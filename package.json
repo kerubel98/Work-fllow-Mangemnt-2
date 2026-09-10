@@ -1,0 +1,22 @@
+{
+  "name": "operational-workflow-manager",
+  "private": true,
+  "version": "1.0.0",
+  "workspaces": [
+    "frontend",
+    "backend"
+  ],
+  "scripts": {
+    "dev": "tsx backend/src/server.ts",
+    "build": "npm run build --prefix frontend && npm run build --prefix backend",
+    "lint": "npm run lint --prefix frontend",
+    "start": "node backend/dist/server.js"
+  },
+  "devDependencies": {
+    "@types/pg": "^8.23.1",
+    "tsx": "^4.21.0"
+  },
+  "dependencies": {
+    "pg": "^8.23.0"
+  }
+}

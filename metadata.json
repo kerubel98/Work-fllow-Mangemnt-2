@@ -1,0 +1,6 @@
+{
+  "name": "Global Mapping Schema & Multi-Database Workspace",
+  "description": "Enterprise payment operations platform featuring central Global Mapping Schema configuration, multi-database query translation, and reconciliation workspace.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

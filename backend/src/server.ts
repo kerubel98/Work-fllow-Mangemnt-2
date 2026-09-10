@@ -1,0 +1,132 @@
+import express from 'express';
+import cors from 'cors';
+import dotenv from 'dotenv';
+import path from 'path';
+import fs from 'fs';
+import os from 'os';
+import { connectDB, isMongoConnected } from './config/db.js';
+import { seedDatabase } from './config/seed.js';
+import { connectPostgres, isPostgresConnected } from './config/postgres.js';
+import { seedPostgres } from './config/seedPostgres.js';
+import { authRouter } from './routes/auth.js';
+import { issuesRouter } from './routes/issues.js';
+import { databaseRouter } from './routes/database.js';
+import { aiRouter } from './routes/ai.js';
+import { miscRouter } from './routes/misc.js';
+import { organizationRouter } from './routes/organizations.js';
+import { transactionSettingsRouter } from './routes/transactionSettings.js';
+import { teamsRouter } from './routes/teams.js';
+import { collaborationRouter } from './routes/collaboration.js';
+import { eventsRouter } from './routes/events.js';
+import { workflowsRouter } from './routes/workflows.js';
+import { investigationsRouter } from './routes/investigations.js';
+import { validationBoxesRouter } from './routes/validationBoxes.js';
+import { mirrorTableManager } from './services/mirrorTableManager.js';
+
+dotenv.config();
+
+const app = express();
+const PORT = process.env.PORT || 5002;
+
+app.use(cors({ origin: '*' }));
+app.use(express.json({ limit: '50mb' }));
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+
+// Request logger middleware
+app.use((req, _res, next) => {
+  if (!req.url.startsWith('/api/events')) {
+    console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
+  }
+  next();
+});
+
+// Route mounts
+app.use('/api/auth', authRouter);
+app.use('/api/issues', issuesRouter);
+app.use('/api/db', databaseRouter);
+app.use('/api/ai', aiRouter);
+app.use('/api/organizations', organizationRouter);
+app.use('/api/transactions', transactionSettingsRouter);
+app.use('/api/teams', teamsRouter);
+app.use('/api/workflows', workflowsRouter);
+app.use('/api/investigations', investigationsRouter);
+app.use('/api/validation-boxes', validationBoxesRouter);
+app.use('/api', eventsRouter);
+app.use('/api', collaborationRouter);
+app.use('/api', miscRouter);
+
+
+app.get('/api/health', (_req, res) => {
+  res.json({
+    status: 'OK',
+    service: 'Operational Workflow Manager Backend Service',
+    database: isMongoConnected ? 'MongoDB (localhost)' : 'In-Memory Store',
+    uptimeSeconds: process.uptime(),
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Helper to get local LAN IP addresses for multi-device network testing
+function getLocalIpAddresses(): string[] {
+  const interfaces = os.networkInterfaces();
+  const ips: string[] = [];
+  for (const name of Object.keys(interfaces)) {
+    for (const iface of interfaces[name] || []) {
+      if (iface.family === 'IPv4' && !iface.internal) {
+        ips.push(iface.address);
+      }
+    }
+  }
+  return ips;
+}
+
+// Initialize Database connections & seed data then start Express server
+async function startServer() {
+  await connectPostgres();
+  await seedPostgres();
+  await mirrorTableManager.provisionAllConnectedDbMirrors().catch(err => {
+    console.warn('[ServerBoot] Error auto-provisioning mirror tables on boot:', err.message);
+  });
+  await connectDB();
+  await seedDatabase();
+
+  const rootDir = fs.existsSync(path.resolve(process.cwd(), 'frontend'))
+    ? process.cwd()
+    : path.resolve(process.cwd(), '..');
+  const frontendDir = path.resolve(rootDir, 'frontend');
+  const indexHtmlPath = path.resolve(frontendDir, 'index.html');
+
+  console.log(`[ServerBoot] Frontend dir: ${frontendDir}, indexHtml exists: ${fs.existsSync(indexHtmlPath)}`);
+
+  const distPath = path.resolve(rootDir, 'frontend/dist');
+  if (fs.existsSync(distPath)) {
+    console.log(`[ServerBoot] Serving frontend application from ${distPath}`);
+    app.use(express.static(distPath));
+    app.get('*', (req, res, next) => {
+      if (req.originalUrl.startsWith('/api')) {
+        return next();
+      }
+      res.sendFile(path.join(distPath, 'index.html'));
+    });
+  } else {
+    console.log('[ServerBoot] Frontend dist not found, running in pure API mode.');
+  }
+
+  // Bind to 0.0.0.0 so all network devices (WiFi/LAN/Cross-browser) can access the app
+  app.listen(Number(PORT), '0.0.0.0', () => {
+    const lanIps = getLocalIpAddresses();
+    console.log(`====================================================`);
+    console.log(`🚀 Operational Workflow Manager running on 0.0.0.0:${PORT}`);
+    console.log(`💻 Local access:   http://localhost:${PORT}`);
+    if (lanIps.length > 0) {
+      lanIps.forEach(ip => {
+        console.log(`📱 Network access: http://${ip}:${PORT}`);
+      });
+    }
+    console.log(`🗄️ Database mode:  ${isPostgresConnected ? 'PostgreSQL (localhost:5432)' : (isMongoConnected ? 'MongoDB (localhost)' : 'In-Memory Store')}`);
+    console.log(`⚡ Real-time SSE:  http://localhost:${PORT}/api/events`);
+    console.log(`====================================================`);
+  });
+}
+
+startServer();

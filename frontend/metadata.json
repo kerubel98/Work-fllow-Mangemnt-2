@@ -1,0 +1,6 @@
+{
+  "name": "Operational Issue & Resolution Tracker",
+  "description": "Desktop operational issue tracking, database-backed query tools, and SQL resolution script manager with role-based user authentication.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
