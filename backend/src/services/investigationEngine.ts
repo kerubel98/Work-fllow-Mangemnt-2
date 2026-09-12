@@ -166,9 +166,28 @@ export function evaluateRuleCondition(
   stage?: ProcessingStage
 ): ConditionEvaluationResult {
   try {
+    // Gather ALL parameters configured for this validation box / rule
+    const configuredStepParams: string[] = [];
+    if (rule.searchParameters && Array.isArray(rule.searchParameters)) {
+      for (const sp of rule.searchParameters) {
+        if (sp.required !== false) {
+          const k = sp.inputField || sp.targetColumn;
+          if (k && !configuredStepParams.includes(k)) configuredStepParams.push(k);
+        }
+      }
+    }
+    if (rule.requiredParams && Array.isArray(rule.requiredParams)) {
+      for (const p of rule.requiredParams) {
+        if (p && !configuredStepParams.includes(p)) configuredStepParams.push(p);
+      }
+    }
+    if (configuredStepParams.length === 0 && (rule.sourceField || rule.canonicalField)) {
+      configuredStepParams.push(rule.sourceField || rule.canonicalField!);
+    }
+
     // Check mandatory parameter presence (resilient across column casings and identifier aliases)
-    if (rule.requiredParams && rule.requiredParams.length > 0) {
-      const missing = rule.requiredParams.filter(p => {
+    if (configuredStepParams.length > 0) {
+      const missing = configuredStepParams.filter(p => {
         const val = resolveRecordField(record, p);
         return val === undefined || val === null || String(val).trim() === '';
       });
@@ -178,27 +197,50 @@ export function evaluateRuleCondition(
           status: 'FAIL',
           badgeText: 'Param Missing',
           message: `Required parameter(s) missing: [${missing.join(', ')}]`,
-          detail: `Mandatory check requires fields: ${rule.requiredParams.join(', ')}`
+          detail: `Mandatory check requires fields: ${configuredStepParams.join(', ')}`
         };
       }
     }
 
     const checkType = rule.checkType;
-    const sourceKey = rule.sourceField || rule.canonicalField || rule.requiredParams?.[0] || 'transaction_id';
+    const sourceKey = configuredStepParams[0] || rule.sourceField || rule.canonicalField || 'id';
     const recordVal = resolveRecordField(record, sourceKey);
 
     switch (checkType) {
       case 'EXISTENCE_CHECK': {
-        // Record existence check
-        const exists = recordVal !== undefined && recordVal !== null && String(recordVal).trim() !== '';
-        // In simulated/mock test scenarios, ORD-FAIL-TEST or missing values indicate absence
-        const isSimulatedMissing = String(recordVal) === 'ORD-FAIL-TEST' || record.simulatedMissing === true;
-        if (!exists || isSimulatedMissing) {
+        // Record existence check against target database
+        const targetRec = record._target_record ?? record.canonical_data?._target_record ?? record._mirrorData ?? record._externalData;
+        const isRowEvaluated = (record._validation_status && record._validation_status !== 'PENDING')
+          || (record.canonical_data && record.canonical_data._validation_status && record.canonical_data._validation_status !== 'PENDING');
+        const hasExplicitTarget = isRowEvaluated && (('_target_record' in record) || (record.canonical_data && '_target_record' in record.canonical_data) || ('_mirrorData' in record) || ('_externalData' in record));
+
+        // If target database was queried and returned no matching record:
+        if (hasExplicitTarget && !targetRec) {
           return {
             status: 'FAIL',
             badgeText: '404 Missing',
             message: rule.failureMessage || `Record not found in ${stage?.name || rule.targetTable || 'data source'}`,
-            detail: `Lookup key "${sourceKey}" with value "${recordVal ?? 'null'}" returned no matching records.`
+            detail: `Target record lookup returned no matching record.`
+          };
+        }
+
+        // Record existence check: verify ALL configured parameters are present
+        const allParamsPresent = configuredStepParams.length > 0
+          ? configuredStepParams.every(p => {
+              const v = resolveRecordField(record, p);
+              return v !== undefined && v !== null && String(v).trim() !== '';
+            })
+          : (recordVal !== undefined && recordVal !== null && String(recordVal).trim() !== '');
+
+        // In simulated/mock test scenarios, ORD-FAIL-TEST or missing values indicate absence
+        const isSimulatedMissing = String(recordVal) === 'ORD-FAIL-TEST' || record.simulatedMissing === true;
+        if (!allParamsPresent || isSimulatedMissing) {
+          const paramSummary = configuredStepParams.map(p => `"${p}": "${resolveRecordField(record, p) ?? 'null'}"`).join(', ');
+          return {
+            status: 'FAIL',
+            badgeText: '404 Missing',
+            message: rule.failureMessage || `Record not found in ${stage?.name || rule.targetTable || 'data source'}`,
+            detail: `Lookup parameters [${paramSummary}] returned no matching records.`
           };
         }
         return {
@@ -722,10 +764,30 @@ export function executeWorkflowForTransaction(
   transactionRecord: Record<string, any>,
   workflow: DatabaseValidationWorkflow
 ): TransactionExecutionSummary {
+  // Resolve transactionId strictly from workflow configured parameters first
+  const configuredParams: string[] = [];
+  if (workflow?.steps) {
+    for (const step of workflow.steps) {
+      if (Array.isArray(step.searchParameters)) {
+        for (const sp of step.searchParameters) {
+          if (sp.inputField && !configuredParams.includes(sp.inputField)) configuredParams.push(sp.inputField);
+        }
+      }
+      if (Array.isArray(step.requiredParams)) {
+        for (const rp of step.requiredParams) {
+          if (rp && !configuredParams.includes(rp)) configuredParams.push(rp);
+        }
+      }
+      if (step.sourceField && !configuredParams.includes(step.sourceField)) configuredParams.push(step.sourceField);
+    }
+  }
+
+  const primaryParamVal = configuredParams.map(p => resolveRecordField(transactionRecord, p)).find(v => v !== undefined && v !== null && String(v).trim() !== '');
+
   const transactionId = String(
-    transactionRecord.transaction_id ||
-    transactionRecord.id ||
-    transactionRecord.card_number ||
+    transactionRecord._rowId ||
+    transactionRecord.rowId ||
+    primaryParamVal ||
     `TXN-${Date.now()}`
   );
 
@@ -979,9 +1041,37 @@ export function executeBatchInvestigation(
   workflow: DatabaseValidationWorkflow
 ): Record<string, TransactionExecutionSummary> {
   const result: Record<string, TransactionExecutionSummary> = {};
-  for (const record of records) {
+
+  // Discover all parameters configured in the workflow
+  const configuredParams: string[] = [];
+  if (workflow?.steps) {
+    for (const step of workflow.steps) {
+      if (Array.isArray(step.searchParameters)) {
+        for (const sp of step.searchParameters) {
+          if (sp.inputField && !configuredParams.includes(sp.inputField)) configuredParams.push(sp.inputField);
+        }
+      }
+      if (Array.isArray(step.requiredParams)) {
+        for (const rp of step.requiredParams) {
+          if (rp && !configuredParams.includes(rp)) configuredParams.push(rp);
+        }
+      }
+      if (step.sourceField && !configuredParams.includes(step.sourceField)) configuredParams.push(step.sourceField);
+    }
+  }
+
+  records.forEach((record, idx) => {
     const summary = executeWorkflowForTransaction(record, workflow);
     result[summary.transactionId] = summary;
-  }
+    result[`ROW-${idx + 1}`] = summary;
+    result[String(idx)] = summary;
+
+    for (const param of configuredParams) {
+      const val = resolveRecordField(record, param);
+      if (val !== undefined && val !== null && String(val).trim() !== '') {
+        result[String(val)] = summary;
+      }
+    }
+  });
   return result;
 }

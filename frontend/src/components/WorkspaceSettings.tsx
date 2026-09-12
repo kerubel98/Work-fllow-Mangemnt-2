@@ -12,7 +12,7 @@ import {
   ArrowLeft, CheckCircle2, AlertTriangle, ShieldCheck,
   Boxes, GitFork
 } from 'lucide-react';
-import DatabaseValidationSettings from './settings/DatabaseValidationSettings';
+import DatabaseColumnConfigurationStudio from './settings/DatabaseColumnConfiguration';
 import { ValidationBoxManager } from './settings/ValidationBoxManager';
 import { WorkflowStudioFlowchart } from './settings/WorkflowStudioFlowchart';
 import ErrorBoundary from './ErrorBoundary';
@@ -61,12 +61,14 @@ interface WorkspaceSettingsProps {
   currentUser: User;
   databases?: DatabaseConnection[];
   onNavigateToWorkspace?: () => void;
+  selectedWorkflowId?: string;
 }
 
 export default function WorkspaceSettings({
   currentUser,
   databases = [],
-  onNavigateToWorkspace
+  onNavigateToWorkspace,
+  selectedWorkflowId
 }: WorkspaceSettingsProps) {
   const [config, setConfig] = useState<WorkspaceConfig>(() => {
     try {
@@ -78,7 +80,7 @@ export default function WorkspaceSettings({
     return DEFAULT_WORKSPACE_CONFIG;
   });
 
-  const [activeTab, setActiveTab] = useState<'general' | 'validation_box' | 'workflow_studio' | 'workflow' | 'notifications' | 'data_grid' | 'database_validation'>('validation_box');
+  const [activeTab, setActiveTab] = useState<'database_validation' | 'validation_box' | 'workflow_studio' | 'general' | 'workflow' | 'notifications' | 'data_grid'>('database_validation');
   const [saveBanner, setSaveBanner] = useState(false);
 
   const handleSave = (e?: React.FormEvent) => {
@@ -102,17 +104,17 @@ export default function WorkspaceSettings({
   };
 
   const tabs = [
+    { id: 'database_validation', label: 'DB Config', icon: ShieldCheck },
     { id: 'validation_box', label: 'Validation Box', icon: Boxes },
     { id: 'workflow_studio', label: 'Workflow Studio', icon: GitFork },
     { id: 'general', label: 'General', icon: Sliders },
-    { id: 'database_validation', label: 'Database Rules', icon: ShieldCheck },
     { id: 'workflow', label: 'Workflow & SLA', icon: Clock },
     { id: 'notifications', label: 'Notifications', icon: Bell },
     { id: 'data_grid', label: 'Data & Export', icon: FileSpreadsheet }
   ] as const;
 
   return (
-    <div className={`space-y-4 ${activeTab === 'workflow_studio' || activeTab === 'validation_box' ? 'w-full' : 'max-w-7xl mx-auto'}`}>
+    <div className={`space-y-4 ${activeTab === 'database_validation' || activeTab === 'validation_box' || activeTab === 'workflow_studio' ? 'w-full' : 'max-w-7xl mx-auto'}`}>
       {/* 1. Sleek Compact Header Bar */}
       <div className="bg-slate-900 border border-slate-800 rounded-xl px-4 py-3 text-white shadow-xs flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-2.5">
@@ -187,19 +189,22 @@ export default function WorkspaceSettings({
       </div>
 
       {/* 3. Settings Content Pane */}
-      {activeTab === 'validation_box' ? (
+      {activeTab === 'database_validation' ? (
+        <ErrorBoundary fallbackTitle="Column Configuration Error" fallbackMessage="Could not render Database Column Configuration Studio. You can retry or refresh.">
+          <DatabaseColumnConfigurationStudio
+            currentUser={currentUser}
+            databases={databases}
+          />
+        </ErrorBoundary>
+      ) : activeTab === 'validation_box' ? (
         <ErrorBoundary fallbackTitle="Validation Box Error" fallbackMessage="Could not render Validation Box interface.">
           <ValidationBoxManager currentUser={currentUser} />
         </ErrorBoundary>
       ) : activeTab === 'workflow_studio' ? (
         <ErrorBoundary fallbackTitle="Workflow Studio Error" fallbackMessage="Could not render Workflow Studio Flowchart.">
-          <WorkflowStudioFlowchart currentUser={currentUser} />
-        </ErrorBoundary>
-      ) : activeTab === 'database_validation' ? (
-        <ErrorBoundary fallbackTitle="Database Validation Settings Error" fallbackMessage="Could not render Database Validation rules. You can reset cached workflows or retry.">
-          <DatabaseValidationSettings
+          <WorkflowStudioFlowchart 
             currentUser={currentUser}
-            databases={databases}
+            selectedWorkflowId={selectedWorkflowId}
           />
         </ErrorBoundary>
       ) : (

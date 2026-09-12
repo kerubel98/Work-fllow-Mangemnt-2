@@ -3,6 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import { DatabaseColumnConfiguration } from '../types';
+
 const API_BASE_URL = '/api';
 
 const TOKEN_KEY = 'operational_workflow_jwt_token';
@@ -24,6 +26,27 @@ export function setAuthToken(token: string | null): void {
     }
   } catch (err) {
     console.warn('Could not persist auth token:', err);
+  }
+}
+
+/**
+ * Safely stringifies objects by discarding circular references and non-serializable properties
+ */
+export function safeJsonStringify(obj: any, space?: number): string {
+  const seen = new WeakSet();
+  try {
+    return JSON.stringify(obj, (_key, value) => {
+      if (typeof value === 'object' && value !== null) {
+        if (seen.has(value)) {
+          return undefined; // Break circular reference
+        }
+        seen.add(value);
+      }
+      return value;
+    }, space);
+  } catch (err) {
+    console.warn('[safeJsonStringify] Circular serialization warning:', err);
+    return '{}';
   }
 }
 
@@ -126,6 +149,34 @@ export const api = {
   },
   getTaskBatches: (issueId: string) =>
     fetchApi<{ batchId: string; count: number }[]>(`/issues/${issueId}/batches`),
+  getCentralTransactions: (taskId: string) =>
+    fetchApi<{ taskId: string; totalCount: number; records: any[] }>(`/investigations/${taskId}/central-records`),
+  getSchemaAuditLogs: () =>
+    fetchApi<any[]>('/transactions/directory/audit-logs'),
+  getTaskWorkflowExecutions: (taskId: string) =>
+    fetchApi<{ taskId: string; count: number; executions: any[] }>(`/investigations/${taskId}/workflow-executions`),
+  clearTaskWorkflowExecutions: (taskId: string) =>
+    fetchApi<{ success: boolean; taskId: string; deleted: number; message: string }>(
+      `/investigations/${taskId}/workflow-executions`,
+      { method: 'DELETE' }
+    ),
+  clearAllValidationExecutions: () =>
+    fetchApi<{ success: boolean; message: string; executions: number; tasks: number; batches: number; transactions: number }>(
+      '/investigations/executions/clear-all',
+      { method: 'DELETE' }
+    ),
+  scanCrossTaskDuplicates: () =>
+    fetchApi<{ success: boolean; flaggedCount: number; message: string }>('/investigations/duplicates/scan', { method: 'POST' }),
+  moveTransactionToTask: (key: string, targetTaskId: string) =>
+    fetchApi<{ success: boolean; message: string }>(`/investigations/transactions/${encodeURIComponent(key)}/move-to-task`, {
+      method: 'POST',
+      body: JSON.stringify({ targetTaskId })
+    }),
+  removeTransactionFromTask: (key: string, taskId: string) =>
+    fetchApi<{ success: boolean; message: string }>(`/investigations/transactions/${encodeURIComponent(key)}/remove-from-task`, {
+      method: 'POST',
+      body: JSON.stringify({ taskId })
+    }),
 
   // ================= Database Connections =================
   getDatabases: () => fetchApi<any[]>('/db/databases'),
@@ -502,17 +553,17 @@ export const api = {
   createWorkflow: (workflow: any) =>
     fetchApi<any>('/workflows', {
       method: 'POST',
-      body: JSON.stringify(workflow)
+      body: safeJsonStringify(workflow)
     }),
   saveWorkflow: (workflow: any) =>
     fetchApi<any>('/workflows', {
       method: 'POST',
-      body: JSON.stringify(workflow)
+      body: safeJsonStringify(workflow)
     }),
   updateWorkflow: (id: string, updates: any) =>
     fetchApi<any>(`/workflows/${id}`, {
       method: 'PUT',
-      body: JSON.stringify(updates)
+      body: safeJsonStringify(updates)
     }),
   deleteWorkflow: (id: string) =>
     fetchApi<any>(`/workflows/${id}`, {
@@ -580,10 +631,24 @@ export const api = {
     sourceType?: string;
     sourceId?: string;
     keyField?: string;
+    keyFields?: string[];
+    forceRerun?: boolean;
     priority?: string;
     options?: any;
+    executedBy?: string;
   }) =>
     fetchApi<any>('/investigations/execute-universal', {
+      method: 'POST',
+      body: JSON.stringify(data)
+    }),
+
+  resumePausedInvestigation: (data: {
+    workflowId: string;
+    records: any[];
+    keyField?: string;
+    keyFields?: string[];
+  }) =>
+    fetchApi<any>('/investigations/resume-paused', {
       method: 'POST',
       body: JSON.stringify(data)
     }),
@@ -681,7 +746,75 @@ export const api = {
   testValidationBox: (box: any, sampleRecord?: any) =>
     fetchApi<any>('/validation-boxes/test', {
       method: 'POST',
-      body: JSON.stringify({ box, sampleRecord })
+      body: JSON.stringify({
+        box,
+        sampleRecord,
+        parameters: sampleRecord,
+        record: sampleRecord,
+        transaction: sampleRecord
+      })
+    }),
+
+  // ================= Database Column Configurations & Rules =================
+  getTablePreviewData: (dbId: string, tableName: string, limit: number = 50) =>
+    fetchApi<{
+      columns: Array<{ name: string; type: string }>;
+      rows: any[];
+      rowCount: number;
+      source: string;
+      executionTimeMs?: number;
+      warning?: string;
+    }>(`/db/databases/${encodeURIComponent(dbId)}/tables/${encodeURIComponent(tableName)}/preview?limit=${limit}`),
+
+  getColumnConfigurations: (dbId?: string, tableName?: string) => {
+    const params = new URLSearchParams();
+    if (dbId) params.append('dbId', dbId);
+    if (tableName) params.append('tableName', tableName);
+    const query = params.toString();
+    return fetchApi<DatabaseColumnConfiguration[]>(`/db/column-configurations${query ? `?${query}` : ''}`);
+  },
+
+  getColumnConfigurationById: (id: string) =>
+    fetchApi<DatabaseColumnConfiguration>(`/db/column-configurations/${encodeURIComponent(id)}`),
+
+  createColumnConfiguration: (config: Partial<DatabaseColumnConfiguration>) =>
+    fetchApi<DatabaseColumnConfiguration>('/db/column-configurations', {
+      method: 'POST',
+      body: JSON.stringify(config)
+    }),
+
+  updateColumnConfiguration: (id: string, updates: Partial<DatabaseColumnConfiguration>) =>
+    fetchApi<DatabaseColumnConfiguration>(`/db/column-configurations/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(updates)
+    }),
+
+  deleteColumnConfiguration: (id: string) =>
+    fetchApi<{ success: boolean; id: string }>(`/db/column-configurations/${encodeURIComponent(id)}`, {
+      method: 'DELETE'
+    }),
+
+  testColumnConfiguration: (config: Partial<DatabaseColumnConfiguration>, sampleRows: any[]) =>
+    fetchApi<{
+      verdict: 'PASS' | 'VIOLATIONS_FOUND' | 'ERROR';
+      totalRows: number;
+      violationCount: number;
+      violations: Array<{
+        rowIndex: number;
+        rowData: Record<string, any>;
+        reason: string;
+        matchedPriorityValues: Record<string, any>;
+      }>;
+      passedCount?: number;
+      passedRows?: Array<{
+        rowIndex: number;
+        rowData: Record<string, any>;
+        info?: string;
+        matchedPriorityValues?: Record<string, any>;
+      }>;
+    }>('/db/column-configurations/test', {
+      method: 'POST',
+      body: JSON.stringify({ config, sampleRows })
     })
 };
 

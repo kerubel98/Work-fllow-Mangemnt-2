@@ -95,18 +95,14 @@ export const mirrorTableManager = {
       `_mirrored_at TIMESTAMPTZ DEFAULT NOW()`
     ];
 
-    if (columns.length > 0) {
-      for (const col of columns) {
-        const safeCol = sanitizeIdentifier(col.name);
-        // Avoid collision with operational prefix
-        if (safeCol.startsWith('_')) continue;
-        const pgType = mapToPgType(col.type);
-        colDefs.push(`${safeCol} ${pgType}`);
-      }
-    } else {
-      // Fallback dynamic payload column if introspection wasn't available
-      colDefs.push(`payload JSONB DEFAULT '{}'::jsonb`);
+    for (const col of columns) {
+      const safeCol = sanitizeIdentifier(col.name);
+      if (safeCol.startsWith('_') || safeCol === 'payload') continue;
+      const pgType = mapToPgType(col.type);
+      colDefs.push(`${safeCol} ${pgType}`);
     }
+    // Always include dynamic payload column for unstructured and custom rule fields
+    colDefs.push(`payload JSONB DEFAULT '{}'::jsonb`);
 
     // Create high-throughput UNLOGGED table in PostgreSQL
     const ddl = `
@@ -118,6 +114,9 @@ export const mirrorTableManager = {
     `;
 
     await queryPg(ddl);
+    try {
+      await queryPg(`ALTER TABLE ${mirrorName} ADD COLUMN IF NOT EXISTS payload JSONB DEFAULT '{}'::jsonb;`);
+    } catch {}
     tableCache.add(mirrorName);
     console.log(`[MirrorManager] Mirror table verified: ${mirrorName} with ${columns.length} columns.`);
     return mirrorName;
@@ -278,5 +277,54 @@ export const mirrorTableManager = {
       console.warn(`[MirrorManager] Error in provisionAllConnectedDbMirrors: ${err.message}`);
     }
     return results;
+  },
+
+  /**
+   * Cleans up mirror table rows for a completed batch.
+   * Should be called after investigation job/task completion to prevent unbounded growth.
+   */
+  async cleanupMirrorBatch(mirrorName: string, batchId: string): Promise<number> {
+    try {
+      const result = await queryPg(
+        `DELETE FROM ${mirrorName} WHERE _batch_id = $1`,
+        [batchId]
+      );
+      const deletedCount = result.rowCount || 0;
+      console.log(`[MirrorManager] Cleaned up ${deletedCount} rows from ${mirrorName} for batch ${batchId}.`);
+      return deletedCount;
+    } catch (err: any) {
+      console.warn(`[MirrorManager] Cleanup failed for ${mirrorName} batch ${batchId}: ${err.message}`);
+      return 0;
+    }
+  },
+
+  /**
+   * Removes stale mirror rows older than a specified age.
+   * Prevents indefinite accumulation of transient reconciliation data.
+   */
+  async cleanupOldMirrorRows(mirrorName: string, maxAgeHours = 24): Promise<number> {
+    try {
+      const result = await queryPg(
+        `DELETE FROM ${mirrorName} WHERE _mirrored_at < NOW() - INTERVAL '${maxAgeHours} hours'`
+      );
+      const deletedCount = result.rowCount || 0;
+      if (deletedCount > 0) {
+        console.log(`[MirrorManager] Trimmed ${deletedCount} stale rows (>${maxAgeHours}h) from ${mirrorName}.`);
+      }
+      return deletedCount;
+    } catch (err: any) {
+      console.warn(`[MirrorManager] Age-based cleanup failed for ${mirrorName}: ${err.message}`);
+      return 0;
+    }
+  },
+
+  /**
+   * Clears the in-memory table existence cache.
+   * Useful when mirror tables are dropped externally or during maintenance.
+   */
+  clearTableCache(): void {
+    const size = tableCache.size;
+    tableCache.clear();
+    console.log(`[MirrorManager] Table cache cleared (${size} entries evicted).`);
   }
 };

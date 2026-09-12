@@ -24,6 +24,7 @@ import {
   CheckCircle2, Loader2, HardDrive, Key, Wifi, Sparkles, X, ChevronRight,
   FileSpreadsheet
 } from 'lucide-react';
+import { showSystemAlert } from '../common/MessageModal';
 
 interface SystemSettingsProps {
   currentUser: User;
@@ -357,7 +358,11 @@ export default function SystemSettings({
       setDictSuccessMsg(`Field "${fieldToDelete.key}" removed from database and Global Dictionary.`);
       setTimeout(() => setDictSuccessMsg(null), 4000);
     } catch (err: any) {
-      alert(`Error deleting field: ${err.message}`);
+      showSystemAlert({
+        title: 'Delete Failed',
+        message: `Error deleting field: ${err.message || err}`,
+        type: 'error'
+      });
     } finally {
       setFieldToDelete(null);
     }
@@ -380,7 +385,11 @@ export default function SystemSettings({
       setDictSuccessMsg('All fields deleted. Global Dictionary and Schema are now empty.');
       setTimeout(() => setDictSuccessMsg(null), 4000);
     } catch (err: any) {
-      alert(`Error clearing dictionary: ${err.message}`);
+      showSystemAlert({
+        title: 'Clear Dictionary Failed',
+        message: `Error clearing dictionary: ${err.message || err}`,
+        type: 'error'
+      });
     }
   };
 
@@ -419,7 +428,11 @@ export default function SystemSettings({
       setDictSuccessMsg(`Deleted ${deletedCount} selected fields from Global Dictionary.`);
       setTimeout(() => setDictSuccessMsg(null), 4000);
     } catch (err: any) {
-      alert(`Error deleting selected fields: ${err.message}`);
+      showSystemAlert({
+        title: 'Delete Failed',
+        message: `Error deleting selected fields: ${err.message || err}`,
+        type: 'error'
+      });
     }
   };
 
@@ -436,7 +449,11 @@ export default function SystemSettings({
       setDictSuccessMsg(res.message || `Discovered ${res.discoveredCount || 0} database columns into Global Schema.`);
       setTimeout(() => setDictSuccessMsg(null), 5000);
     } catch (err: any) {
-      alert(`Error discovering fields from databases: ${err.message}`);
+      showSystemAlert({
+        title: 'Discovery Failed',
+        message: `Error discovering fields from databases: ${err.message || err}`,
+        type: 'error'
+      });
     } finally {
       setDiscoveringFromDb(false);
     }
@@ -509,7 +526,11 @@ export default function SystemSettings({
     } catch (err: any) {
       // Revert on error
       setFields(prev => prev.map(f => f.key === field.key ? { ...f, required: field.required } : f));
-      alert(`Failed to update required constraint: ${err.message}`);
+      showSystemAlert({
+        title: 'Constraint Update Failed',
+        message: `Failed to update required constraint: ${err.message || err}`,
+        type: 'error'
+      });
     } finally {
       setTogglingRequiredKey(null);
     }
@@ -528,7 +549,11 @@ export default function SystemSettings({
       setDictSuccessMsg(res.message || `Successfully auto-classified ${res.classifiedCount || 0} fields!`);
       setTimeout(() => setDictSuccessMsg(null), 5000);
     } catch (err: any) {
-      alert(`Failed to auto-classify fields: ${err.message}`);
+      showSystemAlert({
+        title: 'Classification Failed',
+        message: `Failed to auto-classify fields: ${err.message || err}`,
+        type: 'error'
+      });
     } finally {
       setAutoClassifying(false);
     }

@@ -34,16 +34,17 @@ workflowsRouter.post('/', async (req: Request, res: Response) => {
     }
 
     const workflowId = data.id || `wf-${Date.now()}`;
-    const stages: ProcessingStage[] = (data.stages && data.stages.length > 0)
-      ? data.stages.map((st, idx) => ({
-          id: st.id || `stage-${Date.now()}-${idx + 1}`,
-          name: st.name || `Stage ${idx + 1}`,
-          description: st.description || '',
-          order: st.order !== undefined ? st.order : idx + 1,
-          enabled: st.enabled !== undefined ? st.enabled : true,
-          targetDbId: st.targetDbId || data.targetDbId || 'db-1',
-          targetDataSource: st.targetDataSource || data.targetTable || 'transactions',
-          businessMeaning: st.businessMeaning,
+    const rawStages = Array.isArray(data.stages) ? data.stages.filter(Boolean) : [];
+    const stages: ProcessingStage[] = rawStages.length > 0
+      ? rawStages.map((st, idx) => ({
+          id: st?.id || `stage-${Date.now()}-${idx + 1}`,
+          name: st?.name || `Stage ${idx + 1}`,
+          description: st?.description || '',
+          order: st?.order !== undefined ? st.order : idx + 1,
+          enabled: st?.enabled !== undefined ? st.enabled : true,
+          targetDbId: st?.targetDbId || data.targetDbId || 'db-1',
+          targetDataSource: st?.targetDataSource || data.targetTable || 'transactions',
+          businessMeaning: st?.businessMeaning,
           createdAt: new Date().toISOString()
         }))
       : [
@@ -59,38 +60,43 @@ workflowsRouter.post('/', async (req: Request, res: Response) => {
           }
         ];
 
-    const steps: ValidationCheckStep[] = (data.steps && data.steps.length > 0)
-      ? data.steps.map((s, idx) => ({
-          id: s.id || `step-${Date.now()}-${idx + 1}`,
-          stepNumber: s.stepNumber || idx + 1,
-          name: s.name || `Step ${idx + 1}`,
-          description: s.description || '',
-          stageId: s.stageId || stages[0].id,
-          checkType: s.checkType || 'EXISTENCE_CHECK',
-          targetDbId: s.targetDbId || stages[0].targetDbId || 'db-1',
-          targetTable: s.targetTable || stages[0].targetDataSource || 'transactions',
-          sqlCondition: s.sqlCondition,
-          sourceField: s.sourceField || 'transaction_id',
-          comparator: s.comparator || '=',
-          targetField: s.targetField,
-          compareValue: s.compareValue ?? (s as any).expectedValue,
-          expectedValue: (s as any).expectedValue ?? s.compareValue,
-          toleranceMargin: s.toleranceMargin ?? (s as any).tolerance,
-          dualSourceCondition: s.dualSourceCondition,
-          regexPattern: s.regexPattern,
-          requiredParams: (s.requiredParams && s.requiredParams.length > 0)
+    const defaultStageId = stages[0]?.id || `stage-${workflowId}-1`;
+    const defaultTargetDb = stages[0]?.targetDbId || data.targetDbId || 'db-1';
+    const defaultDataSource = stages[0]?.targetDataSource || data.targetTable || 'transactions';
+
+    const rawSteps = Array.isArray(data.steps) ? data.steps.filter(Boolean) : [];
+    const steps: ValidationCheckStep[] = rawSteps.length > 0
+      ? rawSteps.map((s, idx) => ({
+          id: s?.id || `step-${Date.now()}-${idx + 1}`,
+          stepNumber: s?.stepNumber || idx + 1,
+          name: s?.name || `Step ${idx + 1}`,
+          description: s?.description || '',
+          stageId: s?.stageId || defaultStageId,
+          checkType: s?.checkType || 'EXISTENCE_CHECK',
+          targetDbId: s?.targetDbId || defaultTargetDb,
+          targetTable: s?.targetTable || defaultDataSource,
+          sqlCondition: s?.sqlCondition,
+          sourceField: s?.sourceField || 'transaction_id',
+          comparator: s?.comparator || '=',
+          targetField: s?.targetField,
+          compareValue: s?.compareValue ?? (s as any)?.expectedValue,
+          expectedValue: (s as any)?.expectedValue ?? s?.compareValue,
+          toleranceMargin: s?.toleranceMargin ?? (s as any)?.tolerance,
+          dualSourceCondition: s?.dualSourceCondition,
+          regexPattern: s?.regexPattern,
+          requiredParams: (s?.requiredParams && s.requiredParams.length > 0)
             ? s.requiredParams
-            : (s.sourceField && s.sourceField !== 'transaction_id' ? [s.sourceField] : []),
-          optionalParams: s.optionalParams || [],
-          dependencyCondition: s.dependencyCondition || (idx === 0 ? 'ALWAYS' : 'IF_PREV_SUCCESS'),
-          onPassAction: s.onPassAction || 'CONTINUE',
-          onFailAction: s.onFailAction || 'STOP',
-          onErrorAction: s.onErrorAction || 'STOP',
-          reportColumnName: s.reportColumnName,
-          reportField: s.reportField,
-          successMessage: s.successMessage || 'Check passed successfully.',
-          failureMessage: s.failureMessage || 'Check failed criteria.',
-          severityOnFailure: s.severityOnFailure || 'WARNING'
+            : (s?.sourceField && s.sourceField !== 'transaction_id' ? [s.sourceField] : []),
+          optionalParams: s?.optionalParams || [],
+          dependencyCondition: s?.dependencyCondition || (idx === 0 ? 'ALWAYS' : 'IF_PREV_SUCCESS'),
+          onPassAction: s?.onPassAction || 'CONTINUE',
+          onFailAction: s?.onFailAction || 'STOP',
+          onErrorAction: s?.onErrorAction || 'STOP',
+          reportColumnName: s?.reportColumnName,
+          reportField: s?.reportField,
+          successMessage: s?.successMessage || 'Check passed successfully.',
+          failureMessage: s?.failureMessage || 'Check failed criteria.',
+          severityOnFailure: s?.severityOnFailure || 'WARNING'
         }))
       : [];
 
@@ -98,13 +104,13 @@ workflowsRouter.post('/', async (req: Request, res: Response) => {
       id: workflowId,
       name: data.name,
       description: data.description || '',
-      targetDbId: data.targetDbId || (stages[0]?.targetDbId) || 'db-1',
-      targetTable: data.targetTable || (stages[0]?.targetDataSource) || 'transactions',
+      targetDbId: data.targetDbId || defaultTargetDb,
+      targetTable: data.targetTable || defaultDataSource,
       category: data.category || 'Reconciliation',
       stages,
       steps,
-      nodes: data.nodes || [],
-      connections: data.connections || [],
+      nodes: Array.isArray(data.nodes) ? data.nodes.filter(Boolean) : [],
+      connections: Array.isArray(data.connections) ? data.connections.filter(Boolean) : [],
       globalSuccessMessage: data.globalSuccessMessage || 'All stages reconciled successfully.',
       globalFailureMessage: data.globalFailureMessage || 'Investigation identified stage discrepancy.',
       createdBy: data.createdBy || 'operator',
@@ -124,7 +130,17 @@ workflowsRouter.post('/', async (req: Request, res: Response) => {
 // PUT /api/workflows/:id - Update workflow
 workflowsRouter.put('/:id', async (req: Request, res: Response) => {
   try {
-    const updated = await repo.updateWorkflow(req.params.id, req.body);
+    const updates = req.body || {};
+    if (updates.stages && Array.isArray(updates.stages)) {
+      updates.stages = updates.stages.filter(Boolean);
+    }
+    if (updates.steps && Array.isArray(updates.steps)) {
+      updates.steps = updates.steps.filter(Boolean);
+    }
+    if (updates.messageAggregations && Array.isArray(updates.messageAggregations)) {
+      updates.messageAggregations = updates.messageAggregations.filter(Boolean);
+    }
+    const updated = await repo.updateWorkflow(req.params.id, updates);
     if (!updated) return res.status(404).json({ error: 'Workflow not found' });
     return res.json(updated);
   } catch (err: any) {

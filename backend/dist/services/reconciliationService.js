@@ -36,7 +36,7 @@ export const reconciliationService = {
      * Executes set-based relational reconciliation in PostgreSQL.
      * Compares task transactions against mirrored external records using indexed SQL joins.
      */
-    async reconcileBatchInDatabase(investigationId, batchId, dataSourceId, lookupKeyField, conditionCheck, dualSourceCondition) {
+    async reconcileBatchInDatabase(investigationId, batchId, dataSourceId, lookupKeyField, conditionCheck, dualSourceCondition, actionConfig) {
         const startTime = Date.now();
         if (isPostgresConnected) {
             const pool = getPostgresPool();
@@ -80,6 +80,9 @@ export const reconciliationService = {
                 queryParams.push(conditionCheck.field, String(conditionCheck.expectedValue));
                 conditionSql += ` AND (m.canonical_payload->>$5) = $6`;
             }
+            // Resolve pipeline actions from step configuration (Validation Result ≠ Pipeline Action)
+            const passAction = actionConfig?.onPassAction || 'CONTINUE';
+            const failAction = actionConfig?.onFailAction || 'STOP';
             const updateSql = `
         UPDATE investigation_transactions it
         SET 
@@ -88,8 +91,8 @@ export const reconciliationService = {
             ELSE 'FAIL'
           END,
           final_action = CASE 
-            WHEN ${conditionSql} THEN 'CONTINUE'
-            ELSE 'STOP'
+            WHEN ${conditionSql} THEN '${passAction}'
+            ELSE '${failAction}'
           END,
           investigation_status = CASE 
             WHEN ${conditionSql} THEN 'VERIFIED_MATCH'
@@ -145,7 +148,9 @@ export const reconciliationService = {
         let fails = 0;
         for (const tx of batchTxs) {
             tx.finalResult = tx.finalResult || 'PASS';
-            tx.finalAction = tx.finalResult === 'PASS' ? 'CONTINUE' : 'STOP';
+            tx.finalAction = tx.finalResult === 'PASS'
+                ? (actionConfig?.onPassAction || 'CONTINUE')
+                : (actionConfig?.onFailAction || 'STOP');
             tx.investigationStatus = tx.finalResult === 'PASS' ? 'VERIFIED_MATCH' : 'FLAGGED_DISCREPANCY';
             await repo.createInvestigationTransaction(tx);
             if (tx.finalResult === 'PASS')

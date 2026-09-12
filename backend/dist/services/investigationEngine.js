@@ -14,22 +14,93 @@ export const DEFAULT_RESPONSE_CODE_LABELS = {
     '96': 'System Error'
 };
 /**
+ * Safely resolves a field value from a transaction record.
+ * Supports exact key, case-insensitive key, alphanumeric normalized key,
+ * nested envelopes (_inputData, canonical_data, raw_data, payload, _mirrorData, _externalData),
+ * and standard transaction ID aliases (transaction_id, id, FE_UTRNNO, TR_HIS_ID, refnum, etc.)
+ */
+export function resolveRecordField(record, fieldKey) {
+    if (!record || typeof record !== 'object' || !fieldKey)
+        return undefined;
+    // 1. Direct property access
+    if (record[fieldKey] !== undefined && record[fieldKey] !== null) {
+        return record[fieldKey];
+    }
+    // 2. Direct envelope access
+    const directEnvelopes = [
+        record._inputData,
+        record.canonical_data,
+        record.raw_data,
+        record.payload,
+        record._mirrorData,
+        record._externalData,
+        record.extracted_data
+    ];
+    for (const env of directEnvelopes) {
+        if (env && typeof env === 'object' && env[fieldKey] !== undefined && env[fieldKey] !== null) {
+            return env[fieldKey];
+        }
+    }
+    const targetLower = String(fieldKey).trim().toLowerCase();
+    const targetNorm = targetLower.replace(/[^a-z0-9]/g, '');
+    // 3. Case-insensitive & normalized search in top-level record
+    const recordKeys = Object.keys(record);
+    for (const k of recordKeys) {
+        const kLower = k.toLowerCase();
+        if (kLower === targetLower || kLower.replace(/[^a-z0-9]/g, '') === targetNorm) {
+            if (record[k] !== undefined && record[k] !== null)
+                return record[k];
+        }
+    }
+    // 4. Case-insensitive search in nested envelopes
+    for (const env of directEnvelopes) {
+        if (env && typeof env === 'object') {
+            for (const k of Object.keys(env)) {
+                const kLower = k.toLowerCase();
+                if (kLower === targetLower || kLower.replace(/[^a-z0-9]/g, '') === targetNorm) {
+                    if (env[k] !== undefined && env[k] !== null)
+                        return env[k];
+                }
+            }
+        }
+    }
+    // 5. Special fallback for transaction identifier aliases
+    if (targetLower === 'transaction_id' || targetLower === 'tx_id' || targetLower === 'id') {
+        return (record.transaction_id ??
+            record.id ??
+            record.FE_UTRNNO ??
+            record.fe_utrnno ??
+            record.TR_HIS_ID ??
+            record.tr_his_id ??
+            record.BANK_REF ??
+            record.bank_ref ??
+            record.refnum ??
+            record.reference_number ??
+            record.terminal_id ??
+            record.TERMINAL_ID ??
+            record.order_id);
+    }
+    return undefined;
+}
+/**
  * Resolves an operand value dynamically across Input dataset, External Mirror, or Grouped Leg Envelopes.
  */
 export function extractOperandValue(record, operand) {
     if (!operand || !operand.field)
         return undefined;
     if (operand.origin === 'INPUT') {
-        return (record[operand.field] ??
-            record._inputData?.[operand.field] ??
-            record.canonical_data?.[operand.field] ??
-            record.raw_data?.[operand.field]);
+        const fromDirect = resolveRecordField(record, operand.field);
+        if (fromDirect !== undefined)
+            return fromDirect;
+        return (resolveRecordField(record._inputData, operand.field) ??
+            resolveRecordField(record.canonical_data, operand.field) ??
+            resolveRecordField(record.raw_data, operand.field));
     }
     if (operand.origin === 'MIRROR') {
         const mirror = record._mirrorData ?? record._externalData ?? record.extracted_data ?? record;
-        return (mirror[operand.field] ??
-            mirror.payload?.[operand.field] ??
-            mirror.canonical_payload?.[operand.field]);
+        return (resolveRecordField(mirror, operand.field) ??
+            resolveRecordField(mirror.payload, operand.field) ??
+            resolveRecordField(mirror.canonical_payload, operand.field));
     }
     if (operand.origin === 'LEG') {
         const grouped = record._groupedData ?? record._groupComposite ?? record.composite_data ?? record;
@@ -41,11 +112,11 @@ export function extractOperandValue(record, operand) {
                     current = current[p];
                 }
             }
-            return current?.[operand.field];
+            return resolveRecordField(current, operand.field);
         }
-        return grouped?.[operand.field];
+        return resolveRecordField(grouped, operand.field);
     }
-    return record[operand.field];
+    return resolveRecordField(record, operand.field);
 }
 /**
  * Pure evaluation of a single rule condition against a transaction record and stage context.
@@ -53,10 +124,30 @@ export function extractOperandValue(record, operand) {
  */
 export function evaluateRuleCondition(record, rule, stage) {
     try {
-        // Check mandatory parameter presence
-        if (rule.requiredParams && rule.requiredParams.length > 0) {
-            const missing = rule.requiredParams.filter(p => {
-                const val = record[p];
+        // Gather ALL parameters configured for this validation box / rule
+        const configuredStepParams = [];
+        if (rule.searchParameters && Array.isArray(rule.searchParameters)) {
+            for (const sp of rule.searchParameters) {
+                if (sp.required !== false) {
+                    const k = sp.inputField || sp.targetColumn;
+                    if (k && !configuredStepParams.includes(k))
+                        configuredStepParams.push(k);
+                }
+            }
+        }
+        if (rule.requiredParams && Array.isArray(rule.requiredParams)) {
+            for (const p of rule.requiredParams) {
+                if (p && !configuredStepParams.includes(p))
+                    configuredStepParams.push(p);
+            }
+        }
+        if (configuredStepParams.length === 0 && (rule.sourceField || rule.canonicalField)) {
+            configuredStepParams.push(rule.sourceField || rule.canonicalField);
+        }
+        // Check mandatory parameter presence (resilient across column casings and identifier aliases)
+        if (configuredStepParams.length > 0) {
+            const missing = configuredStepParams.filter(p => {
+                const val = resolveRecordField(record, p);
                 return val === undefined || val === null || String(val).trim() === '';
             });
             if (missing.length > 0) {
@@ -64,25 +155,31 @@ export function evaluateRuleCondition(record, rule, stage) {
                     status: 'FAIL',
                     badgeText: 'Param Missing',
                     message: `Required parameter(s) missing: [${missing.join(', ')}]`,
-                    detail: `Mandatory check requires fields: ${rule.requiredParams.join(', ')}`
+                    detail: `Mandatory check requires fields: ${configuredStepParams.join(', ')}`
                 };
             }
         }
         const checkType = rule.checkType;
-        const sourceKey = rule.sourceField || rule.requiredParams?.[0] || 'transaction_id';
-        const recordVal = record[sourceKey];
+        const sourceKey = configuredStepParams[0] || rule.sourceField || rule.canonicalField || 'id';
+        const recordVal = resolveRecordField(record, sourceKey);
         switch (checkType) {
             case 'EXISTENCE_CHECK': {
-                // Record existence check
-                const exists = recordVal !== undefined && recordVal !== null && String(recordVal).trim() !== '';
+                // Record existence check: verify ALL configured parameters are present
+                const allParamsPresent = configuredStepParams.length > 0
+                    ? configuredStepParams.every(p => {
+                        const v = resolveRecordField(record, p);
+                        return v !== undefined && v !== null && String(v).trim() !== '';
+                    })
+                    : (recordVal !== undefined && recordVal !== null && String(recordVal).trim() !== '');
                 // In simulated/mock test scenarios, ORD-FAIL-TEST or missing values indicate absence
                 const isSimulatedMissing = String(recordVal) === 'ORD-FAIL-TEST' || record.simulatedMissing === true;
-                if (!exists || isSimulatedMissing) {
+                if (!allParamsPresent || isSimulatedMissing) {
+                    const paramSummary = configuredStepParams.map(p => `"${p}": "${resolveRecordField(record, p) ?? 'null'}"`).join(', ');
                     return {
                         status: 'FAIL',
                         badgeText: '404 Missing',
                         message: rule.failureMessage || `Record not found in ${stage?.name || rule.targetTable || 'data source'}`,
-                        detail: `Lookup key "${sourceKey}" with value "${recordVal ?? 'null'}" returned no matching records.`
+                        detail: `Lookup parameters [${paramSummary}] returned no matching records.`
                     };
                 }
                 return {
@@ -93,8 +190,10 @@ export function evaluateRuleCondition(record, rule, stage) {
                 };
             }
             case 'FIELD_COMPARATOR': {
-                const comp = rule.comparator || '=';
-                const expected = rule.compareValue !== undefined ? String(rule.compareValue).trim() : '';
+                const comp = String(rule.comparator || rule.operator || '=').trim().toUpperCase();
+                const expected = rule.compareValue !== undefined && rule.compareValue !== null
+                    ? String(rule.compareValue).trim()
+                    : (rule.expectedValue !== undefined && rule.expectedValue !== null ? String(rule.expectedValue).trim() : '');
                 const actualStr = recordVal !== undefined && recordVal !== null ? String(recordVal).trim() : '';
                 const actualNum = Number(recordVal);
                 const expectedNum = Number(expected);
@@ -102,32 +201,78 @@ export function evaluateRuleCondition(record, rule, stage) {
                 let isMatch = false;
                 switch (comp) {
                     case '=':
+                    case '==':
+                    case 'EQUALS':
                         isMatch = isNumeric ? actualNum === expectedNum : actualStr.toLowerCase() === expected.toLowerCase();
                         break;
                     case '!=':
+                    case '<>':
+                    case 'NOT_EQUALS':
                         isMatch = isNumeric ? actualNum !== expectedNum : actualStr.toLowerCase() !== expected.toLowerCase();
                         break;
                     case '>':
+                    case 'GREATER_THAN':
                         isMatch = isNumeric ? actualNum > expectedNum : actualStr > expected;
                         break;
                     case '<':
+                    case 'LESS_THAN':
                         isMatch = isNumeric ? actualNum < expectedNum : actualStr < expected;
                         break;
                     case '>=':
+                    case 'GREATER_EQUAL':
                         isMatch = isNumeric ? actualNum >= expectedNum : actualStr >= expected;
                         break;
                     case '<=':
+                    case 'LESS_EQUAL':
                         isMatch = isNumeric ? actualNum <= expectedNum : actualStr <= expected;
                         break;
                     case 'LIKE':
-                        isMatch = actualStr.toLowerCase().includes(expected.toLowerCase());
+                    case 'CONTAINS':
+                    case 'CONTAIN':
+                    case 'INCLUDES':
+                    case 'HAS': {
+                        const cleanExpected = expected.replace(/^%+|%+$/g, '').toLowerCase();
+                        isMatch = actualStr.toLowerCase().includes(cleanExpected);
+                        break;
+                    }
+                    case 'NOT_LIKE':
+                    case 'NOT_CONTAINS':
+                    case 'DOES_NOT_CONTAIN': {
+                        const cleanExpected = expected.replace(/^%+|%+$/g, '').toLowerCase();
+                        isMatch = !actualStr.toLowerCase().includes(cleanExpected);
+                        break;
+                    }
+                    case 'STARTS_WITH': {
+                        const cleanExpected = expected.replace(/^%+|%+$/g, '').toLowerCase();
+                        isMatch = actualStr.toLowerCase().startsWith(cleanExpected);
+                        break;
+                    }
+                    case 'ENDS_WITH': {
+                        const cleanExpected = expected.replace(/^%+|%+$/g, '').toLowerCase();
+                        isMatch = actualStr.toLowerCase().endsWith(cleanExpected);
+                        break;
+                    }
+                    case 'NOT_NULL':
+                    case 'EXISTS':
+                    case 'PRESENT':
+                        isMatch = actualStr !== '';
+                        break;
+                    case 'IS_NULL':
+                    case 'EMPTY':
+                        isMatch = actualStr === '';
                         break;
                     case 'IN': {
                         const list = expected.split(',').map(s => s.trim().toLowerCase());
                         isMatch = list.includes(actualStr.toLowerCase());
                         break;
                     }
-                    case 'REGEX': {
+                    case 'NOT_IN': {
+                        const list = expected.split(',').map(s => s.trim().toLowerCase());
+                        isMatch = !list.includes(actualStr.toLowerCase());
+                        break;
+                    }
+                    case 'REGEX':
+                    case 'REGEX_MATCH': {
                         try {
                             const rx = new RegExp(expected, 'i');
                             isMatch = rx.test(actualStr);
@@ -143,12 +288,12 @@ export function evaluateRuleCondition(record, rule, stage) {
                         break;
                     }
                     default:
-                        isMatch = actualStr === expected;
+                        isMatch = actualStr.toLowerCase() === expected.toLowerCase();
                 }
                 if (isMatch) {
                     return {
                         status: 'PASS',
-                        badgeText: 'Matched',
+                        badgeText: comp === 'CONTAINS' || comp === 'LIKE' ? 'Contains Match' : 'Matched',
                         message: rule.successMessage || `Field '${sourceKey}' satisfied condition (${comp} ${expected})`,
                         dbValue: recordVal
                     };
@@ -156,7 +301,7 @@ export function evaluateRuleCondition(record, rule, stage) {
                 else {
                     return {
                         status: 'FAIL',
-                        badgeText: 'Mismatch',
+                        badgeText: comp === 'CONTAINS' || comp === 'LIKE' ? 'Missing Substring' : 'Mismatch',
                         message: rule.failureMessage || `Field '${sourceKey}' value '${actualStr}' failed condition (${comp} '${expected}')`,
                         detail: `Expected: ${expected} | Actual: ${actualStr}`
                     };
@@ -174,18 +319,32 @@ export function evaluateRuleCondition(record, rule, stage) {
                 }
                 const valA = extractOperandValue(record, dsc.sourceA);
                 const valB = extractOperandValue(record, dsc.sourceB);
-                const comp = dsc.comparator || 'EQUALS';
+                const comp = String(dsc.comparator || rule.comparator || 'EQUALS').trim().toUpperCase();
                 const failVerdict = dsc.failVerdict || 'FAIL';
                 let isPass = false;
                 let badge = 'Match';
                 let detail = `[${dsc.sourceA.origin}.${dsc.sourceA.field}]=${valA} vs [${dsc.sourceB.origin}.${dsc.sourceB.field}]=${valB}`;
-                if (comp === 'EQUALS') {
+                if (comp === 'EQUALS' || comp === '==' || comp === '=') {
                     isPass = String(valA ?? '').trim().toLowerCase() === String(valB ?? '').trim().toLowerCase();
                     badge = isPass ? 'Equal' : 'Not Equal';
                 }
-                else if (comp === 'NOT_EQUALS') {
+                else if (comp === 'NOT_EQUALS' || comp === '!=' || comp === '<>') {
                     isPass = String(valA ?? '').trim().toLowerCase() !== String(valB ?? '').trim().toLowerCase();
                     badge = isPass ? 'Diff Satisfied' : 'Unexpected Match';
+                }
+                else if (comp === 'CONTAINS' || comp === 'LIKE' || comp === 'INCLUDES' || comp === 'HAS') {
+                    const strA = String(valA ?? '').trim().toLowerCase();
+                    const strB = String(valB ?? '').trim().replace(/^%+|%+$/g, '').toLowerCase();
+                    isPass = strA.includes(strB);
+                    badge = isPass ? 'Contains Match' : 'Missing Substring';
+                    detail += ` | Substring: "${strB}" in "${strA}"`;
+                }
+                else if (comp === 'NOT_CONTAINS' || comp === 'NOT_LIKE') {
+                    const strA = String(valA ?? '').trim().toLowerCase();
+                    const strB = String(valB ?? '').trim().replace(/^%+|%+$/g, '').toLowerCase();
+                    isPass = !strA.includes(strB);
+                    badge = isPass ? 'Excluded' : 'Unexpectedly Contained';
+                    detail += ` | Not Substring: "${strB}" in "${strA}"`;
                 }
                 else if (comp === 'NUMERIC_TOLERANCE') {
                     const numA = Number(valA);
@@ -202,11 +361,11 @@ export function evaluateRuleCondition(record, rule, stage) {
                         detail += ` | Delta: ${diff.toFixed(4)}, Margin: ${margin}`;
                     }
                 }
-                else if (comp === 'GREATER_THAN') {
+                else if (comp === 'GREATER_THAN' || comp === '>') {
                     isPass = Number(valA) > Number(valB);
                     badge = isPass ? 'A > B' : 'A <= B';
                 }
-                else if (comp === 'LESS_THAN') {
+                else if (comp === 'LESS_THAN' || comp === '<') {
                     isPass = Number(valA) < Number(valB);
                     badge = isPass ? 'A < B' : 'A >= B';
                 }
@@ -264,11 +423,14 @@ export function evaluateRuleCondition(record, rule, stage) {
                     };
                 }
                 const fieldKey = rule.sourceField || 'amount';
-                const fileAmount = Number(record[fieldKey] ?? 0);
-                const targetVal = rule.targetField && record[rule.targetField] !== undefined
-                    ? Number(record[rule.targetField])
-                    : (rule.compareValue !== undefined && String(rule.compareValue).trim() !== '' ? Number(rule.compareValue) : fileAmount);
-                const margin = Number(rule.toleranceMargin ?? 0.00);
+                const fileAmount = Number(resolveRecordField(record, fieldKey) ?? 0);
+                const targetValRaw = rule.targetField ? resolveRecordField(record, rule.targetField) : undefined;
+                const targetVal = targetValRaw !== undefined
+                    ? Number(targetValRaw)
+                    : (rule.compareValue !== undefined && String(rule.compareValue).trim() !== ''
+                        ? Number(rule.compareValue)
+                        : (rule.expectedValue !== undefined && String(rule.expectedValue).trim() !== '' ? Number(rule.expectedValue) : fileAmount));
+                const margin = Number(rule.toleranceMargin ?? rule.tolerance ?? 0.00);
                 const diff = Math.abs(fileAmount - targetVal);
                 if (diff > margin) {
                     return {
@@ -287,9 +449,9 @@ export function evaluateRuleCondition(record, rule, stage) {
             }
             case 'STATUS_MATCH': {
                 const fieldKey = rule.sourceField || rule.targetField || 'status';
-                const rawStatus = record[fieldKey];
-                const sourceStatus = rawStatus !== undefined ? String(rawStatus).toUpperCase() : '';
-                const expectedStatus = String(rule.compareValue ?? '').toUpperCase();
+                const rawStatus = resolveRecordField(record, fieldKey);
+                const sourceStatus = rawStatus !== undefined && rawStatus !== null ? String(rawStatus).toUpperCase() : '';
+                const expectedStatus = String(rule.compareValue ?? rule.expectedValue ?? '').toUpperCase();
                 if (sourceStatus !== expectedStatus) {
                     return {
                         status: 'FAIL',
@@ -307,8 +469,8 @@ export function evaluateRuleCondition(record, rule, stage) {
             }
             case 'ISO_DECLINE_CODE': {
                 const fieldKey = rule.sourceField || 'response_code';
-                const code = String(record[fieldKey] ?? '').trim();
-                const expectedCode = rule.compareValue ? String(rule.compareValue).trim() : '00';
+                const code = String(resolveRecordField(record, fieldKey) ?? '').trim();
+                const expectedCode = (rule.compareValue ?? rule.expectedValue) ? String(rule.compareValue ?? rule.expectedValue).trim() : '00';
                 const dict = rule.dualSourceCondition?.lookupDictionary || DEFAULT_RESPONSE_CODE_LABELS;
                 if (code !== expectedCode) {
                     const reason = dict[code] || 'Declined / Discrepancy Code';
@@ -328,16 +490,16 @@ export function evaluateRuleCondition(record, rule, stage) {
             }
             case 'NUMERIC_THRESHOLD': {
                 const numVal = Number(recordVal ?? 0);
-                const threshold = Number(rule.compareValue ?? 0);
-                const comp = rule.comparator || '>';
+                const threshold = Number(rule.compareValue ?? rule.expectedValue ?? 0);
+                const comp = String(rule.comparator || rule.operator || '>').trim();
                 let passed = false;
-                if (comp === '>')
+                if (comp === '>' || comp === 'GREATER_THAN')
                     passed = numVal > threshold;
-                else if (comp === '>=')
+                else if (comp === '>=' || comp === 'GREATER_EQUAL')
                     passed = numVal >= threshold;
-                else if (comp === '<')
+                else if (comp === '<' || comp === 'LESS_THAN')
                     passed = numVal < threshold;
-                else if (comp === '<=')
+                else if (comp === '<=' || comp === 'LESS_EQUAL')
                     passed = numVal <= threshold;
                 else
                     passed = numVal === threshold;
@@ -523,9 +685,30 @@ export function evaluateDependencyCondition(ruleOrCondition, previousResult, pre
  * Generates an auditable execution summary with independent closure tracking.
  */
 export function executeWorkflowForTransaction(transactionRecord, workflow) {
-    const transactionId = String(transactionRecord.transaction_id ||
-        transactionRecord.id ||
-        transactionRecord.card_number ||
+    // Resolve transactionId strictly from workflow configured parameters first
+    const configuredParams = [];
+    if (workflow?.steps) {
+        for (const step of workflow.steps) {
+            if (Array.isArray(step.searchParameters)) {
+                for (const sp of step.searchParameters) {
+                    if (sp.inputField && !configuredParams.includes(sp.inputField))
+                        configuredParams.push(sp.inputField);
+                }
+            }
+            if (Array.isArray(step.requiredParams)) {
+                for (const rp of step.requiredParams) {
+                    if (rp && !configuredParams.includes(rp))
+                        configuredParams.push(rp);
+                }
+            }
+            if (step.sourceField && !configuredParams.includes(step.sourceField))
+                configuredParams.push(step.sourceField);
+        }
+    }
+    const primaryParamVal = configuredParams.map(p => resolveRecordField(transactionRecord, p)).find(v => v !== undefined && v !== null && String(v).trim() !== '');
+    const transactionId = String(transactionRecord._rowId ||
+        transactionRecord.rowId ||
+        primaryParamVal ||
         `TXN-${Date.now()}`);
     const auditTrail = [];
     let previousResult = null;
@@ -768,9 +951,37 @@ export function executeWorkflowForTransaction(transactionRecord, workflow) {
  */
 export function executeBatchInvestigation(records, workflow) {
     const result = {};
-    for (const record of records) {
+    // Discover all parameters configured in the workflow
+    const configuredParams = [];
+    if (workflow?.steps) {
+        for (const step of workflow.steps) {
+            if (Array.isArray(step.searchParameters)) {
+                for (const sp of step.searchParameters) {
+                    if (sp.inputField && !configuredParams.includes(sp.inputField))
+                        configuredParams.push(sp.inputField);
+                }
+            }
+            if (Array.isArray(step.requiredParams)) {
+                for (const rp of step.requiredParams) {
+                    if (rp && !configuredParams.includes(rp))
+                        configuredParams.push(rp);
+                }
+            }
+            if (step.sourceField && !configuredParams.includes(step.sourceField))
+                configuredParams.push(step.sourceField);
+        }
+    }
+    records.forEach((record, idx) => {
         const summary = executeWorkflowForTransaction(record, workflow);
         result[summary.transactionId] = summary;
-    }
+        result[`ROW-${idx + 1}`] = summary;
+        result[String(idx)] = summary;
+        for (const param of configuredParams) {
+            const val = resolveRecordField(record, param);
+            if (val !== undefined && val !== null && String(val).trim() !== '') {
+                result[String(val)] = summary;
+            }
+        }
+    });
     return result;
 }

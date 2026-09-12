@@ -11,13 +11,16 @@ export async function runMigrations() {
         throw new Error(`Migration aborted: ${connResult.error}`);
     }
     const pool = getPostgresPool();
-    const sqlFilePath = path.join(__dirname, 'migrations', '001_initial_schema.sql');
-    const sql = fs.readFileSync(sqlFilePath, 'utf8');
+    const migrationsDir = path.join(__dirname, 'migrations');
+    const files = fs.readdirSync(migrationsDir).filter(f => f.endsWith('.sql')).sort();
     const client = await pool.connect();
     try {
-        console.log('⚡ Executing 001_initial_schema.sql...');
-        await client.query(sql);
-        console.log('✅ 001_initial_schema.sql applied successfully!');
+        for (const file of files) {
+            console.log(`⚡ Executing migration ${file}...`);
+            const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf8');
+            await client.query(sql);
+            console.log(`✅ ${file} applied successfully!`);
+        }
     }
     finally {
         client.release();

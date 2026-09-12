@@ -32,10 +32,15 @@ import {
   Eye,
   ShieldCheck,
   Info,
-  AlignVerticalJustifyCenter
+  AlignVerticalJustifyCenter,
+  Edit2,
+  Square,
+  AlertCircle,
+  SlidersHorizontal
 } from 'lucide-react';
 import { api } from '../../api/client';
 import { globalMappingService } from '../../services/globalMappingService';
+import { showSystemAlert } from '../common/MessageModal';
 import {
   ValidationBox,
   DatabaseValidationWorkflow,
@@ -43,20 +48,43 @@ import {
   FlowchartConnection,
   FlowchartOutputAction,
   ProcessingStage,
-  ValidationCheckStep
+  ValidationCheckStep,
+  WorkflowMessageAggregationRule
 } from '../../types';
 
 interface WorkflowStudioFlowchartProps {
   currentUser?: any;
+  selectedWorkflowId?: string;
+  onSelectWorkflow?: (workflow: DatabaseValidationWorkflow) => void;
 }
 
-export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = () => {
+export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = ({
+  currentUser,
+  selectedWorkflowId,
+  onSelectWorkflow
+}) => {
   const [workflows, setWorkflows] = useState<DatabaseValidationWorkflow[]>([]);
   const [validationBoxes, setValidationBoxes] = useState<ValidationBox[]>([]);
   const [activeWorkflow, setActiveWorkflow] = useState<DatabaseValidationWorkflow | null>(null);
   const [loading, setLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
   const [saveSuccessMsg, setSaveSuccessMsg] = useState('');
+  const [extraCanvasHeight, setExtraCanvasHeight] = useState<number>(600);
+  
+  // Message Aggregation Rules State
+  const [messageAggregations, setMessageAggregations] = useState<WorkflowMessageAggregationRule[]>([]);
+  const [showAggregatorModal, setShowAggregatorModal] = useState<boolean>(false);
+  const [aggregatorTab, setAggregatorTab] = useState<'PASS' | 'FAIL'>('FAIL');
+  const [isEditingRule, setIsEditingRule] = useState<boolean>(false);
+  const [editingRuleId, setEditingRuleId] = useState<string | null>(null);
+  
+  // Rule Form State
+  const [formRuleName, setFormRuleName] = useState<string>('');
+  const [formRuleMessage, setFormRuleMessage] = useState<string>('');
+  const [formRuleOperator, setFormRuleOperator] = useState<'ALL' | 'ANY'>('ANY');
+  const [formRuleSeverity, setFormRuleSeverity] = useState<'CRITICAL' | 'WARNING' | 'RECONCILED'>('CRITICAL');
+  const [formSelectedStepIds, setFormSelectedStepIds] = useState<string[]>([]);
+  const [aggregatorFeedback, setAggregatorFeedback] = useState<string>('');
 
   // Workflow metadata
   const [workflowName, setWorkflowName] = useState('Payment Reconciliation Pipeline');
@@ -85,6 +113,16 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
     loadData();
   }, []);
 
+  // Synchronize when selectedWorkflowId prop updates
+  useEffect(() => {
+    if (selectedWorkflowId && workflows.length > 0) {
+      const matched = workflows.find(w => w && w.id === selectedWorkflowId);
+      if (matched && matched.id !== activeWorkflow?.id) {
+        selectWorkflow(matched);
+      }
+    }
+  }, [selectedWorkflowId, workflows]);
+
   const loadData = async () => {
     setLoading(true);
     try {
@@ -92,14 +130,24 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
         api.getWorkflows(),
         api.getValidationBoxes()
       ]);
-      setWorkflows(wfs || []);
-      setValidationBoxes(boxes || []);
+      const safeWfs = Array.isArray(wfs) ? wfs.filter(Boolean) : [];
+      const safeBoxes = Array.isArray(boxes) ? boxes.filter(Boolean) : [];
+      setWorkflows(safeWfs);
+      setValidationBoxes(safeBoxes);
 
-      if (wfs && wfs.length > 0) {
-        selectWorkflow(wfs[0], boxes || []);
+      if (safeWfs.length > 0) {
+        // Priority for active workflow selection:
+        // 1. Explicit prop selectedWorkflowId
+        // 2. First workflow in the list
+        const matched = selectedWorkflowId ? safeWfs.find(w => w && w.id === selectedWorkflowId) : null;
+        const targetWorkflow = matched || safeWfs[0];
+        if (targetWorkflow) {
+          selectWorkflow(targetWorkflow, safeBoxes);
+        }
       } else {
         setActiveWorkflow(null);
         setWorkflowName('');
+        setMessageAggregations([]);
         setWorkflowCategory('Settlement');
         setWorkflowDescription('');
         setNodes([]);
@@ -112,16 +160,72 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
     }
   };
 
+  /**
+   * Only returns validation blocks belonging to the active selected workflow
+   */
+  const workflowValidationBlocks = React.useMemo(() => {
+    const fromNodes = (nodes || [])
+      .filter(n => n && (n.type === 'VALIDATION_BOX' || n.type === 'RECONCILIATION' || n.type === 'REPORT' || n.boxId))
+      .map(n => ({
+        id: `step-${n.id}`,
+        nodeId: String(n.id || ''),
+        name: n.name || 'Validation Block',
+        description: n.description || '',
+        category: n.category || 'Validation Check',
+        boxId: n.boxId
+      }));
+    if (fromNodes.length > 0) return fromNodes;
+    if (activeWorkflow?.steps && Array.isArray(activeWorkflow.steps) && activeWorkflow.steps.length > 0) {
+      return activeWorkflow.steps.filter(Boolean).map(s => ({
+        id: s?.id || '',
+        nodeId: s?.id ? String(s.id).replace(/^step-/, '') : '',
+        name: s?.name || '',
+        description: s?.description || '',
+        category: s?.checkType || 'Validation Check',
+        boxId: s?.id
+      }));
+    }
+    return [];
+  }, [nodes, activeWorkflow]);
+
+  /**
+   * Dynamically calculate canvas dimensions based on maximum node positions.
+   * This guarantees infinite vertical scrolling without clipping.
+   */
+  const canvasDimensions = React.useMemo(() => {
+    let maxY = 400;
+    let maxX = 600;
+    nodes.forEach(n => {
+      if (typeof n.y === 'number' && n.y > maxY) maxY = n.y;
+      if (typeof n.x === 'number' && n.x > maxX) maxX = n.x;
+    });
+    return {
+      width: Math.max(1600, maxX + 600),
+      height: Math.max(1800, maxY + extraCanvasHeight + 600)
+    };
+  }, [nodes, extraCanvasHeight]);
+
   const selectWorkflow = (wf: DatabaseValidationWorkflow, availableBoxes?: ValidationBox[]) => {
-    const boxesToUse = availableBoxes || validationBoxes;
+    if (!wf) return;
+    const boxesToUse = (availableBoxes || validationBoxes || []).filter(Boolean);
     setActiveWorkflow(wf);
-    setWorkflowName(wf.name);
+
+    if (onSelectWorkflow) {
+      onSelectWorkflow(wf);
+    }
+
+    setWorkflowName(wf.name || '');
     setWorkflowCategory(wf.category || 'Settlement');
     setWorkflowDescription(wf.description || '');
+    const rawAggs = wf.messageAggregations;
+    const safeAggs = Array.isArray(rawAggs)
+      ? rawAggs.filter(Boolean)
+      : (rawAggs && typeof rawAggs === 'object' ? Object.values(rawAggs).filter(Boolean) : []);
+    setMessageAggregations(safeAggs as WorkflowMessageAggregationRule[]);
 
-    if (wf.nodes && wf.nodes.length > 0) {
-      setNodes(wf.nodes);
-      setConnections(wf.connections || []);
+    if (wf.nodes && Array.isArray(wf.nodes) && wf.nodes.length > 0) {
+      setNodes(wf.nodes.filter(Boolean));
+      setConnections(Array.isArray(wf.connections) ? wf.connections.filter(Boolean) : []);
     } else {
       // Synthesize vertical flowchart nodes from existing stages & steps
       convertStagesToFlowchart(wf, boxesToUse);
@@ -129,9 +233,11 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
   };
 
   /**
-   * Converts linear or stage-based workflow into a clean VERTICAL flowchart
+   * Converts linear, stage-based or step-based workflow into a clean VERTICAL flowchart
    */
   const convertStagesToFlowchart = (wf: DatabaseValidationWorkflow, availableBoxes: ValidationBox[]) => {
+    if (!wf) return;
+    const safeBoxes = (availableBoxes || validationBoxes || []).filter(Boolean);
     const newNodes: FlowchartNode[] = [];
     const newConns: FlowchartConnection[] = [];
 
@@ -153,47 +259,88 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
     let prevNodeId = 'node-start';
     currentY += 160;
 
-    const stages = wf.stages || [];
-    stages.forEach((stage, sIdx) => {
-      const stageBoxes = availableBoxes.filter(b => 
-        stage.ruleBlockIds?.includes(b.id) || 
-        (b.targetTable && stage.targetDataSource && b.targetTable === stage.targetDataSource)
-      );
+    const steps = (wf.steps && Array.isArray(wf.steps)) ? wf.steps.filter(Boolean) : [];
+    const stages = (wf.stages && Array.isArray(wf.stages)) ? wf.stages.filter(Boolean) : [];
 
-      const step = (wf.steps || []).find(st => st.stageId === stage.id) || wf.steps?.[sIdx];
-      const box = stageBoxes[0] || availableBoxes[sIdx];
+    if (steps.length > 0) {
+      steps.forEach((step, sIdx) => {
+        if (!step) return;
+        const stage = stages.find(st => st && st.id === step.stageId);
+        const stageBoxes = stage ? safeBoxes.filter(b => b && (
+          (stage.ruleBlockIds && Array.isArray(stage.ruleBlockIds) && stage.ruleBlockIds.includes(b.id)) || 
+          (b.targetTable && stage.targetDataSource && b.targetTable === stage.targetDataSource)
+        )) : [];
+        const box = safeBoxes.find(b => b && (b.id === (step as any)?.boxId || b.id === step?.id)) || stageBoxes[0] || (safeBoxes.length > 0 ? safeBoxes[sIdx % safeBoxes.length] : undefined);
 
-      const nodeId = `node-stage-${stage.id || sIdx + 1}`;
-      newNodes.push({
-        id: nodeId,
-        type: 'VALIDATION_BOX',
-        boxId: box?.id,
-        name: box?.name || stage.name || `Validation Block ${sIdx + 1}`,
-        description: box?.description || stage.description || 'Configured rule verification',
-        category: box?.category || 'General',
-        x: centerX,
-        y: currentY,
-        onPassAction: (step?.onPassAction as FlowchartOutputAction) || 'CONTINUE',
-        onFailAction: (step?.onFailAction as FlowchartOutputAction) || 'STOP',
-        reportColumnName: step?.reportColumnName || (sIdx === 0 ? 'Auth Status' : undefined),
-        reportField: step?.reportField,
-        targetDbId: box?.targetDbId || stage.targetDbId,
-        targetTable: box?.targetTable || stage.targetDataSource
+        const nodeId = `node-step-${step?.id || sIdx + 1}`;
+        newNodes.push({
+          id: nodeId,
+          type: 'VALIDATION_BOX',
+          boxId: box?.id || step?.id,
+          name: step?.name || box?.name || `Validation Block ${sIdx + 1}`,
+          description: step?.description || box?.description || 'Configured rule verification',
+          category: box?.category || 'General',
+          x: centerX,
+          y: currentY,
+          onPassAction: (step?.onPassAction as FlowchartOutputAction) || 'CONTINUE',
+          onFailAction: (step?.onFailAction as FlowchartOutputAction) || 'STOP',
+          reportColumnName: step?.reportColumnName || (sIdx === 0 ? 'Auth Status' : undefined),
+          reportField: step?.reportField,
+          targetDbId: step?.targetDbId || box?.targetDbId || stage?.targetDbId,
+          targetTable: step?.targetTable || box?.targetTable || stage?.targetDataSource
+        });
+
+        newConns.push({
+          id: `conn-${prevNodeId}-${nodeId}`,
+          fromNodeId: prevNodeId,
+          fromPort: prevNodeId === 'node-start' ? 'output' : 'pass',
+          toNodeId: nodeId,
+          action: 'CONTINUE',
+          label: 'Continue'
+        });
+
+        prevNodeId = nodeId;
+        currentY += 190;
       });
+    } else if (stages.length > 0) {
+      stages.forEach((stage, sIdx) => {
+        if (!stage) return;
+        const stageBoxes = safeBoxes.filter(b => b && (
+          (stage.ruleBlockIds && Array.isArray(stage.ruleBlockIds) && stage.ruleBlockIds.includes(b.id)) || 
+          (b.targetTable && stage.targetDataSource && b.targetTable === stage.targetDataSource)
+        ));
+        const box = stageBoxes[0] || (safeBoxes.length > 0 ? safeBoxes[sIdx % safeBoxes.length] : undefined);
 
-      // Connect previous node down to this node
-      newConns.push({
-        id: `conn-${prevNodeId}-${nodeId}`,
-        fromNodeId: prevNodeId,
-        fromPort: prevNodeId === 'node-start' ? 'output' : 'pass',
-        toNodeId: nodeId,
-        action: 'CONTINUE',
-        label: 'Continue'
+        const nodeId = `node-stage-${stage.id || sIdx + 1}`;
+        newNodes.push({
+          id: nodeId,
+          type: 'VALIDATION_BOX',
+          boxId: box?.id,
+          name: box?.name || stage.name || `Validation Block ${sIdx + 1}`,
+          description: box?.description || stage.description || 'Configured rule verification',
+          category: box?.category || 'General',
+          x: centerX,
+          y: currentY,
+          onPassAction: 'CONTINUE',
+          onFailAction: 'STOP',
+          reportColumnName: sIdx === 0 ? 'Auth Status' : undefined,
+          targetDbId: box?.targetDbId || stage.targetDbId,
+          targetTable: box?.targetTable || stage.targetDataSource
+        });
+
+        newConns.push({
+          id: `conn-${prevNodeId}-${nodeId}`,
+          fromNodeId: prevNodeId,
+          fromPort: prevNodeId === 'node-start' ? 'output' : 'pass',
+          toNodeId: nodeId,
+          action: 'CONTINUE',
+          label: 'Continue'
+        });
+
+        prevNodeId = nodeId;
+        currentY += 190;
       });
-
-      prevNodeId = nodeId;
-      currentY += 190;
-    });
+    }
 
     // End Outcome Node (Bottom)
     const endNodeId = 'node-end-reconciled';
@@ -226,6 +373,7 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
    */
   const initDefaultFlowchart = (availableBoxes: ValidationBox[]) => {
     setActiveWorkflow(null);
+    setMessageAggregations([]);
     setWorkflowName('Two-Stage Reconciliation & Report Pipeline');
     setWorkflowCategory('Settlement');
     setWorkflowDescription('Search authorizations, report intermediate status into Investigation Grid, then verify settlement tolerances.');
@@ -351,11 +499,12 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
    * Identifies whether a node is a Search & Ingestion process block (Rectangle) vs Condition Check (Rhombus)
    */
   const isNodeSearchBox = (node: FlowchartNode) => {
-    if (node.type === 'START' || node.type === 'END') return false;
-    const box = validationBoxes.find(b => b.id === node.boxId);
+    if (!node || node.type === 'START' || node.type === 'END') return false;
+    const safeBoxes = (validationBoxes || []).filter(Boolean);
+    const box = safeBoxes.find(b => b && b.id === node.boxId);
     if (box) return box.boxType === 'INGESTION_SEARCH';
-    if (node.targetTable && !node.name.toLowerCase().includes('check')) return true;
-    if (node.name.toLowerCase().includes('search') || node.name.toLowerCase().includes('ingest') || node.name.toLowerCase().includes('auth log')) return true;
+    if (node.targetTable && !node.name?.toLowerCase().includes('check')) return true;
+    if (node.name?.toLowerCase().includes('search') || node.name?.toLowerCase().includes('ingest') || node.name?.toLowerCase().includes('auth log')) return true;
     return false;
   };
 
@@ -364,6 +513,7 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
    */
   const handleCreateNewFlowchart = () => {
     setActiveWorkflow(null);
+    setMessageAggregations([]);
     setWorkflowName(`Custom Workflow ${workflows.length + 1}`);
     setWorkflowCategory('Settlement');
     setWorkflowDescription('Vertical flowchart connecting ingestion search and condition verification blocks.');
@@ -394,19 +544,132 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
    */
   const handleDeleteWorkflow = async () => {
     if (!activeWorkflow || !activeWorkflow.id) return;
-    if (!confirm(`Are you sure you want to delete workflow "${activeWorkflow.name}"?`)) return;
+    const wfName = activeWorkflow.name || 'Untitled Workflow';
+    const wfId = activeWorkflow.id;
+    if (!window.confirm(`Are you sure you want to permanently delete workflow "${wfName}"? This action cannot be undone.`)) {
+      return;
+    }
     try {
-      await api.deleteWorkflow(activeWorkflow.id);
+      await api.deleteWorkflow(wfId);
       setActiveWorkflow(null);
       await loadData();
+      showSystemAlert({
+        title: 'Workflow Deleted',
+        message: `Workflow "${wfName}" has been permanently deleted from PostgreSQL.`,
+        type: 'success'
+      });
     } catch (err: any) {
-      alert(`Failed to delete workflow: ${err.message}`);
+      showSystemAlert({
+        title: 'Delete Failed',
+        message: `Failed to delete workflow: ${err.message || err}`,
+        type: 'error'
+      });
     }
   };
 
   /**
    * One-click Auto Align Vertically: cleans up user coordinates into a straight top-to-bottom layout
    */
+
+  const resetRuleForm = (type: 'PASS' | 'FAIL') => {
+    setIsEditingRule(false);
+    setEditingRuleId(null);
+    setFormRuleName('');
+    setFormRuleMessage('');
+    setFormRuleOperator(type === 'FAIL' ? 'ANY' : 'ALL');
+    setFormRuleSeverity(type === 'FAIL' ? 'CRITICAL' : 'RECONCILED');
+    setFormSelectedStepIds([]);
+  };
+
+  const handleStartNewRule = (type: 'PASS' | 'FAIL') => {
+    resetRuleForm(type);
+    setIsEditingRule(true);
+    if (workflowValidationBlocks.length > 0) {
+      setFormSelectedStepIds([workflowValidationBlocks[0].id]);
+    }
+  };
+
+  const handleEditRule = (rule: WorkflowMessageAggregationRule) => {
+    setEditingRuleId(rule.id);
+    setIsEditingRule(true);
+    setFormRuleName(rule.name);
+    setFormRuleMessage(rule.message);
+    setFormRuleOperator(rule.operator || (rule.type === 'FAIL' ? 'ANY' : 'ALL'));
+    setFormRuleSeverity(rule.severity || (rule.type === 'FAIL' ? 'CRITICAL' : 'RECONCILED'));
+    setFormSelectedStepIds(rule.validationStepIds || []);
+  };
+
+  const handleDeleteRule = (ruleId: string) => {
+    setMessageAggregations(prev => prev.filter(r => r.id !== ruleId));
+  };
+
+  const handleSaveRule = () => {
+    if (!formRuleName.trim()) {
+      showSystemAlert({
+        title: 'Validation Warning',
+        message: 'Please enter a descriptive Rule Name.',
+        type: 'warning'
+      });
+      return;
+    }
+    if (!formRuleMessage.trim()) {
+      showSystemAlert({
+        title: 'Validation Warning',
+        message: 'Please enter the Consolidated Outcome Message text.',
+        type: 'warning'
+      });
+      return;
+    }
+    if (formSelectedStepIds.length === 0) {
+      showSystemAlert({
+        title: 'Validation Warning',
+        message: 'Please select at least one validation block to attach to this message.',
+        type: 'warning'
+      });
+      return;
+    }
+
+    const newRule: WorkflowMessageAggregationRule = {
+      id: editingRuleId || `agg-rule-${Date.now()}`,
+      name: formRuleName.trim(),
+      type: aggregatorTab,
+      message: formRuleMessage.trim(),
+      validationStepIds: formSelectedStepIds,
+      operator: formRuleOperator,
+      severity: formRuleSeverity
+    };
+
+    setMessageAggregations(prev => {
+      if (editingRuleId) {
+        return prev.map(r => r.id === editingRuleId ? newRule : r);
+      } else {
+        return [...prev, newRule];
+      }
+    });
+
+    setIsEditingRule(false);
+    setEditingRuleId(null);
+    setAggregatorFeedback(`Saved rule "${newRule.name}". Click "Save & Attach to Workflow" to persist changes.`);
+    setTimeout(() => setAggregatorFeedback(''), 4000);
+  };
+
+  const handleSaveAndApplyAggregations = async () => {
+    try {
+      await handleSaveWorkflow(messageAggregations);
+      setAggregatorFeedback('Message aggregations saved and attached to workflow!');
+      setTimeout(() => {
+        setAggregatorFeedback('');
+        setShowAggregatorModal(false);
+      }, 1200);
+    } catch (err: any) {
+      showSystemAlert({
+        title: 'Save Aggregations Failed',
+        message: `Failed to save aggregations: ${err.message || err}`,
+        type: 'error'
+      });
+    }
+  };
+
   const handleAutoAlignVertical = () => {
     const centerX = 320;
     let currentY = 40;
@@ -452,34 +715,45 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
     setNodes([...updated]);
   };
 
-  // Node Drag Handlers
+  // Node Drag Handlers (Account for scroll offsets for infinite vertical canvas)
   const handleNodeMouseDown = (e: React.MouseEvent, nodeId: string) => {
     e.stopPropagation();
     const node = nodes.find(n => n.id === nodeId);
     if (!node || !canvasRef.current) return;
 
     const rect = canvasRef.current.getBoundingClientRect();
+    const scrollLeft = canvasRef.current.scrollLeft || 0;
+    const scrollTop = canvasRef.current.scrollTop || 0;
+
     setDraggingNodeId(nodeId);
     setDragOffset({
-      x: (e.clientX - rect.left) / canvasZoom - node.x,
-      y: (e.clientY - rect.top) / canvasZoom - node.y
+      x: (e.clientX - rect.left + scrollLeft) / canvasZoom - node.x,
+      y: (e.clientY - rect.top + scrollTop) / canvasZoom - node.y
     });
   };
 
   const handleCanvasMouseMove = (e: React.MouseEvent) => {
     if (!canvasRef.current) return;
     const rect = canvasRef.current.getBoundingClientRect();
-    const curX = (e.clientX - rect.left) / canvasZoom;
-    const curY = (e.clientY - rect.top) / canvasZoom;
+    const scrollLeft = canvasRef.current.scrollLeft || 0;
+    const scrollTop = canvasRef.current.scrollTop || 0;
+
+    const curX = (e.clientX - rect.left + scrollLeft) / canvasZoom;
+    const curY = (e.clientY - rect.top + scrollTop) / canvasZoom;
     setMousePos({ x: curX, y: curY });
 
     if (draggingNodeId) {
       setNodes(prev => prev.map(n => {
         if (n.id === draggingNodeId) {
+          const newY = Math.max(10, Math.round(curY - dragOffset.y));
+          // Dynamically extend canvas if dragging near the bottom limit
+          if (newY + 400 > canvasDimensions.height) {
+            setExtraCanvasHeight(h => h + 400);
+          }
           return {
             ...n,
             x: Math.max(10, Math.round(curX - dragOffset.x)),
-            y: Math.max(10, Math.round(curY - dragOffset.y))
+            y: newY
           };
         }
         return n;
@@ -518,8 +792,11 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
       return;
     }
 
-    // Determine default action: if coming from pass, default CONTINUE or REPORT; if fail, default STOP
-    const defaultAction: FlowchartOutputAction = wireSource.port === 'fail' ? 'STOP' : 'CONTINUE';
+    // Determine default action from source node configuration
+    const sourceNode = nodes.find(n => n.id === wireSource.nodeId);
+    const defaultAction: FlowchartOutputAction = wireSource.port === 'fail'
+      ? (sourceNode?.onFailAction || 'STOP')
+      : (sourceNode?.onPassAction || 'CONTINUE');
 
     // Remove any existing connection from this specific port
     const filteredConns = connections.filter(
@@ -558,7 +835,16 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
   };
 
   const handleAddBoxNode = (box: ValidationBox) => {
-    const count = nodes.length;
+    const initialPassAction: FlowchartOutputAction = (box.checkStep?.actionOnSuccess === 'STOP' || box.checkStep?.onPassAction === 'STOP')
+      ? 'STOP'
+      : ((box.checkStep?.onPassAction as FlowchartOutputAction) || 'CONTINUE');
+    const initialFailAction: FlowchartOutputAction = (box.checkStep?.actionOnFailure === 'CONTINUE' || box.checkStep?.onFailAction === 'CONTINUE')
+      ? 'CONTINUE'
+      : 'STOP';
+
+    const maxY = nodes.length > 0 ? Math.max(...nodes.map(n => n.y || 0)) : 0;
+    const newY = nodes.length === 0 ? 40 : maxY + 180;
+
     const newNode: FlowchartNode = {
       id: `box-node-${Date.now()}-${Math.random().toString(36).substring(2, 5)}`,
       type: 'VALIDATION_BOX',
@@ -567,33 +853,52 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
       description: box.description || (box.boxType === 'INGESTION_SEARCH' ? 'Ingestion and mirror lookup' : 'Condition verification'),
       category: box.category || 'General',
       x: 320,
-      y: 40 + count * 170,
-      onPassAction: 'CONTINUE',
-      onFailAction: 'STOP',
+      y: newY,
+      onPassAction: initialPassAction,
+      onFailAction: initialFailAction,
       targetDbId: box.targetDbId,
       targetTable: box.targetTable
     };
     setNodes(prev => [...prev, newNode]);
+
+    // Automatically scroll down to the newly placed block
+    setTimeout(() => {
+      if (canvasRef.current) {
+        canvasRef.current.scrollTo({ top: Math.max(0, newY - 200), behavior: 'smooth' });
+      }
+    }, 50);
   };
 
   const handleAddTerminalNode = (type: 'START' | 'END', name: string) => {
-    const maxY = nodes.length > 0 ? Math.max(...nodes.map(n => n.y)) : 40;
+    const maxY = nodes.length > 0 ? Math.max(...nodes.map(n => n.y || 0)) : 40;
+    const newY = type === 'START' ? 40 : maxY + 180;
     const newNode: FlowchartNode = {
       id: `terminal-${Date.now()}`,
       type,
       name,
       description: type === 'START' ? 'Batch Ingress entry' : 'Final workflow termination',
       x: 320,
-      y: type === 'START' ? 40 : maxY + 180,
+      y: newY,
       onPassAction: 'CONTINUE',
       onFailAction: 'STOP'
     };
     setNodes(prev => [...prev, newNode]);
+
+    // Automatically scroll to the new terminal node
+    setTimeout(() => {
+      if (canvasRef.current) {
+        canvasRef.current.scrollTo({ top: Math.max(0, newY - 200), behavior: 'smooth' });
+      }
+    }, 50);
   };
 
-  const handleSaveWorkflow = async () => {
+  const handleSaveWorkflow = async (overrideAggregations?: WorkflowMessageAggregationRule[]) => {
     if (!workflowName.trim()) {
-      alert('Workflow name is required');
+      showSystemAlert({
+        title: 'Workflow Name Required',
+        message: 'Please enter a name for the workflow before saving.',
+        type: 'warning'
+      });
       return;
     }
 
@@ -602,22 +907,25 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
 
     try {
       // Synchronize flowchart nodes into structured stages and steps for execution
-      const validationNodes = nodes.filter(n => n.type === 'VALIDATION_BOX' || n.type === 'RECONCILIATION' || n.type === 'REPORT');
+      const validNodes = (nodes || []).filter(Boolean);
+      const validationNodes = validNodes.filter(n => n && (n.type === 'VALIDATION_BOX' || n.type === 'RECONCILIATION' || n.type === 'REPORT'));
 
       const stages: ProcessingStage[] = validationNodes.map((n, idx) => ({
-        id: `stage-${n.id}`,
-        name: n.name,
-        description: n.description,
+        id: `stage-${n.id || idx + 1}`,
+        name: String(n.name || `Stage ${idx + 1}`),
+        description: String(n.description || ''),
         order: idx + 1,
         enabled: true,
-        targetDbId: n.targetDbId || 'db-1',
-        targetDataSource: n.targetTable || 'transactions',
-        businessMeaning: n.category || 'Validation Stage',
-        ruleBlockIds: n.boxId ? [n.boxId] : []
+        targetDbId: String(n.targetDbId || 'db-1'),
+        targetDataSource: String(n.targetTable || 'transactions'),
+        businessMeaning: String(n.category || 'Validation Stage'),
+        ruleBlockIds: n.boxId ? [String(n.boxId)] : []
       }));
 
+      const safeBoxes = (validationBoxes || []).filter(Boolean);
+
       const steps: ValidationCheckStep[] = validationNodes.map((n, idx) => {
-        const box = validationBoxes.find(b => b.id === n.boxId);
+        const box = safeBoxes.find(b => b && b.id === n.boxId);
         let checkType: any = 'EXISTENCE_CHECK';
         const dsc = box?.dualSourceCondition || box?.checkStep?.dualSourceCondition;
 
@@ -631,39 +939,124 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
           checkType = box?.checkStep?.checkType || 'FIELD_COMPARATOR';
         }
 
-        const compareVal = box?.checkStep?.compareValue ?? box?.checkStep?.expectedValue ?? (n as any).compareValue ?? (n as any).expectedValue;
-        const expectedVal = box?.checkStep?.expectedValue ?? box?.checkStep?.compareValue ?? (n as any).expectedValue ?? (n as any).compareValue;
-        const srcField = dsc?.sourceA?.field || box?.checkStep?.sourceField || box?.checkStep?.canonicalField || (n as any).sourceField || 'transaction_id';
+        // Derive sourceField and targetField dynamically from the user's configuration
+        // (searchParameters, requiredParams, dualSourceCondition, or explicit checkStep fields)
+        // NEVER hardcode fallback to 'transaction_id'.
+        const firstSearchParam = (box?.boxType === 'INGESTION_SEARCH' && Array.isArray(box.searchParameters) && box.searchParameters.length > 0)
+          ? box.searchParameters[0]
+          : null;
+        const firstReqParam = (box?.checkStep?.requiredParams && box.checkStep.requiredParams.length > 0)
+          ? box.checkStep.requiredParams[0]
+          : null;
+
+        const srcField = dsc?.sourceA?.field ||
+          box?.checkStep?.sourceField ||
+          box?.checkStep?.canonicalField ||
+          (n as any).sourceField ||
+          firstSearchParam?.inputField ||
+          firstReqParam ||
+          '';
+
+        const tgtField = dsc?.sourceB?.field ||
+          box?.checkStep?.targetField ||
+          (n as any).targetField ||
+          firstSearchParam?.targetColumn ||
+          firstSearchParam?.inputField ||
+          firstReqParam ||
+          srcField ||
+          '';
 
         return {
-          id: `step-${n.id}`,
+          id: `step-${n.id || idx + 1}`,
           stepNumber: idx + 1,
-          name: n.name,
-          description: n.description,
-          stageId: `stage-${n.id}`,
+          name: String(n.name || `Step ${idx + 1}`),
+          description: String(n.description || ''),
+          stageId: `stage-${n.id || idx + 1}`,
           checkType,
-          dualSourceCondition: dsc,
-          toleranceMargin: dsc?.toleranceMargin ?? box?.checkStep?.toleranceMargin ?? box?.checkStep?.tolerance ?? 0.00,
-          targetDbId: n.targetDbId || box?.targetDbId || 'db-1',
-          targetTable: n.targetTable || box?.targetTable || 'transactions',
-          sourceField: srcField,
-          targetField: dsc?.sourceB?.field || box?.checkStep?.targetField || 'transaction_id',
+          dualSourceCondition: dsc ? JSON.parse(JSON.stringify(dsc)) : undefined,
+          toleranceMargin: Number(dsc?.toleranceMargin ?? box?.checkStep?.toleranceMargin ?? box?.checkStep?.tolerance ?? 0.00),
+          targetDbId: String(n.targetDbId || box?.targetDbId || 'db-1'),
+          targetTable: String(n.targetTable || box?.targetTable || 'transactions'),
+          sourceField: String(srcField),
+          targetField: String(tgtField),
           comparator: (dsc?.comparator === 'EQUALS' ? '=' : (dsc?.comparator as any)) || box?.checkStep?.comparator || (box?.checkStep?.operator as any) || '=',
-          compareValue: compareVal,
-          expectedValue: expectedVal,
-          regexPattern: box?.checkStep?.regexPattern || (n as any).regexPattern,
-          sqlCondition: box?.checkStep?.sqlCondition || (n as any).sqlCondition,
+          compareValue: compareVal !== undefined ? String(compareVal) : undefined,
+          expectedValue: expectedVal !== undefined ? String(expectedVal) : undefined,
+          regexPattern: box?.checkStep?.regexPattern || (n as any).regexPattern ? String(box?.checkStep?.regexPattern || (n as any).regexPattern) : undefined,
+          sqlCondition: box?.checkStep?.sqlCondition || (n as any).sqlCondition ? String(box?.checkStep?.sqlCondition || (n as any).sqlCondition) : undefined,
           onPassAction: n.onPassAction || (box?.checkStep?.onPassAction as any) || 'CONTINUE',
-          onFailAction: n.onFailAction || (box?.checkStep?.onFailAction as any) || 'STOP',
+          onFailAction: n.onFailAction || (box?.checkStep?.onFailAction as any) || (box?.checkStep?.actionOnFailure as any) || 'STOP',
           onErrorAction: 'STOP',
-          reportColumnName: n.reportColumnName,
-          reportField: n.reportField || box?.checkStep?.sourceField,
-          dependencyCondition: idx === 0 ? 'ALWAYS' : 'IF_PREV_SUCCESS',
-          requiredParams: (box?.checkStep?.requiredParams && box.checkStep.requiredParams.length > 0)
-            ? box.checkStep.requiredParams
-            : (srcField && srcField !== 'transaction_id' ? [srcField] : [])
+          reportColumnName: n.reportColumnName ? String(n.reportColumnName) : undefined,
+          reportField: (n.reportField || box?.checkStep?.sourceField) ? String(n.reportField || box?.checkStep?.sourceField) : undefined,
+          dependencyCondition: (idx === 0 || (idx > 0 && validationNodes[idx - 1]?.onFailAction === 'CONTINUE')) ? 'ALWAYS' : 'IF_PREV_SUCCESS',
+          requiredParams: (() => {
+            if (box?.boxType === 'INGESTION_SEARCH' && Array.isArray(box.searchParameters)) {
+              const spReqs = box.searchParameters
+                .filter(p => p.required !== false)
+                .map(p => p.inputField || p.targetColumn)
+                .filter(Boolean)
+                .map(String);
+              if (spReqs.length > 0) return spReqs;
+            }
+            if (box?.checkStep?.requiredParams && box.checkStep.requiredParams.length > 0) {
+              return box.checkStep.requiredParams.map(String);
+            }
+            if (dsc) {
+              const reqs: string[] = [];
+              if (dsc.sourceA?.field) reqs.push(String(dsc.sourceA.field));
+              if (dsc.sourceB?.field) reqs.push(String(dsc.sourceB.field));
+              return reqs;
+            }
+            return (srcField ? [String(srcField)] : []);
+          })(),
+          searchParameters: box?.searchParameters ? JSON.parse(JSON.stringify(box.searchParameters)) : undefined
         };
       });
+
+      // Strict sanitization: Strip non-serializable properties and break any circular references
+      const cleanNodes: FlowchartNode[] = validNodes.map((n, idx) => ({
+        id: String(n.id || `node-${idx + 1}`),
+        type: n.type,
+        boxId: n.boxId ? String(n.boxId) : undefined,
+        name: String(n.name || ''),
+        description: String(n.description || ''),
+        category: n.category ? String(n.category) : undefined,
+        x: Math.round(Number(n.x) || 0),
+        y: Math.round(Number(n.y) || 0),
+        targetDbId: n.targetDbId ? String(n.targetDbId) : undefined,
+        targetTable: n.targetTable ? String(n.targetTable) : undefined,
+        onPassAction: n.onPassAction || 'CONTINUE',
+        onFailAction: n.onFailAction || 'STOP',
+        reportColumnName: n.reportColumnName ? String(n.reportColumnName) : undefined,
+        reportField: n.reportField ? String(n.reportField) : undefined
+      }));
+
+      const cleanConnections: FlowchartConnection[] = (connections || []).filter(Boolean).map((c, idx) => ({
+        id: String(c.id || `conn-${idx + 1}`),
+        fromNodeId: String(c.fromNodeId || ''),
+        fromPort: c.fromPort,
+        toNodeId: String(c.toNodeId || ''),
+        toPort: c.toPort || 'input',
+        action: c.action || 'CONTINUE',
+        label: String(c.label || '')
+      }));
+
+      const rawAggs = overrideAggregations !== undefined ? overrideAggregations : messageAggregations;
+      const aggsArray: any[] = Array.isArray(rawAggs)
+        ? rawAggs
+        : (rawAggs && typeof rawAggs === 'object' ? Object.values(rawAggs) : []);
+      const cleanAggregations: WorkflowMessageAggregationRule[] = aggsArray
+        .filter(Boolean)
+        .map((r, idx) => ({
+          id: String(r?.id || `agg-${Date.now()}-${idx + 1}-${Math.random().toString(36).substring(2, 6)}`),
+          name: String(r?.name || ''),
+          type: r?.type || 'FAIL',
+          message: String(r?.message || ''),
+          validationStepIds: Array.isArray(r?.validationStepIds) ? r.validationStepIds.filter(Boolean).map(String) : [],
+          operator: r?.operator || 'ANY',
+          severity: r?.severity || 'CRITICAL'
+        }));
 
       const payload: Partial<DatabaseValidationWorkflow> = {
         name: workflowName.trim(),
@@ -671,10 +1064,11 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
         description: workflowDescription.trim(),
         stages,
         steps,
-        nodes,
-        connections,
+        nodes: cleanNodes,
+        connections: cleanConnections,
         globalSuccessMessage: 'All flowchart stages evaluated successfully.',
-        globalFailureMessage: 'Discrepancy identified in validation flowchart.'
+        globalFailureMessage: 'Discrepancy identified in validation flowchart.',
+        messageAggregations: cleanAggregations
       };
 
       let savedWf = null;
@@ -692,15 +1086,22 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
       setTimeout(() => setSaveSuccessMsg(''), 4000);
 
       const refreshed = await api.getWorkflows();
-      setWorkflows(refreshed || []);
-      const match = (refreshed || []).find((w: any) => w.id === (savedWf?.id || (activeWorkflow ? activeWorkflow.id : '')));
-      if (match) {
-        selectWorkflow(match);
-      } else if (savedWf) {
-        selectWorkflow(savedWf);
+      const safeRefreshed = Array.isArray(refreshed) ? refreshed.filter(Boolean) : [];
+      setWorkflows(safeRefreshed);
+      const targetId = savedWf?.id || (activeWorkflow ? activeWorkflow.id : '');
+      const match = safeRefreshed.find((w: any) => w && w.id === targetId);
+      const matchedWorkflow = match 
+        ? { ...match, nodes: cleanNodes, connections: cleanConnections } 
+        : (savedWf ? { ...savedWf, nodes: cleanNodes, connections: cleanConnections } : null);
+      if (matchedWorkflow) {
+        selectWorkflow(matchedWorkflow);
       }
     } catch (err: any) {
-      alert(`Save failed: ${err.message}`);
+      showSystemAlert({
+        title: 'Save Failed',
+        message: `Failed to save workflow: ${err.message || err}`,
+        type: 'error'
+      });
     } finally {
       setIsSaving(false);
     }
@@ -761,13 +1162,18 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
                 <span>Top ➔ Down Flow</span>
                 <ArrowDown size={11} className="text-purple-300" />
               </span>
+              {activeWorkflow && (
+                <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 flex items-center gap-1.5 shadow-2xs">
+                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                  <span>Selected: <strong className="text-white">{activeWorkflow.name}</strong></span>
+                </span>
+              )}
             </div>
             <p className="text-xs text-slate-400">
               Arrange validation blocks vertically, connect downward wire paths, and configure branch outcomes: <strong className="text-emerald-400">Continue</strong>, <strong className="text-rose-400">Stop</strong>, or <strong className="text-purple-400">Report</strong> (which adds a column to the Investigation View).
             </p>
           </div>
 
-          {/* Quick Actions */}
           {/* Quick Actions */}
           <div className="flex items-center gap-2 flex-wrap">
             <button
@@ -780,28 +1186,35 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
               <span>+ New Flowchart</span>
             </button>
 
-            <select
-              value={activeWorkflow?.id || ''}
-              onChange={(e) => {
-                const found = workflows.find(w => w.id === e.target.value);
-                if (found) selectWorkflow(found);
-              }}
-              className="bg-slate-800 border border-slate-700 text-xs rounded-lg px-2.5 py-1.5 text-slate-200 focus:outline-none"
-            >
-              <option value="">-- Switch Workflow ({workflows.length}) --</option>
-              {workflows.map(wf => (
-                <option key={wf.id} value={wf.id}>{wf.name}</option>
-              ))}
-            </select>
+            <div className="flex items-center gap-1.5 bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 shadow-2xs">
+              <GitFork size={13} className="text-purple-400 shrink-0" />
+              <select
+                value={activeWorkflow?.id || ''}
+                onChange={(e) => {
+                  const found = (workflows || []).find(w => w && w.id === e.target.value);
+                  if (found) selectWorkflow(found);
+                }}
+                className="bg-transparent text-xs text-slate-100 font-semibold focus:outline-none cursor-pointer"
+                title="Select active workflow to inspect and edit"
+              >
+                <option value="" className="bg-slate-900 text-slate-400">-- Select Workflow ({(workflows || []).filter(Boolean).length}) --</option>
+                {(workflows || []).filter(Boolean).map(wf => (
+                  <option key={wf.id} value={wf.id} className="bg-slate-900 text-white">
+                    {wf.name} {activeWorkflow?.id === wf.id ? '✓ (Active)' : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
 
             {activeWorkflow && (
               <button
                 type="button"
                 onClick={handleDeleteWorkflow}
-                className="p-1.5 bg-slate-800 hover:bg-rose-950/60 border border-slate-700 hover:border-rose-700 text-slate-400 hover:text-rose-400 rounded-lg text-xs transition cursor-pointer"
+                className="px-2.5 py-1.5 bg-rose-950/40 hover:bg-rose-900/70 border border-rose-700/60 hover:border-rose-500 text-rose-300 hover:text-white rounded-lg text-xs font-semibold transition cursor-pointer flex items-center gap-1.5 shadow-2xs"
                 title={`Delete workflow "${activeWorkflow.name}"`}
               >
-                <Trash2 size={14} />
+                <Trash2 size={13} className="text-rose-400" />
+                <span>Delete Workflow</span>
               </button>
             )}
 
@@ -823,6 +1236,25 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
             >
               <Sparkles size={13} className="text-amber-400" />
               <span>Sample Flow</span>
+            </button>
+
+            {/* Message Aggregator Settings Button */}
+            <button
+              type="button"
+              onClick={() => {
+                setShowAggregatorModal(true);
+                resetRuleForm(aggregatorTab);
+              }}
+              className="px-3 py-1.5 bg-indigo-950/70 hover:bg-indigo-900 border border-indigo-700/60 text-indigo-200 hover:text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition shadow-sm"
+              title="Configure aggregated Pass and Fail outcome messages for this workflow"
+            >
+              <Sliders size={13} className="text-indigo-400" />
+              <span>Message Aggregator</span>
+              {messageAggregations.length > 0 && (
+                <span className="px-1.5 py-0.2 rounded-full text-[10px] font-mono font-bold bg-indigo-600 text-white shadow-2xs">
+                  {messageAggregations.length}
+                </span>
+              )}
             </button>
 
             <button
@@ -1006,24 +1438,52 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
         </div>
 
         {/* Right: Interactive Vertical Flowchart Canvas */}
-        <div className="flex-1 w-full bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-sm flex flex-col min-h-[760px]">
+        <div className="flex-1 w-full bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-sm flex flex-col h-[820px] max-h-[85vh]">
           {/* Canvas Toolbar */}
           <div className="bg-slate-950 px-4 py-2 border-b border-slate-800 flex items-center justify-between text-xs text-slate-300">
             <div className="flex items-center gap-3">
+              <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-purple-950/80 text-purple-200 border border-purple-800 flex items-center gap-1.5 shadow-2xs">
+                <GitFork size={12} className="text-purple-400" />
+                <span>Workflow: <strong className="text-white">{workflowName || activeWorkflow?.name || 'Selected Pipeline'}</strong></span>
+              </span>
               <span className="font-mono text-slate-400 font-semibold flex items-center gap-1.5">
                 <Move size={13} className="text-purple-400" />
                 <span>Vertical DAG: {nodes.length} Nodes, {connections.length} Wires</span>
               </span>
               <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-slate-800 text-slate-300 border border-slate-700 flex items-center gap-1">
-                <span>Layout: Vertical Flow</span>
+                <span>Height: {canvasDimensions.height}px</span>
                 <ArrowDown size={10} className="text-emerald-400" />
               </span>
             </div>
 
             <div className="flex items-center gap-2">
-              <span className="text-[10px] text-slate-400 italic">
-                Drag nodes to reposition. Connect downwards from bottom ports (🟢/🔴) to target input (⚪).
-              </span>
+              <button
+                type="button"
+                onClick={() => setExtraCanvasHeight(h => h + 600)}
+                className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-purple-300 border border-slate-700 rounded text-xs flex items-center gap-1 cursor-pointer transition shadow-xs"
+                title="Extend canvas height by +600px to build arbitrarily long workflows"
+              >
+                <Plus size={12} />
+                <span>+600px Height</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => canvasRef.current?.scrollTo({ top: 0, behavior: 'smooth' })}
+                className="px-2 py-1 hover:bg-slate-800 text-slate-300 border border-slate-800 hover:border-slate-700 rounded transition cursor-pointer text-xs flex items-center gap-1"
+                title="Scroll to top of canvas"
+              >
+                <ArrowDown size={12} className="rotate-180 text-blue-400" />
+                <span>Top</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => canvasRef.current?.scrollTo({ top: canvasRef.current.scrollHeight, behavior: 'smooth' })}
+                className="px-2 py-1 hover:bg-slate-800 text-slate-300 border border-slate-800 hover:border-slate-700 rounded transition cursor-pointer text-xs flex items-center gap-1"
+                title="Scroll to bottom of canvas"
+              >
+                <ArrowDown size={12} className="text-blue-400" />
+                <span>Bottom</span>
+              </button>
               <button
                 type="button"
                 onClick={() => setNodes([])}
@@ -1035,16 +1495,27 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
             </div>
           </div>
 
-          {/* SVG Connection Layer & Node Container */}
+          {/* SVG Connection Layer & Node Container with Infinite Scroll */}
           <div
             ref={canvasRef}
             onMouseMove={handleCanvasMouseMove}
             onMouseUp={handleCanvasMouseUp}
-            className="relative flex-1 bg-[radial-gradient(#334155_1px,transparent_1px)] [background-size:20px_20px] bg-slate-900 select-none overflow-auto p-6 min-h-[720px]"
-            style={{ minHeight: '760px' }}
+            className="relative flex-1 bg-[radial-gradient(#334155_1px,transparent_1px)] [background-size:20px_20px] bg-slate-900 select-none overflow-auto p-6"
+            style={{ minHeight: '600px' }}
           >
-            {/* SVG Wire Lines Layer for Vertical Bezier Curves */}
-            <svg className="absolute inset-0 w-full h-full pointer-events-none z-0 overflow-visible" style={{ minWidth: '1200px', minHeight: '1200px' }}>
+            {/* Inner Sizing Wrapper: explicitly dictates scrollable width/height so scrolling is limitless */}
+            <div
+              style={{
+                width: `${canvasDimensions.width}px`,
+                height: `${canvasDimensions.height}px`,
+                position: 'relative'
+              }}
+            >
+              {/* SVG Wire Lines Layer for Vertical Bezier Curves */}
+              <svg 
+                className="absolute inset-0 pointer-events-none z-0 overflow-visible" 
+                style={{ width: `${canvasDimensions.width}px`, height: `${canvasDimensions.height}px` }}
+              >
               <defs>
                 <marker id="arrow-emerald" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
                   <path d="M 0 0 L 10 5 L 0 10 z" fill="#10b981" />
@@ -1375,6 +1846,18 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
                       {node.description || 'Condition check'}
                     </p>
 
+                    {node.onPassAction === 'STOP' && (
+                      <span className="inline-block text-[8px] font-mono font-bold text-rose-300 bg-rose-950/90 px-1.5 py-0.2 rounded border border-rose-500/50">
+                        Pass ➔ STOP
+                      </span>
+                    )}
+
+                    {node.onFailAction === 'CONTINUE' && (
+                      <span className="inline-block text-[8px] font-mono font-bold text-amber-300 bg-amber-950/90 px-1.5 py-0.2 rounded border border-amber-500/50">
+                        Fail ➔ CONTINUE
+                      </span>
+                    )}
+
                     {hasReportColumn && (
                       <span className="inline-block text-[8px] font-mono text-purple-300 bg-purple-950/80 px-1 py-0.2 rounded border border-purple-500/40">
                         Col: {node.reportColumnName}
@@ -1410,28 +1893,37 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
                   {/* Bottom Ports for Decision Rhombus: PASS on left, FAIL on right */}
                   <button
                     type="button"
-                    title="Drag downwards on PASS"
+                    title={`Drag downwards on PASS (Configured: ${node.onPassAction || 'CONTINUE'})`}
                     style={{ left: '20px', bottom: '12px' }}
                     onMouseDown={(e) => handleStartWire(e, node.id, 'pass')}
-                    className="absolute z-20 px-2 py-0.5 rounded-md bg-emerald-950/95 text-emerald-300 border border-emerald-500 hover:bg-emerald-800 hover:scale-105 flex items-center gap-1 cursor-crosshair text-[9px] font-mono font-bold shadow-md transition"
+                    className={`absolute z-20 px-2 py-0.5 rounded-md text-[9px] font-mono font-bold shadow-md transition flex items-center gap-1 cursor-crosshair hover:scale-105 ${
+                      node.onPassAction === 'STOP'
+                        ? 'bg-rose-950/95 text-rose-300 border border-rose-500 hover:bg-rose-800'
+                        : 'bg-emerald-950/95 text-emerald-300 border border-emerald-500 hover:bg-emerald-800'
+                    }`}
                   >
-                    <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></div>
-                    <span>PASS ➔</span>
+                    <div className={`w-1.5 h-1.5 rounded-full ${node.onPassAction === 'STOP' ? 'bg-rose-400' : 'bg-emerald-400 animate-pulse'}`}></div>
+                    <span>PASS {node.onPassAction === 'STOP' ? '✕' : '➔'}</span>
                   </button>
 
                   <button
                     type="button"
-                    title="Drag downwards on FAIL"
+                    title={`Drag downwards on FAIL (Configured: ${node.onFailAction || 'STOP'})`}
                     style={{ right: '20px', bottom: '12px' }}
                     onMouseDown={(e) => handleStartWire(e, node.id, 'fail')}
-                    className="absolute z-20 px-2 py-0.5 rounded-md bg-rose-950/95 text-rose-300 border border-rose-500 hover:bg-rose-800 hover:scale-105 flex items-center gap-1 cursor-crosshair text-[9px] font-mono font-bold shadow-md transition"
+                    className={`absolute z-20 px-2 py-0.5 rounded-md text-[9px] font-mono font-bold shadow-md transition flex items-center gap-1 cursor-crosshair hover:scale-105 ${
+                      node.onFailAction === 'CONTINUE'
+                        ? 'bg-amber-950/95 text-amber-300 border border-amber-500 hover:bg-amber-800'
+                        : 'bg-rose-950/95 text-rose-300 border border-rose-500 hover:bg-rose-800'
+                    }`}
                   >
-                    <div className="w-1.5 h-1.5 rounded-full bg-rose-400"></div>
-                    <span>FAIL ✕</span>
+                    <div className={`w-1.5 h-1.5 rounded-full ${node.onFailAction === 'CONTINUE' ? 'bg-amber-400' : 'bg-rose-400'}`}></div>
+                    <span>FAIL {node.onFailAction === 'CONTINUE' ? '➔' : '✕'}</span>
                   </button>
                 </div>
               );
             })}
+            </div>
           </div>
         </div>
       </div>
@@ -1544,6 +2036,11 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
                 type="button"
                 onClick={() => {
                   setConnections(prev => prev.map(c => c.id === selectedConnection.id ? selectedConnection : c));
+                  if (selectedConnection.fromPort === 'fail') {
+                    setNodes(prev => prev.map(n => n.id === selectedConnection.fromNodeId ? { ...n, onFailAction: selectedConnection.action } : n));
+                  } else if (selectedConnection.fromPort === 'pass') {
+                    setNodes(prev => prev.map(n => n.id === selectedConnection.fromNodeId ? { ...n, onPassAction: selectedConnection.action } : n));
+                  }
                   setSelectedConnection(null);
                 }}
                 className="px-4 py-1.5 bg-purple-600 hover:bg-purple-500 text-white rounded text-xs font-bold cursor-pointer transition shadow-md"
@@ -1554,6 +2051,443 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
           </div>
         </div>
       )}
+
+            {/* Workflow Message Aggregator Modal */}
+      {showAggregatorModal && (
+        <div className="fixed inset-0 bg-black/75 backdrop-blur-xs z-50 flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl shadow-2xl w-full max-w-3xl max-h-[90vh] flex flex-col overflow-hidden text-slate-200">
+            {/* Modal Header */}
+            <div className="px-6 py-4 border-b border-slate-800 flex items-center justify-between bg-slate-950/60">
+              <div className="flex items-center gap-2.5">
+                <div className="w-8 h-8 rounded-lg bg-indigo-600/20 border border-indigo-500/40 flex items-center justify-center text-indigo-400">
+                  <SlidersHorizontal size={18} />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-sm font-bold text-white">Workflow Message Aggregator</h3>
+                    <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-semibold bg-purple-950 text-purple-300 border border-purple-800">
+                      {workflowName || activeWorkflow?.name || 'Selected Workflow'}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-400 mt-0.5">
+                    Define consolidated Pass and Fail status messages triggered by one or more validation blocks in this workflow.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowAggregatorModal(false);
+                  setIsEditingRule(false);
+                }}
+                className="p-1 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="flex-1 overflow-y-auto p-6 space-y-5">
+              {/* Feedback toast if any */}
+              {aggregatorFeedback && (
+                <div className="px-3.5 py-2 rounded-lg bg-indigo-950 border border-indigo-700 text-indigo-200 text-xs flex items-center gap-2">
+                  <Sparkles size={14} className="text-indigo-400 shrink-0" />
+                  <span>{aggregatorFeedback}</span>
+                </div>
+              )}
+
+              {/* PASS / FAIL Toggle Tabs */}
+              <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+                <div className="flex bg-slate-950 p-1 rounded-xl border border-slate-800 gap-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAggregatorTab('FAIL');
+                      resetRuleForm('FAIL');
+                    }}
+                    className={`px-4 py-1.5 rounded-lg text-xs font-bold flex items-center gap-2 transition cursor-pointer ${
+                      aggregatorTab === 'FAIL'
+                        ? 'bg-rose-600 text-white shadow-md shadow-rose-950'
+                        : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900'
+                    }`}
+                  >
+                    <AlertTriangle size={13} />
+                    <span>FAIL Aggregations</span>
+                    <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-mono ${
+                      aggregatorTab === 'FAIL' ? 'bg-rose-800 text-white' : 'bg-slate-800 text-slate-400'
+                    }`}>
+                      {messageAggregations.filter(r => r.type === 'FAIL').length}
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAggregatorTab('PASS');
+                      resetRuleForm('PASS');
+                    }}
+                    className={`px-4 py-1.5 rounded-lg text-xs font-bold flex items-center gap-2 transition cursor-pointer ${
+                      aggregatorTab === 'PASS'
+                        ? 'bg-emerald-600 text-white shadow-md shadow-emerald-950'
+                        : 'text-slate-400 hover:text-slate-200 hover:bg-slate-900'
+                    }`}
+                  >
+                    <CheckCircle2 size={13} />
+                    <span>PASS Aggregations</span>
+                    <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-mono ${
+                      aggregatorTab === 'PASS' ? 'bg-emerald-800 text-white' : 'bg-slate-800 text-slate-400'
+                    }`}>
+                      {messageAggregations.filter(r => r.type === 'PASS').length}
+                    </span>
+                  </button>
+                </div>
+
+                {!isEditingRule && (
+                  <button
+                    type="button"
+                    onClick={() => handleStartNewRule(aggregatorTab)}
+                    className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow transition"
+                  >
+                    <Plus size={13} />
+                    <span>Add {aggregatorTab} Message</span>
+                  </button>
+                )}
+              </div>
+
+              {/* Active Tab Explanation */}
+              <div className="text-xs text-slate-400 bg-slate-950/40 p-3 rounded-xl border border-slate-800/60">
+                {aggregatorTab === 'FAIL' ? (
+                  <div className="flex items-center gap-2 text-rose-300">
+                    <AlertCircle size={14} className="shrink-0 text-rose-400" />
+                    <span>
+                      When any or all attached validation blocks fail for a record, the Investigation Panel will display this aggregated failure message instead of separate columns.
+                    </span>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2 text-emerald-300">
+                    <CheckCircle2 size={14} className="shrink-0 text-emerald-400" />
+                    <span>
+                      When attached validation blocks pass successfully, the Investigation Panel will display this aggregated success message in the unified outcome column.
+                    </span>
+                  </div>
+                )}
+              </div>
+
+              {/* Rule Editor Form (when adding or editing) */}
+              {isEditingRule ? (
+                <div className="bg-slate-950/90 border border-slate-700/80 rounded-xl p-4 space-y-4">
+                  <div className="flex items-center justify-between border-b border-slate-800 pb-2.5">
+                    <h4 className="text-xs font-bold text-white flex items-center gap-2">
+                      <span className={`w-2 h-2 rounded-full ${aggregatorTab === 'FAIL' ? 'bg-rose-500' : 'bg-emerald-500'}`} />
+                      <span>{editingRuleId ? 'Edit Aggregation Rule' : `New ${aggregatorTab} Aggregation Rule`}</span>
+                    </h4>
+                    <span className="text-[11px] text-slate-400">
+                      Step {editingRuleId ? 'Update' : '1 of 1'}
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+                    <div>
+                      <label className="block text-[11px] font-mono text-slate-400 mb-1">
+                        Rule Name / Label: <span className="text-rose-400">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        value={formRuleName}
+                        onChange={(e) => setFormRuleName(e.target.value)}
+                        placeholder="e.g. Core Settlement & Terminal Discrepancy"
+                        className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-white focus:outline-none focus:border-indigo-500 text-xs"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-mono text-slate-400 mb-1">
+                        Trigger Condition:
+                      </label>
+                      <select
+                        value={formRuleOperator}
+                        onChange={(e: any) => setFormRuleOperator(e.target.value)}
+                        className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-white focus:outline-none focus:border-indigo-500 text-xs"
+                      >
+                        {aggregatorTab === 'FAIL' ? (
+                          <>
+                            <option value="ANY">Trigger if ANY attached block FAILS (Default)</option>
+                            <option value="ALL">Trigger only if ALL attached blocks FAIL</option>
+                          </>
+                        ) : (
+                          <>
+                            <option value="ALL">Trigger only if ALL attached blocks PASS (Default)</option>
+                            <option value="ANY">Trigger if ANY attached block PASSES</option>
+                          </>
+                        )}
+                      </select>
+                    </div>
+
+                    <div className="md:col-span-2">
+                      <label className="block text-[11px] font-mono text-slate-400 mb-1">
+                        Consolidated Status Message (Shown in Investigation Column): <span className="text-rose-400">*</span>
+                      </label>
+                      <input
+                        type="text"
+                        value={formRuleMessage}
+                        onChange={(e) => setFormRuleMessage(e.target.value)}
+                        placeholder={aggregatorTab === 'FAIL' ? 'e.g. Terminal auth mismatch with core settlement record' : 'e.g. Core settlement and interchange verified'}
+                        className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-white focus:outline-none focus:border-indigo-500 text-xs font-semibold"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-mono text-slate-400 mb-1">
+                        Severity / Badge Appearance:
+                      </label>
+                      <select
+                        value={formRuleSeverity}
+                        onChange={(e: any) => setFormRuleSeverity(e.target.value)}
+                        className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-1.5 text-white focus:outline-none focus:border-indigo-500 text-xs"
+                      >
+                        {aggregatorTab === 'FAIL' ? (
+                          <>
+                            <option value="CRITICAL">Critical (Red badge)</option>
+                            <option value="WARNING">Warning (Amber badge)</option>
+                          </>
+                        ) : (
+                          <>
+                            <option value="RECONCILED">Reconciled (Emerald badge)</option>
+                            <option value="WARNING">Warning / Partial Pass (Amber badge)</option>
+                          </>
+                        )}
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* Validation Blocks Selection - STRICTLY SELECTED WORKFLOW */}
+                  <div className="pt-2 border-t border-slate-800">
+                    <div className="flex items-center justify-between mb-2">
+                      <label className="text-[11px] font-mono text-slate-400">
+                        Attach Validation Blocks from this Workflow ({formSelectedStepIds.length} of {workflowValidationBlocks.length} selected):
+                      </label>
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          onClick={() => setFormSelectedStepIds(workflowValidationBlocks.filter(b => b && b.id).map(b => b.id))}
+                          className="text-[10px] text-indigo-400 hover:text-indigo-300 underline cursor-pointer"
+                        >
+                          Select All
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setFormSelectedStepIds([])}
+                          className="text-[10px] text-slate-400 hover:text-slate-300 underline cursor-pointer"
+                        >
+                          Clear
+                        </button>
+                      </div>
+                    </div>
+
+                    {workflowValidationBlocks.length === 0 ? (
+                      <div className="text-center py-6 bg-slate-900/50 rounded-lg border border-dashed border-slate-800 text-slate-400 text-xs">
+                        No validation blocks are present on the flowchart canvas. Please drag or add validation blocks to the workflow first.
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-2 max-h-48 overflow-y-auto pr-1">
+                        {workflowValidationBlocks.filter(b => b && b.id).map(block => {
+                          const isSelected = formSelectedStepIds.includes(block.id);
+                          return (
+                            <div
+                              key={block.id}
+                              onClick={() => {
+                                if (isSelected) {
+                                  setFormSelectedStepIds(prev => prev.filter(id => id !== block.id));
+                                } else {
+                                  setFormSelectedStepIds(prev => [...prev, block.id]);
+                                }
+                              }}
+                              className={`p-2.5 rounded-lg border text-xs cursor-pointer transition flex items-start gap-2.5 ${
+                                isSelected
+                                  ? 'bg-indigo-950/60 border-indigo-500 text-white'
+                                  : 'bg-slate-900 border-slate-800 text-slate-400 hover:border-slate-700'
+                              }`}
+                            >
+                              <div className="mt-0.5 shrink-0">
+                                {isSelected ? (
+                                  <CheckSquare size={14} className="text-indigo-400" />
+                                ) : (
+                                  <Square size={14} className="text-slate-600" />
+                                )}
+                              </div>
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center justify-between gap-1">
+                                  <span className="font-bold text-slate-200 truncate text-[11px]">
+                                    {block.name}
+                                  </span>
+                                  <span className="px-1.5 py-0.2 rounded text-[9px] font-mono bg-slate-800 text-slate-300 shrink-0">
+                                    {block.category}
+                                  </span>
+                                </div>
+                                {block.description && (
+                                  <p className="text-[10px] text-slate-500 truncate mt-0.5">
+                                    {block.description}
+                                  </p>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Form Buttons */}
+                  <div className="flex justify-end gap-2 pt-2 border-t border-slate-800">
+                    <button
+                      type="button"
+                      onClick={() => resetRuleForm(aggregatorTab)}
+                      className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs cursor-pointer"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleSaveRule}
+                      className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-bold cursor-pointer transition shadow"
+                    >
+                      {editingRuleId ? 'Update Aggregation' : 'Add Aggregation'}
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+
+              {/* List of Existing Aggregation Rules for Active Tab */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between text-[11px] font-mono text-slate-400">
+                  <span>Configured {aggregatorTab} Rules:</span>
+                  <span>{messageAggregations.filter(r => r.type === aggregatorTab).length} Rule(s)</span>
+                </div>
+
+                {messageAggregations.filter(r => r.type === aggregatorTab).length === 0 ? (
+                  <div className="text-center py-8 bg-slate-950/30 rounded-xl border border-dashed border-slate-800 text-slate-500 text-xs space-y-2">
+                    <SlidersHorizontal size={24} className="mx-auto text-slate-600" />
+                    <div>No {aggregatorTab} message aggregations configured for this workflow yet.</div>
+                    <button
+                      type="button"
+                      onClick={() => handleStartNewRule(aggregatorTab)}
+                      className="px-3 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-xs font-semibold inline-flex items-center gap-1 cursor-pointer transition"
+                    >
+                      <Plus size={12} />
+                      <span>Create First {aggregatorTab} Rule</span>
+                    </button>
+                  </div>
+                ) : (
+                  <div className="space-y-2.5">
+                    {(Array.isArray(messageAggregations) ? messageAggregations : [])
+                      .filter(r => r && r.type === aggregatorTab)
+                      .map((rule) => {
+                        const attachedBlocks = workflowValidationBlocks.filter(b => b && (
+                          (rule.validationStepIds && Array.isArray(rule.validationStepIds) && rule.validationStepIds.includes(b.id)) || 
+                          (rule.validationStepIds && Array.isArray(rule.validationStepIds) && rule.validationStepIds.includes(b.nodeId))
+                        ));
+                        return (
+                          <div
+                            key={rule.id}
+                            className="p-3.5 rounded-xl bg-slate-950 border border-slate-800 hover:border-slate-700 transition flex flex-col md:flex-row md:items-center justify-between gap-3"
+                          >
+                            <div className="space-y-1 min-w-0 flex-1">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="font-bold text-white text-xs">
+                                  {rule.name}
+                                </span>
+                                <span className={`px-2 py-0.2 rounded-full text-[9px] font-bold font-mono ${
+                                  rule.type === 'FAIL'
+                                    ? rule.severity === 'CRITICAL' ? 'bg-rose-950 text-rose-300 border border-rose-800' : 'bg-amber-950 text-amber-300 border border-amber-800'
+                                    : 'bg-emerald-950 text-emerald-300 border border-emerald-800'
+                                }`}>
+                                  {rule.severity || (rule.type === 'FAIL' ? 'CRITICAL' : 'RECONCILED')}
+                                </span>
+                                <span className="px-2 py-0.2 rounded text-[9px] font-mono bg-slate-900 text-slate-400 border border-slate-800">
+                                  Operator: {rule.operator || (rule.type === 'FAIL' ? 'ANY' : 'ALL')}
+                                </span>
+                              </div>
+
+                              <div className="text-xs text-indigo-300 font-medium bg-slate-900/80 px-2.5 py-1 rounded border border-slate-800/80">
+                                "{rule.message}"
+                              </div>
+
+                              <div className="flex items-center gap-1.5 flex-wrap pt-0.5">
+                                <span className="text-[10px] text-slate-500 font-mono">Attached Blocks:</span>
+                                {attachedBlocks.length > 0 ? (
+                                  attachedBlocks.map(b => (
+                                    <span
+                                      key={b.id}
+                                      className="px-1.5 py-0.2 rounded text-[9px] font-mono bg-slate-900 text-slate-300 border border-slate-800"
+                                    >
+                                      {b.name}
+                                    </span>
+                                  ))
+                                ) : (
+                                  <span className="text-[10px] text-amber-400 font-mono">
+                                    {rule.validationStepIds?.length || 0} block(s) (IDs: {rule.validationStepIds?.join(', ')})
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+
+                            <div className="flex items-center gap-1.5 shrink-0 self-end md:self-center">
+                              <button
+                                type="button"
+                                onClick={() => handleEditRule(rule)}
+                                className="p-1.5 bg-slate-900 hover:bg-slate-800 border border-slate-700 text-slate-300 rounded-lg text-xs cursor-pointer transition"
+                                title="Edit Aggregation Rule"
+                              >
+                                <Edit2 size={13} />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => handleDeleteRule(rule.id)}
+                                className="p-1.5 bg-slate-900 hover:bg-rose-950/60 border border-slate-700 hover:border-rose-700 text-slate-400 hover:text-rose-400 rounded-lg text-xs cursor-pointer transition"
+                                title="Delete Aggregation Rule"
+                              >
+                                <Trash2 size={13} />
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="px-6 py-3.5 border-t border-slate-800 flex items-center justify-between bg-slate-950/80">
+              <div className="text-xs text-slate-400">
+                <span className="font-bold text-white">{messageAggregations.length}</span> total aggregation rule(s) configured.
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowAggregatorModal(false);
+                    setIsEditingRule(false);
+                  }}
+                  className="px-3.5 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-lg text-xs font-semibold cursor-pointer transition"
+                >
+                  Close
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSaveAndApplyAggregations}
+                  disabled={isSaving}
+                  className="px-4 py-1.5 bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-md transition disabled:opacity-50"
+                >
+                  <Save size={13} />
+                  <span>{isSaving ? 'Saving...' : 'Save & Attach to Workflow'}</span>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
 
       {/* =========================================================================
           NODE CONFIGURATION & REPORT COLUMN MODAL
@@ -1586,6 +2520,48 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
                   onChange={(e) => setSelectedNode({ ...selectedNode, name: e.target.value })}
                   className="w-full bg-slate-950 border border-slate-800 rounded px-2.5 py-1.5 text-white focus:outline-none focus:border-purple-500"
                 />
+              </div>
+
+              {/* Pipeline Routing Outcomes (PASS & FAIL) */}
+              <div className="p-3 bg-slate-950/80 border border-slate-800 rounded-lg space-y-2.5">
+                <span className="font-bold text-slate-300 flex items-center gap-1.5 text-[11px] font-mono uppercase">
+                  <Sliders size={13} className="text-blue-400" />
+                  <span>Pipeline Routing Outcomes</span>
+                </span>
+                
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-[10px] font-mono text-emerald-400 mb-1 font-semibold">On PASS Action:</label>
+                    <select
+                      value={selectedNode.onPassAction || 'CONTINUE'}
+                      onChange={(e) => setSelectedNode({ ...selectedNode, onPassAction: e.target.value as FlowchartOutputAction })}
+                      className={`w-full bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-xs font-semibold focus:outline-none font-mono ${
+                        selectedNode.onPassAction === 'STOP' ? 'text-rose-400 border-rose-500/60' : 'text-emerald-300 focus:border-emerald-500'
+                      }`}
+                    >
+                      <option value="CONTINUE">CONTINUE (Advance)</option>
+                      <option value="STOP">STOP (Halt Pipeline)</option>
+                      <option value="REPORT">REPORT (Add Grid Col)</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-mono text-rose-400 mb-1 font-semibold">On FAILURE Action:</label>
+                    <select
+                      value={selectedNode.onFailAction || 'STOP'}
+                      onChange={(e) => setSelectedNode({ ...selectedNode, onFailAction: e.target.value as FlowchartOutputAction })}
+                      className={`w-full bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-xs font-semibold focus:outline-none font-mono ${
+                        selectedNode.onFailAction === 'CONTINUE' ? 'text-blue-400 border-blue-500/60' : 'text-rose-400'
+                      }`}
+                    >
+                      <option value="CONTINUE">CONTINUE (Advance)</option>
+                      <option value="STOP">STOP (Halt Pipeline)</option>
+                      <option value="REPORT">REPORT (Add Grid Col)</option>
+                    </select>
+                  </div>
+                </div>
+                <p className="text-[10px] text-slate-400 leading-relaxed">
+                  Controls whether the investigation advances downstream when this block yields a FAIL verdict.
+                </p>
               </div>
 
               {/* Intermediate Report Column Setting */}

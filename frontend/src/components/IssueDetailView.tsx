@@ -634,38 +634,7 @@ export default function IssueDetailView({
 
   // Helper: Auto-generate column mapping based on column header keywords and Global Standard Dictionary
   const autoGenerateColumnMapping = (headers: string[]) => {
-    const map: Record<string, string> = {};
-    headers.forEach(h => {
-      const clean = h.toLowerCase().replace(/[^a-z0-9]/g, '');
-      if (clean.includes('txn') || clean.includes('transaction') || clean.includes('ref') || clean.includes('id') || clean.includes('trace') || clean.includes('key')) {
-        map[h] = 'transaction_id';
-      } else if (clean.includes('card') || clean.includes('pan') || clean.includes('cnum') || clean.includes('account') || clean.includes('token')) {
-        map[h] = 'card_number';
-      } else if (clean.includes('amt') || clean.includes('amount') || clean.includes('usd') || clean.includes('price') || clean.includes('charge') || clean.includes('val')) {
-        map[h] = 'amount_usd';
-      } else if (clean.includes('status') || clean.includes('state') || clean.includes('dispute') || clean.includes('flag') || clean.includes('stage')) {
-        map[h] = 'status_state';
-      } else if (clean.includes('time') || clean.includes('date') || clean.includes('stamp') || clean.includes('auth') || clean.includes('post') || clean.includes('created')) {
-        map[h] = 'created_at';
-      } else if (clean.includes('email') || clean.includes('mail') || clean.includes('user') || clean.includes('customer') || clean.includes('buyer') || clean.includes('payer')) {
-        map[h] = 'user_email';
-      } else if (clean.includes('merchant') || clean.includes('mid') || clean.includes('store') || clean.includes('seller') || clean.includes('shop')) {
-        map[h] = 'merchant_id';
-      } else if (clean.includes('resp') || clean.includes('code') || clean.includes('isoresp')) {
-        map[h] = 'response_code';
-      } else if (clean.includes('curr') || clean.includes('currency')) {
-        map[h] = 'currency';
-      } else if (clean.includes('terminal') || clean.includes('term') || clean.includes('pos')) {
-        map[h] = 'terminal_id';
-      } else if (clean.includes('chargeback') || clean.includes('reason') || clean.includes('claim')) {
-        map[h] = 'dispute_reason';
-      } else if (clean.includes('batch') || clean.includes('seq')) {
-        map[h] = 'batch_seq_num';
-      } else {
-        map[h] = 'unmapped';
-      }
-    });
-    return map;
+    return globalMappingService.autoGenerateColumnMapping(headers);
   };
 
   // Helper to capture undo snapshot before performing data cleaning or mutations

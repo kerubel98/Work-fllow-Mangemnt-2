@@ -1,6 +1,6 @@
 import pg from 'pg';
-import dotenv from 'dotenv';
-dotenv.config();
+import 'dotenv/config';
+// dotenv/config auto-loads
 const { Pool } = pg;
 export const pgConfig = {
     host: process.env.PG_HOST || 'localhost',

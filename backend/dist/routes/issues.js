@@ -17,6 +17,32 @@ issuesRouter.post('/', async (req, res) => {
         if (!issueData.title || !issueData.creatorId) {
             return res.status(400).json({ error: 'Title and creatorId are required' });
         }
+        // Auto-mapping and Data Type Transformation Pipeline during Task Creation
+        let sanitizedRows = undefined;
+        let effectiveMapping = issueData.fileMapping;
+        let effectiveHeaders = issueData.uploadedFileHeaders || [];
+        const rawRows = issueData.firstLevelMappedData || issueData.records || issueData.rows;
+        if (rawRows && Array.isArray(rawRows) && rawRows.length > 0) {
+            const { dataSanitizerService } = await import('../services/dataSanitizerService.js');
+            const sampleRow = rawRows[0];
+            if (effectiveHeaders.length === 0 && sampleRow && typeof sampleRow === 'object') {
+                effectiveHeaders = Object.keys(sampleRow);
+            }
+            // Pre-flight validation with automatic header mapping resolution
+            const validation = await dataSanitizerService.validateMapping(effectiveMapping, sampleRow);
+            if (!validation.valid) {
+                return res.status(422).json({
+                    error: 'Pre-flight mapping validation failed: Required standard fields are not mapped',
+                    missingFields: validation.missingFields,
+                    requiredFields: validation.requiredFields
+                });
+            }
+            // Strict Data Type Transformation & Auto-Mapping Execution
+            const sanitization = await dataSanitizerService.sanitizeRows(rawRows, validation.autoMapping || effectiveMapping);
+            sanitizedRows = sanitization.sanitizedRows;
+            effectiveMapping = sanitization.effectiveMapping;
+            console.log(`[IssueCreation] Auto-mapped and sanitized ${sanitizedRows.length} rows for new task.`);
+        }
         const newIssue = {
             id: issueData.id || `ISSUE-${Math.floor(1000 + Math.random() * 9000)}`,
             title: issueData.title,
@@ -26,13 +52,13 @@ issuesRouter.post('/', async (req, res) => {
             creatorId: issueData.creatorId,
             creatorName: issueData.creatorName || 'Unknown User',
             createdAt: new Date().toISOString(),
-            type: issueData.type || 'single',
+            type: issueData.type || (sanitizedRows ? 'file' : 'single'),
             transactionId: issueData.transactionId,
             uploadedFileName: issueData.uploadedFileName,
-            uploadedFileHeaders: issueData.uploadedFileHeaders,
-            fileMapping: issueData.fileMapping,
+            uploadedFileHeaders: effectiveHeaders.length > 0 ? effectiveHeaders : undefined,
+            fileMapping: effectiveMapping && Object.keys(effectiveMapping).length > 0 ? effectiveMapping : undefined,
             firstLevelNotes: issueData.firstLevelNotes,
-            firstLevelMappedData: issueData.firstLevelMappedData,
+            firstLevelMappedData: sanitizedRows || issueData.firstLevelMappedData,
             linkedHashtag: issueData.linkedHashtag,
             assignedTechUserId: issueData.assignedTechUserId,
             assignedTechUserName: issueData.assignedTechUserName,
@@ -40,6 +66,22 @@ issuesRouter.post('/', async (req, res) => {
         };
         const saved = await repo.createIssue(newIssue);
         eventService.broadcastEvent('issue:created', saved);
+        // Auto-ingest sanitized dataset rows into Central Repository & Task Dataset upon Task Creation
+        if (sanitizedRows && sanitizedRows.length > 0) {
+            try {
+                const { datasetIngestionService } = await import('../services/datasetIngestionService.js');
+                const ingestResult = await datasetIngestionService.ingestDatasetRows(saved.id, sanitizedRows, effectiveHeaders, effectiveMapping);
+                eventService.broadcastEvent('issue:dataset_ingested', {
+                    issueId: saved.id,
+                    transactionCount: ingestResult.insertedCount,
+                    duplicateCount: ingestResult.duplicateCount
+                });
+                console.log(`[IssueCreation] Automatically ingested ${ingestResult.insertedCount} records into task dataset & central repository for ${saved.id}.`);
+            }
+            catch (ingestErr) {
+                console.warn(`[IssueCreation] Warning auto-ingesting task dataset for ${saved.id}:`, ingestErr.message);
+            }
+        }
         return res.status(201).json(saved);
     }
     catch (err) {
@@ -95,6 +137,16 @@ issuesRouter.post(['/:id/dataset', '/:id/ingest-dataset'], async (req, res) => {
         const { headers, fileMapping } = req.body;
         if (!rows || !Array.isArray(rows)) {
             return res.status(400).json({ error: 'rows or records array is required' });
+        }
+        const { dataSanitizerService } = await import('../services/dataSanitizerService.js');
+        const sampleRow = rows[0];
+        const validation = await dataSanitizerService.validateMapping(fileMapping, sampleRow);
+        if (!validation.valid) {
+            return res.status(422).json({
+                error: 'Pre-flight mapping validation failed: Required standard fields are not mapped',
+                missingFields: validation.missingFields,
+                requiredFields: validation.requiredFields
+            });
         }
         const { datasetIngestionService } = await import('../services/datasetIngestionService.js');
         const result = await datasetIngestionService.ingestDatasetRows(req.params.id, rows, headers, fileMapping);

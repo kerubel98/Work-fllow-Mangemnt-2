@@ -1,4 +1,4 @@
-import { User, Issue, HashtagPreset, Plugin, DatabaseConnection, EnvironmentSystem, Team, TeamTask, TeamInsight, TeamDiscussionMessage, AppNotification, DirectMessage, QueryApprovalRequest, DbAccessRequest, ConnectionUsageLog, Organization, TransactionTemplate, GlobalTransactionSchemaConfig, UploadedTransactionRecord, UploadAuditLog, WorkspaceTableRecord, GlobalStandardDirectoryRecord, DatabaseValidationWorkflow, QueryExtraction, InvestigationTask, InvestigationBatch, InvestigationTransaction, CentralTransactionRecord, ValidationBox } from '../types.js';
+import { User, Issue, HashtagPreset, Plugin, DatabaseConnection, EnvironmentSystem, Team, TeamTask, TeamInsight, TeamDiscussionMessage, AppNotification, DirectMessage, QueryApprovalRequest, DbAccessRequest, ConnectionUsageLog, Organization, TransactionTemplate, GlobalTransactionSchemaConfig, UploadedTransactionRecord, UploadAuditLog, WorkspaceTableRecord, GlobalStandardDirectoryRecord, DatabaseValidationWorkflow, QueryExtraction, InvestigationTask, InvestigationBatch, InvestigationTransaction, CentralTransactionRecord, ValidationBox, DatabaseColumnConfiguration } from '../types.js';
 
 
 export const INITIAL_USERS: User[] = [
@@ -817,6 +817,7 @@ export class DataStore {
   public investigationTransactions: InvestigationTransaction[] = [];
   public centralTransactions: CentralTransactionRecord[] = [];
   public validationBoxes: ValidationBox[] = [];
+  public columnConfigurations: DatabaseColumnConfiguration[] = [];
 }
 
 

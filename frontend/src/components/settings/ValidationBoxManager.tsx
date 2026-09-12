@@ -19,11 +19,13 @@ import {
   Sliders,
   Check,
   X,
-  AlertCircle
+  AlertCircle,
+  AlertTriangle
 } from 'lucide-react';
 import { api } from '../../api/client';
 import { ValidationBox, ValidationBoxType, DatabaseConnection } from '../../types';
 import { globalMappingService } from '../../services/globalMappingService';
+import { showSystemAlert } from '../common/MessageModal';
 
 interface ValidationBoxManagerProps {
   currentUser?: any;
@@ -95,9 +97,106 @@ export const ValidationBoxManager: React.FC<ValidationBoxManagerProps> = () => {
 
   // Test Runner drawer
   const [testingBox, setTestingBox] = useState<ValidationBox | null>(null);
-  const [testSampleJson, setTestSampleJson] = useState('{\n  "transactionId": "TXN-9021",\n  "amount": 149.99,\n  "currency": "USD",\n  "status": "COMPLETED"\n}');
+  const [testParams, setTestParams] = useState<Record<string, any>>({});
+  const [testSampleJson, setTestSampleJson] = useState('{\n  "transaction_id": "TXN-1001",\n  "amount": 149.99\n}');
+  const [testViewMode, setTestViewMode] = useState<'FORM' | 'JSON'>('FORM');
+  const [newParamKey, setNewParamKey] = useState('');
+  const [newParamVal, setNewParamVal] = useState('');
   const [testResult, setTestResult] = useState<any>(null);
   const [isTesting, setIsTesting] = useState(false);
+
+  const generateSampleRecordForBox = (box: ValidationBox): Record<string, any> => {
+    const sample: Record<string, any> = {};
+    if (box.boxType === 'INGESTION_SEARCH' && box.searchParameters && box.searchParameters.length > 0) {
+      box.searchParameters.forEach(p => {
+        const field = p.inputField || p.targetColumn;
+        if (field) {
+          sample[field] = p.defaultValue || (
+            field.toLowerCase().includes('amount') ? 149.99 :
+            field.toLowerCase().includes('id') || field.toLowerCase().includes('ref') ? 'TXN-1001' :
+            field.toLowerCase().includes('card') || field.toLowerCase().includes('pan') ? '4111********9982' :
+            field.toLowerCase().includes('status') ? 'COMPLETED' :
+            field.toLowerCase().includes('code') ? '00' :
+            'PARAM_VAL'
+          );
+        }
+      });
+    } else if (box.boxType === 'CONDITION_CHECK') {
+      if (box.dualSourceCondition) {
+        const sA = box.dualSourceCondition.sourceA?.field || 'institution1';
+        const sB = box.dualSourceCondition.sourceB?.field || 'institution2';
+        sample[sA] = box.dualSourceCondition.toleranceMargin ? 100.00 : 'TEST_VAL';
+        sample[sB] = box.dualSourceCondition.toleranceMargin ? 100.00 : 'TEST_VAL';
+      } else if (box.checkStep) {
+        const field = box.checkStep.canonicalField || box.checkStep.sourceField || 'amount';
+        sample[field] = box.checkStep.expectedValue ?? box.checkStep.compareValue ?? 149.99;
+      }
+      if (box.checkStep?.requiredParams && Array.isArray(box.checkStep.requiredParams)) {
+        box.checkStep.requiredParams.forEach(p => {
+          if (!sample[p]) sample[p] = p.toLowerCase().includes('amount') ? 100.00 : 'PARAM_VAL';
+        });
+      }
+    } else if (box.boxType === 'RECONCILIATION') {
+      sample[box.matchKeyInput || 'transaction_id'] = 'TXN-1001';
+      if (box.groupConfig?.groupIdField) sample[box.groupConfig.groupIdField] = 'GRP-001';
+      if (box.groupConfig?.eventPhaseField) sample[box.groupConfig.eventPhaseField] = 'FINANCIAL_REQ';
+    } else if (box.boxType === 'REPORT') {
+      (box.outputColumns || []).forEach(c => {
+        if (c.field) sample[c.field] = `VAL_${c.field.toUpperCase()}`;
+      });
+    }
+
+    if (Object.keys(sample).length === 0) {
+      sample.transaction_id = 'TXN-1001';
+      sample.amount = 149.99;
+    }
+    return sample;
+  };
+
+  const handleOpenTestDrawer = (box: ValidationBox) => {
+    setTestingBox(box);
+    setTestResult(null);
+    const sample = generateSampleRecordForBox(box);
+    setTestParams(sample);
+    setTestSampleJson(JSON.stringify(sample, null, 2));
+    setNewParamKey('');
+    setNewParamVal('');
+    setTestViewMode('FORM');
+  };
+
+  const handleParamChange = (key: string, value: any) => {
+    const updated = { ...testParams, [key]: value };
+    setTestParams(updated);
+    setTestSampleJson(JSON.stringify(updated, null, 2));
+  };
+
+  const handleParamDelete = (key: string) => {
+    const updated = { ...testParams };
+    delete updated[key];
+    setTestParams(updated);
+    setTestSampleJson(JSON.stringify(updated, null, 2));
+  };
+
+  const handleAddParam = () => {
+    if (!newParamKey.trim()) return;
+    const key = newParamKey.trim();
+    let val: any = newParamVal.trim();
+    if (!isNaN(Number(val)) && val !== '') {
+      val = Number(val);
+    }
+    const updated = { ...testParams, [key]: val };
+    setTestParams(updated);
+    setTestSampleJson(JSON.stringify(updated, null, 2));
+    setNewParamKey('');
+    setNewParamVal('');
+  };
+
+  const handleResetToBoxParams = () => {
+    if (!testingBox) return;
+    const sample = generateSampleRecordForBox(testingBox);
+    setTestParams(sample);
+    setTestSampleJson(JSON.stringify(sample, null, 2));
+  };
 
   useEffect(() => {
     loadData();
@@ -413,6 +512,8 @@ export const ValidationBoxManager: React.FC<ValidationBoxManagerProps> = () => {
           severityOnFailure: severity,
           actionOnSuccess: actionSuccess,
           actionOnFailure: actionFailure,
+          onPassAction: (actionSuccess === 'RECONCILE' || actionSuccess === 'CLOSE_PASS') ? 'CLOSE' : (actionSuccess === 'STOP' ? 'STOP' : 'CONTINUE'),
+          onFailAction: (actionFailure === 'CONTINUE' ? 'CONTINUE' : (actionFailure === 'FLAG' ? 'STOP' : actionFailure)) as any,
           errorMessage: `${name.trim()} check failed`
         } : undefined
       };
@@ -426,7 +527,36 @@ export const ValidationBoxManager: React.FC<ValidationBoxManagerProps> = () => {
       setIsModalOpen(false);
       loadData();
     } catch (err: any) {
-      alert(`Failed to save validation box: ${err.message}`);
+      showSystemAlert({
+        title: 'Save Failed',
+        message: `Failed to save validation box: ${err.message || err}`,
+        type: 'error'
+      });
+    }
+  };
+
+  const [isClearingAll, setIsClearingAll] = useState(false);
+
+  const handleClearAllHistory = async () => {
+    if (!confirm(
+      'DANGER: Permanently delete ALL validation check history across all tasks?\n\nThis will wipe:\n- All workflow execution records\n- All investigation tasks, batches, and transaction results\n\nThis action cannot be undone.'
+    )) return;
+    setIsClearingAll(true);
+    try {
+      const result = await api.clearAllValidationExecutions();
+      showSystemAlert({
+        title: 'Validation History Cleared',
+        message: result.message || 'All validation check history has been cleared. You can start fresh.',
+        type: 'success'
+      });
+    } catch (err: any) {
+      showSystemAlert({
+        title: 'Clear Failed',
+        message: `Failed to clear history: ${err.message || err}`,
+        type: 'error'
+      });
+    } finally {
+      setIsClearingAll(false);
     }
   };
 
@@ -435,8 +565,17 @@ export const ValidationBoxManager: React.FC<ValidationBoxManagerProps> = () => {
     try {
       await api.deleteValidationBox(id);
       loadData();
+      showSystemAlert({
+        title: 'Validation Box Deleted',
+        message: `Validation Box "${boxName}" has been deleted.`,
+        type: 'success'
+      });
     } catch (err: any) {
-      alert(`Delete failed: ${err.message}`);
+      showSystemAlert({
+        title: 'Delete Failed',
+        message: `Delete failed: ${err.message || err}`,
+        type: 'error'
+      });
     }
   };
 
@@ -445,13 +584,19 @@ export const ValidationBoxManager: React.FC<ValidationBoxManagerProps> = () => {
     setIsTesting(true);
     setTestResult(null);
     try {
-      let parsed = {};
-      try {
-        parsed = JSON.parse(testSampleJson);
-      } catch {
-        alert('Invalid JSON in test payload');
-        setIsTesting(false);
-        return;
+      let parsed = testParams;
+      if (testViewMode === 'JSON') {
+        try {
+          parsed = JSON.parse(testSampleJson);
+        } catch {
+          showSystemAlert({
+            title: 'Invalid JSON Payload',
+            message: 'The sample test payload is not valid JSON. Please check commas, quotes, and brackets.',
+            type: 'warning'
+          });
+          setIsTesting(false);
+          return;
+        }
       }
       const res = await api.testValidationBox(testingBox, parsed);
       setTestResult(res);
@@ -519,6 +664,16 @@ export const ValidationBoxManager: React.FC<ValidationBoxManagerProps> = () => {
             >
               <Cpu className="w-3.5 h-3.5" />
               + Report Box
+            </button>
+            {/* Danger: Clear all validation run history globally */}
+            <button
+              onClick={handleClearAllHistory}
+              disabled={isClearingAll}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-rose-700 hover:bg-rose-600 disabled:opacity-50 text-white rounded-lg font-medium text-xs transition-colors shadow-sm border border-rose-500/40"
+              title="Permanently clear all validation check history across all tasks (cannot be undone)"
+            >
+              <Trash2 className="w-3.5 h-3.5" />
+              {isClearingAll ? 'Clearing...' : 'Clear All History'}
             </button>
           </div>
         </div>
@@ -834,11 +989,19 @@ export const ValidationBoxManager: React.FC<ValidationBoxManagerProps> = () => {
                       <div className="flex items-center justify-between text-[11px] text-slate-500 pt-0.5">
                         <span>Outcomes:</span>
                         <div className="flex items-center gap-1.5 text-xs font-semibold">
-                          <span className="text-emerald-700 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded text-[10px] font-bold">
-                            Pass: {box.checkStep?.actionOnSuccess || 'CONTINUE'}
+                          <span className={`${
+                            box.checkStep?.actionOnSuccess === 'STOP' || box.checkStep?.onPassAction === 'STOP'
+                              ? 'text-rose-700 bg-rose-50 border border-rose-200'
+                              : 'text-emerald-700 bg-emerald-50 border border-emerald-200'
+                          } px-1.5 py-0.5 rounded text-[10px] font-bold`}>
+                            Pass: {box.checkStep?.actionOnSuccess || box.checkStep?.onPassAction || 'CONTINUE'}
                           </span>
-                          <span className="text-rose-700 bg-rose-50 border border-rose-200 px-1.5 py-0.5 rounded text-[10px] font-bold">
-                            Fail: {box.checkStep?.actionOnFailure || 'FLAG'}
+                          <span className={`${
+                            (box.checkStep?.actionOnFailure === 'CONTINUE' || box.checkStep?.onFailAction === 'CONTINUE')
+                              ? 'text-blue-700 bg-blue-50 border border-blue-200'
+                              : 'text-rose-700 bg-rose-50 border border-rose-200'
+                          } px-1.5 py-0.5 rounded text-[10px] font-bold`}>
+                            Fail: {box.checkStep?.actionOnFailure || box.checkStep?.onFailAction || 'FLAG'}
                           </span>
                         </div>
                       </div>
@@ -913,10 +1076,7 @@ export const ValidationBoxManager: React.FC<ValidationBoxManagerProps> = () => {
                 <div className="pt-2.5 border-t border-slate-100">
                   <button
                     type="button"
-                    onClick={() => {
-                      setTestingBox(box);
-                      setTestResult(null);
-                    }}
+                    onClick={() => handleOpenTestDrawer(box)}
                     className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded-lg bg-slate-50 hover:bg-slate-100 text-slate-700 hover:text-slate-900 text-xs font-semibold border border-slate-200 hover:border-slate-300 transition cursor-pointer"
                   >
                     <Play className="w-3.5 h-3.5 text-emerald-600 fill-emerald-600/20" /> Test Block
@@ -2191,9 +2351,12 @@ export const ValidationBoxManager: React.FC<ValidationBoxManagerProps> = () => {
                       <select
                         value={actionSuccess}
                         onChange={(e) => setActionSuccess(e.target.value)}
-                        className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-emerald-400 font-semibold"
+                        className={`w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs font-semibold ${
+                          actionSuccess === 'STOP' ? 'text-rose-400' : 'text-emerald-400'
+                        }`}
                       >
                         <option value="CONTINUE">CONTINUE</option>
+                        <option value="STOP">STOP</option>
                         <option value="RECONCILE">RECONCILE</option>
                         <option value="CLOSE_PASS">CLOSE_PASS</option>
                       </select>
@@ -2203,8 +2366,11 @@ export const ValidationBoxManager: React.FC<ValidationBoxManagerProps> = () => {
                       <select
                         value={actionFailure}
                         onChange={(e) => setActionFailure(e.target.value)}
-                        className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-rose-400 font-semibold"
+                        className={`w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs font-semibold ${
+                          actionFailure === 'CONTINUE' ? 'text-blue-400' : 'text-rose-400'
+                        }`}
                       >
+                        <option value="CONTINUE">CONTINUE</option>
                         <option value="FLAG">FLAG</option>
                         <option value="STOP">STOP</option>
                         <option value="ESCALATE">ESCALATE</option>
@@ -2257,47 +2423,237 @@ export const ValidationBoxManager: React.FC<ValidationBoxManagerProps> = () => {
             </div>
 
             <div className="space-y-4 py-4 flex-1">
-              <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1">
-                  Sample Transaction Record (JSON)
-                </label>
-                <textarea
-                  rows={6}
-                  value={testSampleJson}
-                  onChange={(e) => setTestSampleJson(e.target.value)}
-                  className="w-full bg-slate-950 border border-slate-800 rounded-lg p-3 font-mono text-xs text-emerald-300 focus:outline-none focus:border-blue-500"
-                />
+              {/* Header Info & Mode Switcher */}
+              <div className="flex items-center justify-between gap-2 p-2.5 bg-slate-950/70 border border-slate-800 rounded-lg">
+                <div className="text-[11px] text-slate-300">
+                  Mode: <span className="font-semibold text-emerald-400">{testingBox.boxType}</span>
+                </div>
+                <div className="flex items-center gap-1 bg-slate-900 p-0.5 rounded border border-slate-800">
+                  <button
+                    type="button"
+                    onClick={() => setTestViewMode('FORM')}
+                    className={`px-2.5 py-1 text-[11px] font-semibold rounded transition ${
+                      testViewMode === 'FORM'
+                        ? 'bg-blue-600 text-white shadow-xs'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    Parameters Form
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setTestViewMode('JSON')}
+                    className={`px-2.5 py-1 text-[11px] font-semibold rounded transition ${
+                      testViewMode === 'JSON'
+                        ? 'bg-blue-600 text-white shadow-xs'
+                        : 'text-slate-400 hover:text-white'
+                    }`}
+                  >
+                    Raw JSON
+                  </button>
+                </div>
               </div>
+
+              {testViewMode === 'FORM' ? (
+                /* Dynamic Parameter Input Form */
+                <div className="space-y-3">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-semibold text-slate-300">
+                      Given Parameters ({Object.keys(testParams).length})
+                    </label>
+                    <button
+                      type="button"
+                      onClick={handleResetToBoxParams}
+                      className="text-[11px] text-blue-400 hover:text-blue-300 underline font-medium cursor-pointer"
+                    >
+                      Reset to Block Parameters
+                    </button>
+                  </div>
+
+                  <div className="space-y-2 max-h-64 overflow-y-auto pr-1">
+                    {Object.keys(testParams).length === 0 ? (
+                      <div className="text-xs text-slate-500 italic p-3 bg-slate-950/50 rounded-lg border border-slate-800 text-center">
+                        No parameters defined. Add one below.
+                      </div>
+                    ) : (
+                      Object.entries(testParams).map(([key, val]) => {
+                        const isReq = Boolean(
+                          testingBox.searchParameters?.some(p => (p.inputField === key || p.targetColumn === key) && p.required !== false) ||
+                          testingBox.checkStep?.requiredParams?.includes(key) ||
+                          (testingBox.boxType === 'CONDITION_CHECK' && (testingBox.checkStep?.canonicalField === key || testingBox.checkStep?.sourceField === key)) ||
+                          (testingBox.boxType === 'RECONCILIATION' && testingBox.matchKeyInput === key)
+                        );
+                        return (
+                          <div
+                            key={key}
+                            className="flex items-center gap-2 p-2 bg-slate-950 border border-slate-800 rounded-lg"
+                          >
+                            <div className="w-1/3 min-w-0 flex items-center gap-1.5">
+                              <span className="text-xs font-mono font-bold text-slate-200 truncate block" title={key}>
+                                {key}
+                              </span>
+                              {isReq && (
+                                <span className="px-1.5 py-0.2 rounded text-[9px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30 shrink-0" title="Required parameter for this validation box">
+                                  Req
+                                </span>
+                              )}
+                            </div>
+                            <div className="flex-1">
+                              <input
+                                type="text"
+                                value={val !== undefined && val !== null ? String(val) : ''}
+                                onChange={(e) => handleParamChange(key, e.target.value)}
+                                className="w-full bg-slate-900 border border-slate-700 rounded px-2.5 py-1 text-xs text-emerald-300 font-mono focus:border-blue-500 focus:outline-none"
+                              />
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => handleParamDelete(key)}
+                              className="text-slate-500 hover:text-rose-400 p-1 transition cursor-pointer"
+                              title="Remove parameter"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        );
+                      })
+                    )}
+                  </div>
+
+                  {/* Add New Parameter */}
+                  <div className="p-2.5 bg-slate-950/80 border border-dashed border-slate-800 rounded-lg space-y-2">
+                    <div className="text-[11px] font-semibold text-slate-400">Add Parameter:</div>
+                    <div className="flex items-center gap-2">
+                      <input
+                        type="text"
+                        placeholder="Parameter key (e.g. order_id)"
+                        value={newParamKey}
+                        onChange={(e) => setNewParamKey(e.target.value)}
+                        className="flex-1 bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-white font-mono focus:border-blue-500"
+                      />
+                      <input
+                        type="text"
+                        placeholder="Value"
+                        value={newParamVal}
+                        onChange={(e) => setNewParamVal(e.target.value)}
+                        className="flex-1 bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xs text-white font-mono focus:border-blue-500"
+                      />
+                      <button
+                        type="button"
+                        onClick={handleAddParam}
+                        className="px-3 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-semibold rounded transition cursor-pointer"
+                      >
+                        + Add
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                /* Raw JSON Editor */
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="text-xs font-semibold text-slate-300">
+                      Sample Transaction Record (JSON)
+                    </label>
+                    <button
+                      type="button"
+                      onClick={handleResetToBoxParams}
+                      className="text-[11px] text-blue-400 hover:text-blue-300 underline font-medium cursor-pointer"
+                    >
+                      Reset to Block Parameters
+                    </button>
+                  </div>
+                  <textarea
+                    rows={8}
+                    value={testSampleJson}
+                    onChange={(e) => {
+                      setTestSampleJson(e.target.value);
+                      try {
+                        const parsed = JSON.parse(e.target.value);
+                        if (parsed && typeof parsed === 'object') {
+                          setTestParams(parsed);
+                        }
+                      } catch {
+                        // ignore syntax errors while typing
+                      }
+                    }}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-lg p-3 font-mono text-xs text-emerald-300 focus:outline-none focus:border-blue-500"
+                  />
+                </div>
+              )}
 
               <button
                 type="button"
                 disabled={isTesting}
                 onClick={handleTestRun}
-                className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white rounded-lg font-semibold text-xs transition-colors flex items-center justify-center gap-2"
+                className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 text-white rounded-lg font-semibold text-xs transition-colors flex items-center justify-center gap-2 cursor-pointer shadow-lg shadow-emerald-950/50"
               >
                 {isTesting ? (
                   <span>Executing live validation...</span>
                 ) : (
                   <>
                     <Play className="w-4 h-4 fill-white" />
-                    Execute Validation Run
+                    Execute Validation Run with Given Parameters
                   </>
                 )}
               </button>
 
               {testResult && (
-                <div className="space-y-2 mt-4">
+                <div className="space-y-3 mt-4">
                   <div className="text-xs font-semibold text-slate-300 uppercase tracking-wider flex items-center justify-between">
                     <span>Execution Result</span>
-                    {testResult.passed !== undefined && (
-                      <span className={`px-2 py-0.5 rounded text-[11px] font-bold ${
-                        testResult.passed ? 'bg-emerald-950 text-emerald-300 border border-emerald-500/40' : 'bg-rose-950 text-rose-300 border border-rose-500/40'
-                      }`}>
-                        {testResult.passed ? 'STATUS: PASS' : 'STATUS: FAIL'}
-                      </span>
-                    )}
+                    <div className="flex items-center gap-2">
+                      {testResult.passed !== undefined && (
+                        <span className={`px-2 py-0.5 rounded text-[11px] font-bold ${
+                          testResult.passed ? 'bg-emerald-950 text-emerald-300 border border-emerald-500/40' : 'bg-rose-950 text-rose-300 border border-rose-500/40'
+                        }`}>
+                          {testResult.passed ? 'STATUS: PASS' : 'STATUS: FAIL'}
+                        </span>
+                      )}
+                      {testResult.status && (
+                        <span className="px-2 py-0.5 rounded text-[11px] font-bold bg-slate-800 text-slate-300 border border-slate-700">
+                          {testResult.status}
+                        </span>
+                      )}
+                    </div>
                   </div>
-                  <pre className="bg-slate-950 p-3 rounded-lg border border-slate-800 text-xs font-mono text-slate-300 overflow-x-auto max-h-72">
+
+                  {/* Missing Parameters Warning Banner */}
+                  {testResult.missingParameters && testResult.missingParameters.length > 0 && (
+                    <div className="p-3 bg-rose-950/60 border border-rose-800/80 rounded-lg text-xs space-y-1.5 shadow-md">
+                      <div className="flex items-center gap-2 text-rose-300 font-semibold">
+                        <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+                        <span>Required Parameter(s) Missing</span>
+                      </div>
+                      <p className="text-slate-300 text-[11px]">
+                        This validation box depends on: <strong className="text-rose-300 font-mono">{testResult.missingParameters.join(', ')}</strong>.
+                        Please provide them in the parameters above.
+                      </p>
+                    </div>
+                  )}
+
+                  {/* Summary Feedback Banner */}
+                  {(testResult.message || testResult.reason) && (
+                    <div className="p-2.5 rounded-lg bg-slate-900/90 border border-slate-800 text-xs flex flex-col gap-1.5">
+                      <div className="flex items-center gap-2">
+                        {testResult.badgeText && (
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-bold shrink-0 ${
+                            testResult.passed ? 'bg-emerald-950 text-emerald-300 border border-emerald-500/40' : 'bg-rose-950 text-rose-300 border border-rose-500/40'
+                          }`}>
+                            {testResult.badgeText}
+                          </span>
+                        )}
+                        <span className="text-slate-200 font-medium">{testResult.message || testResult.reason}</span>
+                      </div>
+                      {testResult.queryPreview && (
+                        <div className="text-[10px] font-mono text-slate-400 bg-slate-950 p-1.5 rounded border border-slate-800/80 truncate" title={testResult.queryPreview}>
+                          Query: {testResult.queryPreview}
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  <pre className="bg-slate-950 p-3 rounded-lg border border-slate-800 text-xs font-mono text-slate-300 overflow-x-auto max-h-64">
                     {JSON.stringify(testResult, null, 2)}
                   </pre>
                 </div>

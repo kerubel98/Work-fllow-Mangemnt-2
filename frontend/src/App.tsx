@@ -30,6 +30,7 @@ import GlobalTransactionSettings from './components/GlobalTransactionSettings';
 import WorkspaceSettings from './components/WorkspaceSettings';
 import SystemSettings from './components/settings/SystemSettings';
 import ErrorBoundary from './components/ErrorBoundary';
+import MessageModal from './components/common/MessageModal';
 
 
 export default function App() {
@@ -1287,6 +1288,7 @@ export default function App() {
 
         </div>
       )}
+      <MessageModal />
     </div>
   );
 }

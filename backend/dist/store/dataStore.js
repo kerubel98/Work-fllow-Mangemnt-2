@@ -656,188 +656,7 @@ export const INITIAL_WORKSPACE_TABLE_RECORDS = [
         createdAt: '2026-08-09T07:15:00Z'
     }
 ];
-export const INITIAL_GLOBAL_STANDARD_DIRECTORY_RECORDS = [
-    {
-        id: 'gsd-1',
-        key: 'transaction_id',
-        label: 'Transaction ID / Reference',
-        description: 'Primary unique transaction or authorization identifier',
-        dataType: 'string',
-        required: true,
-        isStandard: true,
-        exampleValue: 'TXN-9021',
-        category: 'Identity',
-        notes: 'Unique key across network gateways and processor feeds',
-        user_id: 'usr-1',
-        created_at: '2026-05-01T08:00:00Z',
-        updated_at: '2026-08-09T08:00:00Z'
-    },
-    {
-        id: 'gsd-2',
-        key: 'card_number',
-        label: 'Card PAN / Security Token',
-        description: 'Masked payment card number or secure account token',
-        dataType: 'string',
-        required: true,
-        isStandard: true,
-        exampleValue: '4111********9982',
-        category: 'Financial',
-        notes: 'PCI-DSS masked format or cryptographic payment token',
-        user_id: 'usr-1',
-        created_at: '2026-05-01T08:00:00Z',
-        updated_at: '2026-08-09T08:00:00Z'
-    },
-    {
-        id: 'gsd-3',
-        key: 'amount_usd',
-        label: 'Amount ($ USD)',
-        description: 'Total numeric transaction charge or authorization amount',
-        dataType: 'number',
-        required: true,
-        isStandard: true,
-        exampleValue: 149.99,
-        category: 'Financial',
-        notes: 'Standardized numeric double decimal amount in base currency',
-        user_id: 'usr-1',
-        created_at: '2026-05-01T08:00:00Z',
-        updated_at: '2026-08-09T08:00:00Z'
-    },
-    {
-        id: 'gsd-4',
-        key: 'status_state',
-        label: 'Transaction Status',
-        description: 'Current lifecycle state (AUTHORIZED, SETTLED, DECLINED, PENDING, REVERSED)',
-        dataType: 'string',
-        required: true,
-        isStandard: true,
-        exampleValue: 'PENDING',
-        category: 'Lifecycle',
-        notes: 'Normalized lifecycle state string',
-        user_id: 'usr-1',
-        created_at: '2026-05-01T08:00:00Z',
-        updated_at: '2026-08-09T08:00:00Z'
-    },
-    {
-        id: 'gsd-5',
-        key: 'created_at',
-        label: 'Created / Auth Timestamp',
-        description: 'Transaction post date or authorization ISO timestamp',
-        dataType: 'date',
-        required: true,
-        isStandard: true,
-        exampleValue: '2026-07-11T04:12:00Z',
-        category: 'Audit',
-        notes: 'Standard ISO 8601 UTC timestamp',
-        user_id: 'usr-1',
-        created_at: '2026-05-01T08:00:00Z',
-        updated_at: '2026-08-09T08:00:00Z'
-    },
-    {
-        id: 'gsd-6',
-        key: 'user_email',
-        label: 'Customer / User Email',
-        description: 'Buyer or account holder email address',
-        dataType: 'string',
-        required: false,
-        isStandard: true,
-        exampleValue: 'customer@domain.com',
-        category: 'Customer',
-        notes: 'RFC 5322 compliant buyer email address',
-        user_id: 'usr-2',
-        created_at: '2026-05-15T09:30:00Z',
-        updated_at: '2026-08-09T08:00:00Z'
-    },
-    {
-        id: 'gsd-7',
-        key: 'merchant_id',
-        label: 'Merchant / Terminal Identifier',
-        description: 'Merchant account code or store terminal name',
-        dataType: 'string',
-        required: false,
-        isStandard: true,
-        exampleValue: 'AMAZON.COM*OPERATIONS',
-        category: 'Merchant',
-        notes: 'MID or terminal descriptor string',
-        user_id: 'usr-2',
-        created_at: '2026-05-15T09:30:00Z',
-        updated_at: '2026-08-09T08:00:00Z'
-    },
-    {
-        id: 'gsd-8',
-        key: 'response_code',
-        label: 'Response Code',
-        description: 'Gateway ISO 8583 response code (00, 51, 91, etc.)',
-        dataType: 'string',
-        required: false,
-        isStandard: true,
-        exampleValue: '00',
-        category: 'Network',
-        notes: 'ISO-8583 standard 2-digit network code',
-        user_id: 'usr-3',
-        created_at: '2026-05-18T14:15:00Z',
-        updated_at: '2026-08-09T08:00:00Z'
-    },
-    {
-        id: 'gsd-9',
-        key: 'currency',
-        label: 'Currency ISO',
-        description: '3-letter currency code (USD, EUR, GBP)',
-        dataType: 'string',
-        required: false,
-        isStandard: true,
-        exampleValue: 'USD',
-        category: 'Financial',
-        notes: 'ISO 4217 standard alpha currency code',
-        user_id: 'usr-1',
-        created_at: '2026-05-01T08:00:00Z',
-        updated_at: '2026-08-09T08:00:00Z'
-    },
-    {
-        id: 'gsd-10',
-        key: 'terminal_id',
-        label: 'POS Terminal ID',
-        description: 'Physical or virtual POS terminal number',
-        dataType: 'string',
-        required: false,
-        isStandard: true,
-        exampleValue: 'TERM-08',
-        category: 'POS',
-        notes: 'Hardware terminal code for in-store transactions',
-        user_id: 'usr-3',
-        created_at: '2026-05-18T14:15:00Z',
-        updated_at: '2026-08-09T08:00:00Z'
-    },
-    {
-        id: 'gsd-11',
-        key: 'dispute_reason',
-        label: 'Dispute / Chargeback Reason',
-        description: 'Operational dispute note or chargeback classification code',
-        dataType: 'string',
-        required: false,
-        isStandard: false,
-        exampleValue: 'DUPLICATE_AUTH',
-        category: 'Dispute',
-        notes: 'Custom chargeback descriptor',
-        user_id: 'usr-2',
-        created_at: '2026-07-01T10:00:00Z',
-        updated_at: '2026-08-09T08:00:00Z'
-    },
-    {
-        id: 'gsd-12',
-        key: 'batch_seq_num',
-        label: 'Batch Sequence Number',
-        description: 'Clearing file batch sequence number',
-        dataType: 'string',
-        required: false,
-        isStandard: false,
-        exampleValue: 'BATCH-8891',
-        category: 'Settlement',
-        notes: 'Sequential settlement clearing file batch ID',
-        user_id: 'usr-3',
-        created_at: '2026-07-05T12:00:00Z',
-        updated_at: '2026-08-09T08:00:00Z'
-    }
-];
+export const INITIAL_GLOBAL_STANDARD_DIRECTORY_RECORDS = [];
 export const INITIAL_WORKFLOWS = [
     {
         id: 'wf-recon-multi-stage-1',
@@ -961,17 +780,9 @@ export class DataStore {
         version: '2.3.0',
         updatedAt: new Date().toISOString(),
         updatedBy: 'system',
-        standardFields: [...INITIAL_GLOBAL_STANDARD_DIRECTORY_RECORDS],
+        standardFields: [],
         tableMappings: {},
-        versionHistory: [
-            {
-                version: '2.3.0',
-                timestamp: new Date().toISOString(),
-                author: 'system',
-                description: 'Initial persisted enterprise standard fields',
-                fieldCount: INITIAL_GLOBAL_STANDARD_DIRECTORY_RECORDS.length
-            }
-        ],
+        versionHistory: [],
         strictMappingEnforced: true
     };
     tableMappings = {};
@@ -979,7 +790,7 @@ export class DataStore {
     uploadedTransactions = [];
     uploadAuditLogs = [];
     workspaceTableRecords = [];
-    globalStandardDirectory = [...INITIAL_GLOBAL_STANDARD_DIRECTORY_RECORDS];
+    globalStandardDirectory = [];
     workflows = [];
     queryExtractions = [];
     investigationTasks = [];
@@ -987,5 +798,6 @@ export class DataStore {
     investigationTransactions = [];
     centralTransactions = [];
     validationBoxes = [];
+    columnConfigurations = [];
 }
 export const store = new DataStore();

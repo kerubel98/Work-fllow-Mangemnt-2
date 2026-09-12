@@ -9,6 +9,7 @@ import { UploadAuditLogModel } from '../models/UploadAuditLog.js';
 import { WorkspaceTableRecordModel } from '../models/WorkspaceTableRecord.js';
 import { GlobalStandardDirectoryModel } from '../models/GlobalStandardDirectory.js';
 import { store } from '../store/dataStore.js';
+import { GlobalSchemaDiscoveryService, classifyColumn, formatColumnLabel } from '../services/globalSchemaDiscoveryService.js';
 export const transactionSettingsRouter = Router();
 // GET /api/transactions/settings - Retrieve global transaction schema config and mapping templates
 transactionSettingsRouter.get('/settings', async (_req, res) => {
@@ -639,6 +640,83 @@ transactionSettingsRouter.delete('/workspace-table/:id', async (req, res) => {
 // =========================================================
 // GLOBAL STANDARD DIRECTORY DATABASE TABLE & MODEL ENDPOINTS
 // =========================================================
+// POST /api/transactions/directory/discover-from-databases - Discover columns from connected databases
+transactionSettingsRouter.post('/directory/discover-from-databases', async (req, res) => {
+    try {
+        const result = await GlobalSchemaDiscoveryService.discoverFromAllDatabases(req.body?.userId || 'system');
+        return res.json({
+            message: `Successfully discovered and registered ${result.discoveredCount} database columns into Global Schema`,
+            ...result
+        });
+    }
+    catch (err) {
+        console.error('[Directory] Error discovering fields from databases:', err);
+        return res.status(500).json({ error: `Failed to discover database fields: ${err.message}` });
+    }
+});
+// POST /api/transactions/directory/import-from-table - Import columns from specific table
+transactionSettingsRouter.post('/directory/import-from-table', async (req, res) => {
+    const { dbId, tableName, userId } = req.body;
+    if (!dbId || !tableName) {
+        return res.status(400).json({ error: 'dbId and tableName are required' });
+    }
+    try {
+        const result = await GlobalSchemaDiscoveryService.importFromTable(dbId, tableName, userId || 'system');
+        return res.json({
+            message: `Successfully imported ${result.importedCount} columns from table '${tableName}' into Global Schema`,
+            ...result
+        });
+    }
+    catch (err) {
+        console.error('[Directory] Error importing fields from table:', err);
+        return res.status(500).json({ error: `Failed to import table columns: ${err.message}` });
+    }
+});
+// POST /api/transactions/directory/batch-import - Batch import array of directory fields (e.g. from JSON)
+transactionSettingsRouter.post('/directory/batch-import', async (req, res) => {
+    const { fields, autoClassify } = req.body;
+    if (!fields || !Array.isArray(fields) || fields.length === 0) {
+        return res.status(400).json({ error: 'fields array is required and must not be empty' });
+    }
+    try {
+        const result = await GlobalSchemaDiscoveryService.batchImportFields(fields, autoClassify !== false, req.body.userId || 'system');
+        return res.status(201).json({
+            success: true,
+            message: `Successfully imported and saved ${result.importedCount} fields to database Global Schema`,
+            ...result
+        });
+    }
+    catch (err) {
+        console.error('[Directory] Error batch importing fields:', err);
+        return res.status(500).json({ error: `Failed to batch import fields: ${err.message}` });
+    }
+});
+// POST /api/transactions/directory/auto-classify - Automatically classify all existing directory fields
+transactionSettingsRouter.post('/directory/auto-classify', async (_req, res) => {
+    try {
+        const result = await GlobalSchemaDiscoveryService.autoClassifyAllFields();
+        return res.json({
+            success: true,
+            message: `Successfully classified ${result.classifiedCount} directory fields`,
+            ...result
+        });
+    }
+    catch (err) {
+        console.error('[Directory] Error auto-classifying fields:', err);
+        return res.status(500).json({ error: `Failed to auto-classify fields: ${err.message}` });
+    }
+});
+// GET /api/transactions/directory/audit-logs - Schema migration version control and rollback audit log
+transactionSettingsRouter.get('/directory/audit-logs', async (_req, res) => {
+    try {
+        const { schemaMigrationService } = await import('../services/schemaMigrationService.js');
+        const logs = await schemaMigrationService.getAuditLogs();
+        return res.json(logs);
+    }
+    catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+});
 // GET /api/transactions/directory - Fetch all Global Standard Directory records
 transactionSettingsRouter.get('/directory', async (_req, res) => {
     if (isPostgresConnected) {
@@ -670,17 +748,29 @@ transactionSettingsRouter.post('/directory', async (req, res) => {
     }
     const now = new Date().toISOString();
     const cleanKey = key.trim().toLowerCase().replace(/[\s-]+/g, '_');
-    const newId = req.body.id || `gsd-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
+    const cleanLabel = label.trim();
+    const dType = dataType || 'string';
+    const newId = req.body.id || `gsd-${cleanKey}`;
+    // Robust required handling: accept required, is_required, or isRequired
+    const isReq = required !== undefined
+        ? !!required
+        : (req.body.is_required !== undefined
+            ? !!req.body.is_required
+            : (req.body.isRequired !== undefined ? !!req.body.isRequired : false));
+    // Automatic classification if category is missing or 'General'
+    const resolvedCategory = (category && category.trim() && category !== 'General')
+        ? category.trim()
+        : classifyColumn(cleanKey, cleanLabel, dType);
     const record = {
         id: newId,
         key: cleanKey,
-        label: label.trim(),
+        label: cleanLabel,
         description: description || '',
-        dataType: dataType || 'string',
-        required: !!required,
+        dataType: dType,
+        required: isReq,
         isStandard: isStandard !== undefined ? !!isStandard : false,
         exampleValue: exampleValue !== undefined ? exampleValue : '',
-        category: category || 'General',
+        category: resolvedCategory,
         notes: notes || '',
         user_id: user_id || 'usr-1',
         created_at: now,
@@ -690,11 +780,15 @@ transactionSettingsRouter.post('/directory', async (req, res) => {
     let savedRecord = record;
     if (isPostgresConnected) {
         try {
-            savedRecord = await postgresRepo.saveGlobalStandardDirectoryField(record);
+            const { schemaMigrationService } = await import('../services/schemaMigrationService.js');
+            savedRecord = await schemaMigrationService.addDirectoryField(record);
         }
         catch (e) {
-            console.warn('[Directory] Could not insert to PostgreSQL:', e.message);
-            return res.status(500).json({ error: `Failed to persist field to database: ${e.message}` });
+            console.warn('[Directory] Transactional schema migration failed:', e.message);
+            return res.status(400).json({
+                error: `Schema migration failed and was rolled back: ${e.message}`,
+                details: e.message
+            });
         }
     }
     if (isMongoConnected) {
@@ -714,37 +808,53 @@ transactionSettingsRouter.post('/directory', async (req, res) => {
 transactionSettingsRouter.put('/directory/:id', async (req, res) => {
     const { id } = req.params;
     const { key, label, description, dataType, required, isStandard, exampleValue, category, notes, user_id } = req.body;
+    const targetKey = (key || id || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
     let existing = null;
     if (isPostgresConnected) {
         try {
             existing = await postgresRepo.getGlobalStandardDirectoryField(id);
+            if (!existing && targetKey) {
+                existing = await postgresRepo.getGlobalStandardDirectoryField(targetKey);
+            }
         }
         catch (e) {
             console.warn('[Directory] Could not find field in PostgreSQL:', e.message);
         }
     }
     if (!existing) {
-        existing = store.globalStandardDirectory.find(r => r.id === id || r.key === id) || null;
-    }
-    if (!existing) {
-        return res.status(404).json({ error: `Directory record with ID '${id}' not found` });
+        existing = store.globalStandardDirectory.find(r => r.id === id || r.key === id || (targetKey && r.key === targetKey)) || null;
     }
     const now = new Date().toISOString();
+    const cleanKey = key
+        ? key.trim().toLowerCase().replace(/[\s-]+/g, '_')
+        : (existing ? existing.key : targetKey.replace(/^gsd-/, ''));
+    const cleanLabel = label ? label.trim() : (existing ? existing.label : formatColumnLabel(cleanKey));
+    const dType = dataType || existing?.dataType || 'string';
+    // Robust required handling
+    const isReq = required !== undefined
+        ? !!required
+        : (req.body.is_required !== undefined
+            ? !!req.body.is_required
+            : (req.body.isRequired !== undefined ? !!req.body.isRequired : (existing ? existing.required : false)));
+    const resolvedCategory = (category && category.trim() && category !== 'General')
+        ? category.trim()
+        : (existing?.category && existing.category !== 'General' ? existing.category : classifyColumn(cleanKey, cleanLabel, dType));
     const updatedRecord = {
-        ...existing,
-        key: key ? key.trim().toLowerCase().replace(/[\s-]+/g, '_') : existing.key,
-        label: label ? label.trim() : existing.label,
-        description: description !== undefined ? description : existing.description,
-        dataType: dataType || existing.dataType,
-        required: required !== undefined ? !!required : existing.required,
-        isStandard: isStandard !== undefined ? !!isStandard : existing.isStandard,
-        exampleValue: exampleValue !== undefined ? exampleValue : existing.exampleValue,
-        category: category !== undefined ? category : existing.category,
-        notes: notes !== undefined ? notes : existing.notes,
-        user_id: user_id || existing.user_id,
+        id: existing ? existing.id : (id.startsWith('gsd-') ? id : `gsd-${cleanKey}`),
+        key: cleanKey,
+        label: cleanLabel,
+        description: description !== undefined ? description : (existing ? existing.description : ''),
+        dataType: dType,
+        required: isReq,
+        isStandard: isStandard !== undefined ? !!isStandard : (existing ? existing.isStandard : false),
+        exampleValue: exampleValue !== undefined ? String(exampleValue) : (existing ? existing.exampleValue : ''),
+        category: resolvedCategory,
+        notes: notes !== undefined ? notes : (existing ? existing.notes : 'Imported via Schema'),
+        user_id: user_id || existing?.user_id || 'system',
+        created_at: existing?.created_at || now,
         updated_at: now
     };
-    const memIdx = store.globalStandardDirectory.findIndex(r => r.id === id || r.key === id);
+    const memIdx = store.globalStandardDirectory.findIndex(r => r.id === id || r.key === id || r.key === cleanKey);
     if (memIdx !== -1) {
         store.globalStandardDirectory[memIdx] = updatedRecord;
     }
@@ -754,16 +864,20 @@ transactionSettingsRouter.put('/directory/:id', async (req, res) => {
     let savedRecord = updatedRecord;
     if (isPostgresConnected) {
         try {
-            savedRecord = await postgresRepo.saveGlobalStandardDirectoryField(updatedRecord);
+            const { schemaMigrationService } = await import('../services/schemaMigrationService.js');
+            savedRecord = await schemaMigrationService.updateDirectoryField(id, updatedRecord);
         }
         catch (e) {
-            console.warn('[Directory] Could not update PostgreSQL directory field:', e.message);
-            return res.status(500).json({ error: `Failed to update field in database: ${e.message}` });
+            console.warn('[Directory] Transactional update schema migration failed:', e.message);
+            return res.status(400).json({
+                error: `Schema update failed and was rolled back: ${e.message}`,
+                details: e.message
+            });
         }
     }
     if (isMongoConnected) {
         try {
-            await GlobalStandardDirectoryModel.findOneAndUpdate({ $or: [{ id }, { key: id }] }, { ...updatedRecord }, { new: true });
+            await GlobalStandardDirectoryModel.findOneAndUpdate({ $or: [{ id }, { key: id }, { key: cleanKey }] }, { ...updatedRecord }, { new: true });
         }
         catch (e) {
             console.warn('Could not update GlobalStandardDirectoryModel:', e.message);
@@ -783,7 +897,8 @@ transactionSettingsRouter.delete('/directory/:id', async (req, res) => {
     }
     if (isPostgresConnected) {
         try {
-            await postgresRepo.deleteGlobalStandardDirectoryField(id);
+            const { schemaMigrationService } = await import('../services/schemaMigrationService.js');
+            await schemaMigrationService.deleteDirectoryField(id);
         }
         catch (e) {
             console.warn('[Directory] Could not delete from PostgreSQL directory:', e.message);

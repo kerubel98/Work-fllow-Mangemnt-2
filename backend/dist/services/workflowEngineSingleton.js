@@ -37,6 +37,23 @@ class WorkflowEngineSingleton extends EventEmitter {
         return cached;
     }
     /**
+     * Invalidates or evicts cached results for specific keys or an entire workflow.
+     */
+    evictCache(workflowId, txKeys) {
+        if (txKeys && txKeys.length > 0) {
+            for (const k of txKeys) {
+                this.resultCache.delete(this.getCacheKey(workflowId, k));
+            }
+        }
+        else {
+            for (const [key] of this.resultCache) {
+                if (key.startsWith(`${workflowId}:`)) {
+                    this.resultCache.delete(key);
+                }
+            }
+        }
+    }
+    /**
      * Stores a transaction validation result in the cache.
      */
     cacheResult(workflowId, txKey, verdict, status, audit) {
@@ -79,7 +96,16 @@ class WorkflowEngineSingleton extends EventEmitter {
         const inFlight = [];
         const toExecute = [];
         for (const rec of records) {
-            const txKey = String(rec[keyField] || rec.transaction_id || rec.id || '');
+            const txKey = String((keyField && rec[keyField]) ||
+                rec.transaction_id ||
+                rec.transactionId ||
+                rec.retrieval_ref_num ||
+                rec.retrievalRefNum ||
+                rec.refnum ||
+                rec.rrn ||
+                rec.id ||
+                rec.card_number ||
+                '');
             if (!txKey) {
                 toExecute.push(rec);
                 continue;

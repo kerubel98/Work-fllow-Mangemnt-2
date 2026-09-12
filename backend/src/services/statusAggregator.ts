@@ -38,15 +38,16 @@ export function aggregateParentIssueStatus(
 
   for (const t of transactions) {
     const status = String(t.investigationStatus || '').toUpperCase();
-    if (status === 'RECONCILED') {
+    if (status === 'VERIFIED_MATCH' || status === 'RECONCILED') {
       reconciledCount++;
     } else if (status === 'CLOSED') {
       closedCount++;
-    } else if (status === 'FLAGGED') {
+    } else if (status === 'FLAGGED_DISCREPANCY' || status === 'FLAGGED') {
       flaggedCount++;
-    } else if (status === 'INVESTIGATING') {
+    } else if (status === 'IN_PROGRESS' || status === 'INVESTIGATING') {
       investigatingCount++;
     } else {
+      // UNINVESTIGATED, ERROR, or any other status
       pendingCount++;
     }
   }

@@ -804,6 +804,17 @@ transactionSettingsRouter.post('/directory/auto-classify', async (_req: Request,
   }
 });
 
+// GET /api/transactions/directory/audit-logs - Schema migration version control and rollback audit log
+transactionSettingsRouter.get('/directory/audit-logs', async (_req: Request, res: Response) => {
+  try {
+    const { schemaMigrationService } = await import('../services/schemaMigrationService.js');
+    const logs = await schemaMigrationService.getAuditLogs();
+    return res.json(logs);
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 // GET /api/transactions/directory - Fetch all Global Standard Directory records
 transactionSettingsRouter.get('/directory', async (_req: Request, res: Response) => {
   if (isPostgresConnected) {
@@ -886,10 +897,14 @@ transactionSettingsRouter.post('/directory', async (req: Request, res: Response)
   let savedRecord = record;
   if (isPostgresConnected) {
     try {
-      savedRecord = await postgresRepo.saveGlobalStandardDirectoryField(record);
+      const { schemaMigrationService } = await import('../services/schemaMigrationService.js');
+      savedRecord = await schemaMigrationService.addDirectoryField(record);
     } catch (e: any) {
-      console.warn('[Directory] Could not insert to PostgreSQL:', e.message);
-      return res.status(500).json({ error: `Failed to persist field to database: ${e.message}` });
+      console.warn('[Directory] Transactional schema migration failed:', e.message);
+      return res.status(400).json({ 
+        error: `Schema migration failed and was rolled back: ${e.message}`,
+        details: e.message
+      });
     }
   }
 
@@ -984,10 +999,14 @@ transactionSettingsRouter.put('/directory/:id', async (req: Request, res: Respon
   let savedRecord = updatedRecord;
   if (isPostgresConnected) {
     try {
-      savedRecord = await postgresRepo.saveGlobalStandardDirectoryField(updatedRecord);
+      const { schemaMigrationService } = await import('../services/schemaMigrationService.js');
+      savedRecord = await schemaMigrationService.updateDirectoryField(id, updatedRecord);
     } catch (e: any) {
-      console.warn('[Directory] Could not update PostgreSQL directory field:', e.message);
-      return res.status(500).json({ error: `Failed to update field in database: ${e.message}` });
+      console.warn('[Directory] Transactional update schema migration failed:', e.message);
+      return res.status(400).json({ 
+        error: `Schema update failed and was rolled back: ${e.message}`,
+        details: e.message
+      });
     }
   }
 
@@ -1020,7 +1039,8 @@ transactionSettingsRouter.delete('/directory/:id', async (req: Request, res: Res
 
   if (isPostgresConnected) {
     try {
-      await postgresRepo.deleteGlobalStandardDirectoryField(id);
+      const { schemaMigrationService } = await import('../services/schemaMigrationService.js');
+      await schemaMigrationService.deleteDirectoryField(id);
     } catch (e: any) {
       console.warn('[Directory] Could not delete from PostgreSQL directory:', e.message);
       return res.status(500).json({ error: `Failed to delete field from database: ${e.message}` });

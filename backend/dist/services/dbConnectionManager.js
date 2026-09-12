@@ -72,21 +72,22 @@ export async function testExternalDbConnection(db) {
     const config = resolveDbConfig(db);
     try {
         if (db.type === 'MySQL') {
-            const connection = await mysql.createConnection({
-                host: config.host,
-                port: config.port,
-                user: config.user,
-                password: config.password,
-                database: config.database || undefined,
-                connectTimeout: 4000
-            });
+            const pool = getExternalMysqlPool(`${db.id}:${config.host}:${config.port}:${config.database}`, config);
+            const conn = await pool.getConnection();
             try {
-                await connection.query('SELECT 1 as ping');
+                await conn.query('SELECT 1 as ping');
                 return { success: true, message: `Connected to MySQL [${db.name}]`, latencyMs: Date.now() - start };
             }
             finally {
-                await connection.end().catch(() => { });
+                conn.release();
             }
+        }
+        if (db.type === 'Oracle') {
+            return {
+                success: false,
+                message: 'Oracle database connectivity requires the native oracledb client library, which is not currently provisioned.',
+                latencyMs: Date.now() - start
+            };
         }
         if (db.type === 'PostgreSQL') {
             const client = new pg.Client({
@@ -129,31 +130,22 @@ export async function testExternalDbConnection(db) {
  */
 export async function discoverTablesForDb(db) {
     const config = resolveDbConfig(db);
+    if (db.type === 'Oracle') {
+        throw new Error('Oracle introspection requires the native oracledb driver, which is currently uninstalled.');
+    }
     if (db.type === 'MySQL') {
-        const connection = await mysql.createConnection({
-            host: config.host,
-            port: config.port,
-            user: config.user,
-            password: config.password,
-            database: config.database || undefined,
-            connectTimeout: 5000
-        });
-        try {
-            const targetDb = config.database;
-            let tables = [];
-            if (targetDb) {
-                const [rows] = await connection.query(`SELECT table_name AS name FROM information_schema.tables WHERE table_schema = ? AND table_type = 'BASE TABLE' ORDER BY table_name`, [targetDb]);
-                tables = rows;
-            }
-            else {
-                const [rows] = await connection.query(`SELECT table_name AS name FROM information_schema.tables WHERE table_schema = DATABASE() AND table_type = 'BASE TABLE' ORDER BY table_name`);
-                tables = rows;
-            }
-            return tables.map((t) => String(t.name || Object.values(t)[0]));
+        const pool = getExternalMysqlPool(`${db.id}:${config.host}:${config.port}:${config.database}`, config);
+        const targetDb = config.database;
+        let tables = [];
+        if (targetDb) {
+            const [rows] = await pool.query(`SELECT table_name AS name FROM information_schema.tables WHERE table_schema = ? AND table_type = 'BASE TABLE' ORDER BY table_name`, [targetDb]);
+            tables = rows;
         }
-        finally {
-            await connection.end().catch(() => { });
+        else {
+            const [rows] = await pool.query(`SELECT table_name AS name FROM information_schema.tables WHERE table_schema = DATABASE() AND table_type = 'BASE TABLE' ORDER BY table_name`);
+            tables = rows;
         }
+        return tables.map((t) => String(t.name || Object.values(t)[0]));
     }
     if (db.type === 'PostgreSQL') {
         const client = new pg.Client({
@@ -191,31 +183,22 @@ export async function discoverTablesForDb(db) {
  */
 export async function getTableColumnsForDb(db, tableName) {
     const config = resolveDbConfig(db);
+    if (db.type === 'Oracle') {
+        throw new Error('Oracle introspection requires the native oracledb driver, which is currently uninstalled.');
+    }
     if (db.type === 'MySQL') {
-        const connection = await mysql.createConnection({
-            host: config.host,
-            port: config.port,
-            user: config.user,
-            password: config.password,
-            database: config.database || undefined,
-            connectTimeout: 5000
-        });
-        try {
-            const targetDb = config.database;
-            const [rows] = await connection.query(`SELECT column_name AS name, data_type AS type, is_nullable AS nullable, column_key AS col_key
-         FROM information_schema.columns
-         WHERE table_schema = ${targetDb ? '?' : 'DATABASE()'} AND table_name = ?
-         ORDER BY ordinal_position`, targetDb ? [targetDb, tableName] : [tableName]);
-            return rows.map((r) => ({
-                name: r.name,
-                type: String(r.type).toUpperCase(),
-                nullable: r.nullable === 'YES',
-                isPrimary: r.col_key === 'PRI'
-            }));
-        }
-        finally {
-            await connection.end().catch(() => { });
-        }
+        const pool = getExternalMysqlPool(`${db.id}:${config.host}:${config.port}:${config.database}`, config);
+        const targetDb = config.database;
+        const [rows] = await pool.query(`SELECT column_name AS name, data_type AS type, is_nullable AS nullable, column_key AS col_key
+       FROM information_schema.columns
+       WHERE table_schema = ${targetDb ? '?' : 'DATABASE()'} AND table_name = ?
+       ORDER BY ordinal_position`, targetDb ? [targetDb, tableName] : [tableName]);
+        return rows.map((r) => ({
+            name: r.name,
+            type: String(r.type).toUpperCase(),
+            nullable: r.nullable === 'YES',
+            isPrimary: r.col_key === 'PRI'
+        }));
     }
     if (db.type === 'PostgreSQL') {
         const client = new pg.Client({

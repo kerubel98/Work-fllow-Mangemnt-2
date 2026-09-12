@@ -223,6 +223,11 @@ export const repo = {
         }
         return Object.entries(counts).map(([batchId, count]) => ({ batchId, count }));
     },
+    async updateTaskDatasetValidationStatus(taskId, workflowId, workflowName, evaluatedRecords) {
+        if (isPostgresConnected) {
+            return await postgresRepo.updateTaskDatasetValidationStatus(taskId, workflowId, workflowName, evaluatedRecords);
+        }
+    },
     // ================= DATABASES =================
     async getDatabases() {
         if (isPostgresConnected) {
@@ -831,31 +836,20 @@ export const repo = {
     },
     // ================= VALIDATION WORKFLOWS & STAGES =================
     async getWorkflows() {
-        if (isMongoConnected) {
-            return await DatabaseValidationWorkflowModel.find().sort({ createdAt: -1 }).lean();
-        }
-        return store.workflows;
+        return await postgresRepo.getValidationWorkflows();
     },
     async getWorkflowById(id) {
-        if (isMongoConnected) {
-            return await DatabaseValidationWorkflowModel.findOne({ id }).lean();
-        }
-        return store.workflows.find(w => w.id === id) || null;
+        return await postgresRepo.getValidationWorkflowById(id);
     },
     async createWorkflow(wf) {
-        if (isMongoConnected) {
-            await DatabaseValidationWorkflowModel.create(wf);
-        }
-        const idx = store.workflows.findIndex(w => w.id === wf.id);
-        if (idx !== -1) {
-            store.workflows[idx] = wf;
-        }
-        else {
-            store.workflows.push(wf);
-        }
-        return wf;
+        return await postgresRepo.createValidationWorkflow(wf);
     },
     async updateWorkflow(id, updates) {
+        if (isPostgresConnected) {
+            const updated = await postgresRepo.updateValidationWorkflow(id, updates);
+            if (updated)
+                return updated;
+        }
         if (isMongoConnected) {
             const updated = await DatabaseValidationWorkflowModel.findOneAndUpdate({ id }, { $set: updates }, { new: true }).lean();
             if (updated) {
@@ -873,6 +867,11 @@ export const repo = {
         return null;
     },
     async deleteWorkflow(id) {
+        if (isPostgresConnected) {
+            const deleted = await postgresRepo.deleteWorkflow(id);
+            if (deleted)
+                return true;
+        }
         if (isMongoConnected) {
             await DatabaseValidationWorkflowModel.deleteOne({ id });
         }
@@ -927,6 +926,11 @@ export const repo = {
         return null;
     },
     async deleteQueryExtraction(id) {
+        if (isPostgresConnected) {
+            const deleted = await postgresRepo.deleteQueryExtraction(id);
+            if (deleted)
+                return true;
+        }
         if (isMongoConnected) {
             await QueryExtractionModel.deleteOne({ id });
         }
@@ -1182,5 +1186,95 @@ export const repo = {
             return true;
         }
         return false;
+    },
+    // ================= GLOBAL STANDARD DIRECTORY =================
+    async getGlobalStandardDirectory() {
+        return await postgresRepo.getGlobalStandardDirectory();
+    },
+    async getGlobalStandardDirectoryField(idOrKey) {
+        return await postgresRepo.getGlobalStandardDirectoryField(idOrKey);
+    },
+    async saveGlobalStandardDirectoryField(record) {
+        return await postgresRepo.saveGlobalStandardDirectoryField(record);
+    },
+    async deleteGlobalStandardDirectoryField(idOrKey) {
+        return await postgresRepo.deleteGlobalStandardDirectoryField(idOrKey);
+    },
+    // ================= TASK WORKFLOW EXECUTIONS (LOOKUP TABLE) =================
+    async getTaskWorkflowExecution(taskId, workflowId) {
+        return await postgresRepo.getTaskWorkflowExecution(taskId, workflowId);
+    },
+    async recordTaskWorkflowExecution(exec) {
+        return await postgresRepo.recordTaskWorkflowExecution(exec);
+    },
+    async getTaskWorkflowExecutionsByTaskId(taskId) {
+        return await postgresRepo.getTaskWorkflowExecutionsByTaskId(taskId);
+    },
+    async clearTaskWorkflowExecutions(taskId) {
+        return await postgresRepo.clearTaskWorkflowExecutions(taskId);
+    },
+    async clearAllValidationExecutions() {
+        return await postgresRepo.clearAllValidationExecutions();
+    },
+    // ================= CROSS-TASK DUPLICATES =================
+    async runCrossTaskDuplicateScan() {
+        return await postgresRepo.runCrossTaskDuplicateScan();
+    },
+    async moveTransactionToTask(transactionKey, targetTaskId) {
+        return await postgresRepo.moveTransactionToTask(transactionKey, targetTaskId);
+    },
+    async removeTransactionFromTask(transactionKey, taskId) {
+        return await postgresRepo.removeTransactionFromTask(transactionKey, taskId);
+    },
+    // ================= DATABASE COLUMN CONFIGURATIONS =================
+    async getColumnConfigurations(dbId, tableName) {
+        if (isPostgresConnected) {
+            return await postgresRepo.getColumnConfigurations(dbId, tableName);
+        }
+        let configs = store.columnConfigurations;
+        if (dbId) {
+            configs = configs.filter(c => c.dbId === dbId);
+        }
+        if (tableName) {
+            configs = configs.filter(c => c.tableName.toLowerCase() === tableName.toLowerCase());
+        }
+        return configs;
+    },
+    async getColumnConfigurationById(id) {
+        if (isPostgresConnected) {
+            return await postgresRepo.getColumnConfigurationById(id);
+        }
+        return store.columnConfigurations.find(c => c.id === id) || null;
+    },
+    async createColumnConfiguration(config) {
+        if (isPostgresConnected) {
+            return await postgresRepo.createColumnConfiguration(config);
+        }
+        store.columnConfigurations = store.columnConfigurations.filter(c => c.id !== config.id);
+        store.columnConfigurations.push(config);
+        return config;
+    },
+    async updateColumnConfiguration(id, updates) {
+        if (isPostgresConnected) {
+            return await postgresRepo.updateColumnConfiguration(id, updates);
+        }
+        const idx = store.columnConfigurations.findIndex(c => c.id === id);
+        if (idx === -1)
+            return null;
+        store.columnConfigurations[idx] = {
+            ...store.columnConfigurations[idx],
+            ...updates,
+            id,
+            updatedAt: new Date().toISOString()
+        };
+        return store.columnConfigurations[idx];
+    },
+    async deleteColumnConfiguration(id) {
+        if (isPostgresConnected) {
+            return await postgresRepo.deleteColumnConfiguration(id);
+        }
+        const initialLen = store.columnConfigurations.length;
+        store.columnConfigurations = store.columnConfigurations.filter(c => c.id !== id);
+        return store.columnConfigurations.length < initialLen;
     }
 };

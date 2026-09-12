@@ -668,6 +668,7 @@ export interface ValidationCheckStep {
   // Parameter Management
   requiredParams?: string[];
   optionalParams?: string[];
+  searchParameters?: ValidationBoxSearchParam[];
   
   // Advanced Logic & Workflow Orchestration
   dependencyCondition: 'ALWAYS' | 'IF_PREV_SUCCESS' | 'IF_PREV_FAILURE' | 'IF_PREV_DATASET_NON_EMPTY';
@@ -730,6 +731,16 @@ export interface FlowchartConnection {
   label?: string;
 }
 
+export interface WorkflowMessageAggregationRule {
+  id: string;
+  name: string;
+  type: 'PASS' | 'FAIL';
+  message: string;
+  validationStepIds: string[];
+  operator?: 'ALL' | 'ANY';
+  severity?: 'CRITICAL' | 'WARNING' | 'RECONCILED';
+}
+
 export interface DatabaseValidationWorkflow {
   id: string;
   name: string;
@@ -743,6 +754,7 @@ export interface DatabaseValidationWorkflow {
   connections?: FlowchartConnection[];
   globalSuccessMessage?: string;
   globalFailureMessage?: string;
+  messageAggregations?: WorkflowMessageAggregationRule[];
   createdBy?: string;
   createdAt?: string;
   updatedAt?: string;
@@ -962,6 +974,8 @@ export interface CentralTransactionRecord {
   status: 'INGESTED' | 'BATCHED' | 'IN_PROGRESS' | 'COMPLETED' | 'FLAGGED' | 'DUPLICATE';
   isDuplicate: boolean;
   duplicateFromTaskId?: string;
+  duplicateCount?: number;
+  duplicateStatus?: string;
   workflowIds: string[];
   canonicalData: Record<string, any>;
   rawData?: Record<string, any>;
@@ -1006,3 +1020,127 @@ export interface ValidationBox {
   createdAt?: string;
   updatedAt?: string;
 }
+
+export interface TaskWorkflowExecution {
+  id?: number;
+  taskId: string;
+  workflowId: string;
+  workflowName?: string;
+  status: 'RUNNING' | 'COMPLETED' | 'FAILED' | 'PAUSED';
+  totalRecords: number;
+  passedCount: number;
+  failedCount: number;
+  durationMs: number;
+  executionSummary?: any;
+  executedAt?: string;
+  executedBy?: string;
+}
+
+// =============================================================================
+// DATABASE COLUMN CONFIGURATIONS & RULES
+// =============================================================================
+
+export type DatabaseColumnRuleType =
+  | 'DUPLICATE_CHECK'
+  | 'GROUPING_CHECK'
+  | 'UNIQUE_CONSTRAINT'
+  | 'COMPLETENESS_CHECK'
+  | 'VALUE_RANGE_CHECK'
+  | 'PATTERN_CHECK'
+  | 'MULTI_ROW_SEMANTIC_CHECK'
+  | 'TYPE_RELATION_CHECK'
+  | 'VALUE_LABEL_CHECK'
+  | 'CUSTOM_LOGIC';
+
+export interface ColumnValueLabelMapping {
+  value: string; // Constant value in the column
+  label: string; // Meaning/label specified by the user for this constant value
+  description?: string; // Additional context or business explanation
+  category?: 'VALID' | 'WARNING' | 'ERROR' | 'INFO'; // Classification of this value
+  color?: string; // Optional badge color
+}
+
+export interface TypeColumnCondition {
+  columnName: string;
+  operator: '=' | '!=' | 'IN' | 'NOT_IN' | 'LIKE' | 'STARTS_WITH';
+  value: string;
+}
+
+export interface TransactionTypeGroupConfig {
+  id: string;
+  groupName: string; // e.g. "Card Purchase", "ATM Cash Withdrawal", "Reversal", "Fee"
+  description?: string;
+  conditions: TypeColumnCondition[]; // Single or multiple column conditions to classify rows into this type
+  expectedLegCount?: { operator: '==' | '>=' | '<=' | '!=' | '>'; value: number };
+  roles?: SemanticRowRoleConfig[]; // Leg roles specific to this transaction type
+  legRelationships?: SemanticCrossRowRule[]; // Leg relationships specific to this transaction type
+  aggregationRules?: RuleAggregation[]; // Grouping aggregations specific to this transaction type
+}
+
+export interface RuleColumnPriority {
+  columnName: string;
+  priority: number; // 1 = Primary key/criterion, 2 = Secondary, etc.
+  role?: 'MATCH_KEY' | 'DISCRIMINATOR' | 'AGGREGATE_TARGET' | 'TIE_BREAKER' | string;
+  matchMode?: 'EXACT' | 'CASE_INSENSITIVE' | 'TRIMMED';
+  transform?: 'NONE' | 'LOWERCASE' | 'UPPERCASE' | 'DIGITS_ONLY';
+}
+
+export interface RuleAggregation {
+  function: 'COUNT' | 'SUM' | 'AVG' | 'MIN' | 'MAX';
+  column?: string;
+  operator: '>' | '>=' | '=' | '!=' | '<' | '<=';
+  value: any;
+}
+
+export interface SemanticRowRoleConfig {
+  roleName: string; // e.g. "Original", "Debit", "Credit", "Reversal", "Decline", "Fee"
+  matchValues: string[]; // e.g. ["200", "PURCHASE"] or ["D"]
+  matchMode?: 'EXACT' | 'CASE_INSENSITIVE' | 'IN_LIST';
+  expectedCount?: { operator: '==' | '>=' | '<=' | '>' | '<'; value: number };
+  color?: string;
+}
+
+export interface SemanticCrossRowRule {
+  id?: string;
+  ruleType: 'ROLE_EXISTENCE' | 'VALUE_MATCH' | 'NET_BALANCE' | 'MUTUAL_EXCLUSION';
+  primaryRole: string; // e.g. "Debit"
+  targetRole?: string; // e.g. "Credit"
+  valueColumn?: string; // e.g. "amount"
+  targetValueColumn?: string; // e.g. "amount"
+  tolerance?: number;
+  conditionDescription?: string;
+  description?: string;
+}
+
+export interface DatabaseColumnConfiguration {
+  id: string;
+  name: string;
+  dbId: string;
+  dbName?: string;
+  tableName: string;
+  ruleType: DatabaseColumnRuleType;
+  description?: string;
+  columns: RuleColumnPriority[];
+  groupByColumns?: string[];
+  aggregationRules?: RuleAggregation[];
+  // Semantic multi-row transaction interpretation & leg relations
+  primaryKeyColumn?: string; // The primary correlation column shared across all rows/legs of the transaction
+  roleColumn?: string; // The discriminator column providing row meaning/business role
+  semanticRoles?: SemanticRowRoleConfig[]; // Definitions of roles and their matching values
+  crossRowRules?: SemanticCrossRowRule[]; // Rules across interpreted roles
+  // Type Group classification based on single or multiple columns
+  typeGroups?: TransactionTypeGroupConfig[]; // Transaction Type Groups (multi-column classified)
+  typeGroupColumns?: string[]; // Columns used to identify type groups
+  // Value constant labeling and interpretation
+  valueLabels?: ColumnValueLabelMapping[]; // User labels and interpretation when column value equals a constant
+  unmappedValueAction?: 'FLAG' | 'ALLOW' | 'IGNORE'; // How to handle values without a defined label
+  violationAction: 'FLAG' | 'STOP' | 'CONTINUE' | 'REPORT';
+  severity: 'CRITICAL' | 'WARNING' | 'INFO';
+  violationMessage?: string;
+  isActive: boolean;
+  createdBy?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+

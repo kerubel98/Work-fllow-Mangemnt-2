@@ -143,6 +143,17 @@ export class GlobalMappingService {
     return freshConfig;
   }
 
+  public updateStandardFields(fields: GlobalTransactionSchemaField[]): void {
+    if (Array.isArray(fields) && fields.length > 0) {
+      this.config.standardFields = fields;
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(this.config));
+      } catch (err) {
+        // ignore storage error
+      }
+    }
+  }
+
   public getStandardFields(): GlobalTransactionSchemaField[] {
     return this.config.standardFields || [];
   }
@@ -971,31 +982,104 @@ export class GlobalMappingService {
    * Translates a raw uploaded file row using a chosen column mapping into canonical Global Standard Schema fields.
    * Only includes fields that have actual mapped values to optimize memory and display.
    */
+  public cleanFieldValue(val: any, targetKey: string, dataType: string = 'string'): any {
+    if (val === null || val === undefined || val === '') return null;
+    const sKey = targetKey.toLowerCase();
+
+    // PAN / Card number normalization
+    if (sKey === 'hpan' || sKey === 'pan' || sKey.includes('card')) {
+      const cleanP = String(val).replace(/[\s\-\.]/g, '').trim();
+      return cleanP.length >= 10 ? cleanP : String(val).trim();
+    }
+
+    // Amount / Numeric transformation
+    if (dataType === 'number' || dataType === 'integer' || sKey.includes('amt') || sKey.includes('amount') || sKey === 'reqamt' || sKey === 'conamt') {
+      if (typeof val === 'number') return isNaN(val) || !isFinite(val) ? null : val;
+      let s = String(val).trim();
+      if (!s || s.toLowerCase() === 'null' || s.toLowerCase() === 'undefined') return null;
+      const isParenNeg = /^\s*\(\s*([0-9.,]+)\s*\)\s*$/.test(s);
+      const isTrailNeg = /^\s*([0-9.,]+)\s*-\s*$/.test(s);
+      s = s.replace(/[\$\€\£\¥\₹\s]/g, '');
+      if (isParenNeg) s = '-' + s.replace(/[\(\)]/g, '');
+      else if (isTrailNeg) s = '-' + s.replace(/-$/, '');
+      s = s.replace(/,/g, '');
+      const parsed = parseFloat(s);
+      if (!isNaN(parsed) && isFinite(parsed)) {
+        return (dataType === 'integer' || sKey === 'prcode') ? Math.round(parsed) : parsed;
+      }
+      return null;
+    }
+
+    // Date / Timestamp transformation
+    if (dataType === 'date' || dataType === 'timestamp' || sKey.includes('date') || sKey.includes('time') || sKey === 'ttime') {
+      if (val instanceof Date && !isNaN(val.getTime())) return val.toISOString();
+      if (typeof val === 'number') {
+        const ts = val < 10000000000 ? val * 1000 : val;
+        const d = new Date(ts);
+        return !isNaN(d.getTime()) ? d.toISOString() : null;
+      }
+      const str = String(val).trim();
+      if (!str || str.toLowerCase() === 'null' || str.toLowerCase() === 'undefined') return null;
+      if (/^\d{8}$/.test(str)) {
+        return `${str.substring(0, 4)}-${str.substring(4, 6)}-${str.substring(6, 8)}`;
+      }
+      if (/^\d{1,2}:\d{2}(:\d{2})?$/.test(str)) return str;
+      const d = new Date(str);
+      if (!isNaN(d.getTime())) {
+        return !str.includes(':') ? d.toISOString().split('T')[0] : d.toISOString();
+      }
+      return str;
+    }
+
+    // Boolean transformation
+    if (dataType === 'boolean' || dataType === 'bool') {
+      if (typeof val === 'boolean') return val;
+      const s = String(val).trim().toLowerCase();
+      if (['true', '1', 't', 'y', 'yes', 'on'].includes(s)) return true;
+      if (['false', '0', 'f', 'n', 'no', 'off'].includes(s)) return false;
+      return null;
+    }
+
+    return typeof val === 'string' ? val.trim() : val;
+  }
+
   public transformRowToGlobalSchema(
     rawRecord: Record<string, any>,
-    fileMapping: Record<string, string> = {}
+    fileMapping: Record<string, string> = {},
+    candidateFields?: { key: string; dataType?: string }[]
   ): Record<string, any> {
     const globalRecord: Record<string, any> = {};
+    const standardFields = candidateFields && candidateFields.length > 0
+      ? candidateFields
+      : this.getStandardFields();
+    const typeMap = new Map<string, string>();
+    standardFields.forEach(f => typeMap.set(f.key.toLowerCase(), (f.dataType || 'string').toLowerCase()));
 
-    // Apply explicit mappings (raw header -> global key)
+    // Apply explicit mappings (raw header -> global key) with Data Type Transformation
     Object.entries(fileMapping).forEach(([rawHeader, targetGlobalKey]) => {
       if (targetGlobalKey && targetGlobalKey !== 'unmapped' && targetGlobalKey.trim()) {
         const val = rawRecord[rawHeader];
         if (val !== undefined && val !== null && val !== '') {
-          globalRecord[targetGlobalKey] = val;
+          const dataType = typeMap.get(targetGlobalKey.toLowerCase()) || 'string';
+          const transformed = this.cleanFieldValue(val, targetGlobalKey, dataType);
+          if (transformed !== null && transformed !== undefined) {
+            globalRecord[targetGlobalKey] = transformed;
+          }
         }
       }
     });
 
     // If explicit mapping did not supply any mapped values, check direct key matching
     if (Object.keys(globalRecord).length === 0) {
-      const standardFields = this.getStandardFields();
       standardFields.forEach(f => {
         const directKey = Object.keys(rawRecord).find(
           k => k.toLowerCase().replace(/[-_\s]/g, '') === f.key.toLowerCase().replace(/[-_\s]/g, '')
         );
         if (directKey && rawRecord[directKey] !== undefined && rawRecord[directKey] !== null && rawRecord[directKey] !== '') {
-          globalRecord[f.key] = rawRecord[directKey];
+          const transformed = this.cleanFieldValue(rawRecord[directKey], f.key, f.dataType);
+          if (transformed !== null && transformed !== undefined) {
+            globalRecord[f.key] = transformed;
+          }
         }
       });
     }
@@ -1036,46 +1120,66 @@ export class GlobalMappingService {
         return;
       }
 
-      // 2. High-priority Financial & Settlement synonym rules
-      // Transaction / UTRNNO
-      if (/^(fe_)?utrnno$/i.test(slugH) || /^(txn|trans)(id|no|num|ref)?$/i.test(slugH)) {
-        const target = fields.find(f => /utrnno|transaction_id|trans_id|ref/i.test(f.key));
+      // 2. Domain-aware synonym matching
+      // Reference Number / Retrieval Ref Num / Transaction ID (prioritize refnum)
+      if (/^(refnum|reference_no|reference_num|referenceno|referencenum|ref_no|refno|ref_num|ref|rrn|retrieval_ref_num|retrieval_ref_no|utrnno|fe_utrnno|trans_id|tran_id|transaction_id|txnid|tx_id)$/i.test(slugH)
+        || slugH.includes('refnum') || slugH.includes('reference') || slugH.includes('retrieval') || slugH.includes('utrnno')) {
+        const target = fields.find(f => f.key.toLowerCase() === 'refnum')
+          || fields.find(f => f.key.toLowerCase() === 'retrieval_ref_num')
+          || fields.find(f => f.key.toLowerCase() === 'fe_utrnno')
+          || fields.find(f => f.key.toLowerCase() === 'transaction_id')
+          || fields.find(f => /refnum|transaction_id|trans_id|utrnno|retrieval_ref_num/i.test(f.key));
         if (target) { map[rawH] = target.key; return; }
       }
 
-      // Amount
-      if (/^(amnt\d?|amount|amt|val|trans?amt)$/i.test(slugH) || slugH.includes('amount') || slugH.includes('amnt')) {
-        const target = fields.find(f => /amnt1|amount|amt/i.test(f.key));
+      // Amount / Currency Amount (prioritize reqamt)
+      if (/^(reqamt|request_amt|requested_amount|req_amount|tran_amt|trans_amt|transaction_amount|txn_amount|amount|amt|val|value|interchangeamt|conamt)$/i.test(slugH)
+        || slugH.includes('amount') || slugH.includes('reqamt') || slugH.includes('amt')) {
+        const target = fields.find(f => f.key.toLowerCase() === 'reqamt')
+          || fields.find(f => f.key.toLowerCase() === 'amount')
+          || fields.find(f => /reqamt|amount|amt/i.test(f.key))
+          || fields.find(f => /interchangeamt|conamt/i.test(f.key));
         if (target) { map[rawH] = target.key; return; }
       }
 
-      // Card / PAN
-      if (/^(hpan|pan|card|cardno|cardnum|account|acct\d?)$/i.test(slugH) || slugH.includes('card') || slugH.includes('pan')) {
-        const target = fields.find(f => /hpan|card|pan|acct_num1/i.test(f.key));
+      // Card / PAN / Account (prioritize hpan)
+      if (/^(hpan|pan|card|card_no|card_num|card_number|cardnumber|account|acct|acct_no|acct_num|account_number|primary_account_number)$/i.test(slugH)
+        || slugH.includes('card') || slugH.includes('pan')) {
+        const target = fields.find(f => f.key.toLowerCase() === 'hpan')
+          || fields.find(f => f.key.toLowerCase() === 'pan')
+          || fields.find(f => /hpan|pan|card|acct_num/i.test(f.key));
+        if (target) { map[rawH] = target.key; return; }
+      }
+
+      // Date / Timestamp / Time (prioritize ttime)
+      if (/^(ttime|tran_time|trans_time|txn_time|datetime|timestamp|tr_date|trans_date|txn_date|valuedate|value_date|date|created_at|authtime)$/i.test(slugH)
+        || slugH.includes('date') || slugH.includes('time')) {
+        const target = fields.find(f => f.key.toLowerCase() === 'ttime')
+          || fields.find(f => f.key.toLowerCase() === 'tr_date')
+          || fields.find(f => /ttime|tr_date|value_date|timestamp|created_at/i.test(f.key));
+        if (target) { map[rawH] = target.key; return; }
+      }
+
+      // Terminal / Merchant / Device (prioritize terminal_id)
+      if (/^(terminal_id|term_id|tid|terminal|merchant_id|mid|merchant|pos_id|term)$/i.test(slugH)
+        || slugH.includes('terminal') || slugH.includes('term')) {
+        const target = fields.find(f => f.key.toLowerCase() === 'terminal_id')
+          || fields.find(f => f.key.toLowerCase() === 'terminal')
+          || fields.find(f => /terminal_id|terminal|merchant_id|merchant/i.test(f.key));
+        if (target) { map[rawH] = target.key; return; }
+      }
+
+      // Processing Code (prioritize prcode)
+      if (/^(prcode|proc_code|processing_code|proccode|trans_type|txn_type)$/i.test(slugH)
+        || slugH.includes('prcode') || slugH.includes('proccode') || slugH.includes('proc')) {
+        const target = fields.find(f => f.key.toLowerCase() === 'prcode')
+          || fields.find(f => /prcode|proc_code|trans_type/i.test(f.key));
         if (target) { map[rawH] = target.key; return; }
       }
 
       // Status
       if (/^(status|state|stat|statusstate)$/i.test(slugH) || slugH.includes('status')) {
         const target = fields.find(f => /status|status_state/i.test(f.key));
-        if (target) { map[rawH] = target.key; return; }
-      }
-
-      // Date / Timestamp
-      if (/^(trdate|valuedate|date|time|timestamp|createdat|authtime)$/i.test(slugH) || slugH.includes('date')) {
-        const target = fields.find(f => /tr_date|value_date|created_at|timestamp/i.test(f.key));
-        if (target) { map[rawH] = target.key; return; }
-      }
-
-      // Terminal / Merchant
-      if (/^(terminal|term|terminalid|merchant|mid|pos)$/i.test(slugH) || slugH.includes('terminal')) {
-        const target = fields.find(f => /terminal|merchant/i.test(f.key));
-        if (target) { map[rawH] = target.key; return; }
-      }
-
-      // Response / Reason code
-      if (/^(resp|response|reason|responcecode|responsecode|isoresp)$/i.test(slugH) || slugH.includes('resp')) {
-        const target = fields.find(f => /responce_code|response_code|reason/i.test(f.key));
         if (target) { map[rawH] = target.key; return; }
       }
 
@@ -1091,7 +1195,7 @@ export class GlobalMappingService {
         if (target) { map[rawH] = target.key; return; }
       }
 
-      // 3. Substring containment match
+      // 3. Substring containment match (minimum 3 characters)
       const subMatch = fields.find(f => {
         const slugKey = f.key.toLowerCase().replace(/[-_.\s]/g, '');
         if (slugKey.length < 3) return false;
@@ -1510,8 +1614,13 @@ export class GlobalMappingService {
   /**
    * Pre-flight Gate: Validates that all required columns from the Global Schema are mapped
    */
-  public validateRequiredColumns(fileMapping: Record<string, string>): RequiredColumnValidationResult {
-    const standardFields = this.getStandardFields();
+  public validateRequiredColumns(
+    fileMapping: Record<string, string>,
+    candidateFields?: { key: string; label?: string; required?: boolean }[]
+  ): RequiredColumnValidationResult {
+    const standardFields = candidateFields && candidateFields.length > 0
+      ? candidateFields
+      : this.getStandardFields();
     const requiredFields = standardFields.filter(f => f.required);
 
     const mappedTargetKeys = new Set(

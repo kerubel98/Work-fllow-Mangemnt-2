@@ -36,7 +36,8 @@ import {
   TransactionTemplate, GlobalTransactionSchemaConfig, UploadedTransactionRecord,
   UploadAuditLog, WorkspaceTableRecord, DatabaseValidationWorkflow,
   QueryExtraction, InvestigationTask, InvestigationBatch, InvestigationTransaction,
-  CentralTransactionRecord, ValidationBox, FtpFileStagingConfig
+  CentralTransactionRecord, ValidationBox, FtpFileStagingConfig, GlobalStandardDirectoryRecord, TaskWorkflowExecution,
+  DatabaseColumnConfiguration
 } from '../types.js';
 
 export const repo = {
@@ -241,6 +242,24 @@ export const repo = {
       if (b) counts[b] = (counts[b] || 0) + 1;
     }
     return Object.entries(counts).map(([batchId, count]) => ({ batchId, count }));
+  },
+
+  async updateTaskDatasetValidationStatus(
+    taskId: string,
+    workflowId: string,
+    workflowName: string,
+    evaluatedRecords: Array<{
+      key: string;
+      status: string;
+      details?: any;
+      targetRecord?: any;
+      targetDb?: string;
+      targetTable?: string;
+    }>
+  ): Promise<void> {
+    if (isPostgresConnected) {
+      return await postgresRepo.updateTaskDatasetValidationStatus(taskId, workflowId, workflowName, evaluatedRecords);
+    }
   },
 
   // ================= DATABASES =================
@@ -905,33 +924,22 @@ export const repo = {
 
   // ================= VALIDATION WORKFLOWS & STAGES =================
   async getWorkflows(): Promise<DatabaseValidationWorkflow[]> {
-    if (isMongoConnected) {
-      return await DatabaseValidationWorkflowModel.find().sort({ createdAt: -1 }).lean() as DatabaseValidationWorkflow[];
-    }
-    return store.workflows;
+    return await postgresRepo.getValidationWorkflows();
   },
 
   async getWorkflowById(id: string): Promise<DatabaseValidationWorkflow | null> {
-    if (isMongoConnected) {
-      return await DatabaseValidationWorkflowModel.findOne({ id }).lean() as DatabaseValidationWorkflow | null;
-    }
-    return store.workflows.find(w => w.id === id) || null;
+    return await postgresRepo.getValidationWorkflowById(id);
   },
 
   async createWorkflow(wf: DatabaseValidationWorkflow): Promise<DatabaseValidationWorkflow> {
-    if (isMongoConnected) {
-      await DatabaseValidationWorkflowModel.create(wf);
-    }
-    const idx = store.workflows.findIndex(w => w.id === wf.id);
-    if (idx !== -1) {
-      store.workflows[idx] = wf;
-    } else {
-      store.workflows.push(wf);
-    }
-    return wf;
+    return await postgresRepo.createValidationWorkflow(wf);
   },
 
   async updateWorkflow(id: string, updates: Partial<DatabaseValidationWorkflow>): Promise<DatabaseValidationWorkflow | null> {
+    if (isPostgresConnected) {
+      const updated = await postgresRepo.updateValidationWorkflow(id, updates);
+      if (updated) return updated;
+    }
     if (isMongoConnected) {
       const updated = await DatabaseValidationWorkflowModel.findOneAndUpdate(
         { id },
@@ -953,6 +961,10 @@ export const repo = {
   },
 
   async deleteWorkflow(id: string): Promise<boolean> {
+    if (isPostgresConnected) {
+      const deleted = await postgresRepo.deleteWorkflow(id);
+      if (deleted) return true;
+    }
     if (isMongoConnected) {
       await DatabaseValidationWorkflowModel.deleteOne({ id });
     }
@@ -1014,6 +1026,10 @@ export const repo = {
   },
 
   async deleteQueryExtraction(id: string): Promise<boolean> {
+    if (isPostgresConnected) {
+      const deleted = await postgresRepo.deleteQueryExtraction(id);
+      if (deleted) return true;
+    }
     if (isMongoConnected) {
       await QueryExtractionModel.deleteOne({ id });
     }
@@ -1286,6 +1302,112 @@ export const repo = {
       return true;
     }
     return false;
+  },
+
+  // ================= GLOBAL STANDARD DIRECTORY =================
+  async getGlobalStandardDirectory(): Promise<GlobalStandardDirectoryRecord[]> {
+    return await postgresRepo.getGlobalStandardDirectory();
+  },
+
+  async getGlobalStandardDirectoryField(idOrKey: string): Promise<GlobalStandardDirectoryRecord | null> {
+    return await postgresRepo.getGlobalStandardDirectoryField(idOrKey);
+  },
+
+  async saveGlobalStandardDirectoryField(record: GlobalStandardDirectoryRecord): Promise<GlobalStandardDirectoryRecord> {
+    return await postgresRepo.saveGlobalStandardDirectoryField(record);
+  },
+
+  async deleteGlobalStandardDirectoryField(idOrKey: string): Promise<boolean> {
+    return await postgresRepo.deleteGlobalStandardDirectoryField(idOrKey);
+  },
+
+  // ================= TASK WORKFLOW EXECUTIONS (LOOKUP TABLE) =================
+  async getTaskWorkflowExecution(taskId: string, workflowId: string): Promise<TaskWorkflowExecution | null> {
+    return await postgresRepo.getTaskWorkflowExecution(taskId, workflowId);
+  },
+
+  async recordTaskWorkflowExecution(exec: TaskWorkflowExecution): Promise<TaskWorkflowExecution> {
+    return await postgresRepo.recordTaskWorkflowExecution(exec);
+  },
+
+  async getTaskWorkflowExecutionsByTaskId(taskId: string): Promise<TaskWorkflowExecution[]> {
+    return await postgresRepo.getTaskWorkflowExecutionsByTaskId(taskId);
+  },
+
+  async clearTaskWorkflowExecutions(taskId: string): Promise<number> {
+    return await postgresRepo.clearTaskWorkflowExecutions(taskId);
+  },
+
+  async clearAllValidationExecutions(): Promise<{ executions: number; tasks: number; batches: number; transactions: number }> {
+    return await postgresRepo.clearAllValidationExecutions();
+  },
+
+  // ================= CROSS-TASK DUPLICATES =================
+  async runCrossTaskDuplicateScan(): Promise<number> {
+    return await postgresRepo.runCrossTaskDuplicateScan();
+  },
+
+  async moveTransactionToTask(transactionKey: string, targetTaskId: string): Promise<void> {
+    return await postgresRepo.moveTransactionToTask(transactionKey, targetTaskId);
+  },
+
+  async removeTransactionFromTask(transactionKey: string, taskId: string): Promise<void> {
+    return await postgresRepo.removeTransactionFromTask(transactionKey, taskId);
+  },
+
+  // ================= DATABASE COLUMN CONFIGURATIONS =================
+  async getColumnConfigurations(dbId?: string, tableName?: string): Promise<DatabaseColumnConfiguration[]> {
+    if (isPostgresConnected) {
+      return await postgresRepo.getColumnConfigurations(dbId, tableName);
+    }
+    let configs = store.columnConfigurations;
+    if (dbId) {
+      configs = configs.filter(c => c.dbId === dbId);
+    }
+    if (tableName) {
+      configs = configs.filter(c => c.tableName.toLowerCase() === tableName.toLowerCase());
+    }
+    return configs;
+  },
+
+  async getColumnConfigurationById(id: string): Promise<DatabaseColumnConfiguration | null> {
+    if (isPostgresConnected) {
+      return await postgresRepo.getColumnConfigurationById(id);
+    }
+    return store.columnConfigurations.find(c => c.id === id) || null;
+  },
+
+  async createColumnConfiguration(config: DatabaseColumnConfiguration): Promise<DatabaseColumnConfiguration> {
+    if (isPostgresConnected) {
+      return await postgresRepo.createColumnConfiguration(config);
+    }
+    store.columnConfigurations = store.columnConfigurations.filter(c => c.id !== config.id);
+    store.columnConfigurations.push(config);
+    return config;
+  },
+
+  async updateColumnConfiguration(id: string, updates: Partial<DatabaseColumnConfiguration>): Promise<DatabaseColumnConfiguration | null> {
+    if (isPostgresConnected) {
+      return await postgresRepo.updateColumnConfiguration(id, updates);
+    }
+    const idx = store.columnConfigurations.findIndex(c => c.id === id);
+    if (idx === -1) return null;
+    store.columnConfigurations[idx] = {
+      ...store.columnConfigurations[idx],
+      ...updates,
+      id,
+      updatedAt: new Date().toISOString()
+    };
+    return store.columnConfigurations[idx];
+  },
+
+  async deleteColumnConfiguration(id: string): Promise<boolean> {
+    if (isPostgresConnected) {
+      return await postgresRepo.deleteColumnConfiguration(id);
+    }
+    const initialLen = store.columnConfigurations.length;
+    store.columnConfigurations = store.columnConfigurations.filter(c => c.id !== id);
+    return store.columnConfigurations.length < initialLen;
   }
 };
 

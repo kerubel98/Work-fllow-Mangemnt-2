@@ -22,6 +22,7 @@ import {
   Clock, CreditCard, FileSearch, ShieldAlert, CheckCircle, XCircle, Tag
 } from 'lucide-react';
 import { QuerySandbox } from '../investigation/QuerySandbox';
+import { showSystemAlert } from '../common/MessageModal';
 
 
 export function normalizeWorkflow(wf: any): DatabaseValidationWorkflow {
@@ -89,8 +90,6 @@ export function normalizeWorkflow(wf: any): DatabaseValidationWorkflow {
 }
 
 const DEFAULT_WORKFLOWS: DatabaseValidationWorkflow[] = [];
-
-const STORAGE_KEY = 'operational_validation_workflows_v1';
 
 // 1-Click Operational Rule Blueprints
 interface RuleBlueprint {
@@ -204,20 +203,7 @@ export default function DatabaseValidationSettings({
     return Array.isArray(databases) ? databases : [];
   }, [databases]);
 
-  const [workflows, setWorkflows] = useState<DatabaseValidationWorkflow[]>(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed) && parsed.length > 0) {
-          return parsed.map(normalizeWorkflow);
-        }
-      }
-    } catch {
-      // Fallback
-    }
-    return [];
-  });
+  const [workflows, setWorkflows] = useState<DatabaseValidationWorkflow[]>([]);
 
   const [selectedWorkflowId, setSelectedWorkflowId] = useState<string>(workflows[0]?.id || '');
   const [isEditing, setIsEditing] = useState(false);
@@ -334,21 +320,15 @@ export default function DatabaseValidationSettings({
             setWorkflows(normalized);
             setSelectedWorkflowId(normalized[0].id);
             setEditingWorkflow(normalized[0]);
-            try {
-              localStorage.setItem(STORAGE_KEY, JSON.stringify(normalized));
-            } catch { /* ignore */ }
           } else {
             setWorkflows([]);
             setSelectedWorkflowId('');
             setEditingWorkflow(null);
-            try {
-              localStorage.setItem(STORAGE_KEY, JSON.stringify([]));
-            } catch { /* ignore */ }
           }
         }
       })
       .catch(err => {
-        console.warn('Backend getWorkflows warning, using local store:', err);
+        console.warn('Backend getWorkflows warning:', err);
       });
     return () => { isMounted = false; };
   }, []);
@@ -410,13 +390,8 @@ export default function DatabaseValidationSettings({
 
   const handleSaveWorkflows = async (updatedList: DatabaseValidationWorkflow[]) => {
     setWorkflows(updatedList);
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(updatedList));
-      setSaveSuccessBanner(true);
-      setTimeout(() => setSaveSuccessBanner(false), 3000);
-    } catch (err) {
-      console.warn('Failed to save validation workflows to localStorage:', err);
-    }
+    setSaveSuccessBanner(true);
+    setTimeout(() => setSaveSuccessBanner(false), 3000);
 
     if (editingWorkflow) {
       try {
@@ -449,7 +424,11 @@ export default function DatabaseValidationSettings({
     if (e) e.preventDefault();
     const trimmedName = newWorkflowName.trim();
     if (!trimmedName) {
-      alert('Please enter a name for the workflow.');
+      showSystemAlert({
+        title: 'Validation Warning',
+        message: 'Please enter a name for the workflow.',
+        type: 'warning'
+      });
       return;
     }
 
@@ -529,13 +508,8 @@ export default function DatabaseValidationSettings({
     if (confirm('Are you sure you want to delete this validation workflow?')) {
       const next = workflows.filter(w => w.id !== id);
       setWorkflows(next);
-      try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
-        setSaveSuccessBanner(true);
-        setTimeout(() => setSaveSuccessBanner(false), 2000);
-      } catch (err) {
-        console.warn('Failed to save to localStorage:', err);
-      }
+      setSaveSuccessBanner(true);
+      setTimeout(() => setSaveSuccessBanner(false), 2000);
       if (selectedWorkflowId === id) {
         const nextActive = next[0] || null;
         setSelectedWorkflowId(nextActive?.id || '');
@@ -584,7 +558,11 @@ export default function DatabaseValidationSettings({
 
   const handleRemoveStage = (stageId: string) => {
     if ((editingWorkflow.stages?.length || 0) <= 1) {
-      alert('A workflow must maintain at least one processing stage.');
+      showSystemAlert({
+        title: 'Stage Constraint',
+        message: 'A workflow must maintain at least one processing stage.',
+        type: 'warning'
+      });
       return;
     }
     const nextStages = (editingWorkflow.stages || []).filter(st => st.id !== stageId).map((st, idx) => ({ ...st, order: idx + 1 }));
@@ -609,7 +587,11 @@ export default function DatabaseValidationSettings({
     if (!editingWorkflow) return;
     const trimmedName = newRuleName.trim();
     if (!trimmedName) {
-      alert('Please enter a name for the rule.');
+      showSystemAlert({
+        title: 'Validation Warning',
+        message: 'Please enter a name for the rule.',
+        type: 'warning'
+      });
       return;
     }
 
@@ -789,6 +771,16 @@ export default function DatabaseValidationSettings({
 
   return (
     <div className="space-y-4">
+      {/* Visual DAG Canvas Recommendation Banner */}
+      <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl px-4 py-2.5 flex items-center justify-between text-amber-200 text-xs">
+        <div className="flex items-center gap-2">
+          <AlertTriangle size={15} className="text-amber-400 shrink-0" />
+          <span>
+            <strong>Recommended:</strong> For visual rule composition, please use the interactive <strong>Workflow Studio Flowchart</strong> DAG canvas. This monolithic settings panel is preserved for legacy compatibility.
+          </span>
+        </div>
+      </div>
+
       {/* 1. Header Toolbar */}
       <div className="bg-slate-900 border border-slate-800 rounded-xl px-4 py-3 text-white shadow-xs flex flex-wrap items-center justify-between gap-3">
         <div className="space-y-0.5">
@@ -2050,6 +2042,7 @@ export default function DatabaseValidationSettings({
                                 className="w-full bg-white border border-emerald-300 rounded p-1 text-xs text-emerald-950 font-bold"
                               >
                                 <option value="CONTINUE">CONTINUE (Evaluate Next Rule/Stage)</option>
+                                <option value="STOP">STOP (Halt Pipeline for Record)</option>
                                 <option value="CLOSE">CLOSE (Terminate & Mark Closed)</option>
                               </select>
                             ) : (

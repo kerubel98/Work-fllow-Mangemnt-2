@@ -14,7 +14,9 @@ export interface ValidationPayloadEnvelope {
   workflowId: string;
   records: Record<string, any>[];
   keyField?: string;
+  keyFields?: string[];
   priority?: 'HIGH' | 'NORMAL';
+  forceRerun?: boolean;
   options?: {
     persistMirror?: boolean;
     ttlMinutes?: number;
@@ -84,6 +86,23 @@ class WorkflowEngineSingleton extends EventEmitter {
   }
 
   /**
+   * Invalidates or evicts cached results for specific keys or an entire workflow.
+   */
+  public evictCache(workflowId: string, txKeys?: string[]): void {
+    if (txKeys && txKeys.length > 0) {
+      for (const k of txKeys) {
+        this.resultCache.delete(this.getCacheKey(workflowId, k));
+      }
+    } else {
+      for (const [key] of this.resultCache) {
+        if (key.startsWith(`${workflowId}:`)) {
+          this.resultCache.delete(key);
+        }
+      }
+    }
+  }
+
+  /**
    * Stores a transaction validation result in the cache.
    */
   public cacheResult(workflowId: string, txKey: string, verdict: 'PASS' | 'FAIL' | 'DISCREPANCY' | 'PAUSED_DB_OFFLINE', status: string, audit: any): void {
@@ -138,7 +157,18 @@ class WorkflowEngineSingleton extends EventEmitter {
     const toExecute: Record<string, any>[] = [];
 
     for (const rec of records) {
-      const txKey = String(rec[keyField] || rec.transaction_id || rec.id || '');
+      const txKey = String(
+        (keyField && rec[keyField]) ||
+        rec.transaction_id ||
+        rec.transactionId ||
+        rec.retrieval_ref_num ||
+        rec.retrievalRefNum ||
+        rec.refnum ||
+        rec.rrn ||
+        rec.id ||
+        rec.card_number ||
+        ''
+      );
       if (!txKey) {
         toExecute.push(rec);
         continue;

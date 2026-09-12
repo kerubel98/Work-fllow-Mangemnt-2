@@ -22,7 +22,9 @@ function resolveColExpr(targetCol: string, mirrorColPrefix = 'm', validColumns?:
     if (validColumns.includes(targetCol)) {
       return `${mirrorColPrefix}.${targetCol}`;
     }
-    return `(${mirrorColPrefix}.payload->>'${targetCol}')`;
+    if (validColumns.includes('payload')) {
+      return `(${mirrorColPrefix}.payload->>'${targetCol}')`;
+    }
   }
   return `${mirrorColPrefix}.${targetCol}`;
 }
@@ -217,9 +219,9 @@ export const ruleSqlCompiler = {
         const condition = this.compileStepCondition(rule, 'm', validColumns);
         const failLabel = rule.name ? rule.name.toUpperCase().replace(/[^A-Z0-9_]/g, '_') : 'CRITERIA_FAILED';
 
-        statusWhenBranches.push(`WHEN NOT (${condition}) THEN '${failLabel}'`);
+        statusWhenBranches.push(`WHEN NOT (${condition}) THEN 'FAIL'`);
         actionWhenBranches.push(`WHEN NOT (${condition}) THEN '${rule.onFailAction || 'STOP'}'`);
-        detailFields.push(`'${rule.id || failLabel}', ${condition}`);
+        detailFields.push(`'${rule.id || failLabel}', jsonb_build_object('rule', '${rule.name ? rule.name.replace(/'/g, "''") : failLabel}', 'passed', (${condition}), 'action', '${rule.onFailAction || 'STOP'}')`);
       }
 
       // Default pass fallback

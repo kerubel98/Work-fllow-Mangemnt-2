@@ -6,6 +6,7 @@ import { Router } from 'express';
 import { repo } from '../store/repository.js';
 import { planInvestigation } from '../services/investigationPlanner.js';
 import { aggregateParentIssueStatus } from '../services/statusAggregator.js';
+import { investigationOrchestratorService } from '../services/investigationOrchestratorService.js';
 export const investigationsRouter = Router();
 // POST /api/investigations/plan - Validate and generate execution plan
 investigationsRouter.post('/plan', async (req, res) => {
@@ -157,10 +158,24 @@ investigationsRouter.get('/:id/audit', async (req, res) => {
         return res.status(500).json({ error: err.message });
     }
 });
+// POST /api/investigations/resume-paused - Resumes execution for paused transactions
+investigationsRouter.post('/resume-paused', async (req, res) => {
+    try {
+        const { workflowId, records, keyField } = req.body;
+        if (!workflowId || !records || !Array.isArray(records)) {
+            return res.status(400).json({ error: 'workflowId and records array are required' });
+        }
+        const result = await investigationOrchestratorService.resumePausedTransactions(workflowId, records, keyField || 'retrieval_ref_num');
+        return res.json(result);
+    }
+    catch (err) {
+        return res.status(500).json({ error: err.message || 'Error resuming paused transactions' });
+    }
+});
 // POST /api/investigations/execute-universal - Universal workflow runner for Sandbox, Panel, or API
 investigationsRouter.post('/execute-universal', async (req, res) => {
     try {
-        const { workflowId, records, sourceType, sourceId, keyField, priority, options } = req.body;
+        const { workflowId, records, sourceType, sourceId, keyField, keyFields, priority, options, forceRerun, executedBy } = req.body;
         if (!workflowId) {
             return res.status(400).json({ error: 'workflowId is required' });
         }
@@ -173,14 +188,143 @@ investigationsRouter.post('/execute-universal', async (req, res) => {
             records,
             sourceType: sourceType || 'QUERY_SANDBOX',
             sourceId,
-            keyField: keyField || 'retrieval_ref_num',
+            keyField,
+            keyFields: Array.isArray(keyFields) ? keyFields : undefined,
             priority: priority || 'HIGH',
-            options
+            options,
+            forceRerun: !!forceRerun,
+            executedBy: executedBy || req.user?.name || req.user?.username || 'investigator'
         });
         return res.json(result);
     }
     catch (err) {
         console.error('Error in execute-universal:', err);
         return res.status(500).json({ error: err.message || 'Internal workflow execution error' });
+    }
+});
+// GET /api/investigations/:taskId/central-records - Dedicated Sheet 1 Master Ledger ingress
+investigationsRouter.get('/:taskId/central-records', async (req, res) => {
+    try {
+        const { taskId } = req.params;
+        const records = await repo.getCentralTransactionsByTaskId(taskId);
+        return res.json({
+            taskId,
+            totalCount: records.length,
+            records: records.map(r => ({
+                ...r.canonicalData,
+                _transactionKey: r.transactionKey,
+                _originalTaskId: r.originalTaskId,
+                _currentTaskId: r.currentTaskId,
+                _batchId: r.batchId,
+                _rowNumber: r.rowNumber,
+                _status: r.status,
+                _isDuplicate: !!r.isDuplicate,
+                _duplicateFromTaskId: r.duplicateFromTaskId,
+                _duplicateCount: r.duplicateCount || 1,
+                _duplicateStatus: r.duplicateStatus || 'ORIGINAL',
+                _allTaskIds: r.allTaskIds || [],
+                _createdAt: r.createdAt
+            }))
+        });
+    }
+    catch (err) {
+        console.error('Error fetching central records for task:', err);
+        return res.status(500).json({ error: err.message });
+    }
+});
+// GET /api/investigations/:taskId/workflow-executions - List completed/cached workflows for a task
+investigationsRouter.get('/:taskId/workflow-executions', async (req, res) => {
+    try {
+        const { taskId } = req.params;
+        const executions = await repo.getTaskWorkflowExecutionsByTaskId(taskId);
+        return res.json({ taskId, count: executions.length, executions });
+    }
+    catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+});
+// POST /api/investigations/duplicates/scan - Run stored procedure to detect cross-task collisions
+investigationsRouter.post('/duplicates/scan', async (_req, res) => {
+    try {
+        const flaggedCount = await repo.runCrossTaskDuplicateScan();
+        const { eventService } = await import('../services/events.js');
+        eventService.broadcastEvent('central:duplicates_scanned', { flaggedCount, timestamp: new Date().toISOString() });
+        return res.json({ success: true, flaggedCount, message: `Scanned and flagged ${flaggedCount} cross-task duplicates.` });
+    }
+    catch (err) {
+        console.error('Error running duplicate scan procedure:', err);
+        return res.status(500).json({ error: err.message });
+    }
+});
+// POST /api/investigations/transactions/:key/move-to-task - Reassign ownership to a single task exclusively
+investigationsRouter.post('/transactions/:key/move-to-task', async (req, res) => {
+    try {
+        const { key } = req.params;
+        const { targetTaskId } = req.body;
+        if (!targetTaskId) {
+            return res.status(400).json({ error: 'targetTaskId is required' });
+        }
+        await repo.moveTransactionToTask(key, targetTaskId);
+        const { eventService } = await import('../services/events.js');
+        eventService.broadcastEvent('central:transaction_moved', { transactionKey: key, targetTaskId });
+        return res.json({ success: true, message: `Transaction '${key}' moved exclusively to task '${targetTaskId}'` });
+    }
+    catch (err) {
+        console.error('Error moving transaction to task:', err);
+        return res.status(500).json({ error: err.message });
+    }
+});
+// POST /api/investigations/transactions/:key/remove-from-task - Detach transaction from a task
+investigationsRouter.post('/transactions/:key/remove-from-task', async (req, res) => {
+    try {
+        const { key } = req.params;
+        const { taskId } = req.body;
+        if (!taskId) {
+            return res.status(400).json({ error: 'taskId is required' });
+        }
+        await repo.removeTransactionFromTask(key, taskId);
+        const { eventService } = await import('../services/events.js');
+        eventService.broadcastEvent('central:transaction_removed', { transactionKey: key, taskId });
+        return res.json({ success: true, message: `Transaction '${key}' removed from task '${taskId}'` });
+    }
+    catch (err) {
+        console.error('Error removing transaction from task:', err);
+        return res.status(500).json({ error: err.message });
+    }
+});
+// DELETE /api/investigations/:taskId/workflow-executions - Clear all validation run history for a specific task
+investigationsRouter.delete('/:taskId/workflow-executions', async (req, res) => {
+    try {
+        const { taskId } = req.params;
+        const deleted = await repo.clearTaskWorkflowExecutions(taskId);
+        const { eventService } = await import('../services/events.js');
+        eventService.broadcastEvent('investigation:executions_cleared', { taskId, deleted });
+        return res.json({
+            success: true,
+            taskId,
+            deleted,
+            message: `Cleared ${deleted} validation execution record(s) for task '${taskId}'.`
+        });
+    }
+    catch (err) {
+        console.error('Error clearing task workflow executions:', err);
+        return res.status(500).json({ error: err.message });
+    }
+});
+// DELETE /api/investigations/executions/clear-all - Wipe ALL validation run data (global reset)
+investigationsRouter.delete('/executions/clear-all', async (_req, res) => {
+    try {
+        const result = await repo.clearAllValidationExecutions();
+        const { eventService } = await import('../services/events.js');
+        eventService.broadcastEvent('investigation:all_cleared', result);
+        return res.json({
+            success: true,
+            message: `All validation check history cleared. Removed: ${result.executions} executions, ${result.tasks} tasks, ${result.batches} batches, ${result.transactions} transactions.`,
+            ...result
+        });
+    }
+    catch (err) {
+        console.error('Error clearing all validation executions:', err);
+        return res.status(500).json({ error: err.message });
     }
 });

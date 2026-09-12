@@ -42,21 +42,137 @@ export const investigationOrchestratorService = {
    */
   async executeUniversalWorkflow(envelope: ValidationPayloadEnvelope): Promise<WorkflowJobResult> {
     const startTime = Date.now();
-    const { workflowId, records, sourceType, sourceId, keyField = 'retrieval_ref_num' } = envelope;
+    const { workflowId, records, sourceType, sourceId, keyField: inputKeyField, keyFields: inputKeyFields, forceRerun, executedBy } = envelope as any;
 
     const workflow = await repo.getWorkflowById(workflowId);
     if (!workflow) {
       throw new Error(`Workflow with ID '${workflowId}' not found.`);
     }
 
+    // Discover ALL parameters configured by the user across this workflow's validation boxes
+    // (searchParameters[].inputField, requiredParams, optionalParams, sourceField, canonicalField).
+    // Never fall back to hardcoded field names (e.g. transaction_id, retrieval_ref_num).
+    const configuredWorkflowParams: string[] = [];
+    const seenParamNames = new Set<string>();
+    const registerParam = (p?: string) => {
+      if (!p) return;
+      const t = String(p).trim();
+      if (t && !seenParamNames.has(t.toLowerCase())) {
+        seenParamNames.add(t.toLowerCase());
+        configuredWorkflowParams.push(t);
+      }
+    };
+
+    if (Array.isArray(inputKeyFields)) {
+      for (const kf of inputKeyFields) registerParam(kf);
+    }
+    if (workflow.steps && Array.isArray(workflow.steps)) {
+      for (const step of workflow.steps) {
+        if (Array.isArray(step.searchParameters)) {
+          for (const sp of step.searchParameters) registerParam(sp.inputField);
+        }
+        if (Array.isArray(step.requiredParams)) {
+          for (const rp of step.requiredParams) registerParam(rp);
+        }
+        if (Array.isArray(step.optionalParams)) {
+          for (const op of step.optionalParams) registerParam(op);
+        }
+        registerParam(step.sourceField);
+        registerParam(step.canonicalField);
+      }
+    }
+    registerParam(inputKeyField);
+
+    // Filter to those parameters actually PRESENT in the input file records
+    const sampleRecord = records.length > 0 ? records[0] : {};
+    const fileColumns = Object.keys(sampleRecord);
+    const activeParamsInFile: string[] = [];
+    for (const cp of configuredWorkflowParams) {
+      const match = fileColumns.find(c =>
+        c.toLowerCase() === cp.toLowerCase() ||
+        c.toLowerCase().replace(/[^a-z0-9]/g, '') === cp.toLowerCase().replace(/[^a-z0-9]/g, '')
+      );
+      if (match && !activeParamsInFile.includes(match)) {
+        activeParamsInFile.push(match);
+      }
+    }
+
+    // Determine primary keyField and full list of active parameters
+    const primaryKeyField = activeParamsInFile[0] || inputKeyField || fileColumns.find(c => !c.startsWith('_')) || 'id';
+    const activeKeyFields = activeParamsInFile.length > 0 ? activeParamsInFile : [primaryKeyField];
+
+    // Helper to extract candidate keys for any record strictly from configured parameters
+    const getRecordCandidateKeys = (rec: any, idx?: number): string[] => {
+      const keys: string[] = [];
+      for (const kf of activeKeyFields) {
+        const v = rec[kf];
+        if (v !== undefined && v !== null && String(v).trim() !== '') {
+          keys.push(String(v).trim());
+        }
+      }
+      const tuple = activeKeyFields.map(kf => String(rec[kf] ?? '').trim()).filter(Boolean).join(':::');
+      if (tuple && !keys.includes(tuple)) keys.push(tuple);
+      if (idx !== undefined) keys.push(`ROW-${idx + 1}`);
+      return keys.length > 0 ? keys : [`ROW-${(idx ?? 0) + 1}`];
+    };
+
+    // 0. Check task_workflow_executions lookup table to prevent redundant execution
+    if (sourceId && !forceRerun) {
+      try {
+        const existingExec = await repo.getTaskWorkflowExecution(sourceId, workflowId);
+        if (existingExec && existingExec.status === 'COMPLETED') {
+          console.log(`[WorkflowEngine] Task '${sourceId}' already evaluated with workflow '${workflowId}'. Serving from task_workflow_executions lookup table.`);
+          const resultMap = existingExec.executionSummary?.results || {};
+          const cachedRecords = records.map((r: any, idx: number) => {
+            const candidateKeys = getRecordCandidateKeys(r, idx);
+            const k = candidateKeys.find(key => resultMap[key]) || candidateKeys[0];
+            const evalInfo = resultMap[k];
+            return {
+              ...r,
+              _validation_status: evalInfo?.status || 'PASS',
+              _validation_details: evalInfo?.details || { lookup: 'task_workflow_executions' },
+              _target_record: evalInfo?.targetRecord || null,
+              _target_db: evalInfo?.targetDb || null,
+              _target_table: evalInfo?.targetTable || null,
+              _is_cached: true,
+              _evaluated_at: existingExec.executedAt
+            };
+          });
+
+          return {
+            jobId: `lookup-${existingExec.id || Date.now()}`,
+            sourceType,
+            workflowId,
+            totalRecords: records.length,
+            processedRecords: records.length,
+            passedCount: existingExec.passedCount,
+            failedCount: existingExec.failedCount,
+            cachedHits: records.length,
+            durationMs: 2,
+            isLookupHit: true,
+            cached: true,
+            records: cachedRecords
+          } as any;
+        }
+      } catch (lookupErr: any) {
+        console.warn('[WorkflowEngine] Lookup table check warning:', lookupErr.message);
+      }
+    }
+
+    // When re-running, evict singleton in-memory cache to guarantee fresh re-execution
+    if (forceRerun) {
+      const keys = records.flatMap((r: any, idx: number) => getRecordCandidateKeys(r, idx));
+      workflowEngineSingleton.evictCache(workflowId, keys);
+    }
+
     const jobId = `job-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
-    console.log(`[WorkflowEngine] Starting job ${jobId} from ${sourceType} with ${records.length} records.`);
+    console.log(`[WorkflowEngine] Starting job ${jobId} from ${sourceType} with ${records.length} records using parameters [${activeKeyFields.join(', ')}].`);
 
     // 1. Singleton In-Flight Deduplication & Idempotent Cache Check
     const { cacheHits, inFlight, toExecute } = workflowEngineSingleton.partitionIncomingTransactions(
       workflowId,
       records,
-      keyField
+      primaryKeyField
     );
 
     console.log(`[WorkflowEngine] Deduplication: ${cacheHits.length} cache hits, ${inFlight.length} in-flight joins, ${toExecute.length} fresh executions.`);
@@ -71,7 +187,18 @@ export const investigationOrchestratorService = {
       cachedHits: cacheHits.length
     });
 
-    const stages = (workflow.stages || []).filter(s => s.enabled);
+    const rawStages = (workflow.stages || []).filter(s => s.enabled);
+    const stages = rawStages.length > 0 ? rawStages : [
+      {
+        id: `stage-default-${workflow.id}`,
+        name: 'Validation Stage',
+        order: 1,
+        targetDbId: workflow.targetDbId || 'db-1',
+        targetDataSource: workflow.targetTable || 'transactions',
+        enabled: true,
+        actionOnFail: 'STOP'
+      }
+    ];
     const steps = workflow.steps || [];
 
     let totalPassed = 0;
@@ -130,7 +257,7 @@ export const investigationOrchestratorService = {
     // Register in-flight locks for fresh records
     const jobPromise = (async () => {
       // Execute Stages with Key Chaining and Liveness Checks
-      let currentActiveKeys: string[] = toExecute.map((r, idx) => String(r[keyField] ?? r.transaction_id ?? r.id ?? `TX-${idx + 1}`));
+      let currentActiveKeys: string[] = toExecute.map((r, idx) => getRecordCandidateKeys(r, idx)[0]);
       let currentActiveRecords = [...toExecute];
       let previousMirrorTable: string | null = null;
 
@@ -157,8 +284,9 @@ export const investigationOrchestratorService = {
             });
             
             // Gracefully pause affected transactions without crashing
-            for (const r of currentActiveRecords) {
-              const txKey = String(r[keyField] ?? r.transaction_id ?? r.id ?? '');
+            for (let rIdx = 0; rIdx < currentActiveRecords.length; rIdx++) {
+              const r = currentActiveRecords[rIdx];
+              const txKey = getRecordCandidateKeys(r, rIdx)[0] || '';
               finalEvaluatedRecords.push({
                 ...r,
                 _validation_status: 'PAUSED_DB_OFFLINE',
@@ -186,8 +314,17 @@ export const investigationOrchestratorService = {
         if (previousMirrorTable && stageIdx > 0) {
           try {
             const previousCols = await mirrorTableManager.getMirrorColumns(previousMirrorTable);
-            // Check if previous mirror table contains the primary key or foreign key of this stage
-            const candidateKeys = ['settlement_id', 'clearing_sequence_id', 'batch_id', 'order_id', 'account_id'];
+
+            // Priority 1: Use keyMappings from the current stage's QueryExtraction if available
+            const stageExtractions = (await repo.getQueryExtractionsByWorkflowId(workflow.id))
+              .filter((qe: QueryExtraction) => qe.stageId === stage.id && qe.enabled !== false);
+            const extractionKeys = stageExtractions
+              .flatMap((qe: QueryExtraction) => (qe.keyMappings || []).map(km => km.sourceField))
+              .filter((k: string) => k && previousCols.includes(k));
+
+            // Priority 2: Fallback heuristic for common downstream keys
+            const heuristicKeys = ['settlement_id', 'clearing_sequence_id', 'batch_id', 'order_id', 'account_id'];
+            const candidateKeys = extractionKeys.length > 0 ? extractionKeys : heuristicKeys;
             const discoveredKey = candidateKeys.find(k => previousCols.includes(k));
 
             if (discoveredKey) {
@@ -218,6 +355,41 @@ export const investigationOrchestratorService = {
         }
 
         // 5. Fetch External Data & Ingest to Mirror
+        // Build the extraction using ALL searchParameters configured across the stage's steps
+        // AND all parameters present in the uploaded file.
+        const stageSearchParams: { inputField: string; targetColumn: string; required: boolean }[] = [];
+        const seenInputs = new Set<string>();
+
+        for (const step of stageSteps) {
+          if (Array.isArray(step.searchParameters) && step.searchParameters.length > 0) {
+            for (const sp of step.searchParameters) {
+              if (sp.inputField && !seenInputs.has(sp.inputField.toLowerCase())) {
+                seenInputs.add(sp.inputField.toLowerCase());
+                stageSearchParams.push({
+                  inputField: sp.inputField,
+                  targetColumn: sp.targetColumn || sp.inputField,
+                  required: sp.required !== false
+                });
+              }
+            }
+          } else if (Array.isArray(step.requiredParams) && step.requiredParams.length > 0) {
+            for (const p of step.requiredParams) {
+              if (p && !seenInputs.has(p.toLowerCase())) {
+                seenInputs.add(p.toLowerCase());
+                stageSearchParams.push({ inputField: p, targetColumn: p, required: true });
+              }
+            }
+          }
+        }
+
+        // Add all activeKeyFields present in the file
+        for (const kf of activeKeyFields) {
+          if (!seenInputs.has(kf.toLowerCase())) {
+            seenInputs.add(kf.toLowerCase());
+            stageSearchParams.push({ inputField: kf, targetColumn: kf, required: true });
+          }
+        }
+
         const extraction: QueryExtraction = {
           id: `ext-${jobId}-${stage.id}`,
           workflowId: workflow.id,
@@ -225,7 +397,7 @@ export const investigationOrchestratorService = {
           targetDbId: stage.targetDbId || workflow.targetDbId || '',
           targetDataSource: stage.targetDataSource || workflow.targetTable || 'transactions',
           selectedColumns: [],
-          keyMappings: [{ inputField: keyField, sourceField: keyField, required: true }],
+          keyMappings: stageSearchParams.map(sp => ({ inputField: sp.inputField, sourceField: sp.targetColumn, required: sp.required })),
           enabled: true
         };
 
@@ -236,24 +408,46 @@ export const investigationOrchestratorService = {
         );
 
         if (externalResult.success) {
-          const recordsToMirror = Object.entries(externalResult.correlatedRecords).map(([k, v]) => ({
-            [keyField]: k,
-            ...v
-          }));
+          const recordsToMirror: any[] = [];
+          const seenMirrorKeys = new Set<string>();
 
-          await mirrorTableManager.bulkInsertToMirror(
-            mirrorTable,
-            jobId,
-            stage.id,
-            recordsToMirror
-          );
+          for (let rIdx = 0; rIdx < currentActiveRecords.length; rIdx++) {
+            const inputRec = currentActiveRecords[rIdx];
+            const candidateKeys = getRecordCandidateKeys(inputRec, rIdx);
+            let matchedTarget: any = null;
+            for (const ck of candidateKeys) {
+              if (externalResult.correlatedRecords[ck]) {
+                matchedTarget = externalResult.correlatedRecords[ck];
+                break;
+              }
+            }
+            if (matchedTarget) {
+              const primaryVal = candidateKeys[0] || `ROW-${rIdx + 1}`;
+              if (!seenMirrorKeys.has(primaryVal)) {
+                seenMirrorKeys.add(primaryVal);
+                recordsToMirror.push({
+                  [primaryKeyField]: primaryVal,
+                  ...matchedTarget
+                });
+              }
+            }
+          }
+
+          if (recordsToMirror.length > 0) {
+            await mirrorTableManager.bulkInsertToMirror(
+              mirrorTable,
+              jobId,
+              stage.id,
+              recordsToMirror
+            );
+          }
         }
 
         // 6. Dynamic Rule-to-SQL Compilation & Evaluation
         const mirrorCols = await mirrorTableManager.getMirrorColumns(mirrorTable);
         const compiledSql = ruleSqlCompiler.compileBlockUpdateSql(
           mirrorTable,
-          keyField,
+          primaryKeyField,
           stageSteps,
           mirrorCols
         );
@@ -262,8 +456,11 @@ export const investigationOrchestratorService = {
         await queryPg(compiledSql.fullUpdateSql, [jobId]);
 
         // 7. Segregate Passed vs. Failed Partitions
-        const hasKeyCol = mirrorCols.includes(keyField);
-        const keyExpr = hasKeyCol ? `${keyField}::text` : `COALESCE(payload->>'${keyField}', payload->>'transaction_id', _mirror_id::text)`;
+        const hasKeyCol = mirrorCols.includes(primaryKeyField);
+        const hasPayloadCol = mirrorCols.includes('payload');
+        const keyExpr = hasKeyCol
+          ? `${primaryKeyField}::text`
+          : (hasPayloadCol ? `COALESCE(payload->>'${primaryKeyField}', _mirror_id::text)` : `_mirror_id::text`);
 
         const partitionQuery = `
           SELECT ${keyExpr} as tx_key, _validation_status, _validation_details 
@@ -296,19 +493,43 @@ export const investigationOrchestratorService = {
 
         // 8. Event-Driven Chaining: Route passed subset to next stage
         currentActiveKeys = passKeys;
-        currentActiveRecords = currentActiveRecords.filter(r => passKeys.includes(String(r[keyField] ?? r.transaction_id ?? r.id)));
+        currentActiveRecords = currentActiveRecords.filter((r, idx) => {
+          const rKeys = getRecordCandidateKeys(r, idx);
+          return rKeys.some(k => passKeys.includes(k));
+        });
         previousMirrorTable = mirrorTable;
 
         // Collect final outcomes
+        const processedKeysInStage = new Set<string>();
+        const seenProcessedRecIndices = new Set<number>();
         partitionRes.rows.forEach((r: any) => {
-          const orig = toExecute.find(o => String(o[keyField] ?? o.transaction_id ?? o.id) === String(r.tx_key));
+          processedKeysInStage.add(String(r.tx_key));
+          const origIdx = toExecute.findIndex((o, idx) => getRecordCandidateKeys(o, idx).includes(String(r.tx_key)));
+          const orig = origIdx >= 0 ? toExecute[origIdx] : null;
+          if (origIdx >= 0 && seenProcessedRecIndices.has(origIdx)) return;
+          if (origIdx >= 0) seenProcessedRecIndices.add(origIdx);
+
           const verdict: 'PASS' | 'FAIL' | 'DISCREPANCY' = r._validation_status === 'PASS' ? 'PASS' : 'FAIL';
           
           if (stageIdx === stages.length - 1 || r._validation_status !== 'PASS') {
+            let targetRec: any = null;
+            if (externalResult?.correlatedRecords) {
+              const keysToCheck = orig ? getRecordCandidateKeys(orig, origIdx) : [String(r.tx_key)];
+              for (const k of keysToCheck) {
+                if (externalResult.correlatedRecords[k]) {
+                  targetRec = externalResult.correlatedRecords[k];
+                  break;
+                }
+              }
+            }
+
             finalEvaluatedRecords.push({
               ...(orig || {}),
               _validation_status: r._validation_status,
               _validation_details: r._validation_details,
+              _target_record: targetRec || null,
+              _target_db: targetDb?.name || stage.targetDbId || 'Target DB',
+              _target_table: stage.targetDataSource || workflow.targetTable || 'transactions',
               _evaluated_at: new Date().toISOString()
             });
 
@@ -325,6 +546,37 @@ export const investigationOrchestratorService = {
             );
           }
         });
+
+        // Any record in currentActiveRecords that was not found in external query/mirror must be flagged as FAIL
+        for (let recIdx = 0; recIdx < currentActiveRecords.length; recIdx++) {
+          const record = currentActiveRecords[recIdx];
+          const candidateKeys = getRecordCandidateKeys(record, recIdx);
+          const isProcessed = candidateKeys.some(ck => processedKeysInStage.has(ck));
+          const recKey = candidateKeys[0] || '';
+          if (recKey && !isProcessed) {
+            const failDetails = {
+              existence: 'NOT_FOUND_IN_TARGET_DB',
+              message: `Record not found in target database ${targetDb?.name || stage.targetDbId || 'Target DB'} (${stage.targetDataSource || workflow.targetTable || 'transactions'})`
+            };
+            finalEvaluatedRecords.push({
+              ...record,
+              _validation_status: 'FAIL',
+              _validation_details: failDetails,
+              _target_record: null,
+              _target_db: targetDb?.name || stage.targetDbId || 'Target DB',
+              _target_table: stage.targetDataSource || workflow.targetTable || 'transactions',
+              _evaluated_at: new Date().toISOString()
+            });
+            totalFailed++;
+            workflowEngineSingleton.cacheResult(
+              workflowId,
+              recKey,
+              'FAIL',
+              'FAIL',
+              failDetails
+            );
+          }
+        }
 
         // If no records passed, terminate pipeline early
         if (currentActiveKeys.length === 0) {
@@ -348,8 +600,9 @@ export const investigationOrchestratorService = {
     })();
 
     // Register locks for all executing transactions
-    for (const rec of toExecute) {
-      const k = String(rec[keyField] ?? rec.transaction_id ?? rec.id ?? '');
+    for (let idx = 0; idx < toExecute.length; idx++) {
+      const rec = toExecute[idx];
+      const k = getRecordCandidateKeys(rec, idx)[0];
       if (k) {
         workflowEngineSingleton.registerInFlightLock(workflowId, k, jobPromise);
       }
@@ -366,7 +619,93 @@ export const investigationOrchestratorService = {
       durationMs: result.durationMs
     });
 
+    // Post-completion: Clean up transient mirror batch rows to prevent unbounded growth
+    for (const stage of stages) {
+      try {
+        const targetDb = await repo.getDatabaseConnectionById(stage.targetDbId || workflow.targetDbId || '');
+        const mirrorName = mirrorTableManager.getMirrorTableName(
+          targetDb ? (targetDb.name || targetDb.id) : 'local',
+          stage.targetDataSource || 'transactions'
+        );
+        await mirrorTableManager.cleanupMirrorBatch(mirrorName, jobId);
+      } catch (cleanupErr: any) {
+        console.warn(`[WorkflowEngine] Mirror cleanup warning for stage '${stage.name}': ${cleanupErr.message}`);
+      }
+    }
+
+    // Record execution in task_workflow_executions lookup table and sync task_dataset_transactions in PostgreSQL
+    if (sourceId) {
+      try {
+        const resultMap: Record<string, any> = {};
+        for (let idx = 0; idx < result.records.length; idx++) {
+          const rec = result.records[idx];
+          const candidateKeys = getRecordCandidateKeys(rec, idx);
+          const evalEntry = {
+            status: rec._validation_status,
+            details: rec._validation_details,
+            targetRecord: rec._target_record || null,
+            targetDb: rec._target_db || null,
+            targetTable: rec._target_table || null
+          };
+          for (const ck of candidateKeys) {
+            resultMap[ck] = evalEntry;
+          }
+        }
+
+        await repo.recordTaskWorkflowExecution({
+          taskId: sourceId,
+          workflowId,
+          workflowName: workflow.name,
+          status: 'COMPLETED',
+          totalRecords: records.length,
+          passedCount: result.passedCount,
+          failedCount: result.failedCount,
+          durationMs: result.durationMs,
+          executionSummary: { results: resultMap },
+          executedBy: executedBy || 'investigator'
+        });
+
+        await repo.updateTaskDatasetValidationStatus(
+          sourceId,
+          workflowId,
+          workflow.name,
+          result.records.map((r, idx) => ({
+            key: r._rowNumber ? `ROW-${r._rowNumber}` : (r.row_number ? `ROW-${r.row_number}` : (getRecordCandidateKeys(r, idx)[0] || `ROW-${idx + 1}`)),
+            status: r._validation_status,
+            details: r._validation_details,
+            targetRecord: r._target_record || null,
+            targetDb: r._target_db || null,
+            targetTable: r._target_table || null
+          }))
+        );
+
+        console.log(`[WorkflowEngine] Recorded execution and synced task_dataset_transactions for task '${sourceId}', workflow '${workflowId}'.`);
+      } catch (recErr: any) {
+        console.warn('[WorkflowEngine] Notice recording task workflow execution:', recErr.message);
+      }
+    }
+
     return result;
+  },
+
+  /**
+   * Resumes previously paused transactions (e.g. after target database recovers from offline status).
+   * Evicts PAUSED_DB_OFFLINE cache entries and re-runs the universal workflow.
+   */
+  async resumePausedTransactions(
+    workflowId: string,
+    records: Record<string, any>[],
+    keyField?: string,
+    keyFields?: string[]
+  ): Promise<WorkflowJobResult> {
+    return await this.executeUniversalWorkflow({
+      sourceType: 'DIRECT_API',
+      workflowId,
+      records,
+      keyField,
+      keyFields,
+      forceRerun: true
+    });
   },
 
   /**

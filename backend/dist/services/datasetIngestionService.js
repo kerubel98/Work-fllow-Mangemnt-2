@@ -47,38 +47,25 @@ export const datasetIngestionService = {
         const batchSet = new Set();
         const duplicatesFlagged = [];
         let sampleStandardizedDate = undefined;
-        // 1. Pre-Flight Mapping & Data Transformation
+        // 1. Pre-Flight Mapping & Data Transformation via Data Sanitizer Pipeline
+        const { dataSanitizerService } = await import('./dataSanitizerService.js');
+        const { sanitizedRows, droppedKeysCount, droppedNullsCount } = await dataSanitizerService.sanitizeRows(rows, fileMapping);
+        console.log(`[DatasetIngestion] Sanitized ${sanitizedRows.length} rows for task ${taskId}: pruned ${droppedKeysCount} unmapped keys, ${droppedNullsCount} nulls/empty values.`);
         const normalizedRows = [];
         const centralRecords = [];
-        for (let i = 0; i < rows.length; i++) {
-            const rawRow = rows[i];
+        for (let i = 0; i < sanitizedRows.length; i++) {
+            const rawRow = rows[i] || {};
             const rowNum = i + 1;
-            const canonicalData = {};
-            // Apply Column Mapping
-            if (fileMapping && Object.keys(fileMapping).length > 0) {
-                for (const [fileCol, canonicalKey] of Object.entries(fileMapping)) {
-                    if (rawRow[fileCol] !== undefined) {
-                        canonicalData[canonicalKey] = rawRow[fileCol];
-                    }
-                }
-            }
-            // Merge raw row with mapped canonical fields
+            // Start directly with the clean, mapped, non-null standardized row
             const merged = {
-                ...rawRow,
-                ...canonicalData
+                task_id: taskId,
+                ...sanitizedRows[i]
             };
-            // Data Transformation: Standardize Dates and Amounts
+            // Check sample date for telemetry
             for (const [key, val] of Object.entries(merged)) {
                 const lowerKey = key.toLowerCase();
-                if (lowerKey.includes('date') || lowerKey.includes('time')) {
-                    const transformedDate = standardizeDate(val);
-                    merged[key] = transformedDate;
-                    if (!sampleStandardizedDate && transformedDate) {
-                        sampleStandardizedDate = String(transformedDate);
-                    }
-                }
-                else if (lowerKey.includes('amount') || lowerKey.includes('fee') || lowerKey.includes('balance') || lowerKey === 'amt') {
-                    merged[key] = standardizeAmount(val);
+                if ((lowerKey.includes('date') || lowerKey.includes('time')) && !sampleStandardizedDate && val) {
+                    sampleStandardizedDate = String(val);
                 }
             }
             // Assign Upfront Batch (500 records per batch)

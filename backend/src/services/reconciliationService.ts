@@ -1,6 +1,6 @@
 import { getPostgresPool, isPostgresConnected } from '../config/postgres.js';
 import { repo } from '../store/repository.js';
-import { InvestigationTransaction, DualSourceCondition } from '../types.js';
+import { InvestigationTransaction, DualSourceCondition, PipelineAction } from '../types.js';
 
 export interface MirrorRecord {
   recordKey: string;
@@ -78,7 +78,12 @@ export const reconciliationService = {
     dataSourceId: string,
     lookupKeyField: string,
     conditionCheck?: { field: string; expectedValue: any },
-    dualSourceCondition?: DualSourceCondition
+    dualSourceCondition?: DualSourceCondition,
+    actionConfig?: {
+      onPassAction?: PipelineAction;
+      onFailAction?: PipelineAction;
+      onErrorAction?: PipelineAction;
+    }
   ): Promise<BatchReconciliationResult> {
     const startTime = Date.now();
 
@@ -125,6 +130,10 @@ export const reconciliationService = {
         conditionSql += ` AND (m.canonical_payload->>$5) = $6`;
       }
 
+      // Resolve pipeline actions from step configuration (Validation Result ≠ Pipeline Action)
+      const passAction = actionConfig?.onPassAction || 'CONTINUE';
+      const failAction = actionConfig?.onFailAction || 'STOP';
+
       const updateSql = `
         UPDATE investigation_transactions it
         SET 
@@ -133,8 +142,8 @@ export const reconciliationService = {
             ELSE 'FAIL'
           END,
           final_action = CASE 
-            WHEN ${conditionSql} THEN 'CONTINUE'
-            ELSE 'STOP'
+            WHEN ${conditionSql} THEN '${passAction}'
+            ELSE '${failAction}'
           END,
           investigation_status = CASE 
             WHEN ${conditionSql} THEN 'VERIFIED_MATCH'
@@ -199,7 +208,9 @@ export const reconciliationService = {
 
     for (const tx of batchTxs) {
       tx.finalResult = tx.finalResult || 'PASS';
-      tx.finalAction = tx.finalResult === 'PASS' ? 'CONTINUE' : 'STOP';
+      tx.finalAction = tx.finalResult === 'PASS'
+        ? (actionConfig?.onPassAction || 'CONTINUE') as PipelineAction
+        : (actionConfig?.onFailAction || 'STOP') as PipelineAction;
       tx.investigationStatus = tx.finalResult === 'PASS' ? 'VERIFIED_MATCH' : 'FLAGGED_DISCREPANCY';
       await repo.createInvestigationTransaction(tx);
       if (tx.finalResult === 'PASS') passes++; else fails++;

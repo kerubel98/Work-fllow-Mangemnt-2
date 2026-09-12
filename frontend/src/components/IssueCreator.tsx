@@ -72,6 +72,7 @@ export default function IssueCreator({
       .then(res => {
         if (res?.standardFields && Array.isArray(res.standardFields) && res.standardFields.length > 0) {
           setStandardDirectoryFields(res.standardFields);
+          globalMappingService.updateStandardFields(res.standardFields);
         }
       })
       .catch(e => console.warn('Could not fetch global schema config in IssueCreator:', e));
@@ -525,13 +526,26 @@ export default function IssueCreator({
     return globalMappingService.autoGenerateColumnMapping(headers, globalStandardFields);
   };
 
-  const handleAutoMapAllColumns = () => {
+  const handleAutoMapAllColumns = async () => {
     if (rawHeaders.length === 0) return;
-    const generated = autoGenerateColumnMapping(rawHeaders);
+    let fields = globalStandardFields;
+    if (!fields || fields.length === 0) {
+      try {
+        const res = await api.getGlobalSchemaConfig();
+        if (res?.standardFields && res.standardFields.length > 0) {
+          fields = res.standardFields;
+          setStandardDirectoryFields(fields);
+          globalMappingService.updateStandardFields(fields);
+        }
+      } catch (err) {
+        console.warn('Could not load schema config on auto map:', err);
+      }
+    }
+    const generated = globalMappingService.autoGenerateColumnMapping(rawHeaders, fields);
     setFileMapping(generated);
-    const count = Object.values(generated).filter(v => v && v !== 'unmapped').length;
+    const count = Object.values(generated).filter(v => v && v !== 'unmapped' && v.trim() !== '').length;
     setCleaningActionSuccess(`Auto-mapped ${count} of ${rawHeaders.length} columns based on Global Standard Directory.`);
-    setTimeout(() => setCleaningActionSuccess(null), 3000);
+    setTimeout(() => setCleaningActionSuccess(null), 3500);
   };
 
   // Filter systems based on user's privilege
@@ -722,7 +736,7 @@ export default function IssueCreator({
 
     // Strict Global Mapping Gate Check: All required global schema columns must be mapped
     if (type === 'file' && filePreviewData.length > 0) {
-      const requiredCheck = globalMappingService.validateRequiredColumns(fileMapping);
+      const requiredCheck = globalMappingService.validateRequiredColumns(fileMapping, globalStandardFields);
       if (!requiredCheck.isValid) {
         alert(`Strict Mapping Gate Error:\nCannot create task because the following required Global Columns are not mapped:\n\n• ${requiredCheck.missingRequiredLabels.join('\n• ')}\n\nPlease map these columns to proceed.`);
         return;
@@ -800,7 +814,7 @@ export default function IssueCreator({
 
     // Transform preview rows so firstLevelMappedData only contains mapped values and columns
     const mappedRowsForTask = filePreviewData.length > 0 && Object.keys(fileMapping).length > 0
-      ? filePreviewData.map(row => globalMappingService.transformRowToGlobalSchema(row, fileMapping))
+      ? filePreviewData.map(row => globalMappingService.transformRowToGlobalSchema(row, fileMapping, globalStandardFields))
       : filePreviewData;
 
     onCreateIssue({
@@ -2249,7 +2263,7 @@ export default function IssueCreator({
 
         {/* Strict Upload Gate Validation Error Banner */}
         {type === 'file' && filePreviewData.length > 0 && (() => {
-          const reqCheck = globalMappingService.validateRequiredColumns(fileMapping);
+          const reqCheck = globalMappingService.validateRequiredColumns(fileMapping, globalStandardFields);
           if (!reqCheck.isValid) {
             return (
               <div className="p-3.5 bg-rose-50 border border-rose-300 rounded-xl text-rose-900 text-xs flex items-center gap-3 shadow-xs">
@@ -2266,7 +2280,7 @@ export default function IssueCreator({
         {/* Submit Action */}
         <button
           type="submit"
-          disabled={type === 'file' && filePreviewData.length > 0 && !globalMappingService.validateRequiredColumns(fileMapping).isValid}
+          disabled={type === 'file' && filePreviewData.length > 0 && !globalMappingService.validateRequiredColumns(fileMapping, globalStandardFields).isValid}
           className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-slate-300 disabled:text-slate-500 disabled:border-slate-300 disabled:cursor-not-allowed text-white font-bold py-2.5 px-4 rounded-xl text-xs transition-colors flex items-center justify-center space-x-1.5 cursor-pointer shadow-sm"
           id="btn-submit-case"
         >

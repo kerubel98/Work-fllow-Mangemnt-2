@@ -1,6 +1,6 @@
 import express from 'express';
 import cors from 'cors';
-import dotenv from 'dotenv';
+import 'dotenv/config';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
@@ -22,7 +22,7 @@ import { workflowsRouter } from './routes/workflows.js';
 import { investigationsRouter } from './routes/investigations.js';
 import { validationBoxesRouter } from './routes/validationBoxes.js';
 import { mirrorTableManager } from './services/mirrorTableManager.js';
-dotenv.config();
+// dotenv/config auto-loads
 const app = express();
 const PORT = process.env.PORT || 5002;
 app.use(cors({ origin: '*' }));
@@ -53,7 +53,9 @@ app.get('/api/health', (_req, res) => {
     res.json({
         status: 'OK',
         service: 'Operational Workflow Manager Backend Service',
-        database: isMongoConnected ? 'MongoDB (localhost)' : 'In-Memory Store',
+        database: isPostgresConnected
+            ? 'PostgreSQL (operational_workflow_db)'
+            : (isMongoConnected ? 'MongoDB (fallback)' : 'In-Memory Store'),
         uptimeSeconds: process.uptime(),
         timestamp: new Date().toISOString()
     });
@@ -78,8 +80,11 @@ async function startServer() {
     await mirrorTableManager.provisionAllConnectedDbMirrors().catch(err => {
         console.warn('[ServerBoot] Error auto-provisioning mirror tables on boot:', err.message);
     });
-    await connectDB();
-    await seedDatabase();
+    // Only attempt MongoDB connection if explicitly configured in environment
+    if (process.env.MONGODB_URI) {
+        await connectDB();
+        await seedDatabase();
+    }
     const rootDir = fs.existsSync(path.resolve(process.cwd(), 'frontend'))
         ? process.cwd()
         : path.resolve(process.cwd(), '..');

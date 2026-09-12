@@ -490,18 +490,52 @@ databaseRouter.delete('/databases/:id', async (req, res) => {
         return res.status(500).json({ error: err.message });
     }
 });
-// GET /api/db/databases/:id/tables - Retrieve available and allowed tables for a database connection
+// GET /api/db/databases/:id/tables - Retrieve available, allowed, and discovered tables for a database connection
 databaseRouter.get('/databases/:id/tables', async (req, res) => {
     try {
         const db = await repo.getDatabaseById(req.params.id);
         if (!db)
             return res.status(404).json({ error: 'Database connection not found' });
+        let discovered = [];
+        if (!db.availableTables || db.availableTables.length === 0) {
+            try {
+                discovered = await discoverTablesForDb(db);
+                if (discovered.length > 0) {
+                    db.availableTables = discovered;
+                    await repo.updateDatabase(db.id, { availableTables: discovered }).catch(() => { });
+                }
+            }
+            catch (discErr) {
+                console.warn(`[database.ts] Auto-discovery for ${db.name}:`, discErr.message);
+            }
+        }
+        const combined = [
+            ...(db.availableTables || []),
+            ...(db.allowedTables || []),
+            ...discovered
+        ];
+        // Also check for PostgreSQL UNLOGGED mirror tables for this database
+        try {
+            const safeDbPrefix = mirrorTableManager.getMirrorTableName(db.name || db.id, '').replace(/_+$/, '');
+            const mirrorRes = await queryPg(`SELECT table_name FROM information_schema.tables 
+         WHERE table_schema = 'public' AND table_name LIKE $1`, [`${safeDbPrefix}_%`]);
+            if (mirrorRes.rows && mirrorRes.rows.length > 0) {
+                for (const r of mirrorRes.rows) {
+                    const rawTable = r.table_name.replace(`${safeDbPrefix}_`, '');
+                    if (rawTable)
+                        combined.push(rawTable);
+                }
+            }
+        }
+        catch { }
+        const allTables = Array.from(new Set(combined.map(t => String(t).trim()))).filter(Boolean);
         return res.json({
             dbId: db.id,
             dbName: db.name,
             engine: db.type,
             availableTables: db.availableTables || [],
-            allowedTables: db.allowedTables || []
+            allowedTables: db.allowedTables || [],
+            tables: allTables
         });
     }
     catch (err) {
@@ -591,6 +625,1029 @@ databaseRouter.get('/databases/:id/tables/:tableName/columns', async (req, res) 
             dbName: db.name,
             tableName: req.params.tableName,
             columns: columns || []
+        });
+    }
+    catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+});
+// GET /api/db/databases/:id/tables/:tableName/preview - Fetch live sample data from database table
+databaseRouter.get('/databases/:id/tables/:tableName/preview', async (req, res) => {
+    try {
+        const db = await repo.getDatabaseById(req.params.id);
+        if (!db)
+            return res.status(404).json({ error: 'Database connection not found' });
+        const tableName = req.params.tableName;
+        const limit = Math.min(Math.max(Number(req.query.limit) || 25, 1), 100);
+        // 1. Try querying real external database first
+        try {
+            const liveRes = await executeLiveQueryOnDb(db, `SELECT * FROM ${tableName} LIMIT ${limit}`);
+            if (liveRes && liveRes.rows && liveRes.rows.length > 0) {
+                return res.json({
+                    dbId: db.id,
+                    dbName: db.name,
+                    tableName,
+                    columns: liveRes.columns,
+                    rows: liveRes.rows,
+                    rowCount: liveRes.rowCount,
+                    source: 'LIVE_DATABASE'
+                });
+            }
+        }
+        catch (liveErr) {
+            console.warn(`[database.ts] Live preview query on ${db.name}.${tableName} failed:`, liveErr.message);
+        }
+        // 2. Fallback to PostgreSQL UNLOGGED mirror table
+        const mirrorName = mirrorTableManager.getMirrorTableName(db.name || db.id, tableName);
+        try {
+            const mirrorQueryRes = await queryPg(`SELECT * FROM ${mirrorName} LIMIT $1`, [limit]);
+            if (mirrorQueryRes.rows && mirrorQueryRes.rows.length > 0) {
+                const sysCols = new Set(['_mirror_id', '_batch_id', '_rule_block_id', '_validation_status', '_fetched_at', '_raw_payload']);
+                const allCols = Object.keys(mirrorQueryRes.rows[0]);
+                const cleanCols = allCols.filter(c => !sysCols.has(c));
+                const cleanRows = mirrorQueryRes.rows.map(r => {
+                    const rowObj = {};
+                    cleanCols.forEach(c => { rowObj[c] = r[c]; });
+                    return rowObj;
+                });
+                return res.json({
+                    dbId: db.id,
+                    dbName: db.name,
+                    tableName,
+                    columns: cleanCols,
+                    rows: cleanRows,
+                    rowCount: cleanRows.length,
+                    source: 'MIRROR_TABLE'
+                });
+            }
+        }
+        catch {
+            // Mirror table may not exist
+        }
+        // 3. Fallback: inspect schema columns and return empty sample array
+        let columns = [];
+        try {
+            columns = await getTableColumnsForDb(db, tableName);
+        }
+        catch { }
+        const colNames = (columns && columns.length > 0) ? columns.map(c => c.name || c) : ['id', 'created_at', 'status'];
+        return res.json({
+            dbId: db.id,
+            dbName: db.name,
+            tableName,
+            columns: colNames,
+            rows: [],
+            rowCount: 0,
+            source: 'SCHEMA_ONLY'
+        });
+    }
+    catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+});
+// =============================================================================
+// DATABASE COLUMN CONFIGURATIONS & RULES ENDPOINTS
+// =============================================================================
+// GET /api/db/column-configurations
+databaseRouter.get('/column-configurations', async (req, res) => {
+    try {
+        const { dbId, tableName } = req.query;
+        const configs = await repo.getColumnConfigurations(typeof dbId === 'string' ? dbId : undefined, typeof tableName === 'string' ? tableName : undefined);
+        return res.json(configs);
+    }
+    catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+});
+// GET /api/db/column-configurations/:id
+databaseRouter.get('/column-configurations/:id', async (req, res) => {
+    try {
+        const config = await repo.getColumnConfigurationById(req.params.id);
+        if (!config)
+            return res.status(404).json({ error: 'Column configuration not found' });
+        return res.json(config);
+    }
+    catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+});
+// POST /api/db/column-configurations
+databaseRouter.post('/column-configurations', async (req, res) => {
+    try {
+        const { name, dbId, dbName, tableName, ruleType, description, columns, groupByColumns, aggregationRules, primaryKeyColumn, roleColumn, semanticRoles, crossRowRules, typeGroups, typeGroupColumns, valueLabels, unmappedValueAction, violationAction, severity, violationMessage, isActive } = req.body;
+        if (!name || !name.trim())
+            return res.status(400).json({ error: 'Rule name is required' });
+        if (!dbId)
+            return res.status(400).json({ error: 'Database ID is required' });
+        if (!tableName)
+            return res.status(400).json({ error: 'Table name is required' });
+        if (!ruleType)
+            return res.status(400).json({ error: 'Rule type is required' });
+        const newConfig = {
+            id: `colcfg-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+            name: name.trim(),
+            dbId,
+            dbName,
+            tableName,
+            ruleType,
+            description: description?.trim() || '',
+            columns: Array.isArray(columns) ? columns : [],
+            groupByColumns: Array.isArray(groupByColumns) ? groupByColumns : [],
+            aggregationRules: Array.isArray(aggregationRules) ? aggregationRules : [],
+            primaryKeyColumn: primaryKeyColumn || undefined,
+            roleColumn: roleColumn || undefined,
+            semanticRoles: Array.isArray(semanticRoles) ? semanticRoles : [],
+            crossRowRules: Array.isArray(crossRowRules) ? crossRowRules : [],
+            typeGroups: Array.isArray(typeGroups) ? typeGroups : [],
+            typeGroupColumns: Array.isArray(typeGroupColumns) ? typeGroupColumns : [],
+            valueLabels: Array.isArray(valueLabels) ? valueLabels : [],
+            unmappedValueAction: unmappedValueAction || 'FLAG',
+            violationAction: violationAction || 'FLAG',
+            severity: severity || 'CRITICAL',
+            violationMessage: violationMessage?.trim() || '',
+            isActive: isActive !== false,
+            createdBy: 'admin'
+        };
+        const saved = await repo.createColumnConfiguration(newConfig);
+        return res.status(201).json(saved);
+    }
+    catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+});
+// PUT /api/db/column-configurations/:id
+databaseRouter.put('/column-configurations/:id', async (req, res) => {
+    try {
+        const existing = await repo.getColumnConfigurationById(req.params.id);
+        if (!existing)
+            return res.status(404).json({ error: 'Column configuration not found' });
+        const updated = await repo.updateColumnConfiguration(req.params.id, req.body);
+        return res.json(updated);
+    }
+    catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+});
+// DELETE /api/db/column-configurations/:id
+databaseRouter.delete('/column-configurations/:id', async (req, res) => {
+    try {
+        const success = await repo.deleteColumnConfiguration(req.params.id);
+        if (!success)
+            return res.status(404).json({ error: 'Column configuration not found' });
+        return res.json({ success: true, message: 'Column configuration deleted successfully' });
+    }
+    catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+});
+// POST /api/db/column-configurations/test
+// Evaluates a column rule configuration against sample rows from the table
+databaseRouter.post('/column-configurations/test', async (req, res) => {
+    try {
+        const { config, sampleRows } = req.body;
+        if (!config)
+            return res.status(400).json({ error: 'Rule configuration is required' });
+        let rows = Array.isArray(sampleRows) ? sampleRows : [];
+        // If sample rows were not provided, fetch from DB
+        if (rows.length === 0 && config.dbId && config.tableName) {
+            const db = await repo.getDatabaseById(config.dbId);
+            if (db) {
+                try {
+                    const liveRes = await executeLiveQueryOnDb(db, `SELECT * FROM ${config.tableName} LIMIT 50`);
+                    if (liveRes && liveRes.rows)
+                        rows = liveRes.rows;
+                }
+                catch {
+                    // fallback to mirror if available
+                    const mirrorName = mirrorTableManager.getMirrorTableName(db.name || db.id, config.tableName);
+                    try {
+                        const mRes = await queryPg(`SELECT * FROM ${mirrorName} LIMIT 50`);
+                        if (mRes && mRes.rows)
+                            rows = mRes.rows;
+                    }
+                    catch { }
+                }
+            }
+        }
+        if (rows.length === 0) {
+            return res.json({
+                verdict: 'PASS',
+                totalRows: 0,
+                violationCount: 0,
+                violations: [],
+                details: 'No data rows available to evaluate in target table.'
+            });
+        }
+        // Helper function to extract row cell value case-insensitively
+        const getVal = (r, col) => {
+            if (!r || !col)
+                return undefined;
+            if (r[col] !== undefined)
+                return r[col];
+            const lower = col.toLowerCase();
+            const found = Object.keys(r).find(k => k.toLowerCase() === lower);
+            return found ? r[found] : undefined;
+        };
+        const priorityCols = Array.isArray(config.columns) ? config.columns : [];
+        const sortedCols = [...priorityCols].sort((a, b) => (a.priority || 1) - (b.priority || 1));
+        const ruleType = config.ruleType || 'DUPLICATE_CHECK';
+        const violations = [];
+        const passedRows = [];
+        // Helper to format values according to matchMode
+        const formatColVal = (val, colCfg) => {
+            if (val === null || val === undefined)
+                return '__NULL__';
+            let str = String(val);
+            if (colCfg?.matchMode === 'TRIMMED')
+                str = str.trim();
+            if (colCfg?.matchMode === 'CASE_INSENSITIVE')
+                str = str.trim().toLowerCase();
+            if (colCfg?.transform === 'LOWERCASE')
+                str = str.toLowerCase();
+            if (colCfg?.transform === 'UPPERCASE')
+                str = str.toUpperCase();
+            if (colCfg?.transform === 'DIGITS_ONLY')
+                str = str.replace(/\D/g, '');
+            return str;
+        };
+        // Helper to evaluate multi-column type conditions
+        const evaluateTypeConditions = (row, conditions) => {
+            if (!conditions || !Array.isArray(conditions) || conditions.length === 0)
+                return true;
+            return conditions.every(cond => {
+                if (!cond || !cond.columnName)
+                    return true;
+                const rawVal = getVal(row, cond.columnName);
+                if (rawVal === null || rawVal === undefined)
+                    return false;
+                const rowValStr = String(rawVal).trim().toLowerCase();
+                const condValStr = String(cond.value ?? '').trim().toLowerCase();
+                switch (cond.operator) {
+                    case '=':
+                        return rowValStr === condValStr;
+                    case '!=':
+                        return rowValStr !== condValStr;
+                    case 'IN': {
+                        const allowed = condValStr.split(',').map((s) => s.trim().toLowerCase());
+                        return allowed.includes(rowValStr);
+                    }
+                    case 'NOT_IN': {
+                        const disallowed = condValStr.split(',').map((s) => s.trim().toLowerCase());
+                        return !disallowed.includes(rowValStr);
+                    }
+                    case 'STARTS_WITH':
+                        return rowValStr.startsWith(condValStr);
+                    case 'LIKE':
+                        return rowValStr.includes(condValStr);
+                    default:
+                        return rowValStr === condValStr;
+                }
+            });
+        };
+        // Helper to find matching type group for a transaction / group of rows
+        const findMatchingTypeGroup = (groupRows, typeGroups) => {
+            if (!Array.isArray(typeGroups) || typeGroups.length === 0)
+                return null;
+            for (const tg of typeGroups) {
+                if (!Array.isArray(tg.conditions) || tg.conditions.length === 0)
+                    continue;
+                const matched = groupRows.some(row => evaluateTypeConditions(row, tg.conditions));
+                if (matched)
+                    return tg;
+            }
+            return null;
+        };
+        // Helper to evaluate expected leg / row count operator
+        const evaluateExpectedCount = (actualCount, expected) => {
+            if (!expected || expected.value === undefined)
+                return true;
+            const target = Number(expected.value);
+            const op = expected.operator;
+            if (op === '==' || op === '=')
+                return actualCount === target;
+            if (op === '!=')
+                return actualCount !== target;
+            if (op === '>')
+                return actualCount > target;
+            if (op === '>=')
+                return actualCount >= target;
+            if (op === '<')
+                return actualCount < target;
+            if (op === '<=')
+                return actualCount <= target;
+            return true;
+        };
+        if (ruleType === 'DUPLICATE_CHECK' || ruleType === 'UNIQUE_CONSTRAINT') {
+            if (sortedCols.length === 0) {
+                return res.json({
+                    verdict: 'FAIL',
+                    totalRows: rows.length,
+                    violationCount: rows.length,
+                    violations: rows.map((r, idx) => ({
+                        rowIndex: idx,
+                        rowData: r,
+                        reason: 'In Duplicate Check, at least one column must be configured to check for duplicate value or count.',
+                        matchedPriorityValues: { error: 'NO_COLUMNS_CONFIGURED' }
+                    })),
+                    passedCount: 0,
+                    passedRows: [],
+                    details: 'At least one column must be configured to check for duplicate value or count.'
+                });
+            }
+            const countRule = (Array.isArray(config.aggregationRules) && config.aggregationRules.find((a) => a.function === 'COUNT'))
+                || { function: 'COUNT', operator: '>', value: 1 };
+            const threshold = Number(countRule.value ?? 1);
+            const op = String(countRule.operator || '>').trim();
+            const isCountViolation = (count) => {
+                if (op === '>')
+                    return count > threshold;
+                if (op === '>=')
+                    return count >= threshold;
+                if (op === '=')
+                    return count === threshold;
+                if (op === '!=')
+                    return count !== threshold;
+                if (op === '<')
+                    return count < threshold;
+                if (op === '<=')
+                    return count <= threshold;
+                return count > 1;
+            };
+            const groups = new Map();
+            rows.forEach((row, idx) => {
+                const keyParts = sortedCols.map(c => {
+                    const val = getVal(row, c.columnName);
+                    return `${c.columnName}=${formatColVal(val, c)}`;
+                });
+                const compositeKey = keyParts.join(' | ');
+                const existing = groups.get(compositeKey) || [];
+                existing.push(idx);
+                groups.set(compositeKey, existing);
+            });
+            groups.forEach((indices, compositeKey) => {
+                const count = indices.length;
+                const violating = isCountViolation(count);
+                if (violating) {
+                    indices.forEach(idx => {
+                        const row = rows[idx];
+                        const matchedValues = {};
+                        sortedCols.forEach(c => {
+                            matchedValues[c.columnName] = getVal(row, c.columnName);
+                        });
+                        violations.push({
+                            rowIndex: idx,
+                            rowData: row,
+                            reason: `Duplicate detected across column(s) [${compositeKey}]: Occurs ${count} time(s) (threshold: COUNT ${op} ${threshold})`,
+                            matchedPriorityValues: {
+                                ...matchedValues,
+                                evaluatedValue: compositeKey,
+                                duplicateCount: count,
+                                threshold: `COUNT ${op} ${threshold}`
+                            }
+                        });
+                    });
+                }
+                else {
+                    indices.forEach(idx => {
+                        const row = rows[idx];
+                        const matchedValues = {};
+                        sortedCols.forEach(c => {
+                            matchedValues[c.columnName] = getVal(row, c.columnName);
+                        });
+                        passedRows.push({
+                            rowIndex: idx,
+                            rowData: row,
+                            info: `Unique value verified across column(s) [${compositeKey}] (Count: ${count})`,
+                            matchedPriorityValues: {
+                                ...matchedValues,
+                                evaluatedValue: compositeKey,
+                                occurrenceCount: count,
+                                status: 'UNIQUE'
+                            }
+                        });
+                    });
+                }
+            });
+        }
+        else if (ruleType === 'GROUPING_CHECK') {
+            const groupCols = Array.isArray(config.groupByColumns) && config.groupByColumns.length > 0
+                ? config.groupByColumns
+                : sortedCols.map(c => c.columnName);
+            const groups = new Map();
+            rows.forEach((row, idx) => {
+                const key = groupCols.map((col) => `${col}=${getVal(row, col) ?? ''}`).join(' | ');
+                const list = groups.get(key) || [];
+                list.push(idx);
+                groups.set(key, list);
+            });
+            const typeGroups = Array.isArray(config.typeGroups) ? config.typeGroups : [];
+            const defaultAggs = Array.isArray(config.aggregationRules) ? config.aggregationRules : [];
+            const roleCol = config.roleColumn || sortedCols.find(c => c.role === 'DISCRIMINATOR')?.columnName;
+            const globalSemanticRoles = Array.isArray(config.semanticRoles) ? config.semanticRoles : [];
+            const globalCrossRules = Array.isArray(config.crossRowRules) ? config.crossRowRules : [];
+            groups.forEach((indices, groupKey) => {
+                const groupRows = indices.map(i => rows[i]);
+                let groupHasViolation = false;
+                const matchedType = findMatchingTypeGroup(groupRows, typeGroups);
+                // A. If type groups are configured but this group matches none of them:
+                if (typeGroups.length > 0 && !matchedType) {
+                    indices.forEach(idx => {
+                        violations.push({
+                            rowIndex: idx,
+                            rowData: rows[idx],
+                            reason: `Type Group classification failed [${groupKey}]: Group records do not match any configured Type Group conditions (${typeGroups.map((t) => t.groupName).join(', ')}).`,
+                            matchedPriorityValues: {
+                                groupKey,
+                                rowCount: indices.length,
+                                configuredTypeGroups: typeGroups.map((t) => t.groupName)
+                            }
+                        });
+                    });
+                    return; // This group failed completely, do not process further or add to passedRows
+                }
+                const typeName = matchedType ? matchedType.groupName : null;
+                // B. If matched type group has an expected leg / row count constraint
+                if (matchedType && matchedType.expectedLegCount) {
+                    const valid = evaluateExpectedCount(indices.length, matchedType.expectedLegCount);
+                    if (!valid) {
+                        groupHasViolation = true;
+                        indices.forEach(idx => {
+                            violations.push({
+                                rowIndex: idx,
+                                rowData: rows[idx],
+                                reason: `Type Group "${matchedType.groupName}" requires ${matchedType.expectedLegCount.operator} ${matchedType.expectedLegCount.value} legs/rows, but found ${indices.length} [${groupKey}]`,
+                                matchedPriorityValues: {
+                                    groupKey,
+                                    actualLegs: indices.length,
+                                    expected: matchedType.expectedLegCount,
+                                    typeGroup: matchedType.groupName
+                                }
+                            });
+                        });
+                    }
+                }
+                // C. Evaluate Leg Roles and Cross-Row Relationships if configured
+                const rolesToUse = (matchedType && Array.isArray(matchedType.roles) && matchedType.roles.length > 0)
+                    ? matchedType.roles
+                    : globalSemanticRoles;
+                const rulesToEvaluate = (matchedType && Array.isArray(matchedType.legRelationships) && matchedType.legRelationships.length > 0)
+                    ? matchedType.legRelationships
+                    : globalCrossRules;
+                if (rulesToEvaluate.length > 0) {
+                    const resolveRowRole = (row) => {
+                        if (!roleCol)
+                            return '__UNASSIGNED__';
+                        const rawRoleVal = getVal(row, roleCol);
+                        if (rawRoleVal === null || rawRoleVal === undefined)
+                            return '__UNASSIGNED__';
+                        const strVal = String(rawRoleVal).trim().toLowerCase();
+                        for (const sr of rolesToUse) {
+                            const vals = sr.matchValues || sr.matchingValues;
+                            if (Array.isArray(vals)) {
+                                const matches = vals.some((v) => String(v).trim().toLowerCase() === strVal);
+                                if (matches)
+                                    return sr.roleName;
+                            }
+                        }
+                        return String(rawRoleVal).trim();
+                    };
+                    const classifiedRows = groupRows.map((r, i) => ({
+                        row: r,
+                        index: indices[i],
+                        role: resolveRowRole(r),
+                        rawRole: roleCol ? getVal(r, roleCol) : undefined
+                    }));
+                    const presentRoles = new Set(classifiedRows.map(c => c.role));
+                    rulesToEvaluate.forEach((rule) => {
+                        if (rule.ruleType === 'ROLE_EXISTENCE') {
+                            const hasPrimary = presentRoles.has(rule.primaryRole);
+                            const hasTarget = rule.targetRole ? presentRoles.has(rule.targetRole) : false;
+                            if (hasPrimary && !hasTarget) {
+                                groupHasViolation = true;
+                                indices.forEach(idx => {
+                                    violations.push({
+                                        rowIndex: idx,
+                                        rowData: rows[idx],
+                                        reason: `Type Group "${typeName || 'Grouping'}" leg relationship failed [${groupKey}]: Role "${rule.primaryRole}" requires companion role "${rule.targetRole}", but "${rule.targetRole}" was not found among the ${groupRows.length} rows.`,
+                                        matchedPriorityValues: {
+                                            groupKey,
+                                            typeGroup: typeName,
+                                            primaryRole: rule.primaryRole,
+                                            missingRole: rule.targetRole,
+                                            presentRoles: Array.from(presentRoles)
+                                        }
+                                    });
+                                });
+                            }
+                        }
+                        else if (rule.ruleType === 'VALUE_MATCH') {
+                            const rowsA = classifiedRows.filter(c => c.role === rule.primaryRole);
+                            const rowsB = classifiedRows.filter(c => c.role === rule.targetRole);
+                            if (rowsA.length > 0 && rowsB.length > 0 && rule.valueColumn) {
+                                const targetCol = rule.targetValueColumn || rule.valueColumn;
+                                const valA = Number(getVal(rowsA[0].row, rule.valueColumn));
+                                const valB = Number(getVal(rowsB[0].row, targetCol));
+                                const tolerance = rule.tolerance || 0;
+                                const diff = Math.abs(valA - valB);
+                                if (isNaN(valA) || isNaN(valB) || diff > tolerance) {
+                                    groupHasViolation = true;
+                                    indices.forEach(idx => {
+                                        violations.push({
+                                            rowIndex: idx,
+                                            rowData: rows[idx],
+                                            reason: `Type Group "${typeName || 'Grouping'}" value mismatch [${groupKey}]: "${rule.primaryRole}" [${rule.valueColumn}=${valA}] does not equal "${rule.targetRole}" [${targetCol}=${valB}] (difference: ${diff.toFixed(2)}${tolerance > 0 ? `, tolerance: ${tolerance}` : ''}).`,
+                                            matchedPriorityValues: {
+                                                groupKey,
+                                                typeGroup: typeName,
+                                                primaryRole: rule.primaryRole,
+                                                primaryValue: valA,
+                                                targetRole: rule.targetRole,
+                                                targetValue: valB,
+                                                difference: diff
+                                            }
+                                        });
+                                    });
+                                }
+                            }
+                            else if ((rowsA.length === 0 || rowsB.length === 0) && rule.valueColumn) {
+                                groupHasViolation = true;
+                                indices.forEach(idx => {
+                                    violations.push({
+                                        rowIndex: idx,
+                                        rowData: rows[idx],
+                                        reason: `Type Group "${typeName || 'Grouping'}" value match failed [${groupKey}]: Cannot compare values because role "${rule.primaryRole}" or "${rule.targetRole}" is missing.`,
+                                        matchedPriorityValues: {
+                                            groupKey,
+                                            typeGroup: typeName,
+                                            primaryRole: rule.primaryRole,
+                                            targetRole: rule.targetRole,
+                                            presentRoles: Array.from(presentRoles)
+                                        }
+                                    });
+                                });
+                            }
+                        }
+                        else if (rule.ruleType === 'NET_BALANCE') {
+                            if (rule.valueColumn) {
+                                const rowsPos = classifiedRows.filter(c => c.role === rule.primaryRole);
+                                const rowsNeg = rule.targetRole ? classifiedRows.filter(c => c.role === rule.targetRole) : [];
+                                const sumPos = rowsPos.reduce((acc, c) => acc + (Number(getVal(c.row, rule.valueColumn)) || 0), 0);
+                                const sumNeg = rowsNeg.length > 0
+                                    ? rowsNeg.reduce((acc, c) => acc + (Number(getVal(c.row, rule.targetValueColumn || rule.valueColumn)) || 0), 0)
+                                    : 0;
+                                const net = rule.targetRole ? (sumPos - sumNeg) : sumPos;
+                                const tolerance = rule.tolerance || 0;
+                                if (Math.abs(net) > tolerance) {
+                                    groupHasViolation = true;
+                                    indices.forEach(idx => {
+                                        violations.push({
+                                            rowIndex: idx,
+                                            rowData: rows[idx],
+                                            reason: `Type Group "${typeName || 'Grouping'}" unbalanced net balance [${groupKey}]: Net between "${rule.primaryRole}" (${sumPos}) and "${rule.targetRole || 'Others'}" (${sumNeg}) is ${net.toFixed(2)} (expected balanced = 0).`,
+                                            matchedPriorityValues: {
+                                                groupKey,
+                                                typeGroup: typeName,
+                                                netBalance: net,
+                                                sumPositive: sumPos,
+                                                sumNegative: sumNeg
+                                            }
+                                        });
+                                    });
+                                }
+                            }
+                        }
+                        else if (rule.ruleType === 'MUTUAL_EXCLUSION') {
+                            const hasPrimary = presentRoles.has(rule.primaryRole);
+                            const hasTarget = rule.targetRole ? presentRoles.has(rule.targetRole) : false;
+                            if (hasPrimary && hasTarget) {
+                                groupHasViolation = true;
+                                indices.forEach(idx => {
+                                    violations.push({
+                                        rowIndex: idx,
+                                        rowData: rows[idx],
+                                        reason: `Type Group "${typeName || 'Grouping'}" mutually exclusive roles detected [${groupKey}]: Role "${rule.primaryRole}" and "${rule.targetRole}" cannot coexist in the same group.`,
+                                        matchedPriorityValues: {
+                                            groupKey,
+                                            typeGroup: typeName,
+                                            primaryRole: rule.primaryRole,
+                                            targetRole: rule.targetRole
+                                        }
+                                    });
+                                });
+                            }
+                        }
+                    });
+                }
+                // D. Run aggregations: use type group specific aggregations if defined, otherwise default aggregations
+                const aggsToRun = (matchedType && Array.isArray(matchedType.aggregationRules) && matchedType.aggregationRules.length > 0)
+                    ? matchedType.aggregationRules
+                    : defaultAggs;
+                aggsToRun.forEach((agg) => {
+                    let computedVal = 0;
+                    if (agg.function === 'COUNT') {
+                        computedVal = indices.length;
+                    }
+                    else {
+                        const aggCol = agg.column || sortedCols[0]?.columnName;
+                        const vals = indices.map(i => Number(getVal(rows[i], aggCol)) || 0);
+                        if (agg.function === 'SUM')
+                            computedVal = vals.reduce((a, b) => a + b, 0);
+                        else if (agg.function === 'AVG')
+                            computedVal = vals.length ? (vals.reduce((a, b) => a + b, 0) / vals.length) : 0;
+                        else if (agg.function === 'MIN')
+                            computedVal = Math.min(...vals);
+                        else if (agg.function === 'MAX')
+                            computedVal = Math.max(...vals);
+                    }
+                    const target = Number(agg.value);
+                    const op = String(agg.operator || '=').trim();
+                    let satisfied = false;
+                    if (op === '=' || op === '==')
+                        satisfied = (computedVal === target);
+                    else if (op === '!=')
+                        satisfied = (computedVal !== target);
+                    else if (op === '>')
+                        satisfied = (computedVal > target);
+                    else if (op === '>=')
+                        satisfied = (computedVal >= target);
+                    else if (op === '<')
+                        satisfied = (computedVal < target);
+                    else if (op === '<=')
+                        satisfied = (computedVal <= target);
+                    else
+                        satisfied = (computedVal === target);
+                    if (!satisfied) {
+                        groupHasViolation = true;
+                        indices.forEach(idx => {
+                            violations.push({
+                                rowIndex: idx,
+                                rowData: rows[idx],
+                                reason: matchedType
+                                    ? `Type Group "${matchedType.groupName}" aggregation failed: [${groupKey}] Expected ${agg.function}(${agg.column || '*'}) ${op} ${target}, but got ${computedVal}`
+                                    : `Grouping aggregation failed: [${groupKey}] Expected ${agg.function}(${agg.column || '*'}) ${op} ${target}, but got ${computedVal}`,
+                                matchedPriorityValues: { groupKey, computedVal, expected: target, operator: op, typeGroup: matchedType?.groupName }
+                            });
+                        });
+                    }
+                });
+                // E. Only add to passedRows if the group had NO violations!
+                if (!groupHasViolation) {
+                    indices.forEach(idx => {
+                        passedRows.push({
+                            rowIndex: idx,
+                            rowData: rows[idx],
+                            info: matchedType
+                                ? `Type Group "${matchedType.groupName}" satisfied: ${indices.length} leg(s)/row(s) verified [${groupKey}]`
+                                : `Grouping satisfied: ${indices.length} row(s) verified [${groupKey}]`,
+                            matchedPriorityValues: { groupKey, actualLegs: indices.length, typeGroup: matchedType?.groupName }
+                        });
+                    });
+                }
+            });
+        }
+        else if (ruleType === 'COMPLETENESS_CHECK') {
+            rows.forEach((row, idx) => {
+                const missing = sortedCols.filter(c => {
+                    const val = getVal(row, c.columnName);
+                    return val === null || val === undefined || (typeof val === 'string' && val.trim() === '');
+                });
+                if (missing.length > 0) {
+                    violations.push({
+                        rowIndex: idx,
+                        rowData: row,
+                        reason: `Missing required values for column(s): ${missing.map(c => c.columnName).join(', ')}`,
+                        matchedPriorityValues: { missingColumns: missing.map(c => c.columnName) }
+                    });
+                }
+            });
+        }
+        else if (ruleType === 'PATTERN_CHECK') {
+            rows.forEach((row, idx) => {
+                sortedCols.forEach(c => {
+                    const val = getVal(row, c.columnName);
+                    if (val !== null && val !== undefined && String(val).trim() !== '') {
+                        const pat = c.pattern;
+                        if (pat) {
+                            try {
+                                const regex = new RegExp(pat);
+                                if (!regex.test(String(val))) {
+                                    violations.push({
+                                        rowIndex: idx,
+                                        rowData: row,
+                                        reason: `Value "${val}" in column "${c.columnName}" does not match required pattern /${pat}/`,
+                                        matchedPriorityValues: { column: c.columnName, value: val, pattern: pat }
+                                    });
+                                }
+                            }
+                            catch { }
+                        }
+                    }
+                });
+            });
+        }
+        else if (ruleType === 'TYPE_RELATION_CHECK' || ruleType === 'MULTI_ROW_SEMANTIC_CHECK') {
+            const primaryKeyCol = config.primaryKeyColumn || sortedCols[0]?.columnName;
+            const roleCol = config.roleColumn;
+            const typeGroups = Array.isArray(config.typeGroups) ? config.typeGroups : [];
+            const globalSemanticRoles = Array.isArray(config.semanticRoles) ? config.semanticRoles : [];
+            const globalCrossRules = Array.isArray(config.crossRowRules) ? config.crossRowRules : [];
+            if (!primaryKeyCol) {
+                return res.json({
+                    verdict: 'PASS',
+                    totalRows: rows.length,
+                    violationCount: 0,
+                    violations: [],
+                    details: 'Primary correlation column must be selected.'
+                });
+            }
+            // Group rows by primaryKeyColumn
+            const txGroups = new Map();
+            rows.forEach((row, idx) => {
+                const keyVal = getVal(row, primaryKeyCol);
+                const groupKey = (keyVal === null || keyVal === undefined || String(keyVal).trim() === '')
+                    ? `__MISSING_CORRELATION_ROW_${idx}__`
+                    : String(keyVal).trim();
+                if (!txGroups.has(groupKey)) {
+                    txGroups.set(groupKey, { rows: [], indices: [] });
+                }
+                const g = txGroups.get(groupKey);
+                g.rows.push(row);
+                g.indices.push(idx);
+            });
+            txGroups.forEach(({ rows: groupRows, indices }, groupKey) => {
+                if (groupKey.startsWith('__MISSING_CORRELATION_ROW_')) {
+                    violations.push({
+                        rowIndex: indices[0],
+                        rowData: groupRows[0],
+                        reason: `Transaction record is missing primary correlation key [${primaryKeyCol}]`,
+                        matchedPriorityValues: { primaryKeyColumn: primaryKeyCol, groupKey }
+                    });
+                    return;
+                }
+                // Determine transaction Type Group
+                const matchedType = findMatchingTypeGroup(groupRows, typeGroups);
+                if (typeGroups.length > 0 && !matchedType && ruleType === 'TYPE_RELATION_CHECK') {
+                    indices.forEach(idx => {
+                        violations.push({
+                            rowIndex: idx,
+                            rowData: rows[idx],
+                            reason: `Unclassified Transaction [${primaryKeyCol}=${groupKey}]: Does not match any configured Type Group multi-column condition.`,
+                            matchedPriorityValues: { primaryKey: groupKey, rowCount: groupRows.length }
+                        });
+                    });
+                    return;
+                }
+                const typeName = matchedType ? matchedType.groupName : 'Transaction';
+                // 1. Verify Expected Leg Count
+                const expectedLegCount = matchedType?.expectedLegCount;
+                if (expectedLegCount) {
+                    const valid = evaluateExpectedCount(groupRows.length, expectedLegCount);
+                    if (!valid) {
+                        indices.forEach(idx => {
+                            violations.push({
+                                rowIndex: idx,
+                                rowData: rows[idx],
+                                reason: `Type Group "${typeName}" [${primaryKeyCol}=${groupKey}] requires ${expectedLegCount.operator} ${expectedLegCount.value} legs, but found ${groupRows.length} legs/rows.`,
+                                matchedPriorityValues: {
+                                    primaryKey: groupKey,
+                                    typeGroup: typeName,
+                                    actualLegs: groupRows.length,
+                                    expected: expectedLegCount
+                                }
+                            });
+                        });
+                    }
+                }
+                // 2. Leg Roles resolution
+                const rolesToUse = (matchedType && Array.isArray(matchedType.roles) && matchedType.roles.length > 0)
+                    ? matchedType.roles
+                    : globalSemanticRoles;
+                const resolveRowRole = (row) => {
+                    if (!roleCol)
+                        return '__UNASSIGNED__';
+                    const rawRoleVal = getVal(row, roleCol);
+                    if (rawRoleVal === null || rawRoleVal === undefined)
+                        return '__UNASSIGNED__';
+                    const strVal = String(rawRoleVal).trim().toLowerCase();
+                    for (const sr of rolesToUse) {
+                        const vals = sr.matchValues || sr.matchingValues;
+                        if (Array.isArray(vals)) {
+                            const matches = vals.some((v) => String(v).trim().toLowerCase() === strVal);
+                            if (matches)
+                                return sr.roleName;
+                        }
+                    }
+                    return String(rawRoleVal).trim();
+                };
+                const classifiedRows = groupRows.map((r, i) => ({
+                    row: r,
+                    index: indices[i],
+                    role: resolveRowRole(r),
+                    rawRole: roleCol ? getVal(r, roleCol) : undefined
+                }));
+                const presentRoles = new Set(classifiedRows.map(c => c.role));
+                // 3. Leg Relationships / Cross-Row Rules
+                const rulesToEvaluate = (matchedType && Array.isArray(matchedType.legRelationships) && matchedType.legRelationships.length > 0)
+                    ? matchedType.legRelationships
+                    : globalCrossRules;
+                rulesToEvaluate.forEach((rule) => {
+                    if (rule.ruleType === 'ROLE_EXISTENCE') {
+                        const hasPrimary = presentRoles.has(rule.primaryRole);
+                        const hasTarget = rule.targetRole ? presentRoles.has(rule.targetRole) : false;
+                        if (hasPrimary && !hasTarget) {
+                            const violatingItem = classifiedRows.find(c => c.role === rule.primaryRole);
+                            violations.push({
+                                rowIndex: violatingItem?.index ?? indices[0],
+                                rowData: violatingItem?.row ?? groupRows[0],
+                                reason: `Incomplete Transaction Leg [${typeName}] [${primaryKeyCol}=${groupKey}]: Role "${rule.primaryRole}" requires companion role "${rule.targetRole}", but "${rule.targetRole}" was not found among the ${groupRows.length} rows for this transaction.`,
+                                matchedPriorityValues: {
+                                    primaryKey: groupKey,
+                                    typeGroup: typeName,
+                                    primaryRole: rule.primaryRole,
+                                    missingRole: rule.targetRole,
+                                    presentRoles: Array.from(presentRoles)
+                                }
+                            });
+                        }
+                    }
+                    else if (rule.ruleType === 'VALUE_MATCH') {
+                        const rowsA = classifiedRows.filter(c => c.role === rule.primaryRole);
+                        const rowsB = classifiedRows.filter(c => c.role === rule.targetRole);
+                        if (rowsA.length > 0 && rowsB.length > 0 && rule.valueColumn) {
+                            const targetCol = rule.targetValueColumn || rule.valueColumn;
+                            const valA = Number(getVal(rowsA[0].row, rule.valueColumn));
+                            const valB = Number(getVal(rowsB[0].row, targetCol));
+                            const tolerance = rule.tolerance || 0;
+                            const diff = Math.abs(valA - valB);
+                            if (isNaN(valA) || isNaN(valB) || diff > tolerance) {
+                                violations.push({
+                                    rowIndex: rowsA[0].index,
+                                    rowData: rowsA[0].row,
+                                    reason: `Cross-Row Leg Amount Mismatch [${typeName}] [${primaryKeyCol}=${groupKey}]: "${rule.primaryRole}" [${rule.valueColumn}=${valA}] does not equal "${rule.targetRole}" [${targetCol}=${valB}] (difference: ${diff.toFixed(2)}${tolerance > 0 ? `, tolerance: ${tolerance}` : ''}).`,
+                                    matchedPriorityValues: {
+                                        primaryKey: groupKey,
+                                        typeGroup: typeName,
+                                        primaryRole: rule.primaryRole,
+                                        primaryValue: valA,
+                                        targetRole: rule.targetRole,
+                                        targetValue: valB,
+                                        difference: diff
+                                    }
+                                });
+                            }
+                        }
+                    }
+                    else if (rule.ruleType === 'NET_BALANCE') {
+                        if (rule.valueColumn) {
+                            const rowsPos = classifiedRows.filter(c => c.role === rule.primaryRole);
+                            const rowsNeg = rule.targetRole ? classifiedRows.filter(c => c.role === rule.targetRole) : [];
+                            const sumPos = rowsPos.reduce((acc, c) => acc + (Number(getVal(c.row, rule.valueColumn)) || 0), 0);
+                            const sumNeg = rowsNeg.length > 0
+                                ? rowsNeg.reduce((acc, c) => acc + (Number(getVal(c.row, rule.targetValueColumn || rule.valueColumn)) || 0), 0)
+                                : 0;
+                            const net = rule.targetRole ? (sumPos - sumNeg) : sumPos;
+                            const tolerance = rule.tolerance || 0;
+                            if (Math.abs(net) > tolerance) {
+                                violations.push({
+                                    rowIndex: indices[0],
+                                    rowData: groupRows[0],
+                                    reason: `Unbalanced Transaction Net Legs [${typeName}] [${primaryKeyCol}=${groupKey}]: Net balance between "${rule.primaryRole}" (${sumPos}) and "${rule.targetRole || 'Others'}" (${sumNeg}) is ${net.toFixed(2)} (expected balanced = 0).`,
+                                    matchedPriorityValues: {
+                                        primaryKey: groupKey,
+                                        typeGroup: typeName,
+                                        netBalance: net,
+                                        sumPositive: sumPos,
+                                        sumNegative: sumNeg
+                                    }
+                                });
+                            }
+                        }
+                    }
+                    else if (rule.ruleType === 'MUTUAL_EXCLUSION') {
+                        const hasPrimary = presentRoles.has(rule.primaryRole);
+                        const hasTarget = rule.targetRole ? presentRoles.has(rule.targetRole) : false;
+                        if (hasPrimary && hasTarget) {
+                            violations.push({
+                                rowIndex: indices[0],
+                                rowData: groupRows[0],
+                                reason: `Mutually Exclusive Roles Detected [${typeName}] [${primaryKeyCol}=${groupKey}]: Role "${rule.primaryRole}" and "${rule.targetRole}" cannot coexist in the same transaction.`,
+                                matchedPriorityValues: {
+                                    primaryKey: groupKey,
+                                    typeGroup: typeName,
+                                    conflictingRoles: [rule.primaryRole, rule.targetRole]
+                                }
+                            });
+                        }
+                    }
+                });
+            });
+        }
+        else if (ruleType === 'VALUE_LABEL_CHECK') {
+            const targetCol = config.primaryKeyColumn || sortedCols[0]?.columnName;
+            const mappings = Array.isArray(config.valueLabels) ? config.valueLabels : [];
+            const unmappedAction = config.unmappedValueAction || 'FLAG';
+            if (!targetCol) {
+                return res.json({
+                    verdict: 'PASS',
+                    totalRows: rows.length,
+                    violationCount: 0,
+                    violations: [],
+                    details: 'Target evaluation column must be configured.'
+                });
+            }
+            // Build lookup map
+            const labelMap = new Map();
+            mappings.forEach(m => {
+                if (m && m.value !== undefined && m.value !== null) {
+                    labelMap.set(String(m.value).trim().toLowerCase(), m);
+                }
+            });
+            rows.forEach((row, idx) => {
+                const rawVal = getVal(row, targetCol);
+                const strVal = rawVal === null || rawVal === undefined ? '' : String(rawVal).trim();
+                const matched = labelMap.get(strVal.toLowerCase());
+                if (!matched) {
+                    if (unmappedAction === 'FLAG') {
+                        violations.push({
+                            rowIndex: idx,
+                            rowData: row,
+                            reason: `Unrecognized / Unlabeled value "${rawVal ?? 'NULL'}" in column "${targetCol}"`,
+                            matchedPriorityValues: { column: targetCol, value: rawVal, status: 'UNMAPPED' }
+                        });
+                    }
+                    else {
+                        passedRows.push({
+                            rowIndex: idx,
+                            rowData: row,
+                            info: `Unmapped value allowed ("${rawVal ?? 'NULL'}")`,
+                            matchedPriorityValues: {
+                                column: targetCol,
+                                value: rawVal,
+                                status: 'ALLOWED'
+                            }
+                        });
+                    }
+                }
+                else {
+                    if (matched.category === 'ERROR') {
+                        violations.push({
+                            rowIndex: idx,
+                            rowData: row,
+                            reason: `Value "${strVal}" in column "${targetCol}" is classified as ERROR: ${matched.label}${matched.description ? ` (${matched.description})` : ''}`,
+                            matchedPriorityValues: { column: targetCol, value: rawVal, label: matched.label, category: matched.category }
+                        });
+                    }
+                    else if (matched.category === 'WARNING' && config.severity === 'WARNING') {
+                        violations.push({
+                            rowIndex: idx,
+                            rowData: row,
+                            reason: `Value "${strVal}" in column "${targetCol}" flagged with WARNING: ${matched.label}`,
+                            matchedPriorityValues: { column: targetCol, value: rawVal, label: matched.label, category: matched.category }
+                        });
+                    }
+                    else {
+                        passedRows.push({
+                            rowIndex: idx,
+                            rowData: row,
+                            info: `Business Meaning: "${matched.label}" (${matched.category || 'VALID'})${matched.description ? ` - ${matched.description}` : ''}`,
+                            matchedPriorityValues: {
+                                column: targetCol,
+                                value: rawVal,
+                                label: matched.label,
+                                category: matched.category || 'VALID',
+                                description: matched.description
+                            }
+                        });
+                    }
+                }
+            });
+        }
+        // Populate any remaining non-violating rows across all check types
+        const violatingIndices = new Set(violations.map(v => v.rowIndex));
+        const passedIndices = new Set(passedRows.map(p => p.rowIndex));
+        rows.forEach((row, idx) => {
+            if (!violatingIndices.has(idx) && !passedIndices.has(idx)) {
+                const matchedValues = {};
+                sortedCols.forEach(c => {
+                    matchedValues[c.columnName] = getVal(row, c.columnName);
+                });
+                passedRows.push({
+                    rowIndex: idx,
+                    rowData: row,
+                    info: 'Rule criteria satisfied',
+                    matchedPriorityValues: matchedValues
+                });
+            }
+        });
+        passedRows.sort((a, b) => a.rowIndex - b.rowIndex);
+        return res.json({
+            verdict: violations.length > 0 ? 'VIOLATIONS_FOUND' : 'PASS',
+            totalRows: rows.length,
+            violationCount: violations.length,
+            violations,
+            passedCount: passedRows.length,
+            passedRows,
+            evaluatedAt: new Date().toISOString()
         });
     }
     catch (err) {
@@ -769,7 +1826,7 @@ databaseRouter.get('/systems', async (_req, res) => {
     }
 });
 databaseRouter.post('/query/execute', async (req, res) => {
-    const { userId, username, userRole, dbId, dbName, query } = req.body;
+    const { userId, username, userRole, dbId, dbName, query, tableName } = req.body;
     if (!query || !query.trim()) {
         return res.status(400).json({ error: 'Query statement is required' });
     }
@@ -783,6 +1840,31 @@ databaseRouter.post('/query/execute', async (req, res) => {
     const queryType = isUpdate ? 'UPDATE' : 'SELECT';
     try {
         const result = await executeLiveQueryOnDb(db, query);
+        // If SELECT query returned rows, automatically stream/insert into PostgreSQL UNLOGGED mirror table!
+        let mirroredTable = null;
+        let mirroredCount = 0;
+        if (!isUpdate && result.rows && result.rows.length > 0) {
+            try {
+                let targetTable = tableName ? String(tableName).trim() : null;
+                if (!targetTable) {
+                    const match = query.match(/\bFROM\s+[`"']?([a-zA-Z0-9_.-]+)[`"']?/i);
+                    if (match) {
+                        targetTable = match[1].split('.').pop() || match[1];
+                    }
+                }
+                if (targetTable) {
+                    const mirrorName = await mirrorTableManager.ensureMirrorTableExists(db, targetTable);
+                    const batchId = `sandbox-${Date.now()}`;
+                    const ruleBlockId = 'sql-sandbox';
+                    mirroredCount = await mirrorTableManager.bulkInsertToMirror(mirrorName, batchId, ruleBlockId, result.rows);
+                    mirroredTable = mirrorName;
+                    console.log(`[QuerySandbox] Mirrored ${mirroredCount} rows from ${db.name}.${targetTable} into PostgreSQL table '${mirrorName}'`);
+                }
+            }
+            catch (mirrorErr) {
+                console.warn(`[QuerySandbox] Mirror table insertion warning:`, mirrorErr.message);
+            }
+        }
         const log = {
             id: `log-${Date.now()}`,
             userId: userId || 'usr-1',
@@ -807,7 +1889,9 @@ databaseRouter.post('/query/execute', async (req, res) => {
             rowCount: result.rowCount,
             executionTimeMs: result.executionTimeMs,
             logId: log.id,
-            targetDb: `${db.name} (${db.type})`
+            targetDb: `${db.name} (${db.type})`,
+            mirroredTable,
+            mirroredCount
         });
     }
     catch (err) {
@@ -912,6 +1996,82 @@ databaseRouter.put('/access-requests/:id', async (req, res) => {
         if (!updated)
             return res.status(404).json({ error: 'Request not found' });
         return res.json(updated);
+    }
+    catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+});
+// =============================================================================
+// DATABASE TABLE LIVE DATA PREVIEW (FOR COLUMN CONFIGURATION & VISUAL RULES)
+// =============================================================================
+databaseRouter.get('/databases/:id/tables/:tableName/preview', async (req, res) => {
+    try {
+        const { id, tableName } = req.params;
+        const limit = Math.min(Number(req.query.limit) || 50, 100);
+        const db = await repo.getDatabaseById(id);
+        if (!db) {
+            return res.status(404).json({ error: `Database not found: ${id}` });
+        }
+        // 1. Try to query directly from the target database
+        try {
+            const sanitizedTable = tableName.replace(/[^a-zA-Z0-9_.-]/g, '');
+            const query = `SELECT * FROM ${sanitizedTable} LIMIT ${limit}`;
+            const queryResult = await executeLiveQueryOnDb(db, query);
+            const sampleRow = queryResult.rows && queryResult.rows.length > 0 ? queryResult.rows[0] : null;
+            const formattedColumns = (queryResult.columns || []).map((col) => {
+                if (typeof col === 'string') {
+                    const sampleVal = sampleRow ? sampleRow[col] : undefined;
+                    const inferredType = sampleVal !== undefined && sampleVal !== null ? typeof sampleVal : 'text';
+                    return { name: col, type: inferredType };
+                }
+                return { name: col.name || String(col), type: col.type || 'text' };
+            });
+            return res.json({
+                columns: formattedColumns,
+                rows: queryResult.rows || [],
+                rowCount: queryResult.rowCount || 0,
+                source: 'LIVE_DATABASE',
+                executionTimeMs: queryResult.executionTimeMs || 0
+            });
+        }
+        catch (liveErr) {
+            console.warn(`[TablePreview] Direct live query failed for ${tableName} on ${db.name}: ${liveErr.message}. Attempting PostgreSQL mirror fallback...`);
+            // 2. Fallback to UNLOGGED mirror table if available
+            try {
+                const mirrorName = `mirror_${db.id.replace(/[^a-zA-Z0-9_]/g, '_')}_${tableName.replace(/[^a-zA-Z0-9_]/g, '_')}`.toLowerCase();
+                const mirrorResult = await queryPg(`SELECT * FROM ${mirrorName} LIMIT $1`, [limit]);
+                if (mirrorResult.rows && mirrorResult.rows.length > 0) {
+                    const rawColumns = Object.keys(mirrorResult.rows[0]);
+                    const systemCols = new Set(['_mirror_id', '_batch_id', '_rule_block_id', '_ingested_at']);
+                    const cleanCols = rawColumns.filter(c => !systemCols.has(c));
+                    const cleanRows = mirrorResult.rows.map(r => {
+                        const clean = {};
+                        for (const c of cleanCols)
+                            clean[c] = r[c];
+                        return clean;
+                    });
+                    return res.json({
+                        columns: cleanCols.map(c => ({ name: c, type: typeof cleanRows[0][c] || 'text' })),
+                        rows: cleanRows,
+                        rowCount: cleanRows.length,
+                        source: 'POSTGRES_MIRROR',
+                        mirrorTable: mirrorName
+                    });
+                }
+            }
+            catch (mirrorErr) {
+                console.warn(`[TablePreview] Mirror fallback query error: ${mirrorErr.message}`);
+            }
+            // 3. Fallback: inspect discovered table columns schema to at least return empty rows with known columns
+            const cols = await getTableColumnsForDb(db, tableName).catch(() => []);
+            return res.json({
+                columns: cols.map(c => ({ name: c.name, type: c.type })),
+                rows: [],
+                rowCount: 0,
+                source: 'SCHEMA_DISCOVERY',
+                warning: `Database table empty or currently offline: ${liveErr.message}`
+            });
+        }
     }
     catch (err) {
         return res.status(500).json({ error: err.message });
