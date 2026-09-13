@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { repo } from '../store/repository.js';
 import { DatabaseValidationWorkflow, ProcessingStage, ValidationCheckStep } from '../types.js';
+import { executeLiveQueryOnDb } from '../services/dbConnectionManager.js';
 
 export const workflowsRouter = Router();
 
@@ -239,10 +240,28 @@ workflowsRouter.post('/query-sandbox/preview', async (req: Request, res: Respons
     const placeholders = chunk.transactionIds.map(() => '?').join(', ');
     const sql = `SELECT ${columns} FROM ${extraction.targetDataSource || 'transactions'} WHERE ${primaryKey} IN (${placeholders});`;
 
+    let rows: any[] = [];
+    if (extraction.targetDbId && extraction.targetDataSource) {
+      try {
+        const dbs = await repo.getDatabases();
+        const db = dbs.find(d => d.id === extraction.targetDbId) || dbs.find(d => d.name === extraction.targetDbId);
+        if (db) {
+          const previewQuery = `SELECT ${columns} FROM ${extraction.targetDataSource} LIMIT 10;`;
+          const queryRes = await executeLiveQueryOnDb(db, previewQuery);
+          if (queryRes && queryRes.rows) {
+            rows = queryRes.rows;
+          }
+        }
+      } catch (qErr: any) {
+        console.warn('[QuerySandbox] Could not fetch sample rows:', qErr.message);
+      }
+    }
+
     return res.json({
       sql,
       parameters: chunk.transactionIds,
-      chunk
+      chunk,
+      rows
     });
   } catch (err: any) {
     return res.status(500).json({ error: err.message });

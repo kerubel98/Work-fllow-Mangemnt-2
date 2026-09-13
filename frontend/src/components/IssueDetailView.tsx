@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import * as XLSX from 'xlsx';
 import { Issue, HashtagPreset, ChatMessage, User, IssueStatus, IssuePriority, EnvironmentSystem, UserRole, QueryApprovalRequest, DatabaseConnection, Transaction } from '../types';
 import GlobalTransactionSettings from './GlobalTransactionSettings';
@@ -226,12 +226,14 @@ export default function IssueDetailView({
     return (databases && databases.length > 0) ? databases[0].id : (systems && systems.length > 0 ? systems[0].id : 'db-1');
   });
   const [sandboxEnv, setSandboxEnv] = useState<'production' | 'testing'>('production');
-  const [sandboxTable, setSandboxTable] = useState<string>('transactions_master');
-  const [sandboxSql, setSandboxSql] = useState<string>(
-    `SELECT transaction_id, card_number, amount_usd, currency, status_state, merchant_id, created_at, response_code\nFROM transactions_master\nWHERE status_state = 'PENDING'\nORDER BY created_at DESC\nLIMIT 20;`
-  );
+  const [sandboxAvailableTables, setSandboxAvailableTables] = useState<string[]>([]);
+  const [sandboxTable, setSandboxTable] = useState<string>('transactions');
+  const [sandboxAvailableColumns, setSandboxAvailableColumns] = useState<{ name: string; type: string }[]>([]);
+  const [sandboxColumns, setSandboxColumns] = useState<string[]>([]);
+  const [sandboxSql, setSandboxSql] = useState<string>('SELECT * FROM transactions LIMIT 25;');
   const [isSandboxExecuting, setIsSandboxExecuting] = useState<boolean>(false);
   const [sandboxResults, setSandboxResults] = useState<any[]>([]);
+  const [sandboxError, setSandboxError] = useState<string | null>(null);
   const [sandboxExecutionStats, setSandboxExecutionStats] = useState<{
     executionTimeMs: number;
     rowCount: number;
@@ -246,89 +248,98 @@ export default function IssueDetailView({
   const [sandboxSearchFilter, setSandboxSearchFilter] = useState<string>('');
   const [sandboxShowLogs, setSandboxShowLogs] = useState<boolean>(false);
   const [sandboxCopiedSql, setSandboxCopiedSql] = useState<boolean>(false);
-  const [sandboxSelectedTemplate, setSandboxSelectedTemplate] = useState<string>('pending_txns');
+  const [sandboxSelectedTemplate, setSandboxSelectedTemplate] = useState<string>('select_all');
 
-  const SANDBOX_SQL_TEMPLATES = [
-    {
-      id: 'pending_txns',
-      name: '1. Select Recent Pending Transactions',
-      table: 'transactions_master',
-      sql: `SELECT transaction_id, card_number, amount_usd, currency, status_state, merchant_id, created_at, response_code\nFROM transactions_master\nWHERE status_state = 'PENDING'\nORDER BY created_at DESC\nLIMIT 20;`
-    },
-    {
-      id: 'disputes',
-      name: '2. Disputed Chargebacks & Reason Codes',
-      table: 'transactions_master',
-      sql: `SELECT transaction_id, card_number, amount_usd, status_state, dispute_reason, user_email, created_at\nFROM transactions_master\nWHERE dispute_reason IS NOT NULL\nORDER BY amount_usd DESC;`
-    },
-    {
-      id: 'high_value',
-      name: '3. High-Value Transaction Audit (> $500)',
-      table: 'transactions_master',
-      sql: `SELECT transaction_id, card_number, amount_usd, currency, status_state, merchant_id, created_at\nFROM transactions_master\nWHERE amount_usd > 500.00\nORDER BY amount_usd DESC;`
-    },
-    {
-      id: 'declined_auths',
-      name: '4. Declined & Failed Auth Analysis',
-      table: 'transactions_master',
-      sql: `SELECT transaction_id, card_number, user_email, response_code, status_state, created_at\nFROM transactions_master\nWHERE response_code != '00' OR status_state = 'DECLINED'\nLIMIT 50;`
-    },
-    {
-      id: 'recon_summary',
-      name: '5. Reconciliation Volume Grouping',
-      table: 'transactions_master',
-      sql: `SELECT status_state, COUNT(*) as record_count, SUM(amount_usd) as total_volume_usd\nFROM transactions_master\nGROUP BY status_state;`
-    },
-    {
-      id: 'update_reconcile',
-      name: '6. UPDATE: Mark Disputed Record as RECONCILED',
-      table: 'transactions_master',
-      sql: `UPDATE transactions_master\nSET status_state = 'RECONCILED'\nWHERE transaction_id = 'TXN-8901' AND status_state = 'PENDING';`
-    },
-    {
-      id: 'update_batch_reversal',
-      name: '7. UPDATE: Batch Flag Stale Pending as REVERSED',
-      table: 'transactions_master',
-      sql: `UPDATE transactions_master\nSET status_state = 'REVERSED'\nWHERE status_state = 'PENDING' AND amount_usd < 100.00;`
-    }
-  ];
+  // Fetch available tables whenever selected database changes
+  useEffect(() => {
+    if (!sandboxSelectedDbId) return;
+    let isMounted = true;
 
-  const generateSandboxSampleData = () => {
-    if (transactions && transactions.length > 0) {
-      return transactions.map((t, idx) => ({
-        transaction_id: t.id || `TXN-${8900 + idx}`,
-        card_number: (t as any).cardNumber || (t as any).card_number || `4111 •••• •••• ${1000 + idx * 37}`,
-        amount_usd: typeof t.amount === 'number' ? t.amount.toFixed(2) : (t.amount || (45.50 + idx * 22.15).toFixed(2)),
-        currency: (t as any).currency || 'USD',
-        status_state: (t as any).status || (idx % 3 === 0 ? 'PENDING' : idx % 3 === 1 ? 'SETTLED' : 'REVERSED'),
-        merchant_id: (t as any).merchant || (t as any).merchant_id || `MERCH-${5400 + (idx % 8)}`,
-        created_at: (t as any).timestamp || (t as any).created_at || new Date(Date.now() - idx * 3600000 * 3).toISOString().replace('T', ' ').slice(0, 19),
-        response_code: (t as any).responseCode || (idx % 5 === 0 ? '05' : '00'),
-        user_email: (t as any).userEmail || (t as any).user_email || `customer.${idx + 1}@banking-client.com`,
-        dispute_reason: idx % 4 === 0 ? 'UNAUTHORIZED_CHARGE' : idx % 6 === 0 ? 'DUPLICATE_AUTH' : null,
-        terminal_id: `TERM-POS-0${(idx % 6) + 1}`
-      }));
-    }
+    api.getDatabaseTables(sandboxSelectedDbId)
+      .then(res => {
+        if (!isMounted) return;
+        const tbls = res.allowedTables && res.allowedTables.length > 0
+          ? res.allowedTables
+          : (res.availableTables && res.availableTables.length > 0 ? res.availableTables : (res.tables || []));
+        setSandboxAvailableTables(tbls);
+        if (tbls.length > 0 && (!sandboxTable || !tbls.includes(sandboxTable))) {
+          setSandboxTable(tbls[0]);
+        }
+      })
+      .catch(() => {
+        if (!isMounted) return;
+        const activeDb = databases.find(d => d.id === sandboxSelectedDbId);
+        const tbls = activeDb?.allowedTables || activeDb?.availableTables || [];
+        setSandboxAvailableTables(tbls);
+        if (tbls.length > 0 && (!sandboxTable || !tbls.includes(sandboxTable))) {
+          setSandboxTable(tbls[0]);
+        }
+      });
 
-    const defaultSamples = [
-      { transaction_id: 'TXN-8901', card_number: '4111 •••• •••• 9821', amount_usd: '142.50', currency: 'USD', status_state: 'PENDING', merchant_id: 'MERCH-5401 (Stripe Gateway)', created_at: '2026-08-28 14:22:10', response_code: '00', user_email: 'claire.morris@finmail.com', dispute_reason: 'AUTH_TIMEOUT_MISMATCH', terminal_id: 'TERM-POS-01' },
-      { transaction_id: 'TXN-8902', card_number: '5200 •••• •••• 4412', amount_usd: '890.00', currency: 'USD', status_state: 'PENDING', merchant_id: 'MERCH-5402 (Square POS)', created_at: '2026-08-28 13:45:00', response_code: '00', user_email: 'david.ross@acmecorp.com', dispute_reason: null, terminal_id: 'TERM-POS-02' },
-      { transaction_id: 'TXN-8903', card_number: '3782 •••• •••• 3011', amount_usd: '29.99', currency: 'USD', status_state: 'SETTLED', merchant_id: 'MERCH-5403 (E-Commerce Web)', created_at: '2026-08-28 12:10:44', response_code: '00', user_email: 'elena.rostova@cloudtech.io', dispute_reason: null, terminal_id: 'TERM-POS-03' },
-      { transaction_id: 'TXN-8904', card_number: '4242 •••• •••• 8734', amount_usd: '650.75', currency: 'USD', status_state: 'PENDING', merchant_id: 'MERCH-5404 (Wholesale Hub)', created_at: '2026-08-28 11:32:19', response_code: '05', user_email: 'marcus.vance@enterprise.com', dispute_reason: 'UNAUTHORIZED_CHARGE', terminal_id: 'TERM-POS-04' },
-      { transaction_id: 'TXN-8905', card_number: '4000 •••• •••• 1122', amount_usd: '15.00', currency: 'USD', status_state: 'DECLINED', merchant_id: 'MERCH-5401 (Stripe Gateway)', created_at: '2026-08-28 10:15:00', response_code: '51', user_email: 'sophia.chen@fintech.org', dispute_reason: null, terminal_id: 'TERM-POS-01' },
-      { transaction_id: 'TXN-8906', card_number: '5500 •••• •••• 9931', amount_usd: '320.00', currency: 'USD', status_state: 'PENDING', merchant_id: 'MERCH-5405 (Global Freight)', created_at: '2026-08-28 09:40:12', response_code: '00', user_email: 'arthur.pendelton@logistics.net', dispute_reason: null, terminal_id: 'TERM-POS-05' },
-      { transaction_id: 'TXN-8907', card_number: '4111 •••• •••• 6654', amount_usd: '75.20', currency: 'USD', status_state: 'REVERSED', merchant_id: 'MERCH-5402 (Square POS)', created_at: '2026-08-28 08:22:31', response_code: '00', user_email: 'kevin.baker@quickpay.com', dispute_reason: 'DUPLICATE_AUTH', terminal_id: 'TERM-POS-02' },
-      { transaction_id: 'TXN-8908', card_number: '5105 •••• •••• 3341', amount_usd: '1200.00', currency: 'USD', status_state: 'PENDING', merchant_id: 'MERCH-5406 (Aviation Terminal)', created_at: '2026-08-28 07:11:55', response_code: '00', user_email: 'natalie.ward@airways.com', dispute_reason: null, terminal_id: 'TERM-POS-06' },
-      { transaction_id: 'TXN-8909', card_number: '4242 •••• •••• 5543', amount_usd: '54.00', currency: 'USD', status_state: 'RECONCILED', merchant_id: 'MERCH-5403 (E-Commerce Web)', created_at: '2026-08-27 22:50:18', response_code: '00', user_email: 'jason.bourne@securepay.org', dispute_reason: null, terminal_id: 'TERM-POS-03' },
-      { transaction_id: 'TXN-8910', card_number: '3714 •••• •••• 8820', amount_usd: '430.25', currency: 'USD', status_state: 'PENDING', merchant_id: 'MERCH-5404 (Wholesale Hub)', created_at: '2026-08-27 21:15:30', response_code: '00', user_email: 'rachel.green@fashionhaus.co', dispute_reason: 'CHARGEBACK_REQUESTED', terminal_id: 'TERM-POS-04' },
-      { transaction_id: 'TXN-8911', card_number: '4111 •••• •••• 7711', amount_usd: '210.00', currency: 'USD', status_state: 'PENDING', merchant_id: 'MERCH-5401 (Stripe Gateway)', created_at: '2026-08-27 20:04:12', response_code: '00', user_email: 'oliver.queen@starling.com', dispute_reason: null, terminal_id: 'TERM-POS-01' },
-      { transaction_id: 'TXN-8912', card_number: '5200 •••• •••• 2290', amount_usd: '95.50', currency: 'USD', status_state: 'SETTLED', merchant_id: 'MERCH-5402 (Square POS)', created_at: '2026-08-27 18:30:00', response_code: '00', user_email: 'barry.allen@centralcity.org', dispute_reason: null, terminal_id: 'TERM-POS-02' },
-      { transaction_id: 'TXN-8913', card_number: '4000 •••• •••• 9901', amount_usd: '820.00', currency: 'USD', status_state: 'PENDING', merchant_id: 'MERCH-5405 (Global Freight)', created_at: '2026-08-27 17:12:45', response_code: '00', user_email: 'bruce.wayne@waynecorp.com', dispute_reason: 'UNAUTHORIZED_CHARGE', terminal_id: 'TERM-POS-05' },
-      { transaction_id: 'TXN-8914', card_number: '3782 •••• •••• 1209', amount_usd: '64.80', currency: 'USD', status_state: 'PENDING', merchant_id: 'MERCH-5403 (E-Commerce Web)', created_at: '2026-08-27 16:05:22', response_code: '00', user_email: 'diana.prince@themyscira.net', dispute_reason: null, terminal_id: 'TERM-POS-03' },
-      { transaction_id: 'TXN-8915', card_number: '4242 •••• •••• 3411', amount_usd: '185.00', currency: 'USD', status_state: 'DECLINED', merchant_id: 'MERCH-5406 (Aviation Terminal)', created_at: '2026-08-27 14:40:10', response_code: '05', user_email: 'hal.jordan@coastair.com', dispute_reason: null, terminal_id: 'TERM-POS-06' }
+    return () => { isMounted = false; };
+  }, [sandboxSelectedDbId]);
+
+  // Fetch columns and tailor SQL query when database or table changes
+  useEffect(() => {
+    if (!sandboxSelectedDbId || !sandboxTable) return;
+    let isMounted = true;
+
+    api.getTableColumns(sandboxSelectedDbId, sandboxTable)
+      .then(res => {
+        if (!isMounted) return;
+        const cols = res.columns || [];
+        setSandboxAvailableColumns(cols);
+        const colNames = cols.map(c => c.name);
+        const colProjection = colNames.length > 0 && colNames.length <= 8 ? colNames.join(', ') : '*';
+        const defaultSql = `SELECT ${colProjection}\nFROM ${sandboxTable}\nLIMIT 25;`;
+        setSandboxSql(defaultSql);
+        executeSandboxQuery(defaultSql, sandboxTable, sandboxSelectedDbId);
+      })
+      .catch(() => {
+        if (!isMounted) return;
+        setSandboxAvailableColumns([]);
+        const defaultSql = `SELECT *\nFROM ${sandboxTable}\nLIMIT 25;`;
+        setSandboxSql(defaultSql);
+        executeSandboxQuery(defaultSql, sandboxTable, sandboxSelectedDbId);
+      });
+
+    return () => { isMounted = false; };
+  }, [sandboxSelectedDbId, sandboxTable]);
+
+  // Dynamic query templates constructed using the selected database table and columns
+  const sandboxTemplates = useMemo(() => {
+    const table = sandboxTable || 'transactions';
+    const firstCol = sandboxAvailableColumns[0]?.name;
+    const secondCol = sandboxAvailableColumns[1]?.name;
+    return [
+      {
+        id: 'select_all',
+        name: `1. Select Recent Records (${table})`,
+        table,
+        sql: `SELECT *\nFROM ${table}\nLIMIT 25;`
+      },
+      {
+        id: 'filter_active',
+        name: `2. Filter ${firstCol ? `by ${firstCol}` : 'Records'}`,
+        table,
+        sql: firstCol
+          ? `SELECT *\nFROM ${table}\nWHERE ${firstCol} IS NOT NULL\nLIMIT 25;`
+          : `SELECT *\nFROM ${table}\nLIMIT 25;`
+      },
+      {
+        id: 'count_summary',
+        name: `3. Total Row Count (${table})`,
+        table,
+        sql: `SELECT COUNT(*) AS total_records\nFROM ${table};`
+      },
+      {
+        id: 'recent_order',
+        name: `4. Sample Ordered by ${secondCol || firstCol || '1'}`,
+        table,
+        sql: `SELECT *\nFROM ${table}\nORDER BY ${secondCol || firstCol || '1'} DESC\nLIMIT 25;`
+      }
     ];
-    return defaultSamples;
-  };
+  }, [sandboxTable, sandboxAvailableColumns]);
 
   const executeSandboxQuery = async (
     querySqlOverride?: string,
@@ -337,40 +348,30 @@ export default function IssueDetailView({
     envOverride?: string
   ) => {
     setIsSandboxExecuting(true);
+    setSandboxError(null);
     const sqlToRun = (querySqlOverride !== undefined ? querySqlOverride : sandboxSql).trim();
-    const currentTable = tableOverride || sandboxTable || 'transactions_master';
+    const currentTable = tableOverride || sandboxTable;
     const currentDbId = dbOverride || sandboxSelectedDbId;
     const currentEnv = envOverride || sandboxEnv;
     const currentDb = (databases && databases.find(d => d.id === currentDbId)) || {
-      id: 'db-1',
-      name: 'Core Retail Banking DB',
+      id: currentDbId || 'db-1',
+      name: 'Database',
       type: 'PostgreSQL',
-      host: 'db-primary.internal:5432',
+      host: 'localhost',
       status: 'online'
     };
 
     const startTime = performance.now();
     const timestamp = new Date().toLocaleTimeString();
     const upperSql = sqlToRun.toUpperCase();
-    const isUpdate = upperSql.startsWith('UPDATE');
-    const isInsert = upperSql.startsWith('INSERT');
-    const isDelete = upperSql.startsWith('DELETE');
-    const isAlter = upperSql.startsWith('ALTER') || upperSql.startsWith('CREATE') || upperSql.startsWith('DROP');
-    const queryType: 'SELECT' | 'UPDATE' | 'INSERT' | 'DELETE' | 'ALTER' = isUpdate
-      ? 'UPDATE'
-      : isInsert
-      ? 'INSERT'
-      : isDelete
-      ? 'DELETE'
-      : isAlter
-      ? 'ALTER'
-      : 'SELECT';
+    const isUpdate = /^\s*(UPDATE|DELETE|INSERT|ALTER|CREATE|DROP|TRUNCATE)/i.test(sqlToRun);
+    const queryType: 'SELECT' | 'UPDATE' | 'INSERT' | 'DELETE' | 'ALTER' = isUpdate ? 'UPDATE' : 'SELECT';
 
     const logs = [
-      `[${timestamp}] Direct TCP pipeline established to ${currentDb.name} (${currentDb.type || 'PostgreSQL'}).`,
-      `[${timestamp}] Host: ${currentDb.host || 'internal-db:5432'} • Environment: ${currentEnv.toUpperCase()}`,
-      `[${timestamp}] Authenticated Operator: @${currentUser.username || 'operator'} (Role: ${currentUser.role})`,
-      `[${timestamp}] AST Query Lexer verified ${queryType} statement structure.`,
+      `[${timestamp}] Query dispatch to ${currentDb.name} (${currentDb.type || 'PostgreSQL'}).`,
+      `[${timestamp}] Host: ${currentDb.host || 'localhost'} • Environment: ${currentEnv.toUpperCase()}`,
+      `[${timestamp}] Target Table: ${currentTable} • Query Type: ${queryType}`,
+      `[${timestamp}] Statement: ${sqlToRun.replace(/\s+/g, ' ').slice(0, 120)}...`
     ];
 
     try {
@@ -380,111 +381,65 @@ export default function IssueDetailView({
         userRole: currentUser.role,
         dbId: currentDb.id,
         dbName: currentDb.name,
-        query: sqlToRun
+        query: sqlToRun,
+        tableName: currentTable
       });
 
-      const elapsed = res.executionTimeMs || Math.max(18, Math.round(performance.now() - startTime));
+      const elapsed = res.executionTimeMs || Math.max(15, Math.round(performance.now() - startTime));
 
       if (isUpdate) {
-        logs.push(`[${timestamp}] Query planner: Executing primary index scan on key (transaction_id)...`);
-        logs.push(`[${timestamp}] Write lock acquired on table '${currentTable}'. Target rows modified.`);
-        logs.push(`[${timestamp}] Transaction committed to WAL redo logs buffer.`);
-        logs.push(`[SUCCESS] UPDATE query completed in ${elapsed}ms. Rows affected.`);
-
-        setSandboxResults(prev => {
-          const list = prev.length > 0 ? prev : generateSandboxSampleData();
-          return list.map(row => {
-            if (sqlToRun.includes(row.transaction_id) || row.status_state === 'PENDING') {
-              const newStatus = sqlToRun.includes('REVERSED')
-                ? 'REVERSED'
-                : sqlToRun.includes('RECONCILED')
-                ? 'RECONCILED'
-                : 'SETTLED';
-              return { ...row, status_state: newStatus };
-            }
-            return row;
-          });
-        });
-
+        logs.push(`[${timestamp}] Write operation completed successfully on '${currentTable}'.`);
+        logs.push(`[SUCCESS] DML statement executed in ${elapsed}ms. Rows affected: ${res.rowCount ?? 1}.`);
+        setSandboxResults([]);
+        setSandboxColumns([]);
         setSandboxExecutionStats({
           executionTimeMs: elapsed,
-          rowCount: 1,
-          affectedCount: 1,
+          rowCount: 0,
+          affectedCount: res.rowCount ?? 1,
           isDml: true,
           queryType: 'UPDATE',
           timestamp: new Date().toISOString(),
           status: 'SUCCESS'
         });
-      } else if (res && res.rows && res.rows.length > 0) {
-        // Map backend rows to sandbox table records
-        const mappedResults = res.rows.map((r: any, idx: number) => ({
-          transaction_id: r.TRANSACTION_ID || r.transaction_id || `TXN-${9020 + idx}`,
-          card_number: r.CARD_NUMBER || r.card_number || '4111 •••• •••• 9821',
-          amount_usd: typeof r.AMOUNT_USD === 'number' ? r.AMOUNT_USD.toFixed(2) : String(r.AMOUNT_USD || r.amount_usd || r.AMOUNT || '149.99'),
-          currency: r.CURRENCY || r.currency || 'USD',
-          status_state: r.STATUS || r.status || r.status_state || 'PENDING',
-          merchant_id: r.MERCHANT_ID || r.merchant_id || 'MERCH-5401',
-          created_at: r.AUTH_TIME || r.auth_time || r.created_at || new Date().toISOString().slice(0, 19).replace('T', ' '),
-          response_code: r.RESPONSE_CODE || r.response_code || '00',
-          user_email: r.CUSTOMER_EMAIL || r.customer_email || r.user_email || 'client@banking.com',
-          dispute_reason: r.DISPUTE_REASON || r.dispute_reason || null,
-          terminal_id: r.TERMINAL_ID || r.terminal_id || 'TERM-POS-01'
-        }));
-
-        logs.push(`[${timestamp}] Query planner: Executing Bitmap Index Scan on '${currentTable}'...`);
-        logs.push(`[${timestamp}] Cost estimation: 0.00..18.40 rows=${mappedResults.length} width=214`);
-        logs.push(`[SUCCESS] SELECT query executed in ${elapsed}ms. Fetched ${mappedResults.length} record(s) from database.`);
-
-        setSandboxResults(mappedResults);
-        setSandboxExecutionStats({
-          executionTimeMs: elapsed,
-          rowCount: mappedResults.length,
-          isDml: false,
-          queryType: 'SELECT',
-          timestamp: new Date().toISOString(),
-          status: 'SUCCESS'
-        });
       } else {
-        const baseData = generateSandboxSampleData();
-        logs.push(`[SUCCESS] Query executed in ${elapsed}ms.`);
-        setSandboxResults(baseData);
+        const rawRows = Array.isArray(res.rows) ? res.rows : [];
+        const cols = (res.columns && res.columns.length > 0)
+          ? res.columns
+          : (rawRows.length > 0 ? Object.keys(rawRows[0]) : []);
+
+        logs.push(`[SUCCESS] Query executed in ${elapsed}ms. Returned ${rawRows.length} record(s) and ${cols.length} column(s).`);
+        setSandboxResults(rawRows);
+        setSandboxColumns(cols);
         setSandboxExecutionStats({
           executionTimeMs: elapsed,
-          rowCount: baseData.length,
+          rowCount: rawRows.length,
           isDml: false,
           queryType: 'SELECT',
           timestamp: new Date().toISOString(),
           status: 'SUCCESS'
         });
       }
-    } catch (err: any) {
-      logs.push(`[ERROR] Execution failed: ${err.message || 'Database connection error'}`);
-    } finally {
       setSandboxQueryLogs(logs);
+    } catch (err: any) {
+      const errorMsg = err.response?.data?.error || err.message || 'Database execution error';
+      logs.push(`[ERROR] Execution failed: ${errorMsg}`);
+      setSandboxError(errorMsg);
+      setSandboxResults([]);
+      setSandboxColumns([]);
+      setSandboxExecutionStats({
+        executionTimeMs: Math.round(performance.now() - startTime),
+        rowCount: 0,
+        isDml: isUpdate,
+        queryType,
+        timestamp: new Date().toISOString(),
+        status: 'ERROR',
+        errorMessage: errorMsg
+      });
+      setSandboxQueryLogs(logs);
+    } finally {
       setIsSandboxExecuting(false);
     }
   };
-
-  useEffect(() => {
-    // Populate query results on initial load so table is immediately rendered below editor
-    if (sandboxResults.length === 0) {
-      const initialData = generateSandboxSampleData().filter(r => r.status_state === 'PENDING').slice(0, 20);
-      setSandboxResults(initialData);
-      setSandboxExecutionStats({
-        executionTimeMs: 24,
-        rowCount: initialData.length,
-        isDml: false,
-        queryType: 'SELECT',
-        timestamp: new Date().toISOString(),
-        status: 'SUCCESS'
-      });
-      setSandboxQueryLogs([
-        `[${new Date().toLocaleTimeString()}] Direct SQL session initialized with PostgreSQL Core Banking DB.`,
-        `[${new Date().toLocaleTimeString()}] Target Table: transactions_master (Active Production)`,
-        `[SUCCESS] 18 pending reconciliation rows loaded into sandbox data grid.`
-      ]);
-    }
-  }, []);
 
   const handleExportSandboxCsv = () => {
     if (sandboxResults.length === 0) return;
@@ -539,7 +494,7 @@ export default function IssueDetailView({
 
   const handleSelectSandboxTemplate = (templateId: string) => {
     setSandboxSelectedTemplate(templateId);
-    const tmpl = SANDBOX_SQL_TEMPLATES.find(t => t.id === templateId);
+    const tmpl = sandboxTemplates.find(t => t.id === templateId);
     if (tmpl) {
       setSandboxSql(tmpl.sql);
       setSandboxTable(tmpl.table);
@@ -2983,94 +2938,89 @@ export default function IssueDetailView({
                   {/* Table View Selector */}
                   <div className="flex items-center gap-1.5 bg-slate-950/80 px-2 py-1 rounded-lg border border-slate-800">
                     <Table size={13} className="text-slate-400" />
-                    <select
-                      value={sandboxTable}
-                      onChange={(e) => {
-                        setSandboxTable(e.target.value);
-                        executeSandboxQuery(undefined, e.target.value);
-                      }}
-                      className="bg-transparent font-mono text-xs text-slate-300 focus:outline-none cursor-pointer"
-                    >
-                      {(() => {
-                        const activeDb = databases.find(d => d.id === sandboxSelectedDbId);
-                        const tables = (activeDb?.allowedTables && activeDb.allowedTables.length > 0)
-                          ? activeDb.allowedTables
-                          : (activeDb?.availableTables || []);
-                        if (tables.length === 0) {
-                          return <option value="" className="bg-slate-900 text-slate-400">No tables discovered</option>;
-                        }
-                        return tables.map(t => (
-                          <option key={t} value={t} className="bg-slate-900 text-white">
-                            {t}
+                      <select
+                        value={sandboxTable}
+                        onChange={(e) => {
+                          setSandboxTable(e.target.value);
+                          executeSandboxQuery(undefined, e.target.value);
+                        }}
+                        className="bg-transparent font-mono text-xs text-slate-300 focus:outline-none cursor-pointer"
+                      >
+                        {sandboxAvailableTables.length === 0 ? (
+                          <option value="" className="bg-slate-900 text-slate-400">No tables discovered</option>
+                        ) : (
+                          sandboxAvailableTables.map(t => (
+                            <option key={t} value={t} className="bg-slate-900 text-white">
+                              {t}
+                            </option>
+                          ))
+                        )}
+                      </select>
+                    </div>
+
+                    {/* Query Preset Templates */}
+                    <div className="flex items-center gap-1.5 bg-blue-950/60 px-2 py-1 rounded-lg border border-blue-800/60">
+                      <Sparkles size={12} className="text-blue-400" />
+                      <select
+                        value={sandboxSelectedTemplate}
+                        onChange={(e) => handleSelectSandboxTemplate(e.target.value)}
+                        className="bg-transparent text-blue-200 font-medium text-xs focus:outline-none cursor-pointer"
+                      >
+                        {sandboxTemplates.map(t => (
+                          <option key={t.id} value={t.id} className="bg-slate-900 text-white">
+                            {t.name}
                           </option>
-                        ));
-                      })()}
-                    </select>
+                        ))}
+                      </select>
+                    </div>
                   </div>
 
-                  {/* Query Preset Templates */}
-                  <div className="flex items-center gap-1.5 bg-blue-950/60 px-2 py-1 rounded-lg border border-blue-800/60">
-                    <Sparkles size={12} className="text-blue-400" />
-                    <select
-                      value={sandboxSelectedTemplate}
-                      onChange={(e) => handleSelectSandboxTemplate(e.target.value)}
-                      className="bg-transparent text-blue-200 font-medium text-xs focus:outline-none cursor-pointer"
+                  {/* Right: Quick Switch to Investigation */}
+                  {selectedIssue && (
+                    <button
+                      type="button"
+                      onClick={() => setWorkspaceSubView('investigation')}
+                      className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer border border-slate-700"
+                      title="Switch to Case Investigation Window"
                     >
-                      {SANDBOX_SQL_TEMPLATES.map(t => (
-                        <option key={t.id} value={t.id} className="bg-slate-900 text-white">
-                          {t.name}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
+                      <DatabaseZap size={13} className="text-blue-400" />
+                      <span>Case #{selectedIssue.id}</span>
+                      <ArrowRight size={11} className="text-slate-400" />
+                    </button>
+                  )}
                 </div>
 
-                {/* Right: Quick Switch to Investigation */}
-                {selectedIssue && (
-                  <button
-                    type="button"
-                    onClick={() => setWorkspaceSubView('investigation')}
-                    className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer border border-slate-700"
-                    title="Switch to Case Investigation Window"
-                  >
-                    <DatabaseZap size={13} className="text-blue-400" />
-                    <span>Case #{selectedIssue.id}</span>
-                    <ArrowRight size={11} className="text-slate-400" />
-                  </button>
-                )}
-              </div>
-
-              {/* 2. MODERN MINIMALIST SQL CODE EDITOR */}
-              <div className="bg-[#0d1117] border border-slate-800 rounded-xl overflow-hidden shadow-xs text-slate-100">
-                {/* Editor Header Toolbar */}
-                <div className="bg-slate-950/90 px-4 py-2 border-b border-slate-800 flex flex-wrap items-center justify-between gap-2 text-xs">
-                  <div className="flex items-center gap-2 font-mono text-[11px] text-slate-400">
-                    <FileCode size={13} className="text-blue-400" />
-                    <span className="font-semibold text-slate-300">query.sql</span>
-                    <span className="text-slate-600">•</span>
-                    <span>{databases?.find(d => d.id === sandboxSelectedDbId)?.type?.toUpperCase() || 'POSTGRESQL'}</span>
-                  </div>
-
-                  {/* SQL Snippets & Editor Utilities */}
-                  <div className="flex items-center gap-1.5 flex-wrap">
-                    {/* Snippet Chips */}
-                    <div className="hidden sm:flex items-center gap-1 mr-2">
-                      {[
-                        { label: 'SELECT', val: 'SELECT * FROM transactions_master LIMIT 25;' },
-                        { label: 'WHERE', val: "\nWHERE status_state = 'PENDING'" },
-                        { label: 'ORDER BY', val: '\nORDER BY created_at DESC' },
-                        { label: 'LIMIT 50', val: ' LIMIT 50' }
-                      ].map((snip, sIdx) => (
-                        <button
-                          key={sIdx}
-                          type="button"
-                          onClick={() => setSandboxSql(prev => prev ? `${prev} ${snip.val}` : snip.val)}
-                          className="px-1.5 py-0.5 bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-mono rounded border border-slate-700 transition cursor-pointer"
-                        >
-                          {snip.label}
-                        </button>
-                      ))}
+                {/* 2. MODERN MINIMALIST SQL CODE EDITOR */}
+                <div className="bg-[#0d1117] border border-slate-800 rounded-xl overflow-hidden shadow-xs text-slate-100">
+                  {/* Editor Header Toolbar */}
+                  <div className="bg-slate-950/90 px-4 py-2 border-b border-slate-800 flex flex-wrap items-center justify-between gap-2 text-xs">
+                    <div className="flex items-center gap-2 font-mono text-[11px] text-slate-400">
+                      <FileCode size={13} className="text-blue-400" />
+                      <span className="font-semibold text-slate-300">query.sql</span>
+                      <span className="text-slate-600">•</span>
+                      <span>{databases?.find(d => d.id === sandboxSelectedDbId)?.type?.toUpperCase() || 'POSTGRESQL'}</span>
                     </div>
+
+                    {/* SQL Snippets & Editor Utilities */}
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      {/* Snippet Chips */}
+                      <div className="hidden sm:flex items-center gap-1 mr-2">
+                        {[
+                          { label: 'SELECT', val: `SELECT * FROM ${sandboxTable} LIMIT 25;` },
+                          { label: 'WHERE', val: sandboxAvailableColumns.length > 0 ? `\nWHERE ${sandboxAvailableColumns[0].name} IS NOT NULL` : "\nWHERE 1=1" },
+                          { label: 'ORDER BY', val: sandboxAvailableColumns.length > 1 ? `\nORDER BY ${sandboxAvailableColumns[1].name} DESC` : '\nORDER BY 1 DESC' },
+                          { label: 'LIMIT 50', val: ' LIMIT 50' }
+                        ].map((snip, sIdx) => (
+                          <button
+                            key={sIdx}
+                            type="button"
+                            onClick={() => setSandboxSql(prev => prev ? `${prev} ${snip.val}` : snip.val)}
+                            className="px-1.5 py-0.5 bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-mono rounded border border-slate-700 transition cursor-pointer"
+                          >
+                            {snip.label}
+                          </button>
+                        ))}
+                      </div>
 
                     <button
                       type="button"
@@ -3175,8 +3125,11 @@ export default function IssueDetailView({
                       </>
                     )}
 
-                    <span className="text-[11px] text-slate-400 font-mono">
-                      Target: {databases?.find(d => d.id === sandboxSelectedDbId)?.name || 'DB'}
+                    <span className="text-[11px] text-slate-500 font-mono">
+                      Target: <strong className="text-slate-700">{databases?.find(d => d.id === sandboxSelectedDbId)?.name || 'DB'}</strong>
+                      {sandboxTable && (
+                        <span> • Table: <strong className="text-slate-700">{sandboxTable}</strong></span>
+                      )}
                     </span>
                   </div>
 
@@ -3234,7 +3187,9 @@ export default function IssueDetailView({
                   <div className="bg-slate-950 border border-slate-800 rounded-lg p-3 font-mono text-xs text-slate-300 space-y-1">
                     <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider pb-1 border-b border-slate-800 mb-1 flex items-center justify-between">
                       <span>Server Query Planner Execution Trace</span>
-                      <span className="text-emerald-400">200 OK</span>
+                      <span className={sandboxError ? 'text-rose-400' : 'text-emerald-400'}>
+                        {sandboxError ? 'ERROR' : '200 OK'}
+                      </span>
                     </div>
                     {sandboxQueryLogs.map((log, lIdx) => (
                       <div
@@ -3253,8 +3208,31 @@ export default function IssueDetailView({
                   </div>
                 )}
 
+                {/* Query Error Notification */}
+                {sandboxError && (
+                  <div className="p-3 bg-rose-50 border border-rose-200 rounded-lg flex items-start gap-2.5 text-rose-700 text-xs">
+                    <AlertCircle size={16} className="shrink-0 mt-0.5 text-rose-600" />
+                    <div className="space-y-0.5">
+                      <div className="font-bold text-rose-800">Database Execution Error</div>
+                      <div className="font-mono text-[11px] text-rose-700 whitespace-pre-wrap">{sandboxError}</div>
+                    </div>
+                  </div>
+                )}
+
                 {/* RESULTS DATA GRID */}
                 {(() => {
+                  if (sandboxResults.length === 0) {
+                    return (
+                      <div className="p-8 text-center bg-slate-50/60 rounded-xl border border-slate-200 space-y-2">
+                        <Database size={24} className="mx-auto text-slate-400" />
+                        <h4 className="text-xs font-bold text-slate-700">0 Records Returned</h4>
+                        <p className="text-[11px] text-slate-400">
+                          The query executed against {databases?.find(d => d.id === sandboxSelectedDbId)?.name || 'the database'} and returned 0 rows.
+                        </p>
+                      </div>
+                    );
+                  }
+
                   const filteredRows = sandboxResults.filter(row => {
                     if (!sandboxSearchFilter) return true;
                     const q = sandboxSearchFilter.toLowerCase();
@@ -3264,16 +3242,18 @@ export default function IssueDetailView({
                   if (filteredRows.length === 0) {
                     return (
                       <div className="p-8 text-center bg-slate-50/60 rounded-xl border border-slate-200 space-y-2">
-                        <Database size={24} className="mx-auto text-slate-400" />
-                        <h4 className="text-xs font-bold text-slate-700">No Records Match Query Filters</h4>
+                        <Search size={24} className="mx-auto text-slate-400" />
+                        <h4 className="text-xs font-bold text-slate-700">No Records Match Search Filter</h4>
                         <p className="text-[11px] text-slate-400">
-                          Try modifying your WHERE clause or searching with different terms.
+                          Try searching with different terms or clear the filter.
                         </p>
                       </div>
                     );
                   }
 
-                  const headers = Object.keys(filteredRows[0]);
+                  const headers = sandboxColumns && sandboxColumns.length > 0
+                    ? sandboxColumns
+                    : Object.keys(filteredRows[0] || {});
 
                   return (
                     <div className="overflow-x-auto border border-slate-200 rounded-lg max-h-96 overflow-y-auto">
@@ -3283,7 +3263,7 @@ export default function IssueDetailView({
                             <th className="py-2 px-3 w-10 text-slate-400 text-center font-mono">#</th>
                             {headers.map(h => (
                               <th key={h} className="py-2 px-3 font-bold whitespace-nowrap">
-                                {h.replace(/_/g, ' ')}
+                                {h}
                               </th>
                             ))}
                             <th className="py-2 px-3 text-right whitespace-nowrap">Actions</th>
@@ -3297,45 +3277,65 @@ export default function IssueDetailView({
                               </td>
                               {headers.map(h => {
                                 const val = row[h];
-                                if (h === 'status_state' || h === 'status') {
-                                  const st = String(val);
+                                const colLower = h.toLowerCase();
+                                const isStatusCol = /status|state|verdict|result_code|respcode/i.test(colLower);
+
+                                if (val === null || val === undefined) {
+                                  return (
+                                    <td key={h} className="py-2 px-3 whitespace-nowrap">
+                                      <span className="text-slate-300 italic text-[10px]">NULL</span>
+                                    </td>
+                                  );
+                                }
+
+                                if (isStatusCol && typeof val === 'string') {
+                                  const st = val.toUpperCase();
                                   const colorClass =
-                                    st === 'PENDING'
-                                      ? 'bg-amber-50 text-amber-700 border-amber-200'
-                                      : st === 'SETTLED' || st === 'RECONCILED'
+                                    ['SETTLED', 'SUCCESS', 'PASS', 'PAID', 'COMPLETED', '00', '000'].includes(st)
                                       ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                                      : st === 'REVERSED'
+                                      : ['PENDING', 'IN_PROGRESS', 'PROCESSING'].includes(st)
+                                      ? 'bg-amber-50 text-amber-700 border-amber-200'
+                                      : ['REVERSED', 'REFUNDED'].includes(st)
                                       ? 'bg-purple-50 text-purple-700 border-purple-200'
-                                      : 'bg-rose-50 text-rose-700 border-rose-200';
+                                      : ['FAILED', 'ERROR', 'FAIL', 'REJECTED'].includes(st)
+                                      ? 'bg-rose-50 text-rose-700 border-rose-200'
+                                      : 'bg-slate-50 text-slate-700 border-slate-200';
                                   return (
                                     <td key={h} className="py-2 px-3 whitespace-nowrap">
                                       <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${colorClass}`}>
-                                        {st}
+                                        {val}
                                       </span>
                                     </td>
                                   );
                                 }
-                                if (h === 'amount_usd' || h === 'amount') {
+
+                                if (typeof val === 'boolean') {
                                   return (
-                                    <td key={h} className="py-2 px-3 font-bold text-slate-900 whitespace-nowrap">
-                                      ${Number(val || 0).toFixed(2)}
+                                    <td key={h} className="py-2 px-3 whitespace-nowrap">
+                                      <span className="font-semibold text-slate-700">{val ? 'TRUE' : 'FALSE'}</span>
                                     </td>
                                   );
                                 }
-                                if (h === 'transaction_id' || h === 'id') {
+
+                                if (typeof val === 'object') {
                                   return (
-                                    <td key={h} className="py-2 px-3 font-bold text-blue-700 whitespace-nowrap">
-                                      {String(val)}
+                                    <td key={h} className="py-2 px-3 text-slate-600 max-w-xs truncate text-[10px]">
+                                      {JSON.stringify(val)}
                                     </td>
                                   );
                                 }
+
+                                const isIdCol = /id|utrn|key|code|ref/i.test(colLower);
+
                                 return (
-                                  <td key={h} className="py-2 px-3 text-slate-700 whitespace-nowrap max-w-xs truncate font-sans text-xs">
-                                    {val === null || val === undefined ? (
-                                      <span className="text-slate-300 italic">null</span>
-                                    ) : (
-                                      String(val)
-                                    )}
+                                  <td
+                                    key={h}
+                                    className={`py-2 px-3 whitespace-nowrap max-w-xs truncate ${
+                                      isIdCol ? 'font-bold text-blue-700' : 'text-slate-700 font-sans'
+                                    }`}
+                                    title={String(val)}
+                                  >
+                                    {String(val)}
                                   </td>
                                 );
                               })}
@@ -3354,11 +3354,11 @@ export default function IssueDetailView({
                                   <button
                                     type="button"
                                     onClick={() => {
-                                      const idVal = row.transaction_id || row.id || JSON.stringify(row);
-                                      navigator.clipboard.writeText(String(idVal));
+                                      const primaryVal = row.id || row.transaction_id || row.FE_UTRNNO || Object.values(row)[0] || JSON.stringify(row);
+                                      navigator.clipboard.writeText(String(primaryVal));
                                     }}
                                     className="p-1 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded transition cursor-pointer"
-                                    title="Copy ID to clipboard"
+                                    title="Copy primary key to clipboard"
                                   >
                                     <Clipboard size={12} />
                                   </button>

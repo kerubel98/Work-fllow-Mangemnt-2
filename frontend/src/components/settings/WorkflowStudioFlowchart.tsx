@@ -287,7 +287,9 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
           reportColumnName: step?.reportColumnName || (sIdx === 0 ? 'Auth Status' : undefined),
           reportField: step?.reportField,
           targetDbId: step?.targetDbId || box?.targetDbId || stage?.targetDbId,
-          targetTable: step?.targetTable || box?.targetTable || stage?.targetDataSource
+          targetTable: step?.targetTable || box?.targetTable || stage?.targetDataSource,
+          columnConfigurationIds: step?.columnConfigurationIds || box?.columnConfigurationIds || [],
+          columnConfigurations: step?.columnConfigurations || box?.columnConfigurations || []
         });
 
         newConns.push({
@@ -325,7 +327,9 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
           onFailAction: 'STOP',
           reportColumnName: sIdx === 0 ? 'Auth Status' : undefined,
           targetDbId: box?.targetDbId || stage.targetDbId,
-          targetTable: box?.targetTable || stage.targetDataSource
+          targetTable: box?.targetTable || stage.targetDataSource,
+          columnConfigurationIds: box?.columnConfigurationIds || [],
+          columnConfigurations: box?.columnConfigurations || []
         });
 
         newConns.push({
@@ -408,7 +412,9 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
         reportColumnName: 'Gateway Auth Response',
         reportField: 'response_code',
         targetDbId: searchBox?.targetDbId,
-        targetTable: searchBox?.targetTable
+        targetTable: searchBox?.targetTable,
+        columnConfigurationIds: searchBox?.columnConfigurationIds || [],
+        columnConfigurations: searchBox?.columnConfigurations || []
       },
       {
         id: 'box-node-2',
@@ -424,7 +430,9 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
         reportColumnName: 'Tolerance Variance',
         reportField: 'amount',
         targetDbId: checkBox?.targetDbId,
-        targetTable: checkBox?.targetTable
+        targetTable: checkBox?.targetTable,
+        columnConfigurationIds: checkBox?.columnConfigurationIds || [],
+        columnConfigurations: checkBox?.columnConfigurations || []
       },
       {
         id: 'end-reconciled',
@@ -857,7 +865,9 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
       onPassAction: initialPassAction,
       onFailAction: initialFailAction,
       targetDbId: box.targetDbId,
-      targetTable: box.targetTable
+      targetTable: box.targetTable,
+      columnConfigurationIds: box.columnConfigurationIds || box.checkStep?.columnConfigurationIds || [],
+      columnConfigurations: box.columnConfigurations || box.checkStep?.columnConfigurations || []
     };
     setNodes(prev => [...prev, newNode]);
 
@@ -966,6 +976,9 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
           srcField ||
           '';
 
+        const compareVal = (n as any).compareValue ?? dsc?.compareValue ?? box?.checkStep?.compareValue;
+        const expectedVal = (n as any).expectedValue ?? dsc?.expectedValue ?? box?.checkStep?.expectedValue;
+
         return {
           id: `step-${n.id || idx + 1}`,
           stepNumber: idx + 1,
@@ -984,6 +997,8 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
           expectedValue: expectedVal !== undefined ? String(expectedVal) : undefined,
           regexPattern: box?.checkStep?.regexPattern || (n as any).regexPattern ? String(box?.checkStep?.regexPattern || (n as any).regexPattern) : undefined,
           sqlCondition: box?.checkStep?.sqlCondition || (n as any).sqlCondition ? String(box?.checkStep?.sqlCondition || (n as any).sqlCondition) : undefined,
+          columnConfigurationIds: n.columnConfigurationIds || box?.columnConfigurationIds || box?.checkStep?.columnConfigurationIds || [],
+          columnConfigurations: n.columnConfigurations || box?.columnConfigurations || box?.checkStep?.columnConfigurations || [],
           onPassAction: n.onPassAction || (box?.checkStep?.onPassAction as any) || 'CONTINUE',
           onFailAction: n.onFailAction || (box?.checkStep?.onFailAction as any) || (box?.checkStep?.actionOnFailure as any) || 'STOP',
           onErrorAction: 'STOP',
@@ -1026,6 +1041,8 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
         y: Math.round(Number(n.y) || 0),
         targetDbId: n.targetDbId ? String(n.targetDbId) : undefined,
         targetTable: n.targetTable ? String(n.targetTable) : undefined,
+        columnConfigurationIds: n.columnConfigurationIds || validationBoxes.find(b => b.id === n.boxId)?.columnConfigurationIds || [],
+        columnConfigurations: n.columnConfigurations || validationBoxes.find(b => b.id === n.boxId)?.columnConfigurations || [],
         onPassAction: n.onPassAction || 'CONTINUE',
         onFailAction: n.onFailAction || 'STOP',
         reportColumnName: n.reportColumnName ? String(n.reportColumnName) : undefined,
@@ -1752,6 +1769,14 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
                           </span>
                         </div>
                       )}
+                      {((node.columnConfigurationIds && node.columnConfigurationIds.length > 0) || (node.columnConfigurations && node.columnConfigurations.length > 0)) && (
+                        <div className="flex items-center gap-1 text-[10px] text-emerald-400 font-mono">
+                          <span className="bg-emerald-950/80 px-1.5 py-0.2 rounded border border-emerald-500/40 font-semibold truncate flex items-center gap-1">
+                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                            {node.columnConfigurationIds?.length || node.columnConfigurations?.length} Table Rules
+                          </span>
+                        </div>
+                      )}
                       <p className="text-[10px] text-slate-400 line-clamp-2 leading-relaxed">
                         {node.description || 'Database query & parameter mapping'}
                       </p>
@@ -1861,6 +1886,12 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
                     {hasReportColumn && (
                       <span className="inline-block text-[8px] font-mono text-purple-300 bg-purple-950/80 px-1 py-0.2 rounded border border-purple-500/40">
                         Col: {node.reportColumnName}
+                      </span>
+                    )}
+
+                    {((node.columnConfigurationIds && node.columnConfigurationIds.length > 0) || (node.columnConfigurations && node.columnConfigurations.length > 0)) && (
+                      <span className="inline-block text-[8px] font-mono font-bold text-emerald-300 bg-emerald-950/80 px-1.5 py-0.2 rounded border border-emerald-500/40">
+                        {node.columnConfigurationIds?.length || node.columnConfigurations?.length} Table Rules
                       </span>
                     )}
 
@@ -2614,6 +2645,43 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
                   </select>
                 </div>
               </div>
+
+              {/* Attached Database Table Column Rules */}
+              {((selectedNode.columnConfigurations && selectedNode.columnConfigurations.length > 0) || (selectedNode.columnConfigurationIds && selectedNode.columnConfigurationIds.length > 0)) && (
+                <div className="p-3 bg-emerald-950/20 border border-emerald-500/30 rounded-lg space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-emerald-400 flex items-center gap-1.5 text-[11px] font-mono uppercase">
+                      <CheckCircle2 size={13} className="text-emerald-400" />
+                      <span>Attached Table Rules ({selectedNode.columnConfigurations?.length || selectedNode.columnConfigurationIds?.length})</span>
+                    </span>
+                  </div>
+                  <p className="text-[10px] text-slate-400">
+                    Active completeness, range, and pattern rules configured on the target database table:
+                  </p>
+                  <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
+                    {(selectedNode.columnConfigurations || []).map((cfg) => (
+                      <div key={cfg.id} className="p-1.5 bg-slate-900 border border-slate-800 rounded text-[11px] flex items-center justify-between">
+                        <div className="flex items-center gap-1">
+                          <span className="font-mono text-emerald-300 font-semibold">{cfg.column_name}</span>
+                          <span className="text-slate-500 text-[9px]">({cfg.data_type || 'text'})</span>
+                        </div>
+                        <div className="flex gap-1 text-[8px] font-mono">
+                          {cfg.completeness_rule?.enabled && <span className="px-1 py-0.2 bg-emerald-900/60 text-emerald-300 rounded border border-emerald-700/50">Complete</span>}
+                          {cfg.value_range_rule?.enabled && <span className="px-1 py-0.2 bg-blue-900/60 text-blue-300 rounded border border-blue-700/50">Range</span>}
+                          {cfg.pattern_rule?.enabled && <span className="px-1 py-0.2 bg-purple-900/60 text-purple-300 rounded border border-purple-700/50">Pattern</span>}
+                          {cfg.value_label_rule?.enabled && <span className="px-1 py-0.2 bg-amber-900/60 text-amber-300 rounded border border-amber-700/50">Labels</span>}
+                          {cfg.duplicate_rule?.is_duplicate_key && <span className="px-1 py-0.2 bg-rose-900/60 text-rose-300 rounded border border-rose-700/50">Duplicate</span>}
+                        </div>
+                      </div>
+                    ))}
+                    {(!selectedNode.columnConfigurations || selectedNode.columnConfigurations.length === 0) && selectedNode.columnConfigurationIds && (
+                      <div className="text-[11px] text-slate-400 font-mono">
+                        {selectedNode.columnConfigurationIds.length} column rule(s) linked to this box.
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
 
             <div className="flex justify-end gap-2 pt-2 border-t border-slate-800">

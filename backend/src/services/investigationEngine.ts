@@ -13,8 +13,147 @@ import {
   RuleExecutionAuditEntry,
   TransactionExecutionSummary,
   ComparisonOperand,
-  DualSourceCondition
+  DualSourceCondition,
+  DatabaseColumnConfiguration
 } from '../types.js';
+
+/**
+ * Evaluates attached Database Table Column Configurations (Completeness, Value Ranges, Patterns, Value Labels, and Uniqueness)
+ * against the target/canonical record data.
+ */
+export function evaluateAttachedColumnConfigurations(
+  record: Record<string, any>,
+  configurations?: DatabaseColumnConfiguration[]
+): ConditionEvaluationResult {
+  if (!Array.isArray(configurations) || configurations.length === 0) {
+    return { status: 'PASS', badgeText: 'Passed', message: 'All checks passed' };
+  }
+
+  const evalTarget = record._target_record ?? record.canonical_data?._target_record ?? record._mirrorData ?? record._externalData ?? record.canonical_data ?? record;
+  const activeConfigs = configurations.filter(c => c && c.isActive !== false);
+
+  for (const cfg of activeConfigs) {
+    const cols = Array.isArray(cfg.columns) ? cfg.columns : [];
+
+    switch (cfg.ruleType) {
+      case 'COMPLETENESS_CHECK': {
+        for (const col of cols) {
+          const val = resolveRecordField(evalTarget, col.columnName);
+          if (val === undefined || val === null || String(val).trim() === '') {
+            return {
+              status: 'FAIL',
+              badgeText: 'Incomplete Col',
+              message: cfg.violationMessage || `Completeness Check failed on [${cfg.name}]: column '${col.columnName}' is missing or empty.`,
+              detail: `Table column completeness violation: ${col.columnName}`
+            };
+          }
+        }
+        break;
+      }
+
+      case 'VALUE_RANGE_CHECK': {
+        for (const col of cols) {
+          const val = resolveRecordField(evalTarget, col.columnName);
+          if (val !== undefined && val !== null && String(val).trim() !== '') {
+            const num = Number(val);
+            if (!isNaN(num)) {
+              if (col.minValue !== undefined && num < Number(col.minValue)) {
+                return {
+                  status: 'FAIL',
+                  badgeText: 'Below Min',
+                  message: cfg.violationMessage || `Value Range Check failed on [${cfg.name}]: '${col.columnName}' (${num}) is below minimum (${col.minValue}).`,
+                  detail: `Range violation: ${col.columnName} < ${col.minValue}`
+                };
+              }
+              if (col.maxValue !== undefined && num > Number(col.maxValue)) {
+                return {
+                  status: 'FAIL',
+                  badgeText: 'Above Max',
+                  message: cfg.violationMessage || `Value Range Check failed on [${cfg.name}]: '${col.columnName}' (${num}) exceeds maximum (${col.maxValue}).`,
+                  detail: `Range violation: ${col.columnName} > ${col.maxValue}`
+                };
+              }
+            }
+          }
+        }
+        break;
+      }
+
+      case 'PATTERN_CHECK': {
+        for (const col of cols) {
+          const val = resolveRecordField(evalTarget, col.columnName);
+          if (col.pattern && val !== undefined && val !== null && String(val).trim() !== '') {
+            try {
+              const regex = new RegExp(col.pattern);
+              if (!regex.test(String(val))) {
+                return {
+                  status: 'FAIL',
+                  badgeText: 'Pattern Error',
+                  message: cfg.violationMessage || `Pattern Check failed on [${cfg.name}]: '${col.columnName}' (${val}) does not match pattern '${col.pattern}'.`,
+                  detail: `Pattern mismatch on ${col.columnName}`
+                };
+              }
+            } catch (err: any) {
+              return {
+                status: 'ERROR',
+                badgeText: 'Regex Error',
+                message: `Invalid regex pattern in [${cfg.name}]: ${err.message}`
+              };
+            }
+          }
+        }
+        break;
+      }
+
+      case 'VALUE_LABEL_CHECK': {
+        if (Array.isArray(cfg.valueLabels) && cfg.valueLabels.length > 0) {
+          for (const vl of cfg.valueLabels) {
+            const val = resolveRecordField(evalTarget, vl.columnName);
+            if (val !== undefined && val !== null) {
+              const strVal = String(val).trim().toLowerCase();
+              const targetConst = String(vl.constantValue).trim().toLowerCase();
+              if (strVal === targetConst && (vl.category === 'ERROR' || vl.severity === 'CRITICAL')) {
+                return {
+                  status: 'FAIL',
+                  badgeText: vl.label || 'Value Error',
+                  message: cfg.violationMessage || `Value Label Check [${cfg.name}] flagged: '${vl.columnName}' has disallowed value '${val}' (${vl.label || vl.description || 'Error category'}).`,
+                  detail: `Disallowed constant: ${vl.constantValue}`
+                };
+              }
+            }
+          }
+        }
+        break;
+      }
+
+      case 'DUPLICATE_CHECK':
+      case 'UNIQUE_CONSTRAINT': {
+        // In individual row evaluation, check that all key columns required for uniqueness are present
+        for (const col of cols) {
+          const val = resolveRecordField(evalTarget, col.columnName);
+          if (val === undefined || val === null || String(val).trim() === '') {
+            return {
+              status: 'FAIL',
+              badgeText: 'Missing Key Col',
+              message: cfg.violationMessage || `Duplicate Check prerequisite failed on [${cfg.name}]: key column '${col.columnName}' is null or empty.`,
+              detail: `Uniqueness key missing: ${col.columnName}`
+            };
+          }
+        }
+        break;
+      }
+
+      default:
+        break;
+    }
+  }
+
+  return {
+    status: 'PASS',
+    badgeText: `${activeConfigs.length} Table Rule${activeConfigs.length > 1 ? 's' : ''} OK`,
+    message: `${activeConfigs.length} database table rule(s) verified`
+  };
+}
 
 // User-configurable default label dictionary when custom mapping is not provided
 export const DEFAULT_RESPONSE_CODE_LABELS: Record<string, string> = {
@@ -206,10 +345,11 @@ export function evaluateRuleCondition(
     const sourceKey = configuredStepParams[0] || rule.sourceField || rule.canonicalField || 'id';
     const recordVal = resolveRecordField(record, sourceKey);
 
-    switch (checkType) {
-      case 'EXISTENCE_CHECK': {
-        // Record existence check against target database
-        const targetRec = record._target_record ?? record.canonical_data?._target_record ?? record._mirrorData ?? record._externalData;
+    const baseResult: ConditionEvaluationResult = (() => {
+      switch (checkType) {
+        case 'EXISTENCE_CHECK': {
+          // Record existence check against target database
+          const targetRec = record._target_record ?? record.canonical_data?._target_record ?? record._mirrorData ?? record._externalData;
         const isRowEvaluated = (record._validation_status && record._validation_status !== 'PENDING')
           || (record.canonical_data && record.canonical_data._validation_status && record.canonical_data._validation_status !== 'PENDING');
         const hasExplicitTarget = isRowEvaluated && (('_target_record' in record) || (record.canonical_data && '_target_record' in record.canonical_data) || ('_mirrorData' in record) || ('_externalData' in record));
@@ -667,14 +807,31 @@ export function evaluateRuleCondition(
         };
       }
 
-      default: {
-        return {
-          status: 'PASS',
-          badgeText: 'Passed',
-          message: `Check passed criteria for ${checkType}`
-        };
+        default: {
+          return {
+            status: 'PASS',
+            badgeText: 'Passed',
+            message: `Check passed criteria for ${checkType}`
+          };
+        }
+      }
+    })();
+
+    // Evaluate attached Database Table Column Configurations (Complete Checks)
+    if (baseResult.status === 'PASS' && Array.isArray(rule.columnConfigurations) && rule.columnConfigurations.length > 0) {
+      const colResult = evaluateAttachedColumnConfigurations(record, rule.columnConfigurations);
+      if (colResult.status !== 'PASS') {
+        return colResult;
+      }
+      if (colResult.badgeText && !baseResult.badgeText.includes(colResult.badgeText)) {
+        baseResult.badgeText = `${baseResult.badgeText} • ${colResult.badgeText}`;
+      }
+      if (colResult.message) {
+        baseResult.message = `${baseResult.message} (${colResult.message})`;
       }
     }
+
+    return baseResult;
   } catch (err: any) {
     // Any unexpected exception during evaluation is classified as a technical ERROR
     return {

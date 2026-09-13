@@ -3,9 +3,42 @@ import { repo } from '../store/repository.js';
 import { postgresRepo } from '../store/postgresRepo.js';
 import { mirrorTableManager } from '../services/mirrorTableManager.js';
 import { executeLiveQueryOnDb } from '../services/dbConnectionManager.js';
-import { ValidationBox, ValidationBoxType } from '../types.js';
+import { ValidationBox, ValidationBoxType, DatabaseColumnConfiguration } from '../types.js';
 
 export const validationBoxesRouter = Router();
+
+async function hydrateBoxConfigurations(box: ValidationBox): Promise<ValidationBox> {
+  if (!box) return box;
+  const configIds = box.columnConfigurationIds || box.checkStep?.columnConfigurationIds;
+  if (Array.isArray(configIds) && configIds.length > 0) {
+    const configs = await Promise.all(configIds.map(id => repo.getColumnConfigurationById(id)));
+    const validConfigs = configs.filter((c): c is DatabaseColumnConfiguration => c !== null);
+    return {
+      ...box,
+      columnConfigurationIds: configIds,
+      columnConfigurations: validConfigs,
+      checkStep: box.checkStep ? {
+        ...box.checkStep,
+        columnConfigurationIds: configIds,
+        columnConfigurations: validConfigs
+      } : undefined
+    };
+  } else if (box.targetDbId && box.targetTable) {
+    // If not explicitly linked yet, discover table configs for this DB + table
+    try {
+      const existingConfigs = await repo.getColumnConfigurations(box.targetDbId, box.targetTable);
+      if (existingConfigs.length > 0) {
+        return {
+          ...box,
+          columnConfigurations: existingConfigs
+        };
+      }
+    } catch {
+      // ignore discovery error
+    }
+  }
+  return box;
+}
 
 // GET /api/validation-boxes - List all validation boxes with optional type filter
 validationBoxesRouter.get('/', async (req: Request, res: Response) => {
@@ -15,7 +48,8 @@ validationBoxesRouter.get('/', async (req: Request, res: Response) => {
     if (boxType) {
       boxes = boxes.filter(b => b.boxType === boxType);
     }
-    return res.json(boxes);
+    const hydratedBoxes = await Promise.all(boxes.map(hydrateBoxConfigurations));
+    return res.json(hydratedBoxes);
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
   }
@@ -26,7 +60,8 @@ validationBoxesRouter.get('/:id', async (req: Request, res: Response) => {
   try {
     const box = await repo.getValidationBoxById(req.params.id);
     if (!box) return res.status(404).json({ error: 'Validation box not found' });
-    return res.json(box);
+    const hydrated = await hydrateBoxConfigurations(box);
+    return res.json(hydrated);
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
   }
@@ -45,6 +80,8 @@ validationBoxesRouter.post('/', async (req: Request, res: Response) => {
       targetTable,
       searchParameters,
       checkStep,
+      columnConfigurationIds,
+      columnConfigurations,
       matchKeyInput,
       matchKeyExternal,
       multiRowPolicy,
@@ -69,6 +106,8 @@ validationBoxesRouter.post('/', async (req: Request, res: Response) => {
       }
     }
 
+    const colConfigIds = columnConfigurationIds || checkStep?.columnConfigurationIds || [];
+
     const newBox: ValidationBox = {
       id: id || `vbox-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
       name,
@@ -79,7 +118,12 @@ validationBoxesRouter.post('/', async (req: Request, res: Response) => {
       targetTable: targetTable || undefined,
       mirrorTableName,
       searchParameters: searchParameters || [],
-      checkStep: checkStep || undefined,
+      checkStep: checkStep ? {
+        ...checkStep,
+        columnConfigurationIds: colConfigIds
+      } : undefined,
+      columnConfigurationIds: colConfigIds,
+      columnConfigurations: columnConfigurations || undefined,
       matchKeyInput: matchKeyInput || undefined,
       matchKeyExternal: matchKeyExternal || undefined,
       multiRowPolicy: multiRowPolicy || undefined,
@@ -93,7 +137,8 @@ validationBoxesRouter.post('/', async (req: Request, res: Response) => {
     };
 
     const saved = await repo.createValidationBox(newBox);
-    return res.status(201).json(saved);
+    const hydrated = await hydrateBoxConfigurations(saved);
+    return res.status(201).json(hydrated);
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
   }
@@ -111,6 +156,8 @@ validationBoxesRouter.put('/:id', async (req: Request, res: Response) => {
       targetTable,
       searchParameters,
       checkStep,
+      columnConfigurationIds,
+      columnConfigurations,
       matchKeyInput,
       matchKeyExternal,
       multiRowPolicy,
@@ -129,6 +176,10 @@ validationBoxesRouter.put('/:id', async (req: Request, res: Response) => {
       }
     }
 
+    const colConfigIds = columnConfigurationIds !== undefined 
+      ? columnConfigurationIds 
+      : (checkStep?.columnConfigurationIds !== undefined ? checkStep.columnConfigurationIds : undefined);
+
     const updates: Partial<ValidationBox> = {
       ...(name !== undefined && { name }),
       ...(description !== undefined && { description }),
@@ -138,7 +189,14 @@ validationBoxesRouter.put('/:id', async (req: Request, res: Response) => {
       ...(targetTable !== undefined && { targetTable }),
       ...(mirrorTableName !== undefined && { mirrorTableName }),
       ...(searchParameters !== undefined && { searchParameters }),
-      ...(checkStep !== undefined && { checkStep }),
+      ...(checkStep !== undefined && { 
+        checkStep: {
+          ...checkStep,
+          ...(colConfigIds !== undefined && { columnConfigurationIds: colConfigIds })
+        }
+      }),
+      ...(colConfigIds !== undefined && { columnConfigurationIds: colConfigIds }),
+      ...(columnConfigurations !== undefined && { columnConfigurations }),
       ...(matchKeyInput !== undefined && { matchKeyInput }),
       ...(matchKeyExternal !== undefined && { matchKeyExternal }),
       ...(multiRowPolicy !== undefined && { multiRowPolicy }),
@@ -151,7 +209,8 @@ validationBoxesRouter.put('/:id', async (req: Request, res: Response) => {
 
     const updated = await repo.updateValidationBox(req.params.id, updates);
     if (!updated) return res.status(404).json({ error: 'Validation box not found' });
-    return res.json(updated);
+    const hydrated = await hydrateBoxConfigurations(updated);
+    return res.json(hydrated);
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
   }

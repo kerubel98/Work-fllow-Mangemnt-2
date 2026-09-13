@@ -60,32 +60,14 @@ export const QuerySandbox: React.FC<QuerySandboxProps> = ({
   const [keyField, setKeyField] = useState<string>('transaction_id');
   const [inputKeyField, setInputKeyField] = useState<string>('transaction_id');
 
-  // Available discovered columns (simulated standard schema discovery)
-  const [availableColumns, setAvailableColumns] = useState<string[]>([
-    'transaction_id',
-    'status',
-    'status_state',
-    'amount',
-    'settlement_date',
-    'settled_at',
-    'auth_time',
-    'response_code',
-    'card_number',
-    'merchant_id',
-    'terminal_id',
-    'clearing_date',
-    'currency',
-    'fee_amount',
-    'reversal_flag',
-    'acquirer_reference_number'
-  ]);
+  const [availableTables, setAvailableTables] = useState<string[]>([]);
+  const [loadingTables, setLoadingTables] = useState<boolean>(false);
+  const [loadingColumns, setLoadingColumns] = useState<boolean>(false);
 
-  const [selectedColMap, setSelectedColMap] = useState<Record<string, boolean>>({
-    transaction_id: true,
-    status: true,
-    amount: true,
-    settlement_date: true
-  });
+  // Available discovered columns from live database introspection
+  const [availableColumns, setAvailableColumns] = useState<string[]>([]);
+
+  const [selectedColMap, setSelectedColMap] = useState<Record<string, boolean>>({});
 
   const [filterList, setFilterList] = useState<QueryFilter[]>([
     { field: 'status', operator: 'IS_NOT_NULL' }
@@ -110,6 +92,80 @@ export const QuerySandbox: React.FC<QuerySandboxProps> = ({
       setTargetDataSource(activeStage.targetDataSource || 'transactions');
     }
   }, [activeStage]);
+
+  // Fetch available tables when targetDbId changes
+  useEffect(() => {
+    if (!targetDbId) return;
+    let isMounted = true;
+    setLoadingTables(true);
+
+    api.getDatabaseTables(targetDbId)
+      .then(res => {
+        if (!isMounted) return;
+        const tbls = res.allowedTables && res.allowedTables.length > 0
+          ? res.allowedTables
+          : (res.availableTables && res.availableTables.length > 0 ? res.availableTables : (res.tables || []));
+        setAvailableTables(tbls);
+        if (tbls.length > 0 && (!targetDataSource || !tbls.includes(targetDataSource))) {
+          setTargetDataSource(tbls[0]);
+        }
+      })
+      .catch(() => {
+        if (!isMounted) return;
+        setAvailableTables([]);
+      })
+      .finally(() => {
+        if (isMounted) setLoadingTables(false);
+      });
+
+    return () => { isMounted = false; };
+  }, [targetDbId]);
+
+  // Fetch real columns when targetDbId or targetDataSource changes
+  useEffect(() => {
+    if (!targetDbId || !targetDataSource) return;
+    let isMounted = true;
+    setLoadingColumns(true);
+
+    api.getTableColumns(targetDbId, targetDataSource)
+      .then(res => {
+        if (!isMounted) return;
+        const colNames = (res.columns || []).map(c => c.name);
+        setAvailableColumns(colNames);
+
+        if (colNames.length > 0) {
+          // If keyField not in discovered columns, set to first column
+          if (!colNames.includes(keyField)) {
+            setKeyField(colNames[0]);
+            setInputKeyField(colNames[0]);
+          }
+
+          // Initial selection of columns (first 8 columns by default)
+          const newColMap: Record<string, boolean> = {};
+          colNames.slice(0, 8).forEach(c => {
+            newColMap[c] = true;
+          });
+          // Also select any fields required by rules
+          if (detectedRequirements) {
+            detectedRequirements.requiredColumns.forEach(c => {
+              if (colNames.includes(c.sourceColumn)) {
+                newColMap[c.sourceColumn] = true;
+              }
+            });
+          }
+          setSelectedColMap(newColMap);
+        }
+      })
+      .catch(() => {
+        if (!isMounted) return;
+        setAvailableColumns([]);
+      })
+      .finally(() => {
+        if (isMounted) setLoadingColumns(false);
+      });
+
+    return () => { isMounted = false; };
+  }, [targetDbId, targetDataSource]);
 
   // Handle auto-detect apply
   const handleAutoSelectFromRules = () => {
@@ -177,37 +233,25 @@ export const QuerySandbox: React.FC<QuerySandboxProps> = ({
         setPreviewSql(previewRes.sql);
       }
 
-      // Generate realistic sample records for visual inspection
-      const simulatedSample = [
-        {
-          [keyField]: 'TX-1001',
-          status: 'SETTLED',
-          amount: 149.99,
-          settlement_date: '2026-08-19',
-          response_code: '00',
-          auth_time: '2026-08-19 10:14:00'
-        },
-        {
-          [keyField]: 'TX-1002',
-          status: 'DECLINED',
-          amount: 250.00,
-          settlement_date: null,
-          response_code: '05',
-          auth_time: '2026-08-19 11:30:12'
-        },
-        {
-          [keyField]: 'TX-1003',
-          status: 'REVERSED',
-          amount: 89.50,
-          settlement_date: '2026-08-20',
-          response_code: '00',
-          auth_time: '2026-08-19 14:02:44'
-        }
-      ];
-
-      setSampleResult(simulatedSample);
+      if (previewRes?.rows && previewRes.rows.length > 0) {
+        setSampleResult(previewRes.rows);
+      } else {
+        // Run live sample query on target database to display real rows
+        const currentDb = databaseConnections.find(d => d.id === targetDbId);
+        const liveSample = await api.executeQuery({
+          userId: 'operator',
+          username: 'operator',
+          userRole: 'admin',
+          dbId: targetDbId,
+          dbName: currentDb?.name || targetDbId,
+          query: `SELECT ${cols.length > 0 ? cols.join(', ') : '*'} FROM ${targetDataSource} LIMIT 10;`,
+          tableName: targetDataSource
+        });
+        setSampleResult(liveSample?.rows || []);
+      }
     } catch (err) {
       console.error('Preview error:', err);
+      setSampleResult([]);
     } finally {
       setIsPreviewing(false);
     }
@@ -348,14 +392,29 @@ export const QuerySandbox: React.FC<QuerySandboxProps> = ({
 
         {/* Data Source / Table */}
         <div className="space-y-1">
-          <label className="font-bold text-slate-700">Data Source (Table/View):</label>
-          <input
-            type="text"
-            value={targetDataSource}
-            onChange={(e) => setTargetDataSource(e.target.value)}
-            placeholder="e.g. transactions, ledger_view"
-            className="w-full bg-white border border-slate-300 rounded-lg p-1.5 font-mono text-xs focus:ring-1 focus:ring-emerald-600"
-          />
+          <label className="font-bold text-slate-700 flex items-center justify-between">
+            <span>Data Source (Table/View):</span>
+            {loadingTables && <span className="text-[10px] text-slate-400 font-normal">Loading tables...</span>}
+          </label>
+          {availableTables.length > 0 ? (
+            <select
+              value={targetDataSource}
+              onChange={(e) => setTargetDataSource(e.target.value)}
+              className="w-full bg-white border border-slate-300 rounded-lg p-1.5 font-mono text-xs focus:ring-1 focus:ring-emerald-600 font-bold text-emerald-950"
+            >
+              {availableTables.map(t => (
+                <option key={t} value={t}>{t}</option>
+              ))}
+            </select>
+          ) : (
+            <input
+              type="text"
+              value={targetDataSource}
+              onChange={(e) => setTargetDataSource(e.target.value)}
+              placeholder="e.g. auth_log_tab"
+              className="w-full bg-white border border-slate-300 rounded-lg p-1.5 font-mono text-xs focus:ring-1 focus:ring-emerald-600"
+            />
+          )}
         </div>
 
         {/* Investigation Correlation Key */}
@@ -364,13 +423,31 @@ export const QuerySandbox: React.FC<QuerySandboxProps> = ({
             <Key size={13} className="text-amber-600" />
             <span>Correlation Key (Source Field):</span>
           </label>
-          <input
-            type="text"
-            value={keyField}
-            onChange={(e) => setKeyField(e.target.value)}
-            placeholder="e.g. transaction_id"
-            className="w-full bg-white border border-slate-300 rounded-lg p-1.5 font-mono text-xs focus:ring-1 focus:ring-emerald-600"
-          />
+          {availableColumns.length > 0 ? (
+            <select
+              value={keyField}
+              onChange={(e) => {
+                setKeyField(e.target.value);
+                setInputKeyField(e.target.value);
+              }}
+              className="w-full bg-white border border-slate-300 rounded-lg p-1.5 font-mono text-xs focus:ring-1 focus:ring-emerald-600 font-bold text-slate-800"
+            >
+              {availableColumns.map(col => (
+                <option key={col} value={col}>{col}</option>
+              ))}
+            </select>
+          ) : (
+            <input
+              type="text"
+              value={keyField}
+              onChange={(e) => {
+                setKeyField(e.target.value);
+                setInputKeyField(e.target.value);
+              }}
+              placeholder="e.g. FE_UTRNNO"
+              className="w-full bg-white border border-slate-300 rounded-lg p-1.5 font-mono text-xs focus:ring-1 focus:ring-emerald-600"
+            />
+          )}
         </div>
       </div>
 
@@ -504,32 +581,38 @@ export const QuerySandbox: React.FC<QuerySandboxProps> = ({
             <span>Sample Result Preview:</span>
           </span>
 
-          {sampleResult ? (
-            <div className="border border-slate-300 rounded-xl overflow-x-auto max-h-[140px] text-xs">
-              <table className="w-full text-left border-collapse">
-                <thead className="bg-slate-100 text-slate-700 font-mono text-[10px] sticky top-0">
-                  <tr>
-                    {Object.keys(sampleResult[0] || {}).map(k => (
-                      <th key={k} className="p-1.5 border-b border-r border-slate-300">{k}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-200 font-mono text-[11px]">
-                  {sampleResult.map((row, rIdx) => (
-                    <tr key={rIdx} className="hover:bg-blue-50/30">
-                      {Object.values(row).map((val: any, cIdx) => (
-                        <td key={cIdx} className="p-1.5 border-r border-slate-200 truncate max-w-[120px]">
-                          {String(val ?? '—')}
-                        </td>
+          {sampleResult !== null ? (
+            sampleResult.length > 0 ? (
+              <div className="border border-slate-300 rounded-xl overflow-x-auto max-h-[140px] text-xs">
+                <table className="w-full text-left border-collapse">
+                  <thead className="bg-slate-100 text-slate-700 font-mono text-[10px] sticky top-0">
+                    <tr>
+                      {Object.keys(sampleResult[0] || {}).map(k => (
+                        <th key={k} className="p-1.5 border-b border-r border-slate-300">{k}</th>
                       ))}
                     </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                  </thead>
+                  <tbody className="divide-y divide-slate-200 font-mono text-[11px]">
+                    {sampleResult.map((row, rIdx) => (
+                      <tr key={rIdx} className="hover:bg-blue-50/30">
+                        {Object.values(row).map((val: any, cIdx) => (
+                          <td key={cIdx} className="p-1.5 border-r border-slate-200 truncate max-w-[120px]">
+                            {String(val ?? '—')}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            ) : (
+              <div className="h-[100px] border border-dashed border-slate-300 rounded-xl flex items-center justify-center text-xs text-slate-500 font-mono">
+                0 records returned from {targetDataSource} in target database.
+              </div>
+            )
           ) : (
             <div className="h-[100px] border border-dashed border-slate-300 rounded-xl flex items-center justify-center text-xs text-slate-400 font-mono">
-              Click 'Run Sample' to execute a design-time preview test.
+              Click 'Run Sample' to execute a live query preview against {targetDataSource}.
             </div>
           )}
         </div>

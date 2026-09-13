@@ -697,6 +697,10 @@ export interface ValidationCheckStep {
   filterOperator?: '=' | '!=' | '>' | '<' | 'CONTAINS';
   filterValue?: string;
   
+  // Database Column Configurations & Table Rules
+  columnConfigurationIds?: string[];
+  columnConfigurations?: DatabaseColumnConfiguration[];
+
   // Output Configuration
   successMessage?: string;
   failureMessage?: string;
@@ -720,6 +724,8 @@ export interface FlowchartNode {
   reportField?: string;
   targetDbId?: string;
   targetTable?: string;
+  columnConfigurationIds?: string[];
+  columnConfigurations?: DatabaseColumnConfiguration[];
 }
 
 export interface FlowchartConnection {
@@ -1003,6 +1009,10 @@ export interface ValidationBox {
   searchParameters?: ValidationBoxSearchParam[];
   checkStep?: ValidationCheckStep;
 
+  // Database Column Configurations & Table Rules
+  columnConfigurationIds?: string[];
+  columnConfigurations?: DatabaseColumnConfiguration[];
+
   // Standalone Reconciliation configuration
   matchKeyInput?: string;
   matchKeyExternal?: string;
@@ -1058,6 +1068,9 @@ export interface ColumnValueLabelMapping {
   description?: string; // Additional context or business explanation
   category?: 'VALID' | 'WARNING' | 'ERROR' | 'INFO'; // Classification of this value
   color?: string; // Optional badge color
+  columnName?: string;
+  constantValue?: string;
+  severity?: string;
 }
 
 export interface TypeColumnCondition {
@@ -1083,6 +1096,9 @@ export interface RuleColumnPriority {
   role?: 'MATCH_KEY' | 'DISCRIMINATOR' | 'AGGREGATE_TARGET' | 'TIE_BREAKER' | string;
   matchMode?: 'EXACT' | 'CASE_INSENSITIVE' | 'TRIMMED';
   transform?: 'NONE' | 'LOWERCASE' | 'UPPERCASE' | 'DIGITS_ONLY';
+  minValue?: number;
+  maxValue?: number;
+  pattern?: string;
 }
 
 export interface RuleAggregation {

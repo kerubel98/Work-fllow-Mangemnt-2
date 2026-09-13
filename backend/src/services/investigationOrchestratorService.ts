@@ -24,7 +24,8 @@ import {
   InvestigationTransaction,
   DatabaseValidationWorkflow,
   QueryExtraction,
-  ValidationCheckStep
+  ValidationCheckStep,
+  DatabaseColumnConfiguration
 } from '../types.js';
 
 export interface OrchestrationOptions {
@@ -264,6 +265,22 @@ export const investigationOrchestratorService = {
       for (let stageIdx = 0; stageIdx < stages.length; stageIdx++) {
         const stage = stages[stageIdx];
         const stageSteps = steps.filter(s => s.stageId === stage.id || (!s.stageId && stageIdx === 0));
+
+        // Hydrate database table column configurations for stage steps (Complete Checks)
+        for (const step of stageSteps) {
+          if ((!step.columnConfigurations || step.columnConfigurations.length === 0) && step.columnConfigurationIds && step.columnConfigurationIds.length > 0) {
+            const configs = await Promise.all(step.columnConfigurationIds.map(id => repo.getColumnConfigurationById(id)));
+            step.columnConfigurations = configs.filter((c): c is DatabaseColumnConfiguration => c !== null);
+          } else if ((!step.columnConfigurations || step.columnConfigurations.length === 0) && (step.targetDbId || stage.targetDbId) && (step.targetTable || stage.targetDataSource)) {
+            try {
+              const tableConfigs = await repo.getColumnConfigurations(step.targetDbId || stage.targetDbId!, step.targetTable || stage.targetDataSource!);
+              if (tableConfigs.length > 0) {
+                step.columnConfigurations = tableConfigs;
+              }
+            } catch {}
+          }
+        }
+
         const targetDb = await repo.getDatabaseConnectionById(stage.targetDbId || workflow.targetDbId || '');
 
         if (!targetDb) {

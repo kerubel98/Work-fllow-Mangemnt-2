@@ -23,7 +23,7 @@ import {
   AlertTriangle
 } from 'lucide-react';
 import { api } from '../../api/client';
-import { ValidationBox, ValidationBoxType, DatabaseConnection } from '../../types';
+import { ValidationBox, ValidationBoxType, DatabaseConnection, DatabaseColumnConfiguration } from '../../types';
 import { globalMappingService } from '../../services/globalMappingService';
 import { showSystemAlert } from '../common/MessageModal';
 
@@ -111,7 +111,7 @@ export const ValidationBoxManager: React.FC<ValidationBoxManagerProps> = () => {
       box.searchParameters.forEach(p => {
         const field = p.inputField || p.targetColumn;
         if (field) {
-          sample[field] = p.defaultValue || (
+          sample[field] = (p as any).defaultValue || (
             field.toLowerCase().includes('amount') ? 149.99 :
             field.toLowerCase().includes('id') || field.toLowerCase().includes('ref') ? 'TXN-1001' :
             field.toLowerCase().includes('card') || field.toLowerCase().includes('pan') ? '4111********9982' :
@@ -229,10 +229,15 @@ export const ValidationBoxManager: React.FC<ValidationBoxManagerProps> = () => {
 
   const [tableColumns, setTableColumns] = useState<{ name: string; type: string; nullable?: boolean; isPrimary?: boolean }[]>([]);
   const [loadingColumns, setLoadingColumns] = useState(false);
+  const [tableColumnConfigs, setTableColumnConfigs] = useState<DatabaseColumnConfiguration[]>([]);
+  const [selectedColumnConfigIds, setSelectedColumnConfigIds] = useState<string[]>([]);
+  const [loadingConfigs, setLoadingConfigs] = useState(false);
 
   useEffect(() => {
     if (targetDbId && targetTable) {
       setLoadingColumns(true);
+      setLoadingConfigs(true);
+
       api.getTableColumns(targetDbId, targetTable)
         .then(res => {
           let cols = res?.columns || [];
@@ -254,8 +259,19 @@ export const ValidationBoxManager: React.FC<ValidationBoxManagerProps> = () => {
           }
         })
         .finally(() => setLoadingColumns(false));
+
+      api.getColumnConfigurations(targetDbId, targetTable)
+        .then(configs => {
+          setTableColumnConfigs(configs || []);
+        })
+        .catch(err => {
+          console.warn('Could not load column configurations:', err);
+          setTableColumnConfigs([]);
+        })
+        .finally(() => setLoadingConfigs(false));
     } else {
       setTableColumns([]);
+      setTableColumnConfigs([]);
     }
   }, [targetDbId, targetTable]);
 
@@ -337,6 +353,7 @@ export const ValidationBoxManager: React.FC<ValidationBoxManagerProps> = () => {
     ]);
     setStatusTargetField('reconciliation_status');
     setMessageTemplate('Transaction {{transaction_id}} verified: status={{status}}');
+    setSelectedColumnConfigIds([]);
 
     setIsModalOpen(true);
   };
@@ -351,6 +368,7 @@ export const ValidationBoxManager: React.FC<ValidationBoxManagerProps> = () => {
     const tbl = box.targetTable || '';
     setTargetDbId(dbId);
     setTargetTable(tbl);
+    setSelectedColumnConfigIds(box.columnConfigurationIds || box.checkStep?.columnConfigurationIds || []);
 
     const initialParams = box.searchParameters && box.searchParameters.length > 0 
       ? box.searchParameters 
@@ -494,6 +512,7 @@ export const ValidationBoxManager: React.FC<ValidationBoxManagerProps> = () => {
           ]
         } : undefined,
         messageTemplate: boxType === 'REPORT' ? messageTemplate : undefined,
+        columnConfigurationIds: selectedColumnConfigIds,
         checkStep: boxType === 'CONDITION_CHECK' ? {
           id: `step-${Date.now()}`,
           name: name.trim(),
@@ -509,6 +528,7 @@ export const ValidationBoxManager: React.FC<ValidationBoxManagerProps> = () => {
           tolerance: parseFloat(tolerance) || 0,
           toleranceMargin: parseFloat(tolerance) || 0,
           dualSourceCondition,
+          columnConfigurationIds: selectedColumnConfigIds,
           severityOnFailure: severity,
           actionOnSuccess: actionSuccess,
           actionOnFailure: actionFailure,
@@ -859,6 +879,11 @@ export const ValidationBoxManager: React.FC<ValidationBoxManagerProps> = () => {
                           <span className={`text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.2 rounded border ${meta.badge}`}>
                             {meta.label}
                           </span>
+                          {(box.columnConfigurationIds && box.columnConfigurationIds.length > 0) && (
+                            <span className="text-[10px] text-indigo-700 bg-indigo-50 border border-indigo-200 px-1.5 py-0.2 rounded font-bold font-mono">
+                              {box.columnConfigurationIds.length} Table Rules
+                            </span>
+                          )}
                           {box.category && (
                             <span className="text-[10px] text-slate-600 bg-slate-100 border border-slate-200 px-1.5 py-0.2 rounded font-medium">
                               {box.category}
@@ -2378,6 +2403,134 @@ export const ValidationBoxManager: React.FC<ValidationBoxManagerProps> = () => {
                       </select>
                     </div>
                   </div>
+                </div>
+              )}
+
+              {/* Database Table Column Configurations & Complete Rules */}
+              {(targetDbId && targetTable) && (
+                <div className="border-t border-slate-800 pt-4 space-y-3">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <Sliders className="w-4 h-4 text-indigo-400" />
+                        <span className="text-xs font-bold uppercase tracking-wider text-indigo-400">
+                          Database Table Rules & Complete Column Configurations
+                        </span>
+                        <span className="text-[10px] font-mono font-bold bg-indigo-950 text-indigo-300 border border-indigo-800/60 px-1.5 py-0.5 rounded">
+                          {selectedColumnConfigIds.length} of {tableColumnConfigs.length} active
+                        </span>
+                      </div>
+                      <p className="text-[11px] text-slate-400 mt-0.5">
+                        Link table-level rules (Completeness, Value Ranges, Duplicate checks, Value Labels) to enforce complete validation inside this box.
+                      </p>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedColumnConfigIds(tableColumnConfigs.map(c => c.id));
+                        }}
+                        className="text-[11px] bg-indigo-950 hover:bg-indigo-900 text-indigo-300 border border-indigo-800/60 px-2 py-1 rounded font-medium transition cursor-pointer"
+                      >
+                        Select All
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedColumnConfigIds([])}
+                        className="text-[11px] bg-slate-900 hover:bg-slate-800 text-slate-400 border border-slate-800 px-2 py-1 rounded font-medium transition cursor-pointer"
+                      >
+                        Clear
+                      </button>
+                    </div>
+                  </div>
+
+                  {loadingConfigs ? (
+                    <div className="py-4 text-center text-xs text-slate-400 animate-pulse">Loading table rules...</div>
+                  ) : tableColumnConfigs.length === 0 ? (
+                    <div className="p-3.5 bg-slate-950/60 border border-slate-800/80 rounded-xl text-center">
+                      <p className="text-xs text-slate-400">
+                        No column configurations defined yet for <code className="text-indigo-300 font-mono">{targetTable}</code>.
+                      </p>
+                      <p className="text-[11px] text-slate-500 mt-1">
+                        Use the <strong>Database Column Configurations Studio</strong> to define duplicate checks, completeness constraints, value bounds, and label dictionaries.
+                      </p>
+                    </div>
+                  ) : (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2 max-h-56 overflow-y-auto pr-1">
+                      {tableColumnConfigs.map((cfg) => {
+                        const isSelected = selectedColumnConfigIds.includes(cfg.id);
+                        const getRuleMeta = (type: string) => {
+                          switch (type) {
+                            case 'COMPLETENESS_CHECK':
+                              return { badge: 'bg-emerald-950 text-emerald-300 border-emerald-800', label: 'Completeness' };
+                            case 'VALUE_RANGE_CHECK':
+                              return { badge: 'bg-amber-950 text-amber-300 border-amber-800', label: 'Value Range' };
+                            case 'DUPLICATE_CHECK':
+                              return { badge: 'bg-indigo-950 text-indigo-300 border-indigo-800', label: 'Duplicate Check' };
+                            case 'VALUE_LABEL_CHECK':
+                              return { badge: 'bg-purple-950 text-purple-300 border-purple-800', label: 'Value Labels' };
+                            case 'PATTERN_CHECK':
+                              return { badge: 'bg-cyan-950 text-cyan-300 border-cyan-800', label: 'Pattern Regex' };
+                            default:
+                              return { badge: 'bg-slate-800 text-slate-300 border-slate-700', label: type };
+                          }
+                        };
+                        const meta = getRuleMeta(cfg.ruleType);
+
+                        return (
+                          <div
+                            key={cfg.id}
+                            onClick={() => {
+                              if (isSelected) {
+                                setSelectedColumnConfigIds(prev => prev.filter(id => id !== cfg.id));
+                              } else {
+                                setSelectedColumnConfigIds(prev => [...prev, cfg.id]);
+                              }
+                            }}
+                            className={`p-2.5 rounded-xl border text-xs cursor-pointer transition flex items-start gap-2.5 ${
+                              isSelected
+                                ? 'bg-indigo-950/40 border-indigo-500/80 shadow-xs'
+                                : 'bg-slate-950/40 border-slate-800 text-slate-400 hover:border-slate-700 hover:bg-slate-900/40'
+                            }`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={isSelected}
+                              onChange={() => {}}
+                              className="mt-0.5 w-4 h-4 rounded bg-slate-900 border-slate-700 text-indigo-500 focus:ring-0 cursor-pointer shrink-0"
+                            />
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center justify-between gap-1 mb-1">
+                                <span className={`font-semibold truncate text-[11px] ${isSelected ? 'text-white' : 'text-slate-300'}`}>
+                                  {cfg.name}
+                                </span>
+                                <span className={`text-[9px] font-mono uppercase px-1.5 py-0.2 rounded border ${meta.badge}`}>
+                                  {meta.label}
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-1.5 flex-wrap text-[10px] text-slate-400">
+                                <span>Cols:</span>
+                                {cfg.columns?.slice(0, 3).map((col, cIdx) => (
+                                  <span key={cIdx} className="font-mono bg-slate-900 border border-slate-800 px-1 py-0.2 rounded text-slate-300">
+                                    {col.columnName}
+                                  </span>
+                                ))}
+                                {cfg.columns?.length > 3 && (
+                                  <span className="text-slate-500 font-mono">+{cfg.columns.length - 3} more</span>
+                                )}
+                              </div>
+                              {cfg.violationMessage && (
+                                <p className="text-[10px] text-slate-500 truncate mt-1 italic">
+                                  {cfg.violationMessage}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
               )}
 

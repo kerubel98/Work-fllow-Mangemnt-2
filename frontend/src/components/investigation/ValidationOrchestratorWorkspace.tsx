@@ -133,7 +133,15 @@ export default function ValidationOrchestratorWorkspace({
   issues,
   selectedIssueId,
   onSelectIssueId,
+  currentUser,
+  users,
   databases,
+  systems,
+  hashtags,
+  onUpdateIssue,
+  onDeleteIssue,
+  onSendChatMessage,
+  onSubmitQueryApproval,
   onOpenNewCase
 }: ValidationOrchestratorWorkspaceProps) {
   const selectedIssue = issues.find(i => i.id === selectedIssueId) || issues[0];
@@ -849,7 +857,7 @@ export default function ValidationOrchestratorWorkspace({
           rowId,
           sourceRecord: r,
           stepResults: {},
-          overallSeverity: (rowValStatus === 'FAIL' ? 'CRITICAL' : 'RECONCILED') as const,
+          overallSeverity: (rowValStatus === 'FAIL' ? 'CRITICAL' : 'RECONCILED') as 'CRITICAL' | 'RECONCILED',
           overallSummary: 'Central Master Record (Clean Ingested Ledger - Immutable)',
           investigationStatus: (rowValStatus === 'PASS' ? 'RECONCILED' : rowValStatus === 'FAIL' ? 'FLAGGED' : 'PENDING') as any,
           isClosed: false,
@@ -1306,7 +1314,7 @@ export default function ValidationOrchestratorWorkspace({
         keyField: detectedKeyField,
         keyFields: activeKeyFields,
         forceRerun,
-        executedBy: currentUser?.name || currentUser?.username || 'investigator'
+        executedBy: (currentUser as any)?.displayName || currentUser?.username || 'investigator'
       });
 
       const serverMap: Record<string, any> = {};

@@ -607,6 +607,10 @@ export interface ValidationCheckStep {
   filterOperator?: '=' | '!=' | '>' | '<' | 'CONTAINS';
   filterValue?: string;
 
+  // Database Column Configurations & Table Rules
+  columnConfigurationIds?: string[];
+  columnConfigurations?: DatabaseColumnConfiguration[];
+
   // Output Configuration
   successMessage?: string;
   failureMessage?: string;
@@ -630,6 +634,8 @@ export interface FlowchartNode {
   reportField?: string;
   targetDbId?: string;
   targetTable?: string;
+  columnConfigurationIds?: string[];
+  columnConfigurations?: DatabaseColumnConfiguration[];
 }
 
 export interface FlowchartConnection {
@@ -911,6 +917,10 @@ export interface ValidationBox {
   mirrorTableName?: string;
   searchParameters?: ValidationBoxSearchParam[];
   checkStep?: ValidationCheckStep;
+
+  // Database Column Configurations & Table Rules
+  columnConfigurationIds?: string[];
+  columnConfigurations?: DatabaseColumnConfiguration[];
 
   // Standalone Reconciliation configuration
   matchKeyInput?: string;

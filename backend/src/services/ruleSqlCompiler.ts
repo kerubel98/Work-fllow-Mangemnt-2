@@ -58,6 +58,7 @@ export const ruleSqlCompiler = {
   ): string {
     const checkType = rule.checkType;
 
+    let baseSql = 'TRUE';
     if (checkType === 'DUAL_SOURCE_COMPARISON' && rule.dualSourceCondition) {
       const dsc = rule.dualSourceCondition;
       const exprA = resolveOperandSqlExpr(dsc.sourceA, mirrorColPrefix, inputColPrefix, validColumns);
@@ -66,134 +67,173 @@ export const ruleSqlCompiler = {
       const margin = Number(dsc.toleranceMargin ?? rule.toleranceMargin ?? 0.00);
 
       if (comp === 'EQUALS' || comp === '==' || comp === '=') {
-        return `LOWER(COALESCE(${exprA}::text, '')) = LOWER(COALESCE(${exprB}::text, ''))`;
-      }
-      if (comp === 'NOT_EQUALS' || comp === '!=' || comp === '<>') {
-        return `LOWER(COALESCE(${exprA}::text, '')) != LOWER(COALESCE(${exprB}::text, ''))`;
-      }
-      if (comp === 'CONTAINS' || comp === 'LIKE' || comp === 'INCLUDES') {
-        return `LOWER(COALESCE(${exprA}::text, '')) LIKE '%' || LOWER(COALESCE(${exprB}::text, '')) || '%'`;
-      }
-      if (comp === 'NOT_CONTAINS' || comp === 'NOT_LIKE') {
-        return `LOWER(COALESCE(${exprA}::text, '')) NOT LIKE '%' || LOWER(COALESCE(${exprB}::text, '')) || '%'`;
-      }
-      if (comp === 'NUMERIC_TOLERANCE') {
-        return `ABS(COALESCE((${exprA})::numeric, 0) - COALESCE((${exprB})::numeric, 0)) <= ${margin}`;
-      }
-      if (comp === 'GREATER_THAN' || comp === '>') {
-        return `COALESCE((${exprA})::numeric, 0) > COALESCE((${exprB})::numeric, 0)`;
-      }
-      if (comp === 'LESS_THAN' || comp === '<') {
-        return `COALESCE((${exprA})::numeric, 0) < COALESCE((${exprB})::numeric, 0)`;
-      }
-      if (comp === 'IN') {
-        return `LOWER(COALESCE(${exprA}::text, '')) = ANY(string_to_array(LOWER(COALESCE(${exprB}::text, '')), ','))`;
-      }
-      if (comp === 'LOOKUP_MAP' && dsc.lookupDictionary) {
+        baseSql = `LOWER(COALESCE(${exprA}::text, '')) = LOWER(COALESCE(${exprB}::text, ''))`;
+      } else if (comp === 'NOT_EQUALS' || comp === '!=' || comp === '<>') {
+        baseSql = `LOWER(COALESCE(${exprA}::text, '')) != LOWER(COALESCE(${exprB}::text, ''))`;
+      } else if (comp === 'CONTAINS' || comp === 'LIKE' || comp === 'INCLUDES') {
+        baseSql = `LOWER(COALESCE(${exprA}::text, '')) LIKE '%' || LOWER(COALESCE(${exprB}::text, '')) || '%'`;
+      } else if (comp === 'NOT_CONTAINS' || comp === 'NOT_LIKE') {
+        baseSql = `LOWER(COALESCE(${exprA}::text, '')) NOT LIKE '%' || LOWER(COALESCE(${exprB}::text, '')) || '%'`;
+      } else if (comp === 'NUMERIC_TOLERANCE') {
+        baseSql = `ABS(COALESCE((${exprA})::numeric, 0) - COALESCE((${exprB})::numeric, 0)) <= ${margin}`;
+      } else if (comp === 'GREATER_THAN' || comp === '>') {
+        baseSql = `COALESCE((${exprA})::numeric, 0) > COALESCE((${exprB})::numeric, 0)`;
+      } else if (comp === 'LESS_THAN' || comp === '<') {
+        baseSql = `COALESCE((${exprA})::numeric, 0) < COALESCE((${exprB})::numeric, 0)`;
+      } else if (comp === 'IN') {
+        baseSql = `LOWER(COALESCE(${exprA}::text, '')) = ANY(string_to_array(LOWER(COALESCE(${exprB}::text, '')), ','))`;
+      } else if (comp === 'LOOKUP_MAP' && dsc.lookupDictionary) {
         const whenClauses = Object.entries(dsc.lookupDictionary)
           .map(([k, v]) => `WHEN '${k.replace(/'/g, "''")}' THEN '${v.replace(/'/g, "''")}'`)
           .join(' ');
         const caseExpr = `CASE ${exprA}::text ${whenClauses} ELSE ${exprA}::text END`;
-        return `LOWER(${caseExpr}) = LOWER(COALESCE(${exprB}::text, ''))`;
+        baseSql = `LOWER(${caseExpr}) = LOWER(COALESCE(${exprB}::text, ''))`;
+      } else {
+        baseSql = `LOWER(COALESCE(${exprA}::text, '')) = LOWER(COALESCE(${exprB}::text, ''))`;
       }
-      return `LOWER(COALESCE(${exprA}::text, '')) = LOWER(COALESCE(${exprB}::text, ''))`;
-    }
+    } else {
+      const targetCol = sanitizeCol(rule.targetField || rule.sourceField || '');
+      if (!targetCol && checkType !== 'SQL_CONDITION' && checkType !== 'EXISTENCE_CHECK') {
+        baseSql = 'TRUE';
+      } else {
+        const colExpr = resolveColExpr(targetCol, mirrorColPrefix, validColumns);
 
-    const targetCol = sanitizeCol(rule.targetField || rule.sourceField || '');
-    if (!targetCol && checkType !== 'SQL_CONDITION' && checkType !== 'EXISTENCE_CHECK') {
-      return 'TRUE';
-    }
-    const colExpr = resolveColExpr(targetCol, mirrorColPrefix, validColumns);
+        switch (checkType) {
+          case 'EXISTENCE_CHECK':
+            baseSql = `${mirrorColPrefix}._mirror_id IS NOT NULL`;
+            break;
 
-    switch (checkType) {
-      case 'EXISTENCE_CHECK':
-        return `${mirrorColPrefix}._mirror_id IS NOT NULL`;
+          case 'AMOUNT_MATCH': {
+            const margin = Number(rule.toleranceMargin ?? rule.tolerance ?? 0.00);
+            if (rule.targetField && rule.sourceField && rule.targetField !== rule.sourceField) {
+              const sourceColExpr = resolveColExpr(sanitizeCol(rule.sourceField), mirrorColPrefix, validColumns);
+              const targetColExpr = resolveColExpr(sanitizeCol(rule.targetField), mirrorColPrefix, validColumns);
+              baseSql = `ABS(COALESCE((${sourceColExpr})::numeric, 0) - COALESCE((${targetColExpr})::numeric, 0)) <= ${margin}`;
+            } else {
+              const compareVal = rule.compareValue ?? rule.expectedValue;
+              if (compareVal !== undefined && String(compareVal).trim() !== '') {
+                const expected = Number(compareVal);
+                if (!isNaN(expected)) {
+                  baseSql = `ABS(COALESCE((${colExpr})::numeric, 0) - ${expected}) <= ${margin}`;
+                } else {
+                  baseSql = `COALESCE((${colExpr})::numeric, 0) > 0`;
+                }
+              } else {
+                baseSql = `COALESCE((${colExpr})::numeric, 0) > 0`;
+              }
+            }
+            break;
+          }
 
-      case 'AMOUNT_MATCH': {
-        const margin = Number(rule.toleranceMargin ?? rule.tolerance ?? 0.00);
-        if (rule.targetField && rule.sourceField && rule.targetField !== rule.sourceField) {
-          const sourceColExpr = resolveColExpr(sanitizeCol(rule.sourceField), mirrorColPrefix, validColumns);
-          const targetColExpr = resolveColExpr(sanitizeCol(rule.targetField), mirrorColPrefix, validColumns);
-          return `ABS(COALESCE((${sourceColExpr})::numeric, 0) - COALESCE((${targetColExpr})::numeric, 0)) <= ${margin}`;
+          case 'FIELD_COMPARATOR': {
+            const rawComp = String(rule.comparator || rule.operator || '=').trim().toUpperCase();
+            const expected = String(rule.compareValue ?? rule.expectedValue ?? '').replace(/'/g, "''");
+            if (rawComp === 'IN') {
+              const list = expected.split(',').map(s => `'${s.trim()}'`).join(', ');
+              baseSql = `LOWER(COALESCE(${colExpr}::text, '')) IN (${list.toLowerCase()})`;
+            } else if (rawComp === 'NOT_IN') {
+              const list = expected.split(',').map(s => `'${s.trim()}'`).join(', ');
+              baseSql = `LOWER(COALESCE(${colExpr}::text, '')) NOT IN (${list.toLowerCase()})`;
+            } else if (rawComp === 'LIKE' || rawComp === 'CONTAINS' || rawComp === 'INCLUDES') {
+              const clean = expected.replace(/^%+|%+$/g, '');
+              baseSql = `LOWER(COALESCE(${colExpr}::text, '')) LIKE '%${clean.toLowerCase()}%'`;
+            } else if (rawComp === 'NOT_LIKE' || rawComp === 'NOT_CONTAINS') {
+              const clean = expected.replace(/^%+|%+$/g, '');
+              baseSql = `LOWER(COALESCE(${colExpr}::text, '')) NOT LIKE '%${clean.toLowerCase()}%'`;
+            } else if (rawComp === 'STARTS_WITH') {
+              const clean = expected.replace(/^%+|%+$/g, '');
+              baseSql = `LOWER(COALESCE(${colExpr}::text, '')) LIKE '${clean.toLowerCase()}%'`;
+            } else if (rawComp === 'ENDS_WITH') {
+              const clean = expected.replace(/^%+|%+$/g, '');
+              baseSql = `LOWER(COALESCE(${colExpr}::text, '')) LIKE '%${clean.toLowerCase()}'`;
+            } else if (rawComp === 'NOT_NULL' || rawComp === 'EXISTS' || rawComp === 'PRESENT') {
+              baseSql = `COALESCE(${colExpr}::text, '') != ''`;
+            } else if (rawComp === 'IS_NULL' || rawComp === 'EMPTY') {
+              baseSql = `COALESCE(${colExpr}::text, '') = ''`;
+            } else {
+              const sqlComp = (rawComp === 'EQUALS' || rawComp === '==') ? '=' : ((rawComp === 'NOT_EQUALS' || rawComp === '<>') ? '!=' : rawComp);
+              baseSql = `COALESCE(${colExpr}::text, '') ${sqlComp} '${expected}'`;
+            }
+            break;
+          }
+
+          case 'STATUS_MATCH': {
+            const expected = String(rule.compareValue ?? rule.expectedValue ?? '').toUpperCase().replace(/'/g, "''");
+            baseSql = `UPPER(COALESCE(${colExpr}::text, '')) = '${expected}'`;
+            break;
+          }
+
+          case 'ISO_DECLINE_CODE': {
+            const expected = String(rule.compareValue ?? rule.expectedValue ?? '').trim().replace(/'/g, "''");
+            baseSql = `COALESCE(${colExpr}::text, '') = '${expected}'`;
+            break;
+          }
+
+          case 'NUMERIC_THRESHOLD': {
+            const comp = rule.comparator || rule.operator || '>';
+            const val = Number(rule.compareValue ?? rule.expectedValue ?? 0);
+            baseSql = `COALESCE((${colExpr})::numeric, 0) ${comp} ${val}`;
+            break;
+          }
+
+          case 'REGEX_MATCH': {
+            const pattern = (rule.regexPattern || rule.compareValue || '').replace(/'/g, "''");
+            baseSql = `COALESCE(${colExpr}::text, '') ~* '${pattern}'`;
+            break;
+          }
+
+          case 'SQL_CONDITION': {
+            if (rule.sqlCondition && rule.sqlCondition.trim()) {
+              baseSql = `(${rule.sqlCondition.replace(/\{table\}/gi, mirrorColPrefix)})`;
+            } else {
+              baseSql = 'TRUE';
+            }
+            break;
+          }
+
+          default:
+            baseSql = 'TRUE';
+            break;
         }
-        const compareVal = rule.compareValue ?? rule.expectedValue;
-        if (compareVal !== undefined && String(compareVal).trim() !== '') {
-          const expected = Number(compareVal);
-          if (!isNaN(expected)) {
-            return `ABS(COALESCE((${colExpr})::numeric, 0) - ${expected}) <= ${margin}`;
+      }
+    }
+
+    // Append complete checks for attached Database Table Column Configurations
+    const colConfigConditions: string[] = [];
+    if (Array.isArray(rule.columnConfigurations) && rule.columnConfigurations.length > 0) {
+      for (const cfg of rule.columnConfigurations) {
+        if (!cfg || cfg.isActive === false) continue;
+        if (cfg.ruleType === 'COMPLETENESS_CHECK' && Array.isArray(cfg.columns)) {
+          for (const col of cfg.columns) {
+            const colExp = resolveColExpr(sanitizeCol(col.columnName), mirrorColPrefix, validColumns);
+            colConfigConditions.push(`COALESCE(${colExp}::text, '') != ''`);
+          }
+        } else if (cfg.ruleType === 'VALUE_RANGE_CHECK' && Array.isArray(cfg.columns)) {
+          for (const col of cfg.columns) {
+            const colExp = resolveColExpr(sanitizeCol(col.columnName), mirrorColPrefix, validColumns);
+            if (col.minValue !== undefined) {
+              colConfigConditions.push(`COALESCE((${colExp})::numeric, 0) >= ${Number(col.minValue)}`);
+            }
+            if (col.maxValue !== undefined) {
+              colConfigConditions.push(`COALESCE((${colExp})::numeric, 0) <= ${Number(col.maxValue)}`);
+            }
+          }
+        } else if (cfg.ruleType === 'VALUE_LABEL_CHECK' && Array.isArray(cfg.valueLabels)) {
+          for (const vl of cfg.valueLabels) {
+            if (vl.category === 'ERROR' || vl.severity === 'CRITICAL') {
+              const colExp = resolveColExpr(sanitizeCol(vl.columnName), mirrorColPrefix, validColumns);
+              const disVal = String(vl.constantValue).replace(/'/g, "''");
+              colConfigConditions.push(`LOWER(COALESCE(${colExp}::text, '')) != LOWER('${disVal}')`);
+            }
           }
         }
-        return `COALESCE((${colExpr})::numeric, 0) > 0`;
       }
-
-      case 'FIELD_COMPARATOR': {
-        const rawComp = String(rule.comparator || rule.operator || '=').trim().toUpperCase();
-        const expected = String(rule.compareValue ?? rule.expectedValue ?? '').replace(/'/g, "''");
-        if (rawComp === 'IN') {
-          const list = expected.split(',').map(s => `'${s.trim()}'`).join(', ');
-          return `LOWER(COALESCE(${colExpr}::text, '')) IN (${list.toLowerCase()})`;
-        }
-        if (rawComp === 'NOT_IN') {
-          const list = expected.split(',').map(s => `'${s.trim()}'`).join(', ');
-          return `LOWER(COALESCE(${colExpr}::text, '')) NOT IN (${list.toLowerCase()})`;
-        }
-        if (rawComp === 'LIKE' || rawComp === 'CONTAINS' || rawComp === 'INCLUDES') {
-          const clean = expected.replace(/^%+|%+$/g, '');
-          return `LOWER(COALESCE(${colExpr}::text, '')) LIKE '%${clean.toLowerCase()}%'`;
-        }
-        if (rawComp === 'NOT_LIKE' || rawComp === 'NOT_CONTAINS') {
-          const clean = expected.replace(/^%+|%+$/g, '');
-          return `LOWER(COALESCE(${colExpr}::text, '')) NOT LIKE '%${clean.toLowerCase()}%'`;
-        }
-        if (rawComp === 'STARTS_WITH') {
-          const clean = expected.replace(/^%+|%+$/g, '');
-          return `LOWER(COALESCE(${colExpr}::text, '')) LIKE '${clean.toLowerCase()}%'`;
-        }
-        if (rawComp === 'ENDS_WITH') {
-          const clean = expected.replace(/^%+|%+$/g, '');
-          return `LOWER(COALESCE(${colExpr}::text, '')) LIKE '%${clean.toLowerCase()}'`;
-        }
-        if (rawComp === 'NOT_NULL' || rawComp === 'EXISTS' || rawComp === 'PRESENT') {
-          return `COALESCE(${colExpr}::text, '') != ''`;
-        }
-        if (rawComp === 'IS_NULL' || rawComp === 'EMPTY') {
-          return `COALESCE(${colExpr}::text, '') = ''`;
-        }
-        const sqlComp = (rawComp === 'EQUALS' || rawComp === '==') ? '=' : ((rawComp === 'NOT_EQUALS' || rawComp === '<>') ? '!=' : rawComp);
-        return `COALESCE(${colExpr}::text, '') ${sqlComp} '${expected}'`;
-      }
-
-      case 'STATUS_MATCH': {
-        const expected = String(rule.compareValue ?? rule.expectedValue ?? '').toUpperCase().replace(/'/g, "''");
-        return `UPPER(COALESCE(${colExpr}::text, '')) = '${expected}'`;
-      }
-
-      case 'ISO_DECLINE_CODE': {
-        const expected = String(rule.compareValue ?? rule.expectedValue ?? '').trim().replace(/'/g, "''");
-        return `COALESCE(${colExpr}::text, '') = '${expected}'`;
-      }
-
-      case 'NUMERIC_THRESHOLD': {
-        const comp = rule.comparator || rule.operator || '>';
-        const val = Number(rule.compareValue ?? rule.expectedValue ?? 0);
-        return `COALESCE((${colExpr})::numeric, 0) ${comp} ${val}`;
-      }
-
-      case 'REGEX_MATCH': {
-        const pattern = (rule.regexPattern || rule.compareValue || '').replace(/'/g, "''");
-        return `COALESCE(${colExpr}::text, '') ~* '${pattern}'`;
-      }
-
-      case 'SQL_CONDITION': {
-        if (rule.sqlCondition && rule.sqlCondition.trim()) {
-          return `(${rule.sqlCondition.replace(/\{table\}/gi, mirrorColPrefix)})`;
-        }
-        return 'TRUE';
-      }
-
-      default:
-        return 'TRUE';
     }
+
+    if (colConfigConditions.length > 0) {
+      return baseSql === 'TRUE' ? colConfigConditions.join(' AND ') : `(${baseSql}) AND ${colConfigConditions.join(' AND ')}`;
+    }
+    return baseSql;
   },
 
   /**
