@@ -11,6 +11,22 @@ export default defineConfig(() => {
         '@': path.resolve(__dirname, '.'),
       },
     },
+    build: {
+      chunkSizeWarningLimit: 1000,
+      rollupOptions: {
+        output: {
+          manualChunks(id) {
+            if (id.includes('node_modules')) {
+              if (id.includes('xlsx')) return 'vendor-xlsx';
+              if (id.includes('recharts') || id.includes('d3')) return 'vendor-charts';
+              if (id.includes('lucide-react')) return 'vendor-icons';
+              if (id.includes('motion')) return 'vendor-motion';
+              return 'vendor-core';
+            }
+          }
+        }
+      }
+    },
     server: {
       port: 3000,
       host: '0.0.0.0',
