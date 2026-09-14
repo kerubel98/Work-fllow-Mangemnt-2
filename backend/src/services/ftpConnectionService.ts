@@ -259,7 +259,7 @@ function resolveFileType(name: string): 'EXCEL' | 'CSV' | 'XML' | 'TXT' | 'JSON'
 async function fetchSftpFilesRecursive(
   config: FtpConnectionConfig,
   baseDirOverride?: string,
-  maxDepth = 6
+  maxDepth = 8
 ): Promise<FtpFileEntry[]> {
   return new Promise((resolve, reject) => {
     const conn = new SshClient();
@@ -357,7 +357,7 @@ async function fetchSftpFilesRecursive(
 async function fetchSftpFileBuffer(
   config: FtpConnectionConfig,
   remotePath: string,
-  maxBytes = 10485760
+  maxBytes = 52428800
 ): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const conn = new SshClient();
@@ -486,7 +486,7 @@ export async function discoverFtpFiles(db: DatabaseConnection): Promise<string[]
 export async function discoverFtpFilesRecursive(
   db: DatabaseConnection,
   baseDirOverride?: string,
-  maxDepth = 6
+  maxDepth = 8
 ): Promise<FtpFileEntry[]> {
   const config = resolveFtpConfig(db);
   const rootDir = baseDirOverride || config.baseDirectory;
@@ -554,7 +554,7 @@ export async function discoverFtpFilesRecursive(
 export async function fetchRemoteFileBuffer(
   db: DatabaseConnection,
   remotePath: string,
-  maxBytes = 10485760
+  maxBytes = 52428800
 ): Promise<Buffer> {
   const config = resolveFtpConfig(db);
 

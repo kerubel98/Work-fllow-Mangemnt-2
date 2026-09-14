@@ -236,7 +236,7 @@ function resolveFileType(name) {
 /**
  * Traverses SFTP filesystem recursively to discover actual files and folders.
  */
-async function fetchSftpFilesRecursive(config, baseDirOverride, maxDepth = 6) {
+async function fetchSftpFilesRecursive(config, baseDirOverride, maxDepth = 8) {
     return new Promise((resolve, reject) => {
         const conn = new SshClient();
         let isFinished = false;
@@ -334,7 +334,7 @@ async function fetchSftpFilesRecursive(config, baseDirOverride, maxDepth = 6) {
 /**
  * Streams remote binary file buffer via SFTP.
  */
-async function fetchSftpFileBuffer(config, remotePath, maxBytes = 10485760) {
+async function fetchSftpFileBuffer(config, remotePath, maxBytes = 52428800) {
     return new Promise((resolve, reject) => {
         const conn = new SshClient();
         const chunks = [];
@@ -460,7 +460,7 @@ export async function discoverFtpFiles(db) {
  * Discovers data files recursively across subfolders (e.g. /AIB/Card/Settlemnt/2026/sep/).
  * Enables multi-folder looping, authentic pattern recognition, and batch staging.
  */
-export async function discoverFtpFilesRecursive(db, baseDirOverride, maxDepth = 6) {
+export async function discoverFtpFilesRecursive(db, baseDirOverride, maxDepth = 8) {
     const config = resolveFtpConfig(db);
     const rootDir = baseDirOverride || config.baseDirectory;
     if (isSftpConnection(db, config)) {
@@ -528,7 +528,7 @@ export async function discoverFtpFilesRecursive(db, baseDirOverride, maxDepth = 
 /**
  * Downloads full or partial file binary buffer from remote FTP/SFTP server.
  */
-export async function fetchRemoteFileBuffer(db, remotePath, maxBytes = 10485760) {
+export async function fetchRemoteFileBuffer(db, remotePath, maxBytes = 52428800) {
     const config = resolveFtpConfig(db);
     if (isSftpConnection(db, config)) {
         return await fetchSftpFileBuffer(config, remotePath, maxBytes);

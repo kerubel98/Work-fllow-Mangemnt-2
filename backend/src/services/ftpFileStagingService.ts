@@ -148,7 +148,7 @@ export const ftpFileStagingService = {
     // If wildcard or bare name, resolve via recursive file discovery
     if (targetPath.includes('*') || targetPath.includes('?') || !targetPath.startsWith('/')) {
       try {
-        const discovered = await discoverFtpFilesRecursive(db, undefined, 4);
+        const discovered = await discoverFtpFilesRecursive(db, undefined, 8);
         if (targetPath.includes('*') || targetPath.includes('?')) {
           const regex = new RegExp('^' + targetPath.replace(/\./g, '\\.').replace(/\*/g, '.*') + '$', 'i');
           const match = discovered.find(f => regex.test(f.name) || regex.test(f.fullPath));
@@ -169,7 +169,7 @@ export const ftpFileStagingService = {
     const isXml = ext === '.xml';
 
     if (isExcel) {
-      const buf = await fetchRemoteFileBuffer(db, targetPath);
+      const buf = await fetchRemoteFileBuffer(db, targetPath, 52428800);
       if (!buf || buf.length === 0) {
         throw new Error(`Failed to inspect Excel file '${targetPath}': File is empty or could not be downloaded from remote server.`);
       }
@@ -188,13 +188,36 @@ export const ftpFileStagingService = {
         return { name: sheetName, rowCount, colCount, hasMergedCells };
       });
 
+      let suggestedHeaderRow = 1;
+      let suggestedDataStartRow = 2;
+
+      const firstSheet = wb.Sheets[wb.SheetNames[0]];
+      if (firstSheet) {
+        const rawRows: any[][] = XLSX.utils.sheet_to_json(firstSheet, { header: 1 });
+        let bestHeaderIdx = 0;
+        let maxColsFound = 0;
+        for (let r = 0; r < Math.min(rawRows.length, 15); r++) {
+          const row = rawRows[r];
+          if (!Array.isArray(row)) continue;
+          const nonNullCount = row.filter(c => c !== null && c !== undefined && String(c).trim() !== '').length;
+          if (nonNullCount > maxColsFound) {
+            maxColsFound = nonNullCount;
+            bestHeaderIdx = r;
+          }
+        }
+        if (maxColsFound >= 3) {
+          suggestedHeaderRow = bestHeaderIdx + 1;
+          suggestedDataStartRow = suggestedHeaderRow + 1;
+        }
+      }
+
       return {
         fileName: targetPath,
         fileType: 'EXCEL',
         fileSizeBytes: buf.length,
         excelSheets: sheets,
-        suggestedHeaderRow: 1,
-        suggestedDataStartRow: 2
+        suggestedHeaderRow,
+        suggestedDataStartRow
       };
     }
 
@@ -298,7 +321,7 @@ export const ftpFileStagingService = {
     // If wildcard or bare filename, resolve via recursive file discovery
     if (targetFile.includes('*') || targetFile.includes('?') || !targetFile.startsWith('/')) {
       try {
-        const discovered = await discoverFtpFilesRecursive(db, config.sourceDirectoryPath || undefined, 4);
+        const discovered = await discoverFtpFilesRecursive(db, config.sourceDirectoryPath || undefined, 8);
         if (targetFile.includes('*') || targetFile.includes('?')) {
           const regex = new RegExp('^' + targetFile.replace(/\./g, '\\.').replace(/\*/g, '.*') + '$', 'i');
           const match = discovered.find(f => regex.test(f.name) || regex.test(f.fullPath));
@@ -326,7 +349,7 @@ export const ftpFileStagingService = {
     // 1. EXCEL PARSING
     // ==========================================
     if (isExcel) {
-      const buf = await fetchRemoteFileBuffer(db, targetFile);
+      const buf = await fetchRemoteFileBuffer(db, targetFile, 52428800);
       if (!buf || buf.length === 0) {
         throw new Error(`Failed to preview Excel file '${targetFile}': File is empty or could not be downloaded from remote server.`);
       }
@@ -677,7 +700,7 @@ export const ftpFileStagingService = {
     let targetFiles: { fullPath: string; folder: string; name: string }[] = [];
 
     if (traversalMode === 'RECURSIVE_SCAN' || traversalMode === 'DIRECTORY_SCAN') {
-      const recursiveEntries = await discoverFtpFilesRecursive(db, config.sourceDirectoryPath);
+      const recursiveEntries = await discoverFtpFilesRecursive(db, config.sourceDirectoryPath, 8);
       const pattern = config.fileNamePattern.toLowerCase().replace(/\*/g, '.*');
       const regex = new RegExp(`^${pattern}$`, 'i');
 
