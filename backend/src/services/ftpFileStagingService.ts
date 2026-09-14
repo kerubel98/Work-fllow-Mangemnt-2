@@ -121,167 +121,14 @@ function sanitizeColumnName(name: string, fallbackIdx: number): string {
 }
 
 /**
- * Downloads initial string content from remote FTP file (UTF-8).
+ * Downloads initial string content from remote FTP/SFTP file (UTF-8).
  */
 async function fetchRemoteFileContent(db: DatabaseConnection, filename: string, maxBytes = 2097152): Promise<string> {
-  const config = resolveFtpConfig(db);
-  const client = new ftp.Client();
-  client.ftp.verbose = false;
-  let content = '';
-
-  try {
-    await client.access({
-      host: config.host,
-      port: config.port,
-      user: config.user,
-      password: config.password,
-      secure: config.secure
-    });
-
-    const memoryStream = new Writable({
-      write(chunk, _encoding, callback) {
-        content += chunk.toString('utf-8');
-        callback();
-      }
-    });
-
-    const fullPath = filename.startsWith('/')
-      ? filename
-      : (config.baseDirectory.endsWith('/') ? `${config.baseDirectory}${filename}` : `${config.baseDirectory}/${filename}`);
-
-    await client.downloadTo(memoryStream, fullPath);
-    return content;
-  } catch (err: any) {
-    console.warn(`[ftpFileStagingService] Remote download warning for ${filename}:`, err.message);
-    return '';
-  } finally {
-    try { client.close(); } catch {}
+  const buf = await fetchRemoteFileBuffer(db, filename, maxBytes);
+  if (!buf || buf.length === 0) {
+    throw new Error(`File '${filename}' is empty or could not be read from remote server.`);
   }
-}
-
-/**
- * Generates rich simulated clearing content if physical FTP is offline.
- */
-function getSimulatedFileContent(filename: string): string {
-  const isVisa = filename.toLowerCase().includes('visa') || filename.toLowerCase().includes('switch');
-  const isXml = filename.toLowerCase().endsWith('.xml');
-  const now = new Date();
-
-  if (isXml) {
-    return `<?xml version="1.0" encoding="UTF-8"?>
-<Document xmlns="urn:iso:std:iso:20022:tech:xsd:camt.053.001.02">
-  <BkToCstmrStmt>
-    <GrpHdr>
-      <MsgId>MSG-CLEARING-${now.toISOString().slice(0, 10)}</MsgId>
-      <CreDtTm>${now.toISOString()}</CreDtTm>
-    </GrpHdr>
-    <Stmt>
-      <Id>STMT-2026-BATCH-01</Id>
-      <Acct><Id><IBAN>US89BKTR00012345678901</IBAN></Id></Acct>
-      <Ntry>
-        <Amt Ccy="USD">1450.50</Amt>
-        <CdtDbtInd>CRDT</CdtDbtInd>
-        <Sts>BOOK</Sts>
-        <BookgDt><DtTm>${now.toISOString()}</DtTm></BookgDt>
-        <NtryDtls>
-          <TxDtls>
-            <Refs><EndToEndId>TXN-XML-10001</EndToEndId></Refs>
-            <AmtDtls><TxAmt><Amt Ccy="USD">1450.50</Amt></TxAmt></AmtDtls>
-            <RltdPties><Dbtr><Nm>Retail Merchant Group A</Nm></Dbtr></RltdPties>
-            <RmtInf><Ustrd>Card Clearing Settlement Batch 01</Ustrd></RmtInf>
-          </TxDtls>
-        </NtryDtls>
-      </Ntry>
-      <Ntry>
-        <Amt Ccy="USD">890.00</Amt>
-        <CdtDbtInd>DBIT</CdtDbtInd>
-        <Sts>BOOK</Sts>
-        <BookgDt><DtTm>${now.toISOString()}</DtTm></BookgDt>
-        <NtryDtls>
-          <TxDtls>
-            <Refs><EndToEndId>TXN-XML-10002</EndToEndId></Refs>
-            <AmtDtls><TxAmt><Amt Ccy="USD">890.00</Amt></TxAmt></AmtDtls>
-            <RltdPties><Dbtr><Nm>ATM Network Interchange</Nm></Dbtr></RltdPties>
-            <RmtInf><Ustrd>Interchange Fee Settlement</Ustrd></RmtInf>
-          </TxDtls>
-        </NtryDtls>
-      </Ntry>
-      <Ntry>
-        <Amt Ccy="USD">45.20</Amt>
-        <CdtDbtInd>DBIT</CdtDbtInd>
-        <Sts>RJCT</Sts>
-        <BookgDt><DtTm>${now.toISOString()}</DtTm></BookgDt>
-        <NtryDtls>
-          <TxDtls>
-            <Refs><EndToEndId>TXN-XML-10003</EndToEndId></Refs>
-            <AmtDtls><TxAmt><Amt Ccy="USD">45.20</Amt></TxAmt></AmtDtls>
-            <RltdPties><Dbtr><Nm>Fee Processing Center</Nm></Dbtr></RltdPties>
-            <RmtInf><Ustrd>Declined Duplicate Transaction</Ustrd></RmtInf>
-          </TxDtls>
-        </NtryDtls>
-      </Ntry>
-    </Stmt>
-  </BkToCstmrStmt>
-</Document>`;
-  }
-
-  if (isVisa) {
-    let out = `HDR|CLEARING_BATCH|${now.toISOString().slice(0, 10)}|BATCH-09827\n`;
-    out += `transaction_id|card_number|amount|currency|auth_code|response_code|settlement_date|status\n`;
-    for (let i = 1; i <= 35; i++) {
-      const resp = i % 8 === 0 ? '05' : '00';
-      const stat = resp === '00' ? 'SETTLED' : 'DECLINED';
-      out += `TXN-STG-${100000 + i}|453275******${String(1000 + i * 3).slice(-4)}|${(120.5 + i * 14.25).toFixed(2)}|USD|AUTH${8000 + i}|${resp}|${new Date(now.getTime() - i * 1800000).toISOString()}|${stat}\n`;
-    }
-    out += `TRL|TOTAL_COUNT=35|TOTAL_AMOUNT=7850.25|STATUS=BATCH_BALANCED\n`;
-    return out;
-  }
-
-  // Multi-row header CSV representation
-  let out = `## BANK SETTLEMENT EXTRACT - INSTITUTION 00492\n`;
-  out += `Transaction Core Details,Transaction Core Details,Transaction Financials,Transaction Financials,Status Details,Status Details\n`;
-  out += `Transaction ID,Account Number,Settlement Amount,Currency Code,Response Code,Status\n`;
-  for (let i = 1; i <= 35; i++) {
-    const resp = i % 6 === 0 ? '51' : '00';
-    const stat = resp === '00' ? 'POSTED' : 'REJECTED';
-    out += `TXN-STG-${200000 + i},1000029384${String(i).padStart(2, '0')},${(85.0 + i * 22.5).toFixed(2)},USD,${resp},${stat}\n`;
-  }
-  out += `## TRAILER: COUNT=35, SUM=17482.50\n`;
-  return out;
-}
-
-/**
- * Creates simulated Excel Buffer with multi-row headers and merged cell ranges.
- */
-function getSimulatedExcelBuffer(): Buffer {
-  const wb = XLSX.utils.book_new();
-
-  // Create multi-row header matrix
-  const data = [
-    ['REPORT RUN: 2026-09-08', '', '', '', ''],
-    ['Account Details', '', 'Financial Details', '', 'Status'],
-    ['Account Number', 'Holder Name', 'Amount', 'Currency', 'State'],
-    ['100002938401', 'Acme Corp', 1540.50, 'USD', 'SETTLED'],
-    ['100002938402', 'Global Logistics', 920.00, 'USD', 'SETTLED'],
-    ['100002938403', 'Apex Trading', 45.10, 'USD', 'FAILED'],
-    ['100002938404', 'Zenith Capital', 3400.00, 'USD', 'SETTLED'],
-    ['TOTALS:', '', 5905.60, '', '']
-  ];
-
-  const ws = XLSX.utils.aoa_to_sheet(data);
-
-  // Define merged ranges:
-  // Row 1 (index 1): Account Details spans Col A & B (0 to 1)
-  // Row 1 (index 1): Financial Details spans Col C & D (2 to 3)
-  ws['!merges'] = [
-    { s: { r: 1, c: 0 }, e: { r: 1, c: 1 } },
-    { s: { r: 1, c: 2 }, e: { r: 1, c: 3 } }
-  ];
-
-  XLSX.utils.book_append_sheet(wb, ws, 'Settlement_Batch_01');
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['Fee Ledger Summary']]), 'Fee_Summary');
-
-  return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+  return buf.toString('utf-8');
 }
 
 export const ftpFileStagingService = {
@@ -293,17 +140,45 @@ export const ftpFileStagingService = {
     db: DatabaseConnection,
     filePath: string
   ): Promise<FileStructureInspectionResult> {
-    const ext = filePath.toLowerCase().slice(filePath.lastIndexOf('.'));
+    let targetPath = filePath.trim();
+    if (!targetPath) {
+      throw new Error('No file path provided for structure inspection.');
+    }
+
+    // If wildcard or bare name, resolve via recursive file discovery
+    if (targetPath.includes('*') || targetPath.includes('?') || !targetPath.startsWith('/')) {
+      try {
+        const discovered = await discoverFtpFilesRecursive(db, undefined, 4);
+        if (targetPath.includes('*') || targetPath.includes('?')) {
+          const regex = new RegExp('^' + targetPath.replace(/\./g, '\\.').replace(/\*/g, '.*') + '$', 'i');
+          const match = discovered.find(f => regex.test(f.name) || regex.test(f.fullPath));
+          if (match) targetPath = match.fullPath;
+          else throw new Error(`No remote files match pattern '${targetPath}'. Verify the pattern or check server files.`);
+        } else if (!targetPath.startsWith('/')) {
+          const match = discovered.find(f => f.name === targetPath || f.fullPath.endsWith(`/${targetPath}`));
+          if (match) targetPath = match.fullPath;
+        }
+      } catch (err: any) {
+        if (err.message.includes('No remote files match pattern')) throw err;
+        // Continue with original path if discovery fails
+      }
+    }
+
+    const ext = targetPath.toLowerCase().slice(targetPath.lastIndexOf('.'));
     const isExcel = ext === '.xlsx' || ext === '.xls';
     const isXml = ext === '.xml';
 
     if (isExcel) {
-      let buf = await fetchRemoteFileBuffer(db, filePath);
+      const buf = await fetchRemoteFileBuffer(db, targetPath);
       if (!buf || buf.length === 0) {
-        buf = getSimulatedExcelBuffer();
+        throw new Error(`Failed to inspect Excel file '${targetPath}': File is empty or could not be downloaded from remote server.`);
       }
 
       const wb = XLSX.read(buf, { type: 'buffer' });
+      if (!wb.SheetNames || wb.SheetNames.length === 0) {
+        throw new Error(`Excel workbook at '${targetPath}' contains no readable worksheets.`);
+      }
+
       const sheets = wb.SheetNames.map(sheetName => {
         const ws = wb.Sheets[sheetName];
         const range = XLSX.utils.decode_range(ws['!ref'] || 'A1:A1');
@@ -314,19 +189,19 @@ export const ftpFileStagingService = {
       });
 
       return {
-        fileName: filePath,
+        fileName: targetPath,
         fileType: 'EXCEL',
         fileSizeBytes: buf.length,
         excelSheets: sheets,
-        suggestedHeaderRow: 2,
-        suggestedDataStartRow: 4
+        suggestedHeaderRow: 1,
+        suggestedDataStartRow: 2
       };
     }
 
     if (isXml) {
-      let text = await fetchRemoteFileContent(db, filePath);
-      if (!text.trim()) {
-        text = getSimulatedFileContent(filePath);
+      const text = await fetchRemoteFileContent(db, targetPath);
+      if (!text || !text.trim()) {
+        throw new Error(`Failed to inspect XML file '${targetPath}': File contains no readable XML content.`);
       }
 
       const parser = new XMLParser({ ignoreAttributes: false });
@@ -350,7 +225,7 @@ export const ftpFileStagingService = {
       findArrays(parsed, '');
 
       return {
-        fileName: filePath,
+        fileName: targetPath,
         fileType: 'XML',
         fileSizeBytes: Buffer.byteLength(text, 'utf-8'),
         xmlRootElement: rootElement,
@@ -362,11 +237,14 @@ export const ftpFileStagingService = {
     }
 
     // CSV / TXT / Delimited
-    let content = await fetchRemoteFileContent(db, filePath);
-    if (!content.trim()) {
-      content = getSimulatedFileContent(filePath);
+    const content = await fetchRemoteFileContent(db, targetPath);
+    if (!content || !content.trim()) {
+      throw new Error(`Failed to inspect file '${targetPath}': File contains no readable text content.`);
     }
     const lines = content.split(/\r?\n/).filter(l => l.length > 0);
+    if (lines.length === 0) {
+      throw new Error(`File '${targetPath}' contains no non-empty lines.`);
+    }
 
     // Delimiter sniffing
     const candidates = [',', '\t', '|', ';'];
@@ -392,7 +270,7 @@ export const ftpFileStagingService = {
     }
 
     return {
-      fileName: filePath,
+      fileName: targetPath,
       fileType: ext === '.txt' || ext === '.dat' ? 'TXT' : 'CSV',
       fileSizeBytes: Buffer.byteLength(content, 'utf-8'),
       detectedDelimiter: bestDelimiter,
@@ -411,7 +289,30 @@ export const ftpFileStagingService = {
     db: DatabaseConnection,
     config: Partial<FtpFileStagingConfig>
   ): Promise<PreviewParseResult> {
-    const targetFile = config.fileNamePattern || db.availableTables?.[0] || 'settlement_reconciliation_feed.csv';
+    let targetFile = config.sampleFileName || config.fileNamePattern || db.availableTables?.[0];
+    if (!targetFile || !targetFile.trim()) {
+      throw new Error('No target file or sample file specified for preview parsing.');
+    }
+    targetFile = targetFile.trim();
+
+    // If wildcard or bare filename, resolve via recursive file discovery
+    if (targetFile.includes('*') || targetFile.includes('?') || !targetFile.startsWith('/')) {
+      try {
+        const discovered = await discoverFtpFilesRecursive(db, config.sourceDirectoryPath || undefined, 4);
+        if (targetFile.includes('*') || targetFile.includes('?')) {
+          const regex = new RegExp('^' + targetFile.replace(/\./g, '\\.').replace(/\*/g, '.*') + '$', 'i');
+          const match = discovered.find(f => regex.test(f.name) || regex.test(f.fullPath));
+          if (match) targetFile = match.fullPath;
+          else throw new Error(`Cannot preview parse: No remote files match pattern '${targetFile}'. Please select a sample file or adjust the pattern.`);
+        } else if (!targetFile.startsWith('/')) {
+          const match = discovered.find(f => f.name === targetFile || f.fullPath.endsWith(`/${targetFile}`));
+          if (match) targetFile = match.fullPath;
+        }
+      } catch (err: any) {
+        if (err.message.includes('Cannot preview parse: No remote files match pattern')) throw err;
+      }
+    }
+
     const ext = targetFile.toLowerCase().slice(targetFile.lastIndexOf('.'));
     const isExcel = config.fileFormat === 'EXCEL' || ext === '.xlsx' || ext === '.xls';
     const isXml = config.fileFormat === 'XML' || ext === '.xml';
@@ -425,15 +326,22 @@ export const ftpFileStagingService = {
     // 1. EXCEL PARSING
     // ==========================================
     if (isExcel) {
-      let buf = await fetchRemoteFileBuffer(db, targetFile);
+      const buf = await fetchRemoteFileBuffer(db, targetFile);
       if (!buf || buf.length === 0) {
-        buf = getSimulatedExcelBuffer();
+        throw new Error(`Failed to preview Excel file '${targetFile}': File is empty or could not be downloaded from remote server.`);
       }
 
       const wb = XLSX.read(buf, { type: 'buffer' });
+      if (!wb.SheetNames || wb.SheetNames.length === 0) {
+        throw new Error(`Excel workbook at '${targetFile}' contains no worksheets.`);
+      }
+
       const sheetName = config.excelSheetName && wb.Sheets[config.excelSheetName]
         ? config.excelSheetName
         : wb.SheetNames[0];
+      if (!sheetName || !wb.Sheets[sheetName]) {
+        throw new Error(`Worksheet '${config.excelSheetName || 'default'}' not found in Excel workbook '${targetFile}'. Available sheets: ${wb.SheetNames.join(', ')}`);
+      }
       const ws = wb.Sheets[sheetName];
 
       // Convert to 2D array of rows
@@ -543,9 +451,9 @@ export const ftpFileStagingService = {
     // 2. XML PARSING
     // ==========================================
     if (isXml) {
-      let text = await fetchRemoteFileContent(db, targetFile);
-      if (!text.trim()) {
-        text = getSimulatedFileContent(targetFile);
+      const text = await fetchRemoteFileContent(db, targetFile);
+      if (!text || !text.trim()) {
+        throw new Error(`Failed to preview XML file '${targetFile}': File contains no readable XML content.`);
       }
 
       const parser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: '@_' });
@@ -648,9 +556,9 @@ export const ftpFileStagingService = {
     // ==========================================
     // 3. CSV / TSV / PIPE / TXT DELIMITED PARSING
     // ==========================================
-    let content = await fetchRemoteFileContent(db, targetFile);
-    if (!content.trim()) {
-      content = getSimulatedFileContent(targetFile);
+    const content = await fetchRemoteFileContent(db, targetFile);
+    if (!content || !content.trim()) {
+      throw new Error(`Failed to preview file '${targetFile}': File contains no readable text content.`);
     }
 
     const allLines = content.split(/\r?\n/).filter(l => l.length > 0);
@@ -781,9 +689,9 @@ export const ftpFileStagingService = {
           name: entry.name
         }));
 
-      // Fallback if no pattern matched
-      if (targetFiles.length === 0 && recursiveEntries.length > 0) {
-        targetFiles = recursiveEntries.slice(0, 5).map(e => ({ fullPath: e.fullPath, folder: e.relativeFolder, name: e.name }));
+      // Error if no pattern matched
+      if (targetFiles.length === 0) {
+        throw new Error(`No remote files matched pattern '${config.fileNamePattern}' in directory '${config.sourceDirectoryPath || '/'}' (${recursiveEntries.length} files found on server).`);
       }
     } else {
       targetFiles = [{

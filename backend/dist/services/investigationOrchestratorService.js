@@ -235,6 +235,22 @@ export const investigationOrchestratorService = {
             for (let stageIdx = 0; stageIdx < stages.length; stageIdx++) {
                 const stage = stages[stageIdx];
                 const stageSteps = steps.filter(s => s.stageId === stage.id || (!s.stageId && stageIdx === 0));
+                // Hydrate database table column configurations for stage steps (Complete Checks)
+                for (const step of stageSteps) {
+                    if ((!step.columnConfigurations || step.columnConfigurations.length === 0) && step.columnConfigurationIds && step.columnConfigurationIds.length > 0) {
+                        const configs = await Promise.all(step.columnConfigurationIds.map(id => repo.getColumnConfigurationById(id)));
+                        step.columnConfigurations = configs.filter((c) => c !== null);
+                    }
+                    else if ((!step.columnConfigurations || step.columnConfigurations.length === 0) && (step.targetDbId || stage.targetDbId) && (step.targetTable || stage.targetDataSource)) {
+                        try {
+                            const tableConfigs = await repo.getColumnConfigurations(step.targetDbId || stage.targetDbId, step.targetTable || stage.targetDataSource);
+                            if (tableConfigs.length > 0) {
+                                step.columnConfigurations = tableConfigs;
+                            }
+                        }
+                        catch { }
+                    }
+                }
                 const targetDb = await repo.getDatabaseConnectionById(stage.targetDbId || workflow.targetDbId || '');
                 if (!targetDb) {
                     console.warn(`[WorkflowEngine] Target database not configured for stage '${stage.name}'. Using simulation.`);
@@ -357,11 +373,32 @@ export const investigationOrchestratorService = {
                 };
                 const externalResult = await executeExternalChunkQuery(extraction, { chunkId: `chunk-${jobId}-01`, sequence: 1, transactionIds: effectiveQueryKeys }, currentActiveRecords);
                 if (externalResult.success) {
-                    const recordsToMirror = Object.entries(externalResult.correlatedRecords).map(([k, v]) => ({
-                        [primaryKeyField]: k,
-                        ...v
-                    }));
-                    await mirrorTableManager.bulkInsertToMirror(mirrorTable, jobId, stage.id, recordsToMirror);
+                    const recordsToMirror = [];
+                    const seenMirrorKeys = new Set();
+                    for (let rIdx = 0; rIdx < currentActiveRecords.length; rIdx++) {
+                        const inputRec = currentActiveRecords[rIdx];
+                        const candidateKeys = getRecordCandidateKeys(inputRec, rIdx);
+                        let matchedTarget = null;
+                        for (const ck of candidateKeys) {
+                            if (externalResult.correlatedRecords[ck]) {
+                                matchedTarget = externalResult.correlatedRecords[ck];
+                                break;
+                            }
+                        }
+                        if (matchedTarget) {
+                            const primaryVal = candidateKeys[0] || `ROW-${rIdx + 1}`;
+                            if (!seenMirrorKeys.has(primaryVal)) {
+                                seenMirrorKeys.add(primaryVal);
+                                recordsToMirror.push({
+                                    [primaryKeyField]: primaryVal,
+                                    ...matchedTarget
+                                });
+                            }
+                        }
+                    }
+                    if (recordsToMirror.length > 0) {
+                        await mirrorTableManager.bulkInsertToMirror(mirrorTable, jobId, stage.id, recordsToMirror);
+                    }
                 }
                 // 6. Dynamic Rule-to-SQL Compilation & Evaluation
                 const mirrorCols = await mirrorTableManager.getMirrorColumns(mirrorTable);
@@ -408,12 +445,27 @@ export const investigationOrchestratorService = {
                 previousMirrorTable = mirrorTable;
                 // Collect final outcomes
                 const processedKeysInStage = new Set();
+                const seenProcessedRecIndices = new Set();
                 partitionRes.rows.forEach((r) => {
                     processedKeysInStage.add(String(r.tx_key));
-                    const orig = toExecute.find((o, idx) => getRecordCandidateKeys(o, idx).includes(String(r.tx_key)));
+                    const origIdx = toExecute.findIndex((o, idx) => getRecordCandidateKeys(o, idx).includes(String(r.tx_key)));
+                    const orig = origIdx >= 0 ? toExecute[origIdx] : null;
+                    if (origIdx >= 0 && seenProcessedRecIndices.has(origIdx))
+                        return;
+                    if (origIdx >= 0)
+                        seenProcessedRecIndices.add(origIdx);
                     const verdict = r._validation_status === 'PASS' ? 'PASS' : 'FAIL';
                     if (stageIdx === stages.length - 1 || r._validation_status !== 'PASS') {
-                        const targetRec = externalResult?.correlatedRecords ? externalResult.correlatedRecords[String(r.tx_key)] : null;
+                        let targetRec = null;
+                        if (externalResult?.correlatedRecords) {
+                            const keysToCheck = orig ? getRecordCandidateKeys(orig, origIdx) : [String(r.tx_key)];
+                            for (const k of keysToCheck) {
+                                if (externalResult.correlatedRecords[k]) {
+                                    targetRec = externalResult.correlatedRecords[k];
+                                    break;
+                                }
+                            }
+                        }
                         finalEvaluatedRecords.push({
                             ...(orig || {}),
                             _validation_status: r._validation_status,

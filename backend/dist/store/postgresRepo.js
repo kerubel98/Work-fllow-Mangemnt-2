@@ -1333,6 +1333,7 @@ export const postgresRepo = {
             mirrorTableName: r.mirror_table_name,
             searchParameters: parseJson(r.search_parameters, []),
             checkStep: parseJson(r.check_step, {}),
+            columnConfigurationIds: parseJson(r.column_configuration_ids, []),
             createdAt: r.created_at?.toISOString(),
             updatedAt: r.updated_at?.toISOString()
         }));
@@ -1354,16 +1355,18 @@ export const postgresRepo = {
             mirrorTableName: r.mirror_table_name,
             searchParameters: parseJson(r.search_parameters, []),
             checkStep: parseJson(r.check_step, {}),
+            columnConfigurationIds: parseJson(r.column_configuration_ids, []),
             createdAt: r.created_at?.toISOString(),
             updatedAt: r.updated_at?.toISOString()
         };
     },
     async createValidationBox(box) {
         const pool = getPostgresPool();
+        const colConfigIds = box.columnConfigurationIds || box.checkStep?.columnConfigurationIds || [];
         await pool.query(`INSERT INTO validation_boxes (
         id, name, description, box_type, category, target_db_id, target_table,
-        mirror_table_name, search_parameters, check_step, created_at, updated_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+        mirror_table_name, search_parameters, check_step, column_configuration_ids, created_at, updated_at
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
       ON CONFLICT (id) DO UPDATE SET
         name = EXCLUDED.name,
         description = EXCLUDED.description,
@@ -1374,6 +1377,7 @@ export const postgresRepo = {
         mirror_table_name = EXCLUDED.mirror_table_name,
         search_parameters = EXCLUDED.search_parameters,
         check_step = EXCLUDED.check_step,
+        column_configuration_ids = EXCLUDED.column_configuration_ids,
         updated_at = NOW();`, [
             box.id,
             box.name,
@@ -1385,6 +1389,7 @@ export const postgresRepo = {
             box.mirrorTableName || null,
             JSON.stringify(box.searchParameters || []),
             JSON.stringify(box.checkStep || {}),
+            JSON.stringify(colConfigIds),
             box.createdAt ? new Date(box.createdAt) : new Date(),
             new Date()
         ]);

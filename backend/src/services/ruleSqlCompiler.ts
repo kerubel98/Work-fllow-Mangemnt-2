@@ -221,8 +221,8 @@ export const ruleSqlCompiler = {
         } else if (cfg.ruleType === 'VALUE_LABEL_CHECK' && Array.isArray(cfg.valueLabels)) {
           for (const vl of cfg.valueLabels) {
             if (vl.category === 'ERROR' || vl.severity === 'CRITICAL') {
-              const colExp = resolveColExpr(sanitizeCol(vl.columnName), mirrorColPrefix, validColumns);
-              const disVal = String(vl.constantValue).replace(/'/g, "''");
+              const colExp = resolveColExpr(sanitizeCol(vl.columnName || ''), mirrorColPrefix, validColumns);
+              const disVal = String(vl.constantValue ?? vl.value ?? '').replace(/'/g, "''");
               colConfigConditions.push(`LOWER(COALESCE(${colExp}::text, '')) != LOWER('${disVal}')`);
             }
           }

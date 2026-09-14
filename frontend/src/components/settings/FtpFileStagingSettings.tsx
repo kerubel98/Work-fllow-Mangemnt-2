@@ -6,7 +6,8 @@ import {
   FolderDown, FileSpreadsheet, Play, CheckCircle2, AlertCircle, RefreshCw, 
   Settings2, Plus, Trash2, Edit3, ArrowRight, Eye, Layers, ShieldCheck, 
   Save, X, Database, Table, HelpCircle, FileText, Check, Filter,
-  FolderTree, Search, Sparkles, CheckSquare, Square, Info
+  FolderTree, Search, Sparkles, CheckSquare, Square, Info,
+  Folder, FolderOpen, ChevronRight, ChevronDown, FileCode, Calendar, CheckCheck
 } from 'lucide-react';
 
 interface FtpFileStagingSettingsProps {
@@ -24,6 +25,55 @@ interface DiscoveredRecursiveFile {
   fileType: string;
 }
 
+/**
+ * Analyzes remote file path to separate permanent base path from rotating date/batch patterns
+ */
+export function analyzeFolderPath(fullPath: string, fileName: string): {
+  permanentBasePath: string;
+  dynamicPathPattern: string;
+  recommendedPattern: string;
+} {
+  const normalized = (fullPath || '').replace(/\\/g, '/');
+  const dirPath = normalized.substring(0, normalized.lastIndexOf('/')) || '/';
+  const parts = dirPath.split('/').filter(Boolean);
+
+  const isRotating = (seg: string) => {
+    return /^(19\d\d|20\d\d)$/.test(seg) ||
+      /^(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)$/i.test(seg) ||
+      /^\d{4}[-_]\d{1,2}([-_]\d{1,2})?$/.test(seg) ||
+      /^\d{1,2}[-_]\d{1,2}[-_]\d{2,4}$/.test(seg) ||
+      /^\d{6,8}$/.test(seg) ||
+      /^(daily|batch|archive|history|current|inbox)$/i.test(seg);
+  };
+
+  const rotatingIndex = parts.findIndex(isRotating);
+
+  if (rotatingIndex !== -1) {
+    const permanentBase = '/' + parts.slice(0, rotatingIndex).join('/');
+    const rotatingSegments = parts.slice(rotatingIndex);
+    const dynamicPattern = rotatingSegments.map(() => '*').join('/');
+    const fileExt = fileName.includes('.') ? fileName.slice(fileName.lastIndexOf('.')) : '';
+    const baseName = fileName.replace(fileExt, '');
+    const dateWildcard = baseName.replace(/\d{4}[._-]\d{1,2}[._-]\d{1,2}/g, '*')
+                                 .replace(/\d{1,2}[._-]\d{1,2}[._-]\d{2,4}/g, '*')
+                                 .replace(/\d{6,8}/g, '*');
+    const recommendedPattern = `${dynamicPattern}/${dateWildcard}${fileExt}`;
+
+    return {
+      permanentBasePath: permanentBase || '/',
+      dynamicPathPattern: dynamicPattern,
+      recommendedPattern: recommendedPattern
+    };
+  }
+
+  const permanentBase = '/' + parts.join('/');
+  return {
+    permanentBasePath: permanentBase || '/',
+    dynamicPathPattern: '',
+    recommendedPattern: fileName
+  };
+}
+
 export default function FtpFileStagingSettings({
   databases = [],
   preSelectedDbId,
@@ -37,7 +87,10 @@ export default function FtpFileStagingSettings({
 
   const [selectedDbId, setSelectedDbId] = useState<string>(() => {
     if (preSelectedDbId && ftpServers.some(d => d.id === preSelectedDbId)) return preSelectedDbId;
-    return ftpServers[0]?.id || '';
+    const saved = typeof window !== 'undefined' ? localStorage.getItem('preferred_ftp_server_id') : null;
+    if (saved && ftpServers.some(d => d.id === saved)) return saved;
+    const liveSftp = ftpServers.find(d => d.type === 'SFTP' || d.host === '127.0.0.1' || d.host === 'localhost');
+    return liveSftp?.id || ftpServers[0]?.id || '';
   });
 
   const selectedDb = useMemo(() => {
@@ -49,6 +102,14 @@ export default function FtpFileStagingSettings({
   const [loadingFiles, setLoadingFiles] = useState(false);
   const [recursiveFiles, setRecursiveFiles] = useState<DiscoveredRecursiveFile[]>([]);
   const [loadingRecursive, setLoadingRecursive] = useState(false);
+
+  // Directory explorer filter & collapse state
+  const [collapsedFolders, setCollapsedFolders] = useState<Record<string, boolean>>({});
+  const [explorerFilterType, setExplorerFilterType] = useState<string>('ALL');
+  const [explorerSearch, setExplorerSearch] = useState<string>('');
+
+  // Sample file chosen for schema configuration
+  const [sampleFileName, setSampleFileName] = useState<string>('');
 
   // Staging configurations list
   const [stagingConfigs, setStagingConfigs] = useState<FtpFileStagingConfig[]>([]);
@@ -81,6 +142,7 @@ export default function FtpFileStagingSettings({
 
   // File structure inspection state
   const [structureInspection, setStructureInspection] = useState<any | null>(null);
+  const [inspectionError, setInspectionError] = useState<string | null>(null);
   const [isInspecting, setIsInspecting] = useState(false);
 
   // Preview state
@@ -94,7 +156,7 @@ export default function FtpFileStagingSettings({
     return globalMappingService.getStandardFields();
   }, []);
 
-  // Fetch files and configs when selected FTP server changes
+  // Auto-discover folder tree and fetch configs when selected FTP server changes
   useEffect(() => {
     if (!selectedDbId) return;
 
@@ -113,15 +175,112 @@ export default function FtpFileStagingSettings({
       })
       .catch(() => {})
       .finally(() => setLoadingFiles(false));
+
+    // Automatically discover directory tree & files across folders
+    setLoadingRecursive(true);
+    api.discoverFtpFilesRecursive(selectedDbId)
+      .then(res => {
+        setRecursiveFiles(res || []);
+      })
+      .catch(err => {
+        console.warn('Could not discover recursive FTP files:', err);
+        setActiveMessage({ type: 'error', text: `Directory discovery failed: ${err.message}` });
+      })
+      .finally(() => setLoadingRecursive(false));
   }, [selectedDbId]);
 
+  // Group discovered files by folder
+  const filesByFolder = useMemo(() => {
+    const groups: Record<string, DiscoveredRecursiveFile[]> = {};
+    for (const f of recursiveFiles) {
+      const folder = f.relativeFolder || '/';
+      if (!groups[folder]) groups[folder] = [];
+      groups[folder].push(f);
+    }
+    return groups;
+  }, [recursiveFiles]);
+
+  // Filtered files by search & format type
+  const filteredFilesByFolder = useMemo(() => {
+    const searchLower = explorerSearch.trim().toLowerCase();
+    const result: Record<string, DiscoveredRecursiveFile[]> = {};
+
+    for (const [folder, files] of (Object.entries(filesByFolder) as [string, DiscoveredRecursiveFile[]][])) {
+      const matching = files.filter(f => {
+        const matchesType = explorerFilterType === 'ALL' || f.fileType === explorerFilterType;
+        const matchesSearch = !searchLower || 
+          f.name.toLowerCase().includes(searchLower) || 
+          f.fullPath.toLowerCase().includes(searchLower) ||
+          folder.toLowerCase().includes(searchLower);
+        return matchesType && matchesSearch;
+      });
+
+      if (matching.length > 0) {
+        result[folder] = matching;
+      }
+    }
+    return result;
+  }, [filesByFolder, explorerFilterType, explorerSearch]);
+
+  // Live pattern match calculation: shows which files match permanent path + dynamic pattern
+  const matchingFilesInScope = useMemo(() => {
+    if (!targetFileName && !sourceDirectoryPath) return [];
+    return recursiveFiles.filter(f => {
+      // Check folder match if sourceDirectoryPath is specified
+      if (sourceDirectoryPath && sourceDirectoryPath.trim() !== '' && sourceDirectoryPath.trim() !== '/') {
+        const cleanBase = sourceDirectoryPath.trim().replace(/\/+$/, '');
+        const folder = f.relativeFolder || '';
+        if (!f.fullPath.includes(cleanBase) && !folder.startsWith(cleanBase)) {
+          return false;
+        }
+      }
+
+      // Target file pattern check
+      const pattern = targetFileName.trim();
+      if (!pattern || pattern === '*' || pattern === '*.*') return true;
+
+      if (pattern.includes('*')) {
+        const regexStr = '^' + pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*') + '$';
+        try {
+          const rx = new RegExp(regexStr, 'i');
+          return rx.test(f.name) || rx.test(f.fullPath);
+        } catch {
+          return f.name.toLowerCase().includes(pattern.replace(/\*/g, '').toLowerCase());
+        }
+      }
+
+      return f.name.toLowerCase() === pattern.toLowerCase() || f.fullPath.toLowerCase().endsWith(pattern.toLowerCase());
+    });
+  }, [recursiveFiles, sourceDirectoryPath, targetFileName]);
+
+  const toggleFolderCollapse = (folder: string) => {
+    setCollapsedFolders(prev => ({ ...prev, [folder]: !prev[folder] }));
+  };
+
   // Inspect physical structure of selected file
-  const handleInspectStructure = async (filename = targetFileName) => {
-    if (!selectedDbId || !filename) return;
+  const handleInspectStructure = async (filename?: string) => {
+    let target = (filename || sampleFileName || targetFileName || '').trim();
+    if (!selectedDbId || !target) return;
+
+    // Resolve wildcards or bare filenames against recursiveFiles
+    if (target.includes('*') || target.includes('?')) {
+      const match = matchingFilesInScope[0] || recursiveFiles.find(f => f.name === sampleFileName || f.fullPath === sampleFileName);
+      if (match) {
+        target = match.fullPath;
+      }
+    } else if (!target.startsWith('/')) {
+      const match = recursiveFiles.find(f => f.name === target || f.fullPath === target || f.fullPath.endsWith(`/${target}`));
+      if (match) {
+        target = match.fullPath;
+      }
+    }
+
     setIsInspecting(true);
+    setInspectionError(null);
     try {
-      const res = await api.inspectFtpFileStructure(selectedDbId, filename);
+      const res = await api.inspectFtpFileStructure(selectedDbId, target);
       setStructureInspection(res);
+      setInspectionError(null);
 
       // Auto-configure format from inspection
       if (res.fileType === 'EXCEL') {
@@ -155,19 +314,22 @@ export default function FtpFileStagingSettings({
         setDataStartRow(res.suggestedDataStartRow);
       }
     } catch (e: any) {
-      console.warn('Structure inspection warning:', e.message);
+      setStructureInspection(null);
+      setInspectionError(e.message || 'Structure inspection failed');
+      setActiveMessage({ type: 'error', text: `Structure inspection failed for "${target}": ${e.message}` });
     } finally {
       setIsInspecting(false);
     }
   };
 
-  // Discover recursive files across folders
+  // Discover recursive files across folders (manual trigger)
   const handleDiscoverRecursive = async () => {
     if (!selectedDbId) return;
     setLoadingRecursive(true);
     try {
       const res = await api.discoverFtpFilesRecursive(selectedDbId, sourceDirectoryPath || undefined);
       setRecursiveFiles(res || []);
+      setActiveMessage({ type: 'info', text: `Discovered ${res?.length || 0} remote files across directory hierarchy.` });
     } catch (e: any) {
       setActiveMessage({ type: 'error', text: `Recursive discovery failed: ${e.message}` });
     } finally {
@@ -175,12 +337,60 @@ export default function FtpFileStagingSettings({
     }
   };
 
+
+  // Use a specific file from the explorer as the representative configuration sample
+  const handleUseFileAsSample = (file: DiscoveredRecursiveFile) => {
+    setIsEditing(true);
+    setEditingConfigId(null);
+    const sampleTarget = file.fullPath || file.name;
+    setSampleFileName(sampleTarget);
+
+    const analyzed = analyzeFolderPath(file.fullPath || file.name, file.name);
+    setSourceDirectoryPath(analyzed.permanentBasePath);
+    setTargetFileName(analyzed.recommendedPattern);
+    setFolderTraversalMode(analyzed.dynamicPathPattern ? 'RECURSIVE_SCAN' : 'SINGLE_FILE');
+
+    const baseName = file.name.replace(/\.[^/.]+$/, '').replace(/[_-]/g, ' ');
+    setConfigName(`${baseName.charAt(0).toUpperCase() + baseName.slice(1)} Feed`);
+    setFileFormat(file.fileType as any || 'CSV');
+    setCustomDelimiter(',');
+    setHasHeader(true);
+    setHeaderRowIndex(1);
+    setHeaderRowCount(1);
+    setHandleMergedCells(true);
+    setMergedHeaderSeparator('_');
+    setDataStartRow(2);
+    setSkipFooterLines(0);
+    setQuoteChar('"');
+    setDateFormat('YYYY-MM-DD');
+    setExcelSheetName('');
+    setSelectedImportantColumns([]);
+    setXmlRootElement('');
+    setXmlRecordElement('');
+    setFieldMappings([]);
+    setPreviewResult(null);
+    setStructureInspection(null);
+    setActiveMessage(null);
+
+    handleInspectStructure(sampleTarget);
+  };
+
   const handleOpenCreateModal = () => {
     setIsEditing(true);
     setEditingConfigId(null);
     setConfigName(selectedDb ? `${selectedDb.name} Staging Feed` : 'Settlement Feed Staging');
-    const defaultFile = availableFiles[0] || 'settlement_reconciliation_feed.csv';
-    setTargetFileName(defaultFile);
+    const sampleFile = recursiveFiles[0]?.fullPath || availableFiles[0] || '';
+    setSampleFileName(sampleFile);
+    if (recursiveFiles[0]) {
+      const analyzed = analyzeFolderPath(recursiveFiles[0].fullPath, recursiveFiles[0].name);
+      setSourceDirectoryPath(analyzed.permanentBasePath);
+      setTargetFileName(analyzed.recommendedPattern);
+      setFolderTraversalMode(analyzed.dynamicPathPattern ? 'RECURSIVE_SCAN' : 'SINGLE_FILE');
+    } else {
+      setSourceDirectoryPath('/');
+      setTargetFileName(sampleFile || '*.csv');
+      setFolderTraversalMode('SINGLE_FILE');
+    }
     setFileFormat('CSV');
     setCustomDelimiter(',');
     setHasHeader(true);
@@ -193,8 +403,6 @@ export default function FtpFileStagingSettings({
     setQuoteChar('"');
     setDateFormat('YYYY-MM-DD');
     setExcelSheetName('');
-    setFolderTraversalMode('SINGLE_FILE');
-    setSourceDirectoryPath('');
     setSelectedImportantColumns([]);
     setXmlRootElement('');
     setXmlRecordElement('');
@@ -203,14 +411,16 @@ export default function FtpFileStagingSettings({
     setStructureInspection(null);
     setActiveMessage(null);
 
-    // Trigger initial structure inspection
-    handleInspectStructure(defaultFile);
+    if (sampleFile) {
+      handleInspectStructure(sampleFile);
+    }
   };
 
   const handleOpenEditModal = (cfg: FtpFileStagingConfig) => {
     setIsEditing(true);
     setEditingConfigId(cfg.id);
     setConfigName(cfg.name);
+    setSampleFileName(cfg.sampleFileName || cfg.fileNamePattern || '');
     setTargetFileName(cfg.fileNamePattern);
     setFileFormat(cfg.fileFormat);
     setCustomDelimiter(cfg.customDelimiter || ',');
@@ -225,7 +435,7 @@ export default function FtpFileStagingSettings({
     setDateFormat(cfg.dateFormat || 'YYYY-MM-DD');
     setExcelSheetName(cfg.excelSheetName || '');
     setFolderTraversalMode(cfg.folderTraversalMode || 'SINGLE_FILE');
-    setSourceDirectoryPath(cfg.sourceDirectoryPath || '');
+    setSourceDirectoryPath(cfg.sourceDirectoryPath || '/');
     setSelectedImportantColumns(cfg.selectedImportantColumns || []);
     setXmlRootElement(cfg.xmlRootElement || '');
     setXmlRecordElement(cfg.xmlRecordElement || '');
@@ -234,7 +444,7 @@ export default function FtpFileStagingSettings({
     setStructureInspection(null);
     setActiveMessage(null);
 
-    handleInspectStructure(cfg.fileNamePattern);
+    handleInspectStructure(cfg.sampleFileName || cfg.fileNamePattern);
   };
 
   // Test Parse & Preview
@@ -247,6 +457,7 @@ export default function FtpFileStagingSettings({
       name: configName,
       ftpConnectionId: selectedDbId,
       fileNamePattern: targetFileName,
+      sampleFileName: sampleFileName || targetFileName,
       fileFormat,
       customDelimiter,
       hasHeader,
@@ -337,6 +548,7 @@ export default function FtpFileStagingSettings({
       name: configName,
       ftpConnectionId: selectedDbId,
       fileNamePattern: targetFileName,
+      sampleFileName: sampleFileName || targetFileName,
       fileFormat,
       customDelimiter,
       hasHeader,
@@ -467,7 +679,10 @@ export default function FtpFileStagingSettings({
             <Database className="w-4 h-4 text-purple-400 ml-1" />
             <select
               value={selectedDbId}
-              onChange={e => setSelectedDbId(e.target.value)}
+              onChange={e => {
+                setSelectedDbId(e.target.value);
+                if (typeof window !== 'undefined') localStorage.setItem('preferred_ftp_server_id', e.target.value);
+              }}
               className="bg-transparent text-xs text-white font-bold focus:outline-none cursor-pointer pr-4"
               id="select-ftp-db-server"
             >
@@ -476,7 +691,7 @@ export default function FtpFileStagingSettings({
               ) : (
                 ftpServers.map(s => (
                   <option key={s.id} value={s.id} className="bg-slate-900 text-white">
-                    {s.name} ({s.type} • {s.host})
+                    {s.name} ({s.type} • {s.host}:{s.port}) {s.host === '127.0.0.1' || s.type === 'SFTP' ? '• Live SFTP' : ''}
                   </option>
                 ))
               )}
@@ -540,13 +755,227 @@ export default function FtpFileStagingSettings({
         </div>
       )}
 
+      {/* Interactive Remote Directory & File Structure Explorer */}
+      {selectedDb && (
+        <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden space-y-0">
+          {/* Explorer Top Bar */}
+          <div className="p-4 bg-gradient-to-r from-slate-950 via-slate-900 to-purple-950 text-white flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-purple-900/40">
+            <div className="space-y-1">
+              <div className="flex items-center gap-2">
+                <span className="p-1.5 bg-purple-500/20 text-purple-300 rounded-lg border border-purple-400/30">
+                  <FolderTree className="w-4 h-4" />
+                </span>
+                <h3 className="text-sm font-bold text-white tracking-wide flex items-center gap-2">
+                  <span>Remote Directory &amp; File Structure Explorer</span>
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-purple-900/60 text-purple-200 border border-purple-400/30">
+                    {recursiveFiles.length} file{recursiveFiles.length !== 1 ? 's' : ''} detected
+                  </span>
+                </h3>
+              </div>
+              <p className="text-[11px] text-purple-200/80 max-w-2xl leading-relaxed">
+                Explore folder hierarchies on <strong>{selectedDb.name}</strong> ({selectedDb.host}:{selectedDb.port}). File locations may change across rotating date folders while keeping the same format and schema. Pick any file as a representative sample to configure multi-row headers and column mappings for that entire file pattern.
+              </p>
+            </div>
+
+            {/* Filter and Refresh Controls */}
+            <div className="flex flex-wrap items-center gap-2">
+              {/* Search filter */}
+              <div className="relative">
+                <Search className="w-3.5 h-3.5 text-slate-400 absolute left-2.5 top-2.5" />
+                <input
+                  type="text"
+                  placeholder="Filter files or folders..."
+                  value={explorerSearch}
+                  onChange={e => setExplorerSearch(e.target.value)}
+                  className="pl-8 pr-3 py-1.5 text-xs bg-slate-800/90 border border-purple-500/30 rounded-xl text-white placeholder-slate-400 focus:outline-none focus:ring-1 focus:ring-purple-400 font-mono w-40 sm:w-48"
+                />
+              </div>
+
+              {/* Format Filter */}
+              <select
+                value={explorerFilterType}
+                onChange={e => setExplorerFilterType(e.target.value)}
+                className="bg-slate-800/90 border border-purple-500/30 text-purple-200 text-xs rounded-xl px-2.5 py-1.5 font-mono focus:outline-none cursor-pointer"
+              >
+                <option value="ALL">All Formats</option>
+                <option value="CSV">CSV</option>
+                <option value="EXCEL">EXCEL</option>
+                <option value="XML">XML</option>
+                <option value="TXT">TXT</option>
+              </select>
+
+              {/* Refresh Tree Button */}
+              <button
+                type="button"
+                onClick={handleDiscoverRecursive}
+                disabled={loadingRecursive}
+                className="px-3 py-1.5 bg-purple-600 hover:bg-purple-500 disabled:opacity-50 text-white rounded-xl text-xs font-bold flex items-center gap-1.5 transition cursor-pointer shadow-xs"
+                title="Rescan remote FTP directory tree"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${loadingRecursive ? 'animate-spin' : ''}`} />
+                <span>{loadingRecursive ? 'Scanning...' : 'Scan Tree'}</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Explorer Directory Tree Body */}
+          <div className="p-4 divide-y divide-slate-100 max-h-96 overflow-y-auto">
+            {loadingRecursive ? (
+              <div className="py-10 text-center text-xs text-slate-500 flex flex-col items-center justify-center gap-2">
+                <RefreshCw className="w-5 h-5 animate-spin text-purple-600" />
+                <span>Scanning remote FTP directory tree across folders...</span>
+              </div>
+            ) : Object.keys(filteredFilesByFolder).length === 0 ? (
+              <div className="py-8 text-center text-xs text-slate-500 space-y-2">
+                <FolderTree className="w-8 h-8 text-slate-300 mx-auto" />
+                <p className="font-semibold text-slate-700">No remote files detected on {selectedDb.name} ({selectedDb.host}:{selectedDb.port}).</p>
+                <p className="text-[11px] text-slate-400">Ensure the remote FTP/SFTP service is running and accessible.</p>
+                {ftpServers.some(s => s.id !== selectedDb.id && (s.host === '127.0.0.1' || s.type === 'SFTP')) && (
+                  <div className="pt-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const target = ftpServers.find(s => s.id !== selectedDb.id && (s.host === '127.0.0.1' || s.type === 'SFTP'));
+                        if (target) {
+                          setSelectedDbId(target.id);
+                          if (typeof window !== 'undefined') localStorage.setItem('preferred_ftp_server_id', target.id);
+                        }
+                      }}
+                      className="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-xs font-bold transition shadow-xs cursor-pointer inline-flex items-center gap-1.5"
+                    >
+                      <Database className="w-3.5 h-3.5" />
+                      <span>Switch to Local SFTP ({ftpServers.find(s => s.id !== selectedDb.id && (s.host === '127.0.0.1' || s.type === 'SFTP'))?.name})</span>
+                    </button>
+                  </div>
+                )}
+              </div>
+            ) : (
+              (Object.entries(filteredFilesByFolder) as [string, DiscoveredRecursiveFile[]][]).map(([folder, files]) => {
+                const isCollapsed = collapsedFolders[folder];
+                const isRoot = folder === '/' || !folder;
+                const isDateFolder = /\b(19\d\d|20\d\d)\b/i.test(folder) || 
+                  /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)\b/i.test(folder) ||
+                  /\d{4}[-_/]\d{2}/.test(folder) || /\d{8}/.test(folder);
+
+                return (
+                  <div key={folder} className="py-2.5 first:pt-0 last:pb-0 space-y-2">
+                    {/* Folder Header */}
+                    <div className="flex items-center justify-between group">
+                      <button
+                        type="button"
+                        onClick={() => toggleFolderCollapse(folder)}
+                        className="flex items-center gap-2 text-left hover:text-purple-700 transition cursor-pointer py-1"
+                      >
+                        {isCollapsed ? (
+                          <ChevronRight className="w-4 h-4 text-slate-400" />
+                        ) : (
+                          <ChevronDown className="w-4 h-4 text-purple-600" />
+                        )}
+                        <span className="p-1 rounded bg-slate-100 text-slate-600 group-hover:bg-purple-100 group-hover:text-purple-700">
+                          {isCollapsed ? <Folder className="w-3.5 h-3.5" /> : <FolderOpen className="w-3.5 h-3.5 text-purple-600" />}
+                        </span>
+                        <span className="text-xs font-bold font-mono text-slate-800 group-hover:text-purple-700">
+                          {isRoot ? '/ (Root Directory)' : folder}
+                        </span>
+                        <span className="text-[10px] font-mono px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-600">
+                          {files.length} file{files.length !== 1 ? 's' : ''}
+                        </span>
+                        {isDateFolder && (
+                          <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-amber-50 text-amber-800 border border-amber-200 flex items-center gap-1">
+                            <Calendar className="w-3 h-3 text-amber-600" />
+                            <span>Rotating Date Folder (Dynamic Location)</span>
+                          </span>
+                        )}
+                      </button>
+
+                      <span className="text-[11px] text-slate-400 font-mono hidden sm:inline">
+                        {isRoot ? 'Permanent Base Directory' : 'Changing Subfolder Path'}
+                      </span>
+                    </div>
+
+                    {/* Files inside folder */}
+                    {!isCollapsed && (
+                      <div className="pl-6 sm:pl-7 space-y-1.5">
+                        {files.map((file, idx) => {
+                          const formatBadgeColor = 
+                            file.fileType === 'EXCEL' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
+                            file.fileType === 'XML' ? 'bg-amber-50 text-amber-700 border-amber-200' :
+                            file.fileType === 'CSV' ? 'bg-purple-50 text-purple-700 border-purple-200' :
+                            'bg-slate-100 text-slate-700 border-slate-200';
+
+                          const FileIcon = 
+                            file.fileType === 'EXCEL' ? FileSpreadsheet :
+                            file.fileType === 'XML' ? FileCode :
+                            FileText;
+
+                          return (
+                            <div
+                              key={idx}
+                              className="p-2 rounded-xl border border-slate-200/80 bg-slate-50/50 hover:bg-purple-50/40 hover:border-purple-200 transition flex flex-col sm:flex-row sm:items-center justify-between gap-2"
+                            >
+                              <div className="flex items-center gap-2.5 min-w-0">
+                                <div className={`p-1.5 rounded-lg border shrink-0 ${formatBadgeColor}`}>
+                                  <FileIcon className="w-3.5 h-3.5" />
+                                </div>
+                                <div className="min-w-0">
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-xs font-bold font-mono text-slate-900 truncate">
+                                      {file.name}
+                                    </span>
+                                    <span className={`text-[10px] font-mono px-1.5 py-0.2 rounded font-bold border ${formatBadgeColor}`}>
+                                      {file.fileType}
+                                    </span>
+                                    <span className="text-[10px] font-mono text-slate-400">
+                                      {(file.size / 1024).toFixed(1)} KB
+                                    </span>
+                                  </div>
+                                  <span className="text-[10px] font-mono text-slate-500 truncate block">
+                                    Full Path: {file.fullPath}
+                                  </span>
+                                </div>
+                              </div>
+
+                              {/* Action Buttons for this file */}
+                              <div className="flex items-center gap-1.5 shrink-0 self-end sm:self-auto">
+                                <button
+                                  type="button"
+                                  onClick={() => handleUseFileAsSample(file)}
+                                  className="px-2.5 py-1 text-slate-600 hover:text-purple-700 hover:bg-purple-50 rounded-lg text-xs font-semibold flex items-center gap-1 transition cursor-pointer border border-slate-200 bg-white"
+                                  title="Inspect physical structure of this file"
+                                >
+                                  <Eye className="w-3 h-3" />
+                                  <span>Inspect</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => handleUseFileAsSample(file)}
+                                  className="px-3 py-1 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 transition cursor-pointer shadow-2xs"
+                                  title="Configure multi-row parsing & column mappings using this file as representative sample"
+                                >
+                                  <Sparkles className="w-3 h-3 text-purple-200" />
+                                  <span>Use as Configuration Sample</span>
+                                </button>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Active Staging Configurations Cards */}
       {ftpServers.length > 0 && (
         <div className="space-y-4">
           <div className="flex items-center justify-between">
             <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wider font-mono flex items-center gap-2">
               <Layers className="w-4 h-4 text-purple-600" />
-              <span>Configured File Staging & Prepared Tables ({stagingConfigs.length})</span>
+              <span>Configured File Staging &amp; Prepared Tables ({stagingConfigs.length})</span>
             </h3>
 
             <div className="flex items-center gap-2 text-xs text-slate-500">
@@ -631,9 +1060,29 @@ export default function FtpFileStagingSettings({
                         </div>
                       </div>
 
-                      {/* Config Specs */}
-                      <div className="my-2.5 p-2 bg-slate-50 rounded-lg border border-slate-100 font-mono text-[11px] text-slate-600 space-y-1">
-                        <div className="flex justify-between">
+                      {/* Path & Pattern Architecture Badges */}
+                      <div className="my-2 p-2 bg-slate-50 rounded-lg border border-slate-100 font-mono text-[11px] text-slate-600 space-y-1">
+                        <div className="flex justify-between items-center">
+                          <span className="text-slate-400 text-[10px] uppercase font-bold">Base Path:</span>
+                          <span className="px-1.5 py-0.5 rounded bg-white border border-slate-200 text-slate-800 font-semibold truncate max-w-[170px]" title={cfg.sourceDirectoryPath || '/'}>
+                            {cfg.sourceDirectoryPath || '/'}
+                          </span>
+                        </div>
+                        <div className="flex justify-between items-center">
+                          <span className="text-slate-400 text-[10px] uppercase font-bold">Dynamic Pattern:</span>
+                          <span className="px-1.5 py-0.5 rounded bg-purple-50 border border-purple-200 text-purple-800 font-semibold truncate max-w-[170px]" title={cfg.fileNamePattern}>
+                            {cfg.fileNamePattern}
+                          </span>
+                        </div>
+                        {cfg.sampleFileName && (
+                          <div className="flex justify-between items-center">
+                            <span className="text-slate-400 text-[10px] uppercase font-bold">Sample File:</span>
+                            <span className="text-emerald-700 font-medium truncate max-w-[170px]" title={cfg.sampleFileName}>
+                              {cfg.sampleFileName}
+                            </span>
+                          </div>
+                        )}
+                        <div className="flex justify-between pt-1 border-t border-slate-200/60">
                           <span className="text-slate-400">Header Span:</span>
                           <span>Row {cfg.headerRowIndex || 1} ({cfg.headerRowCount || 1} rows)</span>
                         </div>
@@ -643,10 +1092,6 @@ export default function FtpFileStagingSettings({
                             <span className="font-semibold">{cfg.excelSheetName}</span>
                           </div>
                         )}
-                        <div className="flex justify-between">
-                          <span className="text-slate-400">Traversal Mode:</span>
-                          <span className="font-semibold">{cfg.folderTraversalMode === 'RECURSIVE_SCAN' ? 'Multi-Folder Loop' : 'Single File'}</span>
-                        </div>
                         <div className="flex justify-between">
                           <span className="text-slate-400">Important Columns:</span>
                           <span className="font-semibold text-purple-700">
@@ -741,52 +1186,227 @@ export default function FtpFileStagingSettings({
             </div>
 
             <form onSubmit={handleSaveConfig} className="space-y-4 overflow-y-auto flex-1 pr-1">
-              {/* Target File & Server Selection */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                <div>
+              {/* Configuration Name & Traversal Mode */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                <div className="md:col-span-2">
                   <label className="block text-xs font-semibold text-slate-700 mb-1">Configuration Name</label>
                   <input
                     type="text"
                     value={configName}
                     onChange={e => setConfigName(e.target.value)}
-                    placeholder="e.g. Visa Clearing EOD Staging"
+                    placeholder="e.g. Visa Daily Clearing Staging Feed"
                     required
                     className="w-full text-xs p-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
                   />
                 </div>
 
                 <div>
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">
-                    Target File Name or Pattern
-                  </label>
-                  <div className="flex gap-2">
-                    <input
-                      type="text"
-                      value={targetFileName}
-                      onChange={e => {
-                        setTargetFileName(e.target.value);
-                        handleInspectStructure(e.target.value);
-                      }}
-                      placeholder="e.g. settlement_*.csv or batch_01.xlsx"
-                      required
-                      className="flex-1 text-xs p-2 bg-slate-50 border border-slate-200 rounded-lg font-mono focus:outline-none focus:ring-2 focus:ring-purple-500"
-                    />
-                    {availableFiles.length > 0 && (
-                      <select
-                        onChange={e => {
-                          if (e.target.value) {
-                            setTargetFileName(e.target.value);
-                            handleInspectStructure(e.target.value);
-                          }
-                        }}
-                        className="text-xs p-2 bg-slate-100 border border-slate-200 rounded-lg font-mono text-slate-700 cursor-pointer"
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">Traversal Scope</label>
+                  <select
+                    value={folderTraversalMode}
+                    onChange={e => setFolderTraversalMode(e.target.value as any)}
+                    className="w-full text-xs p-2 bg-slate-50 border border-slate-200 rounded-lg font-semibold text-slate-800"
+                  >
+                    <option value="RECURSIVE_SCAN">Scan Subfolders Recursively (Rotating Folders)</option>
+                    <option value="DIRECTORY_SCAN">Current Directory Scan</option>
+                    <option value="SINGLE_FILE">Single Target File Only</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Path Architecture: Permanent Base Path vs. Dynamic / Changing Path */}
+              <div className="p-3.5 bg-slate-900 text-white rounded-xl border border-purple-800/40 space-y-3 shadow-sm">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <span className="p-1 rounded-md bg-purple-500/20 text-purple-300">
+                      <FolderTree className="w-3.5 h-3.5" />
+                    </span>
+                    <span className="text-xs font-bold text-white uppercase tracking-wider font-mono">
+                      Path Architecture: Permanent Base vs. Dynamic Rotating Paths
+                    </span>
+                  </div>
+                  <span className="text-[10px] font-mono text-purple-300">
+                    Same schema applies across all rotating date/batch subfolders
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {/* Permanent Base Path */}
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between">
+                      <label className="block text-[11px] font-bold text-purple-200">
+                        Permanent Base Path (Fixed Root/Folder)
+                      </label>
+                      <span className="text-[10px] text-slate-400 font-mono">Unchanging Base Dir</span>
+                    </div>
+                    <div className="flex gap-1.5">
+                      <input
+                        type="text"
+                        value={sourceDirectoryPath}
+                        onChange={e => setSourceDirectoryPath(e.target.value)}
+                        placeholder="e.g. / or /clearing/ (Fixed Root)"
+                        className="flex-1 text-xs p-2 bg-slate-800 border border-purple-500/30 rounded-lg font-mono text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-purple-400"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setSourceDirectoryPath('/')}
+                        className="px-2 py-1 bg-slate-800 hover:bg-slate-700 border border-purple-500/30 text-purple-300 rounded-lg text-[10px] font-mono cursor-pointer"
+                        title="Set to server root directory"
                       >
-                        <option value="">Discovered Files...</option>
-                        {availableFiles.map(f => (
-                          <option key={f} value={f}>{f}</option>
-                        ))}
-                      </select>
-                    )}
+                        / (Root)
+                      </button>
+                    </div>
+                    <p className="text-[10px] text-slate-400 leading-tight">
+                      Fixed remote directory on the FTP server where incoming files or daily batch folders arrive.
+                    </p>
+                  </div>
+
+                  {/* Dynamic / Changing Path Pattern */}
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between">
+                      <label className="block text-[11px] font-bold text-purple-200">
+                        Dynamic / Changing Path Pattern
+                      </label>
+                      <span className="text-[10px] text-emerald-400 font-mono">Wildcard / Subfolder Mask</span>
+                    </div>
+                    <div className="flex gap-1.5">
+                      <input
+                        type="text"
+                        value={targetFileName}
+                        onChange={e => {
+                          setTargetFileName(e.target.value);
+                          handleInspectStructure(sampleFileName || e.target.value);
+                        }}
+                        placeholder="e.g. */*.csv or settlement_*.xlsx or {date}/*.csv"
+                        required
+                        className="flex-1 text-xs p-2 bg-slate-800 border border-purple-500/30 rounded-lg font-mono text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-purple-400"
+                      />
+                      {availableFiles.length > 0 && (
+                        <select
+                          onChange={e => {
+                            if (e.target.value) {
+                              setTargetFileName(e.target.value);
+                              setSampleFileName(e.target.value);
+                              handleInspectStructure(e.target.value);
+                            }
+                          }}
+                          className="text-xs p-1.5 bg-slate-800 border border-purple-500/30 rounded-lg font-mono text-purple-200 cursor-pointer"
+                        >
+                          <option value="">Pattern...</option>
+                          <option value="*/*.csv">*/*.csv (All Subfolders)</option>
+                          <option value="*.csv">*.csv (Root CSVs)</option>
+                          <option value="*.xlsx">*.xlsx (Spreadsheets)</option>
+                          <option value="*.xml">*.xml (XML Feeds)</option>
+                        </select>
+                      )}
+                    </div>
+                    <p className="text-[10px] text-slate-400 leading-tight">
+                      Variable folder or filename pattern. Files may change folders daily, but retain the identical format and schema.
+                    </p>
+                  </div>
+                </div>
+
+                {/* Combined Ingestion Scope & Live Match Indicator */}
+                <div className="pt-2 border-t border-purple-800/30 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 text-xs font-mono">
+                    <span className="text-slate-400">Effective Ingestion Scope:</span>
+                    <span className="px-2 py-0.5 rounded bg-purple-950 text-purple-200 border border-purple-500/40 font-bold">
+                      {sourceDirectoryPath ? (sourceDirectoryPath.endsWith('/') ? sourceDirectoryPath : sourceDirectoryPath + '/') : '/'}{targetFileName}
+                    </span>
+                  </div>
+
+                  <div className="flex items-center gap-2 text-xs font-mono">
+                    <span className={`px-2 py-0.5 rounded-full font-bold text-[10px] ${
+                      matchingFilesInScope.length > 0 
+                        ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' 
+                        : 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
+                    }`}>
+                      {matchingFilesInScope.length} file{matchingFilesInScope.length !== 1 ? 's' : ''} currently matching on server
+                    </span>
+                  </div>
+                </div>
+
+                {/* Matching Files Chips */}
+                {matchingFilesInScope.length > 0 && (
+                  <div className="p-2 bg-slate-950/70 rounded-lg border border-purple-900/40 text-[11px] font-mono space-y-1">
+                    <span className="text-[10px] uppercase font-bold text-slate-400 block">
+                      Matching Files on Server (Click any file to use as configuration sample):
+                    </span>
+                    <div className="flex flex-wrap gap-1.5 max-h-20 overflow-y-auto">
+                      {matchingFilesInScope.map(mf => (
+                        <button
+                          key={mf.fullPath}
+                          type="button"
+                          onClick={() => {
+                            setSampleFileName(mf.name);
+                            handleInspectStructure(mf.fullPath || mf.name);
+                          }}
+                          className={`px-2 py-0.5 rounded text-[10px] font-mono transition flex items-center gap-1 cursor-pointer border ${
+                            sampleFileName === mf.name || sampleFileName === mf.fullPath
+                              ? 'bg-purple-600 text-white border-purple-400 font-bold shadow-xs'
+                              : 'bg-slate-800 text-purple-200 border-purple-900/60 hover:bg-slate-700'
+                          }`}
+                        >
+                          <span>{mf.relativeFolder !== '/' ? `${mf.relativeFolder}/${mf.name}` : mf.name}</span>
+                          {(sampleFileName === mf.name || sampleFileName === mf.fullPath) && (
+                            <Check className="w-2.5 h-2.5 text-white" />
+                          )}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Representative Sample File for Configuration */}
+              <div className="p-3 bg-purple-50/70 rounded-xl border border-purple-200 space-y-2">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <Sparkles className="w-4 h-4 text-purple-600" />
+                    <div>
+                      <h4 className="text-xs font-bold text-purple-950">
+                        Representative Sample File for Configuration
+                      </h4>
+                      <p className="text-[11px] text-purple-800/80">
+                        This concrete sample file is parsed to detect multi-row headers, sheets, delimiters, and canonical mappings. This single configuration automatically governs all matching files across permanent and dynamic paths.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 shrink-0">
+                    <select
+                      value={sampleFileName || targetFileName}
+                      onChange={e => {
+                        const sel = e.target.value;
+                        setSampleFileName(sel);
+                        const match = recursiveFiles.find(f => f.name === sel || f.fullPath === sel);
+                        handleInspectStructure(match?.fullPath || sel);
+                      }}
+                      className="text-xs p-1.5 bg-white border border-purple-300 rounded-lg font-mono font-bold text-purple-950 cursor-pointer shadow-2xs"
+                    >
+                      {matchingFilesInScope.length > 0 ? (
+                        matchingFilesInScope.map(f => (
+                          <option key={f.fullPath} value={f.name}>
+                            Sample: {f.name} ({(f.size / 1024).toFixed(0)} KB)
+                          </option>
+                        ))
+                      ) : (
+                        recursiveFiles.map(f => (
+                          <option key={f.fullPath} value={f.name}>
+                            Sample: {f.name}
+                          </option>
+                        ))
+                      )}
+                    </select>
+
+                    <button
+                      type="button"
+                      onClick={() => handleInspectStructure(sampleFileName || targetFileName)}
+                      className="px-2.5 py-1.5 bg-white hover:bg-purple-100 text-purple-700 border border-purple-300 rounded-lg text-xs font-bold transition cursor-pointer flex items-center gap-1 shadow-2xs"
+                    >
+                      <RefreshCw className="w-3 h-3" />
+                      <span>Re-Inspect Sample</span>
+                    </button>
                   </div>
                 </div>
               </div>
@@ -801,7 +1421,7 @@ export default function FtpFileStagingSettings({
                   </div>
                   <button
                     type="button"
-                    onClick={() => handleInspectStructure(targetFileName)}
+                    onClick={() => handleInspectStructure()}
                     className="text-[11px] font-bold text-purple-700 hover:underline cursor-pointer flex items-center gap-1"
                   >
                     <RefreshCw className="w-3 h-3" />
@@ -809,7 +1429,25 @@ export default function FtpFileStagingSettings({
                   </button>
                 </div>
 
-                {structureInspection ? (
+                {isInspecting ? (
+                  <div className="p-3 bg-white/80 rounded-lg border border-purple-100 flex items-center gap-2 text-xs text-purple-800 font-medium">
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin text-purple-600" />
+                    <span>Inspecting physical file structure on remote server...</span>
+                  </div>
+                ) : inspectionError ? (
+                  <div className="p-3 bg-red-50/90 rounded-lg border border-red-200 space-y-1.5">
+                    <div className="flex items-center gap-1.5 text-xs font-bold text-red-800">
+                      <AlertCircle className="w-4 h-4 text-red-600 shrink-0" />
+                      <span>Remote File Inspection Failed</span>
+                    </div>
+                    <p className="text-[11px] font-mono text-red-700 bg-white/90 p-2 rounded border border-red-200/60 break-all select-all">
+                      {inspectionError}
+                    </p>
+                    <p className="text-[11px] text-slate-600">
+                      Please correct the issue: verify that the file exists on the FTP/SFTP server, check credentials and folder permissions, or select a matching sample file from the discovered files list above.
+                    </p>
+                  </div>
+                ) : structureInspection ? (
                   <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs font-mono pt-1">
                     <div className="p-2 bg-white rounded-lg border border-purple-100">
                       <span className="text-slate-400 block text-[10px] uppercase font-bold">Detected Type</span>
@@ -984,69 +1622,6 @@ export default function FtpFileStagingSettings({
                 </div>
               </div>
 
-              {/* Multi-Folder Looping Traversal Settings */}
-              <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200 space-y-2">
-                <div className="flex items-center justify-between">
-                  <h4 className="text-xs font-bold text-slate-800 flex items-center gap-1.5">
-                    <FolderTree className="w-3.5 h-3.5 text-purple-600" />
-                    <span>Multi-Folder Looping Traversal (Date / Branch Partitioning)</span>
-                  </h4>
-                  {folderTraversalMode === 'RECURSIVE_SCAN' && (
-                    <button
-                      type="button"
-                      onClick={handleDiscoverRecursive}
-                      className="text-[11px] font-bold text-purple-600 hover:underline flex items-center gap-1"
-                    >
-                      <Search className="w-3 h-3" />
-                      <span>{loadingRecursive ? 'Scanning Tree...' : 'Scan Nested Folders'}</span>
-                    </button>
-                  )}
-                </div>
-
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                  <div>
-                    <label className="block text-[11px] font-semibold text-slate-600 mb-1">Traversal Mode</label>
-                    <select
-                      value={folderTraversalMode}
-                      onChange={e => setFolderTraversalMode(e.target.value as any)}
-                      className="w-full text-xs p-1.5 bg-white border border-slate-200 rounded-lg font-semibold"
-                    >
-                      <option value="SINGLE_FILE">Single Target File</option>
-                      <option value="DIRECTORY_SCAN">Current Directory Scan</option>
-                      <option value="RECURSIVE_SCAN">Scan Subfolders Recursively (Loop Traversal)</option>
-                    </select>
-                  </div>
-
-                  {folderTraversalMode === 'RECURSIVE_SCAN' && (
-                    <div className="sm:col-span-2">
-                      <label className="block text-[11px] font-semibold text-slate-600 mb-1">
-                        Root Subfolder Path (Optional)
-                      </label>
-                      <input
-                        type="text"
-                        value={sourceDirectoryPath}
-                        onChange={e => setSourceDirectoryPath(e.target.value)}
-                        placeholder="e.g. /clearing/ or leave blank for root"
-                        className="w-full text-xs p-1.5 bg-white border border-slate-200 rounded-lg font-mono"
-                      />
-                    </div>
-                  )}
-                </div>
-
-                {recursiveFiles.length > 0 && (
-                  <div className="mt-2 p-2 bg-white rounded-lg border border-slate-200 text-xs font-mono space-y-1 max-h-28 overflow-y-auto">
-                    <span className="text-[10px] text-slate-400 font-bold uppercase block">
-                      Discovered Files across Folders ({recursiveFiles.length}):
-                    </span>
-                    {recursiveFiles.map((f, i) => (
-                      <div key={i} className="flex justify-between text-slate-700 py-0.5 border-b border-slate-50">
-                        <span>{f.fullPath}</span>
-                        <span className="text-purple-600">{(f.size / 1024).toFixed(1)} KB</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
 
               {/* Action: Run Test Parse */}
               <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-1">

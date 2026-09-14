@@ -5,6 +5,7 @@
  */
 
 import * as ftp from 'basic-ftp';
+import { Client as SshClient } from 'ssh2';
 import { Writable } from 'stream';
 import net from 'net';
 import { DatabaseConnection } from '../types.js';
@@ -20,7 +21,21 @@ export interface FtpConnectionConfig {
 }
 
 /**
- * Resolves standard FTP connection parameters from DatabaseConnection entity.
+ * Determines whether a connection configuration targets SFTP (SSH File Transfer Protocol)
+ * rather than legacy RFC 959 FTP/FTPS.
+ */
+export function isSftpConnection(db: DatabaseConnection, config: FtpConnectionConfig): boolean {
+  if (db.type === 'SFTP') return true;
+  if (config.port === 22) return true;
+  if (db.connectionString) {
+    const cs = db.connectionString.toLowerCase();
+    if (cs.startsWith('sftp:') || cs.startsWith('ssh:')) return true;
+  }
+  return false;
+}
+
+/**
+ * Resolves standard FTP/SFTP connection parameters from DatabaseConnection entity.
  */
 export function resolveFtpConfig(db: DatabaseConnection): FtpConnectionConfig {
   let host = db.host || '127.0.0.1';
@@ -88,10 +103,88 @@ async function testSocketPing(host: string, port: number, timeoutMs = 3000): Pro
 }
 
 /**
- * Tests connectivity to an FTP/FTPS server with real greeting and directory access.
+ * Tests SFTP connectivity via ssh2 with SSH handshake and SFTP subsystem verification.
+ */
+async function testSftpConnection(config: FtpConnectionConfig): Promise<{ success: boolean; message: string; latencyMs?: number }> {
+  return new Promise((resolve) => {
+    const start = Date.now();
+    const conn = new SshClient();
+    let isResolved = false;
+
+    const safeResolve = (res: { success: boolean; message: string; latencyMs?: number }) => {
+      if (!isResolved) {
+        isResolved = true;
+        try { conn.end(); } catch {}
+        resolve(res);
+      }
+    };
+
+    conn.on('error', (err: any) => {
+      safeResolve({
+        success: false,
+        message: `SFTP connection error to ${config.host}:${config.port}: ${err.message}`,
+        latencyMs: Date.now() - start
+      });
+    });
+
+    conn.on('ready', () => {
+      conn.sftp((err, sftp) => {
+        if (err) {
+          return safeResolve({
+            success: false,
+            message: `SFTP subsystem error on ${config.host}:${config.port}: ${err.message}`,
+            latencyMs: Date.now() - start
+          });
+        }
+
+        sftp.readdir('.', (readErr) => {
+          const latencyMs = Date.now() - start;
+          if (readErr) {
+            return safeResolve({
+              success: true,
+              message: `Connected via SFTP to ${config.host}:${config.port} (Root readdir notice: ${readErr.message})`,
+              latencyMs
+            });
+          }
+
+          safeResolve({
+            success: true,
+            message: `Successfully connected to SFTP server at ${config.host}:${config.port}. Handshake latency ${latencyMs}ms.`,
+            latencyMs
+          });
+        });
+      });
+    });
+
+    try {
+      conn.connect({
+        host: config.host,
+        port: config.port,
+        username: config.user,
+        password: config.password,
+        readyTimeout: 7000
+      });
+    } catch (e: any) {
+      safeResolve({
+        success: false,
+        message: `SFTP initialization error: ${e.message}`,
+        latencyMs: Date.now() - start
+      });
+    }
+  });
+}
+
+/**
+ * Tests connectivity to an FTP/FTPS or SFTP server with authentic greeting and directory access.
  */
 export async function testFtpConnection(db: DatabaseConnection): Promise<{ success: boolean; message: string; latencyMs?: number }> {
   const config = resolveFtpConfig(db);
+
+  // If port 22 or type SFTP, route to genuine SFTP client
+  if (isSftpConnection(db, config)) {
+    return await testSftpConnection(config);
+  }
+
   const start = Date.now();
   const client = new ftp.Client(2500);
   client.ftp.verbose = false;
@@ -123,17 +216,6 @@ export async function testFtpConnection(db: DatabaseConnection): Promise<{ succe
         success: true,
         message: `Connected to FTP port at ${config.host}:${config.port} (Auth warning: ${ftpErr.message})`,
         latencyMs: sock.latencyMs
-      };
-    }
-
-    // If host is an internal test domain (e.g. ftp.bankclearing.internal or offline simulation)
-    const isSimulated = config.host.includes('.internal') || config.host.includes('.bank') || config.host.includes('paymentops') || config.host === '127.0.0.1' || config.host === 'localhost';
-    if (isSimulated && (db.connectionString || config.host.length > 5)) {
-      const simulatedLatency = 18;
-      return {
-        success: true,
-        message: `[Simulated Verified] Operational FTP feed endpoint verified at ${config.host}:${config.port} (Dir: ${config.baseDirectory}). Latency ${simulatedLatency}ms.`,
-        latencyMs: simulatedLatency
       };
     }
 
@@ -172,136 +254,302 @@ function resolveFileType(name: string): 'EXCEL' | 'CSV' | 'XML' | 'TXT' | 'JSON'
 }
 
 /**
- * Standard simulated settlement clearing files when remote FTP server is in offline test mode.
+ * Traverses SFTP filesystem recursively to discover actual files and folders.
  */
-const SIMULATED_FTP_FILES = [
-  'settlement_reconciliation_feed.csv',
-  'cbs_daily_clearing_records.csv',
-  'switch_settlement_batch.xlsx',
-  'iso20022_camt053_clearing.xml',
-  'partner_settlement_report.txt',
-  'atm_interchange_extract.csv',
-  'visa_base2_clearing.json'
-];
+async function fetchSftpFilesRecursive(
+  config: FtpConnectionConfig,
+  baseDirOverride?: string,
+  maxDepth = 6
+): Promise<FtpFileEntry[]> {
+  return new Promise((resolve, reject) => {
+    const conn = new SshClient();
+    let isFinished = false;
+
+    const finish = (results: FtpFileEntry[], err?: any) => {
+      if (!isFinished) {
+        isFinished = true;
+        try { conn.end(); } catch {}
+        if (err) reject(err);
+        else resolve(results);
+      }
+    };
+
+    conn.on('error', (err: any) => {
+      if (!isFinished) finish([], err);
+    });
+
+    conn.on('ready', () => {
+      conn.sftp(async (err, sftp) => {
+        if (err) return finish([], err);
+
+        const results: FtpFileEntry[] = [];
+        const rootDir = baseDirOverride || config.baseDirectory || '.';
+        const validExtensions = new Set(['.csv', '.tsv', '.txt', '.json', '.dat', '.xml', '.xlsx', '.xls']);
+
+        const readdirAsync = (dir: string) => new Promise<any[]>((res, rej) => {
+          sftp.readdir(dir, (rErr, list) => {
+            if (rErr) rej(rErr);
+            else res(list);
+          });
+        });
+
+        async function walk(currentDir: string, depth: number) {
+          if (depth > maxDepth) return;
+          try {
+            const list = await readdirAsync(currentDir);
+            for (const item of list) {
+              if (item.filename === '.' || item.filename === '..') continue;
+              const isDir = item.longname?.startsWith('d') || ((item.attrs?.mode ?? 0) & 0o40000) === 0o40000;
+              const fullPath = currentDir === '.' || currentDir === '/'
+                ? item.filename
+                : `${currentDir.replace(/\/+$/, '')}/${item.filename}`;
+
+              const relativeFolder = currentDir === '.' ? '/' : (currentDir.startsWith('/') ? currentDir : `/${currentDir}`);
+
+              if (!isDir) {
+                const ext = item.filename.toLowerCase().slice(item.filename.lastIndexOf('.'));
+                if (validExtensions.has(ext) || !item.filename.includes('.')) {
+                  results.push({
+                    name: item.filename,
+                    fullPath: fullPath.startsWith('/') ? fullPath : `/${fullPath}`,
+                    relativeFolder,
+                    size: item.attrs?.size || 0,
+                    modifiedAt: item.attrs?.mtime ? new Date(item.attrs.mtime * 1000).toISOString() : undefined,
+                    fileType: resolveFileType(item.filename)
+                  });
+                }
+              } else {
+                await walk(fullPath, depth + 1);
+              }
+            }
+          } catch (walkErr: any) {
+            console.warn(`[ftpConnectionService] SFTP directory traversal notice at ${currentDir}:`, walkErr.message);
+          }
+        }
+
+        try {
+          const startDir = (!rootDir || rootDir === '/') ? '.' : rootDir.replace(/^\/+/, '');
+          await walk(startDir, 1);
+          finish(results);
+        } catch (walkException) {
+          finish([], walkException);
+        }
+      });
+    });
+
+    try {
+      conn.connect({
+        host: config.host,
+        port: config.port,
+        username: config.user,
+        password: config.password,
+        readyTimeout: 10000
+      });
+    } catch (e) {
+      finish([], e);
+    }
+  });
+}
 
 /**
- * Discovers data files available on the remote FTP server working directory.
+ * Streams remote binary file buffer via SFTP.
+ */
+async function fetchSftpFileBuffer(
+  config: FtpConnectionConfig,
+  remotePath: string,
+  maxBytes = 10485760
+): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const conn = new SshClient();
+    const chunks: Buffer[] = [];
+    let totalBytes = 0;
+    let isFinished = false;
+
+    const finish = (buf: Buffer) => {
+      if (!isFinished) {
+        isFinished = true;
+        try { conn.end(); } catch {}
+        resolve(buf);
+      }
+    };
+
+    const finishErr = (err: any) => {
+      if (!isFinished) {
+        isFinished = true;
+        try { conn.end(); } catch {}
+        reject(err);
+      }
+    };
+
+    conn.on('error', (err: any) => {
+      if (!isFinished) finishErr(new Error(`SFTP SSH connection error: ${err.message}`));
+    });
+
+    conn.on('ready', () => {
+      conn.sftp((err, sftp) => {
+        if (err) return finishErr(new Error(`SFTP subsystem error: ${err.message}`));
+
+        // Try relative path first, then fallback to leading slash
+        const cleanPath = remotePath.replace(/^\/+/, '');
+        const readStream = sftp.createReadStream(cleanPath);
+
+        readStream.on('data', (chunk: Buffer) => {
+          chunks.push(chunk);
+          totalBytes += chunk.length;
+          if (totalBytes >= maxBytes) {
+            readStream.destroy();
+            finish(Buffer.concat(chunks));
+          }
+        });
+
+        readStream.on('end', () => {
+          finish(Buffer.concat(chunks));
+        });
+
+        readStream.on('error', (streamErr: any) => {
+          const fallbackStream = sftp.createReadStream(`/${cleanPath}`);
+          fallbackStream.on('data', (c: Buffer) => {
+            chunks.push(c);
+            totalBytes += c.length;
+            if (totalBytes >= maxBytes) {
+              fallbackStream.destroy();
+              finish(Buffer.concat(chunks));
+            }
+          });
+          fallbackStream.on('end', () => finish(Buffer.concat(chunks)));
+          fallbackStream.on('error', (fallbackErr: any) => {
+            finishErr(new Error(`SFTP failed to open '${remotePath}': ${fallbackErr.message || streamErr.message}`));
+          });
+        });
+      });
+    });
+
+    try {
+      conn.connect({
+        host: config.host,
+        port: config.port,
+        username: config.user,
+        password: config.password,
+        readyTimeout: 10000
+      });
+    } catch (e: any) {
+      finishErr(new Error(`SFTP connection initialization failed: ${e.message}`));
+    }
+  });
+}
+
+/**
+ * Discovers data files available on the remote FTP/SFTP server working directory.
  * Returns filenames (acting as tables in the validation workflow engine).
  */
 export async function discoverFtpFiles(db: DatabaseConnection): Promise<string[]> {
   const config = resolveFtpConfig(db);
-  const client = new ftp.Client(2500);
-  client.ftp.verbose = false;
 
-  try {
-    await client.access({
-      host: config.host,
-      port: config.port,
-      user: config.user,
-      password: config.password,
-      secure: config.secure
-    });
+  if (isSftpConnection(db, config)) {
+    const files = await fetchSftpFilesRecursive(config, config.baseDirectory, 2);
+    return files.map(f => f.fullPath);
+  } else {
+    const client = new ftp.Client(2500);
+    client.ftp.verbose = false;
 
-    const fileList = await client.list(config.baseDirectory);
-    const validExtensions = new Set(['.csv', '.tsv', '.txt', '.json', '.dat', '.xml', '.xlsx', '.xls']);
+    try {
+      await client.access({
+        host: config.host,
+        port: config.port,
+        user: config.user,
+        password: config.password,
+        secure: config.secure
+      });
 
-    const files = fileList
-      .filter(item => item.isFile && !item.name.startsWith('.'))
-      .filter(item => {
-        const ext = item.name.toLowerCase().slice(item.name.lastIndexOf('.'));
-        return validExtensions.has(ext) || !item.name.includes('.');
-      })
-      .map(item => item.name);
+      const list = await client.list(config.baseDirectory || '/');
+      const validExtensions = new Set(['.csv', '.tsv', '.txt', '.json', '.dat', '.xml', '.xlsx', '.xls']);
 
-    if (files.length > 0) return files;
-  } catch (err: any) {
-    console.warn(`[ftpConnectionService] Live FTP discovery warning for ${db.name}:`, err.message);
-  } finally {
-    try { client.close(); } catch {}
+      return list
+        .filter(item => {
+          if (item.isDirectory) return false;
+          const ext = item.name.toLowerCase().slice(item.name.lastIndexOf('.'));
+          return validExtensions.has(ext) || !item.name.includes('.');
+        })
+        .map(item => item.name);
+    } catch (err: any) {
+      throw new Error(`FTP discovery failed for ${db.name}: ${err.message}`);
+    } finally {
+      try { client.close(); } catch {}
+    }
   }
-
-  // If live FTP was offline or returned empty, return standard banking settlement clearing feeds
-  return [...SIMULATED_FTP_FILES];
 }
 
 /**
- * Discovers data files recursively across subfolders (e.g. /clearing/2026-09-01/, /clearing/2026-09-02/).
- * Enables multi-folder looping and batch staging.
+ * Discovers data files recursively across subfolders (e.g. /AIB/Card/Settlemnt/2026/sep/).
+ * Enables multi-folder looping, authentic pattern recognition, and batch staging.
  */
 export async function discoverFtpFilesRecursive(
   db: DatabaseConnection,
   baseDirOverride?: string,
-  maxDepth = 3
+  maxDepth = 6
 ): Promise<FtpFileEntry[]> {
   const config = resolveFtpConfig(db);
   const rootDir = baseDirOverride || config.baseDirectory;
-  const client = new ftp.Client(2500);
-  client.ftp.verbose = false;
 
-  const results: FtpFileEntry[] = [];
-  const validExtensions = new Set(['.csv', '.tsv', '.txt', '.json', '.dat', '.xml', '.xlsx', '.xls']);
+  if (isSftpConnection(db, config)) {
+    return await fetchSftpFilesRecursive(config, rootDir, maxDepth);
+  } else {
+    const client = new ftp.Client(2500);
+    client.ftp.verbose = false;
+    const results: FtpFileEntry[] = [];
+    const validExtensions = new Set(['.csv', '.tsv', '.txt', '.json', '.dat', '.xml', '.xlsx', '.xls']);
 
-  try {
-    await client.access({
-      host: config.host,
-      port: config.port,
-      user: config.user,
-      password: config.password,
-      secure: config.secure
-    });
+    try {
+      await client.access({
+        host: config.host,
+        port: config.port,
+        user: config.user,
+        password: config.password,
+        secure: config.secure
+      });
 
-    async function walk(currentDir: string, depth: number) {
-      if (depth > maxDepth) return;
-      try {
-        const items = await client.list(currentDir);
-        for (const item of items) {
-          if (item.name.startsWith('.')) continue;
-          const fullPath = currentDir.endsWith('/') ? `${currentDir}${item.name}` : `${currentDir}/${item.name}`;
-          const relativeFolder = currentDir.replace(rootDir, '') || '/';
+      async function walk(currentDir: string, depth: number) {
+        if (depth > maxDepth) return;
+        try {
+          const items = await client.list(currentDir);
+          for (const item of items) {
+            if (item.name.startsWith('.')) continue;
+            const fullPath = currentDir.endsWith('/') ? `${currentDir}${item.name}` : `${currentDir}/${item.name}`;
+            const relativeFolder = currentDir.replace(rootDir, '') || '/';
 
-          if (item.isFile) {
-            const ext = item.name.toLowerCase().slice(item.name.lastIndexOf('.'));
-            if (validExtensions.has(ext) || !item.name.includes('.')) {
-              results.push({
-                name: item.name,
-                fullPath,
-                relativeFolder,
-                size: item.size,
-                modifiedAt: item.rawModifiedAt,
-                fileType: resolveFileType(item.name)
-              });
+            if (item.isFile) {
+              const ext = item.name.toLowerCase().slice(item.name.lastIndexOf('.'));
+              if (validExtensions.has(ext) || !item.name.includes('.')) {
+                results.push({
+                  name: item.name,
+                  fullPath,
+                  relativeFolder,
+                  size: item.size,
+                  modifiedAt: item.rawModifiedAt,
+                  fileType: resolveFileType(item.name)
+                });
+              }
+            } else if (item.isDirectory && depth < maxDepth) {
+              await walk(fullPath, depth + 1);
             }
-          } else if (item.isDirectory && depth < maxDepth) {
-            await walk(fullPath, depth + 1);
           }
+        } catch (e: any) {
+          console.warn(`[ftpConnectionService] Directory traversal warning at ${currentDir}:`, e.message);
         }
-      } catch (e: any) {
-        console.warn(`[ftpConnectionService] Directory traversal warning at ${currentDir}:`, e.message);
       }
+
+      await walk(rootDir, 1);
+      return results;
+    } catch (err: any) {
+      throw new Error(`FTP recursive discovery failed for ${db.name}: ${err.message}`);
+    } finally {
+      try { client.close(); } catch {}
     }
-
-    await walk(rootDir, 1);
-    if (results.length > 0) return results;
-  } catch (err: any) {
-    console.warn(`[ftpConnectionService] Live recursive discovery warning for ${db.name}:`, err.message);
-  } finally {
-    try { client.close(); } catch {}
   }
-
-  // Simulated multi-folder tree for offline / dev mode
-  return [
-    { name: 'settlement_visa.csv', fullPath: `${rootDir}/2026-09-01/settlement_visa.csv`, relativeFolder: '/2026-09-01', size: 142050, fileType: 'CSV' },
-    { name: 'settlement_visa.csv', fullPath: `${rootDir}/2026-09-02/settlement_visa.csv`, relativeFolder: '/2026-09-02', size: 158430, fileType: 'CSV' },
-    { name: 'settlement_visa.csv', fullPath: `${rootDir}/2026-09-03/settlement_visa.csv`, relativeFolder: '/2026-09-03', size: 139120, fileType: 'CSV' },
-    { name: 'switch_settlement_batch.xlsx', fullPath: `${rootDir}/switch_settlement_batch.xlsx`, relativeFolder: '/', size: 284500, fileType: 'EXCEL' },
-    { name: 'iso20022_camt053_clearing.xml', fullPath: `${rootDir}/iso20022_camt053_clearing.xml`, relativeFolder: '/', size: 312000, fileType: 'XML' },
-    { name: 'partner_settlement_report.txt', fullPath: `${rootDir}/partner_settlement_report.txt`, relativeFolder: '/', size: 98400, fileType: 'TXT' },
-    { name: 'cbs_daily_clearing_records.csv', fullPath: `${rootDir}/cbs_daily_clearing_records.csv`, relativeFolder: '/', size: 215000, fileType: 'CSV' }
-  ];
 }
 
 /**
- * Downloads full or partial file binary buffer from remote FTP server.
+ * Downloads full or partial file binary buffer from remote FTP/SFTP server.
  */
 export async function fetchRemoteFileBuffer(
   db: DatabaseConnection,
@@ -309,6 +557,11 @@ export async function fetchRemoteFileBuffer(
   maxBytes = 10485760
 ): Promise<Buffer> {
   const config = resolveFtpConfig(db);
+
+  if (isSftpConnection(db, config)) {
+    return await fetchSftpFileBuffer(config, remotePath, maxBytes);
+  }
+
   const client = new ftp.Client(2500);
   client.ftp.verbose = false;
   const chunks: Buffer[] = [];
@@ -325,6 +578,10 @@ export async function fetchRemoteFileBuffer(
 
     const memoryStream = new Writable({
       write(chunk, _encoding, callback) {
+        if (chunk == null) {
+          callback();
+          return;
+        }
         const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
         chunks.push(buf);
         totalLength += buf.length;
@@ -339,8 +596,7 @@ export async function fetchRemoteFileBuffer(
     await client.downloadTo(memoryStream, fullPath);
     return Buffer.concat(chunks);
   } catch (err: any) {
-    console.warn(`[ftpConnectionService] Remote buffer download warning for ${remotePath}:`, err.message);
-    return Buffer.alloc(0);
+    throw new Error(`FTP download failed for '${remotePath}': ${err.message}`);
   } finally {
     try { client.close(); } catch {}
   }
@@ -363,42 +619,22 @@ function inferType(val: any): string {
  * Introspects column headers and field types from a remote FTP data file.
  */
 export async function inspectFtpFileColumns(db: DatabaseConnection, filename: string): Promise<ColumnMetadata[]> {
-  const config = resolveFtpConfig(db);
-  const client = new ftp.Client(2500);
-  client.ftp.verbose = false;
-
-  try {
-    await client.access({
-      host: config.host,
-      port: config.port,
-      user: config.user,
-      password: config.password,
-      secure: config.secure
-    });
-
-    // Stream download up to first 64KB
-    let buffer = '';
-    const memoryStream = new Writable({
-      write(chunk, _encoding, callback) {
-        buffer += chunk.toString('utf-8');
-        callback();
-      }
-    });
-
-    const fullPath = config.baseDirectory.endsWith('/') ? `${config.baseDirectory}${filename}` : `${config.baseDirectory}/${filename}`;
-    await client.downloadTo(memoryStream, fullPath);
-
-    if (buffer.trim()) {
-      return parseColumnsFromRawData(filename, buffer);
-    }
-  } catch (err: any) {
-    console.warn(`[ftpConnectionService] Live column introspection warning for ${filename}:`, err.message);
-  } finally {
-    try { client.close(); } catch {}
+  const buf = await fetchRemoteFileBuffer(db, filename, 65536);
+  if (!buf || buf.length === 0) {
+    throw new Error(`Failed to inspect columns for '${filename}': File is empty or could not be downloaded from remote server.`);
   }
 
-  // Fallback schema based on standard banking settlement file patterns
-  return getStandardSettlementColumns(filename);
+  const buffer = buf.toString('utf-8');
+  if (!buffer.trim()) {
+    throw new Error(`Failed to inspect columns for '${filename}': File contains no readable text content.`);
+  }
+
+  const cols = parseColumnsFromRawData(filename, buffer);
+  if (cols.length === 0) {
+    throw new Error(`Failed to detect columns for '${filename}': No structured headers or delimiters found in file.`);
+  }
+
+  return cols;
 }
 
 /**
@@ -444,55 +680,7 @@ function parseColumnsFromRawData(filename: string, rawText: string): ColumnMetad
     }));
   }
 
-  return getStandardSettlementColumns(filename);
-}
-
-/**
- * Standard simulated settlement columns for banking transaction feeds.
- */
-function getStandardSettlementColumns(filename: string): ColumnMetadata[] {
-  const isVisa = filename.toLowerCase().includes('visa') || filename.toLowerCase().includes('switch');
-  const isCbs = filename.toLowerCase().includes('cbs') || filename.toLowerCase().includes('core');
-
-  if (isVisa) {
-    return [
-      { name: 'transaction_id', type: 'VARCHAR(64)', nullable: false, isPrimary: true },
-      { name: 'pan', type: 'VARCHAR(32)', nullable: true },
-      { name: 'amount', type: 'NUMERIC(18, 4)', nullable: false },
-      { name: 'currency', type: 'VARCHAR(3)', nullable: false },
-      { name: 'auth_code', type: 'VARCHAR(32)', nullable: true },
-      { name: 'response_code', type: 'VARCHAR(10)', nullable: false },
-      { name: 'switch_reference', type: 'VARCHAR(64)', nullable: true },
-      { name: 'interchange_fee', type: 'NUMERIC(18, 4)', nullable: true },
-      { name: 'settlement_date', type: 'TIMESTAMPTZ', nullable: false },
-      { name: 'status', type: 'VARCHAR(32)', nullable: false }
-    ];
-  }
-
-  if (isCbs) {
-    return [
-      { name: 'tran_id', type: 'VARCHAR(64)', nullable: false, isPrimary: true },
-      { name: 'account_number', type: 'VARCHAR(32)', nullable: false },
-      { name: 'amount', type: 'NUMERIC(18, 4)', nullable: false },
-      { name: 'currency', type: 'VARCHAR(3)', nullable: false },
-      { name: 'tran_type', type: 'VARCHAR(20)', nullable: false },
-      { name: 'posting_date', type: 'TIMESTAMPTZ', nullable: false },
-      { name: 'val_date', type: 'TIMESTAMPTZ', nullable: true },
-      { name: 'balance_after', type: 'NUMERIC(18, 4)', nullable: true },
-      { name: 'status', type: 'VARCHAR(32)', nullable: false }
-    ];
-  }
-
-  return [
-    { name: 'transaction_id', type: 'VARCHAR(64)', nullable: false, isPrimary: true },
-    { name: 'card_number', type: 'VARCHAR(32)', nullable: true },
-    { name: 'amount', type: 'NUMERIC(18, 4)', nullable: false },
-    { name: 'currency', type: 'VARCHAR(3)', nullable: false },
-    { name: 'response_code', type: 'VARCHAR(10)', nullable: true },
-    { name: 'settlement_date', type: 'TIMESTAMPTZ', nullable: false },
-    { name: 'status', type: 'VARCHAR(32)', nullable: false },
-    { name: 'source_feed_name', type: 'VARCHAR(128)', nullable: true }
-  ];
+  return [];
 }
 
 /**
@@ -505,7 +693,6 @@ export async function readFtpFileRows(
   limit = 50
 ): Promise<LiveQueryResult> {
   const start = Date.now();
-  const config = resolveFtpConfig(db);
 
   // Extract filename from SQL query or direct filename parameter
   let targetFile = queryOrFile.trim();
@@ -514,110 +701,55 @@ export async function readFtpFileRows(
     targetFile = selectMatch[1];
   }
 
-  const client = new ftp.Client(2500);
-  client.ftp.verbose = false;
-  let fileContent = '';
+  const buf = await fetchRemoteFileBuffer(db, targetFile, 5242880);
+  if (!buf || buf.length === 0) {
+    throw new Error(`Failed to read records from '${targetFile}': File is empty or could not be retrieved from remote server.`);
+  }
 
-  try {
-    await client.access({
-      host: config.host,
-      port: config.port,
-      user: config.user,
-      password: config.password,
-      secure: config.secure
-    });
-
-    const memoryStream = new Writable({
-      write(chunk, _encoding, callback) {
-        fileContent += chunk.toString('utf-8');
-        callback();
-      }
-    });
-
-    const fullPath = config.baseDirectory.endsWith('/') ? `${config.baseDirectory}${targetFile}` : `${config.baseDirectory}/${targetFile}`;
-    await client.downloadTo(memoryStream, fullPath);
-  } catch (err: any) {
-    console.warn(`[ftpConnectionService] Live FTP read warning for ${targetFile}:`, err.message);
-  } finally {
-    try { client.close(); } catch {}
+  const fileContent = buf.toString('utf-8');
+  if (!fileContent.trim()) {
+    throw new Error(`Failed to read records from '${targetFile}': File contains no text records.`);
   }
 
   // Parse downloaded file content
-  if (fileContent.trim()) {
-    const isJson = targetFile.toLowerCase().endsWith('.json');
-    if (isJson) {
-      try {
-        const parsed = JSON.parse(fileContent);
-        const arrayData: any[] = Array.isArray(parsed) ? parsed : (parsed.transactions || parsed.records || [parsed]);
-        const rows = arrayData.slice(0, limit);
-        const cols = rows.length > 0 ? Object.keys(rows[0]) : [];
-        return {
-          columns: cols,
-          rows,
-          rowCount: arrayData.length,
-          executionTimeMs: Date.now() - start
-        };
-      } catch {}
-    }
-
-    // CSV / Delimited parser
-    const lines = fileContent.split(/\r?\n/).filter(l => l.trim().length > 0);
-    if (lines.length > 0) {
-      const firstLine = lines[0];
-      const delimiter = firstLine.includes('\t') ? '\t' : firstLine.includes('|') ? '|' : firstLine.includes(';') ? ';' : ',';
-      const headers = firstLine.split(delimiter).map(h => h.trim().replace(/^["']|["']$/g, ''));
-      const rows: Record<string, any>[] = [];
-
-      for (let i = 1; i < lines.length && rows.length < limit; i++) {
-        const parts = lines[i].split(delimiter).map(v => v.trim().replace(/^["']|["']$/g, ''));
-        const rowObj: Record<string, any> = {};
-        headers.forEach((h, idx) => {
-          rowObj[h] = parts[idx] ?? null;
-        });
-        rows.push(rowObj);
-      }
-
-      return {
-        columns: headers,
-        rows,
-        rowCount: lines.length - 1,
-        executionTimeMs: Date.now() - start
-      };
-    }
+  const isJson = targetFile.toLowerCase().endsWith('.json');
+  if (isJson) {
+    const parsed = JSON.parse(fileContent);
+    const arrayData: any[] = Array.isArray(parsed) ? parsed : (parsed.transactions || parsed.records || [parsed]);
+    const rows = arrayData.slice(0, limit);
+    const cols = rows.length > 0 ? Object.keys(rows[0]) : [];
+    return {
+      columns: cols,
+      rows,
+      rowCount: arrayData.length,
+      executionTimeMs: Date.now() - start
+    };
   }
 
-  // Offline simulated records fallback
-  const mockRows = generateSimulatedFtpRows(targetFile, limit);
-  const columns = mockRows.length > 0 ? Object.keys(mockRows[0]) : [];
+  // CSV / Delimited parser
+  const lines = fileContent.split(/\r?\n/).filter(l => l.trim().length > 0);
+  if (lines.length > 0) {
+    const firstLine = lines[0];
+    const delimiter = firstLine.includes('\t') ? '\t' : firstLine.includes('|') ? '|' : firstLine.includes(';') ? ';' : ',';
+    const headers = firstLine.split(delimiter).map(h => h.trim().replace(/^["']|["']$/g, ''));
+    const rows: Record<string, any>[] = [];
 
-  return {
-    columns,
-    rows: mockRows,
-    rowCount: mockRows.length,
-    executionTimeMs: Date.now() - start
-  };
-}
+    for (let i = 1; i < lines.length && rows.length < limit; i++) {
+      const parts = lines[i].split(delimiter).map(v => v.trim().replace(/^["']|["']$/g, ''));
+      const rowObj: Record<string, any> = {};
+      headers.forEach((h, idx) => {
+        rowObj[h] = parts[idx] ?? null;
+      });
+      rows.push(rowObj);
+    }
 
-/**
- * Generates sample structured clearing rows for offline testing
- */
-function generateSimulatedFtpRows(filename: string, limit = 25): Record<string, any>[] {
-  const rows: Record<string, any>[] = [];
-  const baseDate = new Date();
-
-  for (let i = 1; i <= limit; i++) {
-    const txnId = `TXN-FTP-${String(100000 + i)}`;
-    rows.push({
-      transaction_id: txnId,
-      card_number: `453275******${String(1000 + i * 7).slice(-4)}`,
-      amount: (150.5 + i * 25.75).toFixed(2),
-      currency: 'USD',
-      response_code: i % 7 === 0 ? '05' : '00',
-      settlement_date: new Date(baseDate.getTime() - i * 3600000).toISOString(),
-      status: i % 7 === 0 ? 'DECLINED' : 'SETTLED',
-      source_feed_name: filename
-    });
+    return {
+      columns: headers,
+      rows,
+      rowCount: lines.length - 1,
+      executionTimeMs: Date.now() - start
+    };
   }
 
-  return rows;
+  throw new Error(`Failed to extract structured rows from '${targetFile}'. Ensure the file format matches CSV, TSV, JSON, or Delimited text.`);
 }

@@ -268,6 +268,7 @@ export interface FtpFileStagingConfig {
   xmlRecordElement?: string;
   fieldMappings: FtpFieldMapping[];
   stagingTableName?: string;
+  sampleFileName?: string;
   lastStagedAt?: string;
   lastStagedStatus?: 'IDLE' | 'STAGED_READY' | 'FAILED';
   lastStagedCount?: number;
@@ -1042,6 +1043,9 @@ export interface ColumnValueLabelMapping {
   description?: string; // Additional context or business explanation
   category?: 'VALID' | 'WARNING' | 'ERROR' | 'INFO'; // Classification of this value
   color?: string; // Optional badge color
+  columnName?: string;
+  constantValue?: string;
+  severity?: string;
 }
 
 export interface TypeColumnCondition {
@@ -1067,6 +1071,9 @@ export interface RuleColumnPriority {
   role?: 'MATCH_KEY' | 'DISCRIMINATOR' | 'AGGREGATE_TARGET' | 'TIE_BREAKER' | string;
   matchMode?: 'EXACT' | 'CASE_INSENSITIVE' | 'TRIMMED';
   transform?: 'NONE' | 'LOWERCASE' | 'UPPERCASE' | 'DIGITS_ONLY';
+  minValue?: number;
+  maxValue?: number;
+  pattern?: string;
 }
 
 export interface RuleAggregation {

@@ -289,6 +289,7 @@ export interface FtpFileStagingConfig {
   xmlRecordElement?: string;
   fieldMappings: FtpFieldMapping[];
   stagingTableName?: string;
+  sampleFileName?: string;
   lastStagedAt?: string;
   lastStagedStatus?: 'IDLE' | 'STAGED_READY' | 'FAILED';
   lastStagedCount?: number;
