@@ -5,15 +5,29 @@
 
 import React from 'react';
 import { User } from '../types';
-import { Terminal, Shield, LogOut, CheckCircle2, AlertCircle, Database, HelpCircle } from 'lucide-react';
+import { 
+  Terminal, Shield, LogOut, CheckCircle2, AlertCircle, Database, HelpCircle,
+  Users, Layers, CheckSquare, Tag, MessageSquare, DatabaseZap, BarChart3, 
+  ShieldCheck, Settings, Sliders, PlusCircle 
+} from 'lucide-react';
 
 interface TitleBarProps {
   currentUser: User | null;
   onLogout: () => void;
   onlineCount: number;
+  activeNavigation?: string;
+  activeTeamName?: string | null;
+  workspaceSubView?: 'sandbox' | 'investigation' | 'open_case';
 }
 
-export default function TitleBar({ currentUser, onLogout, onlineCount }: TitleBarProps) {
+export default function TitleBar({ 
+  currentUser, 
+  onLogout, 
+  onlineCount, 
+  activeNavigation = 'workspace', 
+  activeTeamName,
+  workspaceSubView = 'sandbox'
+}: TitleBarProps) {
   // Determine badge color for the role in dark theme
   const getRoleBadgeClass = (role: string) => {
     switch (role) {
@@ -40,6 +54,103 @@ export default function TitleBar({ currentUser, onLogout, onlineCount }: TitleBa
     }
   };
 
+  // Dynamic page title mapping
+  const getPageInfo = () => {
+    switch (activeNavigation) {
+      case 'team_workspace':
+        return {
+          icon: <Users size={13} className="text-[#155DFC]" />,
+          title: 'My Teams & Workspaces',
+          subtitle: activeTeamName || null
+        };
+      case 'workspace':
+        if (workspaceSubView === 'sandbox') {
+          return {
+            icon: <Terminal size={13} className="text-cyan-400" />,
+            title: 'SQL Query Sandbox',
+            subtitle: 'Live Multi-DB Explorer'
+          };
+        }
+        if (workspaceSubView === 'open_case') {
+          return {
+            icon: <PlusCircle size={13} className="text-blue-400" />,
+            title: 'New Case Intake',
+            subtitle: 'Case Registration'
+          };
+        }
+        return {
+          icon: <DatabaseZap size={13} className="text-[#155DFC]" />,
+          title: 'Reconciliation Workspace',
+          subtitle: 'Audit & Workflows'
+        };
+      case 'my_tasks':
+        return {
+          icon: <CheckSquare size={13} className="text-emerald-400" />,
+          title: 'My Assigned Tasks',
+          subtitle: 'Personal Queue'
+        };
+      case 'hashtags':
+        return {
+          icon: <Tag size={13} className="text-amber-400" />,
+          title: 'Universal Hashtags',
+          subtitle: 'Cross-System Registry'
+        };
+      case 'open_case':
+      case 'create_case':
+        return {
+          icon: <PlusCircle size={13} className="text-blue-400" />,
+          title: 'Operational Case Creator',
+          subtitle: 'Ticket Intake'
+        };
+      case 'direct_chat':
+        return {
+          icon: <MessageSquare size={13} className="text-sky-400" />,
+          title: 'Personal Chat',
+          subtitle: 'Direct Messaging'
+        };
+      case 'db_explorer':
+        return {
+          icon: <Database size={13} className="text-indigo-400" />,
+          title: 'Database Query Tool',
+          subtitle: 'Live SQL Explorer'
+        };
+      case 'manager_analytics':
+        return {
+          icon: <BarChart3 size={13} className="text-purple-400" />,
+          title: 'Managerial Analytics',
+          subtitle: 'SLA & Performance'
+        };
+      case 'admin_panel':
+      case 'user_admin':
+        return {
+          icon: <ShieldCheck size={13} className="text-rose-400" />,
+          title: 'System Administration',
+          subtitle: 'Security & Access'
+        };
+      case 'workspace_settings':
+      case 'txn_settings':
+        return {
+          icon: <Settings size={13} className="text-cyan-400" />,
+          title: 'Workspace Settings',
+          subtitle: 'Governance & Rules'
+        };
+      case 'system_settings':
+        return {
+          icon: <Sliders size={13} className="text-teal-400" />,
+          title: 'System Configuration',
+          subtitle: 'Engine Parameters'
+        };
+      default:
+        return {
+          icon: <Database size={13} className="text-[#155DFC]" />,
+          title: 'IssueTrace',
+          subtitle: 'Desktop Operations Terminal'
+        };
+    }
+  };
+
+  const pageInfo = getPageInfo();
+
   return (
     <div className="h-9 bg-[#0F172B] border-b border-slate-800 flex items-center justify-between px-3 select-none text-xs text-slate-200 shadow-xs z-30" id="electron-title-bar">
       {/* OS Mac-style Traffic Light Buttons */}
@@ -63,12 +174,18 @@ export default function TitleBar({ currentUser, onLogout, onlineCount }: TitleBa
         </div>
       </div>
 
-      {/* Main Title Center */}
-      <div className="text-xs font-medium text-slate-200 flex items-center justify-center space-x-2 w-2/4">
-        <Database size={13} className="text-[#155DFC]" />
-        <span className="font-semibold tracking-tight text-white">IssueTrace</span>
-        <span className="text-slate-600">|</span>
-        <span className="text-[11px] text-slate-300 font-mono bg-slate-800/80 px-2 py-0.5 rounded border border-slate-700/70">Desktop Operations Terminal</span>
+      {/* Main Dynamic Title Center */}
+      <div className="text-xs font-medium text-slate-200 flex items-center justify-center space-x-2 w-2/4 truncate">
+        {pageInfo.icon}
+        <span className="font-semibold tracking-tight text-white font-mono">{pageInfo.title}</span>
+        {pageInfo.subtitle && (
+          <>
+            <span className="text-slate-600">/</span>
+            <span className="text-[11px] text-blue-300 font-mono bg-blue-950/60 px-2 py-0.5 rounded border border-blue-800/60 truncate max-w-[240px]" title={pageInfo.subtitle}>
+              {pageInfo.subtitle}
+            </span>
+          </>
+        )}
       </div>
 
       {/* User Session & Status on the Right */}

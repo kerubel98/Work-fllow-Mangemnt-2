@@ -9,7 +9,7 @@ import { ConnectionUsageLogModel } from '../models/ConnectionUsageLog.js';
 import { QueryApprovalRequestModel } from '../models/QueryApprovalRequest.js';
 import { store } from '../store/dataStore.js';
 import { repo } from '../store/repository.js';
-import { DatabaseConnection, ConnectionUsageLog, QueryApprovalRequest, DbAccessRequest, DatabaseColumnConfiguration, RuleColumnPriority, RuleAggregation, SemanticRowRoleConfig, SemanticCrossRowRule, TransactionTypeGroupConfig, TypeColumnCondition, ColumnValueLabelMapping } from '../types.js';
+import { DatabaseConnection, ConnectionUsageLog, QueryApprovalRequest, DbAccessRequest, DatabaseColumnConfiguration, RuleColumnPriority, RuleAggregation, SemanticRowRoleConfig, SemanticCrossRowRule, TransactionTypeGroupConfig, TypeColumnCondition, ColumnValueLabelMapping, AllowedQueryType, Team } from '../types.js';
 import { discoverTablesForDb, getTableColumnsForDb, executeLiveQueryOnDb, testExternalDbConnection, evictExternalDbPool } from '../services/dbConnectionManager.js';
 import { mirrorTableManager } from '../services/mirrorTableManager.js';
 import { ftpFileStagingService } from '../services/ftpFileStagingService.js';
@@ -426,11 +426,198 @@ databaseRouter.post('/test-connection', async (req: Request, res: Response) => {
   return res.json(responsePayload);
 });
 
-// GET /api/db/databases - List all database connections
-databaseRouter.get('/databases', async (_req: Request, res: Response) => {
+// GET /api/db/databases - List all database connections (filtered by team scoping for non-admins)
+databaseRouter.get('/databases', async (req: Request, res: Response) => {
   try {
-    const dbs = await repo.getDatabases();
-    return res.json(dbs);
+    const { role, teamId, userId } = req.query as { role?: string; teamId?: string; userId?: string };
+    const allDbs = await repo.getDatabases();
+
+    // If caller is Admin/Superadmin, return everything
+    if (role === 'admin' || role === 'superadmin') {
+      return res.json(allDbs);
+    }
+
+    // Identify user's team ID if provided or discovered via permanent team
+    let effectiveTeamId = teamId;
+    if (!effectiveTeamId && userId) {
+      const userPermTeam = await repo.getUserPermanentTeam(userId);
+      if (userPermTeam) effectiveTeamId = userPermTeam.id;
+    }
+
+    // Filter: Include all global databases, plus team-scoped databases ONLY if they match effectiveTeamId
+    const visibleDbs = allDbs.filter(db => {
+      const scope = db.scope || 'global';
+      if (scope === 'global') return true;
+      if (scope === 'team') {
+        return effectiveTeamId && db.teamId === effectiveTeamId;
+      }
+      return true;
+    });
+
+    return res.json(visibleDbs);
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/db/team-databases - List databases scoped specifically to a team
+databaseRouter.get('/team-databases', async (req: Request, res: Response) => {
+  try {
+    const teamId = req.query.teamId as string;
+    if (!teamId) {
+      return res.status(400).json({ error: 'teamId query parameter is required' });
+    }
+    const teamDbs = await repo.getTeamSpecificConnections(teamId);
+    return res.json(teamDbs);
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/db/team-databases - Configure a team-specific connection (isolated from overall users)
+databaseRouter.post('/team-databases', async (req: Request, res: Response) => {
+  try {
+    const { teamId, userId, name, type, host, port, connectionString, databaseName, username, password, description } = req.body;
+    if (!teamId) {
+      return res.status(400).json({ error: 'teamId is required for team-scoped databases' });
+    }
+    if (!name || !type || !host) {
+      return res.status(400).json({ error: 'Database name, type, and host are required' });
+    }
+
+    const team = await repo.getTeamById(teamId);
+    if (!team) return res.status(404).json({ error: 'Specified team not found' });
+
+    let connString = connectionString || '';
+    let targetPort = port;
+    if (connString && (!type || !host)) {
+      const parsed = parseConnectionString(connString);
+      if (!type) req.body.type = parsed.type;
+      if (!host) req.body.host = parsed.host;
+      if (!targetPort) targetPort = parsed.port;
+    }
+
+    const newDb: DatabaseConnection = {
+      id: `team-db-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`,
+      name,
+      type,
+      host,
+      port: targetPort || (type === 'MySQL' ? 3306 : type === 'Oracle' ? 1521 : type === 'MongoDB' ? 27017 : 5432),
+      connectionString: connString,
+      databaseName: databaseName || '',
+      username: username || '',
+      password: password || '',
+      status: 'online',
+      apiEndpoint: `https://api.paymentops.internal/team-db/${name.toLowerCase().replace(/\s+/g, '-')}`,
+      createdByAdmin: false,
+      requiresAccessApproval: false,
+      description: description || `Team-specific connection configured for ${team.name}`,
+      systemCategory: 'Custom_External',
+      environmentType: 'banking',
+      lastTestedAt: new Date().toISOString(),
+      lastTestStatus: 'success',
+      pingMs: 12,
+      scope: 'team',
+      teamId,
+      createdByUserId: userId || undefined,
+      promotionStatus: 'NONE'
+    };
+
+    const saved = await repo.createDatabase(newDb);
+    mirrorTableManager.provisionMirrorTablesForConnection(saved).catch(err => {
+      console.warn(`[DatabaseRoute] Error auto-provisioning mirrors for team DB ${saved.name}:`, err.message);
+    });
+
+    return res.status(201).json(saved);
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/db/team-databases/:id/request-promotion - Team manager requests promoting connection to system-wide
+databaseRouter.post('/team-databases/:id/request-promotion', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { requesterId, notes } = req.body;
+
+    const db = await repo.getDatabaseById(id);
+    if (!db) return res.status(404).json({ error: 'Database connection not found' });
+
+    if (db.scope !== 'team') {
+      return res.status(400).json({ error: 'Only team-scoped databases can be submitted for system-wide promotion.' });
+    }
+
+    const updated = await repo.updateDatabase(id, {
+      promotionStatus: 'PENDING_ADMIN_APPROVAL',
+      promotionRequestedAt: new Date().toISOString(),
+      promotionRequestedBy: requesterId || undefined,
+      promotionNotes: notes || undefined
+    });
+
+    return res.json(updated);
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/db/team-databases/:id/review-promotion - Workspace Admin reviews & accepts/approves promotion
+databaseRouter.post('/team-databases/:id/review-promotion', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { action, reviewerId, notes } = req.body; // action: 'APPROVE' | 'REJECT'
+
+    if (!['APPROVE', 'REJECT'].includes(action)) {
+      return res.status(400).json({ error: 'Action must be either APPROVE or REJECT' });
+    }
+
+    const db = await repo.getDatabaseById(id);
+    if (!db) return res.status(404).json({ error: 'Database connection not found' });
+
+    const now = new Date().toISOString();
+    let updates: Partial<DatabaseConnection> = {};
+
+    if (action === 'APPROVE') {
+      updates = {
+        scope: 'global',
+        promotionStatus: 'APPROVED',
+        promotionReviewedAt: now,
+        promotionReviewedBy: reviewerId || undefined,
+        promotionNotes: notes ? `${db.promotionNotes || ''}\n[Approved]: ${notes}`.trim() : db.promotionNotes
+      };
+    } else {
+      updates = {
+        promotionStatus: 'REJECTED',
+        promotionReviewedAt: now,
+        promotionReviewedBy: reviewerId || undefined,
+        promotionNotes: notes ? `${db.promotionNotes || ''}\n[Rejected]: ${notes}`.trim() : db.promotionNotes
+      };
+    }
+
+    const updated = await repo.updateDatabase(id, updates);
+    return res.json(updated);
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/db/admin/team-resources - Dedicated monitoring endpoint for Workspace Admins
+databaseRouter.get('/admin/team-resources', async (_req: Request, res: Response) => {
+  try {
+    const teamResources = await repo.getAdminTeamResources();
+    const teams = await repo.getTeams();
+    const teamMap = new Map<string, Team>(teams.map(t => [t.id, t]));
+
+    const enriched = teamResources.map(db => {
+      const team = db.teamId ? teamMap.get(db.teamId) : null;
+      return {
+        ...db,
+        teamName: team?.name || 'Unassigned / Global',
+        teamManagerName: team?.managerName || 'System Admin',
+        teamType: team?.teamType || 'permanent'
+      };
+    });
+
+    return res.json(enriched);
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
   }
@@ -2053,7 +2240,96 @@ databaseRouter.post('/query/execute', async (req: Request, res: Response) => {
     return res.status(404).json({ error: `No configured database connection found for ID: ${dbId || 'none'}` });
   }
 
-  const isUpdate = /^\s*(UPDATE|DELETE|INSERT|DROP|ALTER|CREATE|TRUNCATE)/i.test(query.trim());
+  // 1. Identify User's Permanent Team
+  let userPermTeam: Team | null = null;
+  if (userId) {
+    userPermTeam = await repo.getUserPermanentTeam(userId);
+  }
+
+  // 2. Access control: require membership in a permanent team (unless superadmin)
+  if (userRole !== 'admin') {
+    if (!userPermTeam) {
+      return res.status(403).json({
+        error: 'Access Denied: You must be an active member of an authorized permanent team to execute queries.'
+      });
+    }
+
+    // 2a. Team-Specific Resource Isolation: only members of the owning team can access team-scoped DBs
+    if (db.scope === 'team') {
+      if (db.teamId !== userPermTeam.id) {
+        return res.status(403).json({
+          error: `Access Denied: Team-specific database "${db.name}" is private to its designated team and cannot be accessed by other teams without administrator promotion.`
+        });
+      }
+    } else {
+      // 2b. Global Database Authorization for the Permanent Team
+      if (userPermTeam.allowedDbIds && userPermTeam.allowedDbIds.length > 0) {
+        if (!userPermTeam.allowedDbIds.includes(db.id)) {
+          return res.status(403).json({
+            error: `Access Denied: Your permanent team "${userPermTeam.name}" is not authorized to access database "${db.name}". Permitted databases: [${userPermTeam.allowedDbIds.join(', ')}]`
+          });
+        }
+      }
+    }
+  }
+
+  // 4. Parse SQL Query Type
+  const trimmedQuery = query.trim();
+  let detectedQueryType: AllowedQueryType = 'SELECT';
+  if (/^\s*UPDATE\b/i.test(trimmedQuery)) detectedQueryType = 'UPDATE';
+  else if (/^\s*INSERT\b/i.test(trimmedQuery)) detectedQueryType = 'INSERT';
+  else if (/^\s*DELETE\b/i.test(trimmedQuery)) detectedQueryType = 'DELETE';
+  else if (/^\s*ALTER\b/i.test(trimmedQuery)) detectedQueryType = 'ALTER';
+  else if (/^\s*CREATE\b/i.test(trimmedQuery)) detectedQueryType = 'CREATE';
+  else if (/^\s*DROP\b/i.test(trimmedQuery)) detectedQueryType = 'DROP';
+  else if (/^\s*TRUNCATE\b/i.test(trimmedQuery)) detectedQueryType = 'DELETE';
+  else if (/^\s*SELECT\b/i.test(trimmedQuery)) detectedQueryType = 'SELECT';
+
+  // 5. Enforce Allowed Query Types for Permanent Team (unless superadmin)
+  if (userRole !== 'admin' && userPermTeam) {
+    const allowedTypes: AllowedQueryType[] = (userPermTeam.allowedQueryTypes && userPermTeam.allowedQueryTypes.length > 0)
+      ? userPermTeam.allowedQueryTypes
+      : ['SELECT'];
+
+    if (!allowedTypes.includes(detectedQueryType)) {
+      return res.status(403).json({
+        error: `Query Execution Forbidden: Permanent team "${userPermTeam.name}" only permits query types: [${allowedTypes.join(', ')}]. Attempted operation: "${detectedQueryType}".`
+      });
+    }
+
+    // 6. Enforce Manager-to-Member Allocated Privileges (if user is not the Team Manager)
+    if (userPermTeam.managerId !== userId) {
+      const memberPriv = userPermTeam.memberPrivileges?.[userId];
+      if (memberPriv) {
+        // Check allocated databases
+        if (Array.isArray(memberPriv.allowedDbIds) && memberPriv.allowedDbIds.length > 0) {
+          if (!memberPriv.allowedDbIds.includes(db.id)) {
+            return res.status(403).json({
+              error: `Access Denied: Your Team Manager has not allocated access to database "${db.name}" for your account. Allocated databases: [${memberPriv.allowedDbIds.join(', ')}]`
+            });
+          }
+        }
+
+        // Check allocated query types
+        if (Array.isArray(memberPriv.allowedQueryTypes) && memberPriv.allowedQueryTypes.length > 0) {
+          if (!memberPriv.allowedQueryTypes.includes(detectedQueryType)) {
+            return res.status(403).json({
+              error: `Query Execution Forbidden: Your Team Manager has allocated query types: [${memberPriv.allowedQueryTypes.join(', ')}]. Attempted operation: "${detectedQueryType}".`
+            });
+          }
+        }
+      } else {
+        // Safe default: read-only SELECT if no specific allocation has been established yet
+        if (detectedQueryType !== 'SELECT') {
+          return res.status(403).json({
+            error: `Query Execution Forbidden: Team member accounts require explicit managerial privilege allocation for operations beyond SELECT. Attempted operation: "${detectedQueryType}".`
+          });
+        }
+      }
+    }
+  }
+
+  const isUpdate = detectedQueryType !== 'SELECT';
   const queryType = isUpdate ? 'UPDATE' : 'SELECT';
 
   try {

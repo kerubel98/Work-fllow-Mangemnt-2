@@ -638,64 +638,63 @@ export const ValidationBoxManager: React.FC<ValidationBoxManagerProps> = () => {
   return (
     <div className="space-y-6">
       {/* Header Banner */}
-      <div className="bg-slate-900 border border-slate-800 rounded-xl p-6 relative overflow-hidden shadow-xl">
-        <div className="absolute top-0 right-0 w-96 h-96 bg-blue-500/10 rounded-full blur-3xl pointer-events-none -mr-20 -mt-20"></div>
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 relative z-10">
-          <div>
-            <div className="flex items-center gap-3 mb-1">
-              <div className="p-2 bg-blue-600/20 text-blue-400 border border-blue-500/30 rounded-lg">
-                <Boxes className="w-6 h-6" />
-              </div>
-              <h2 className="text-xl font-bold text-white tracking-wide">Validation Boxes (Standalone Rule Blocks)</h2>
-              <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-blue-500/20 text-blue-300 border border-blue-500/30">
-                Modular Architecture
-              </span>
-            </div>
-            <p className="text-sm text-slate-400 max-w-2xl">
-              Create autonomous modular rules separating <strong>Search & External Ingestion</strong> (with auto-provisioned PostgreSQL mirror accounts) from <strong>Condition Checks</strong> (tolerances, code validations, thresholds).
-            </p>
+      <div className="bg-white border border-slate-200/90 rounded-2xl p-2.5 sm:p-3 text-slate-800 shadow-xs flex items-center justify-between gap-2 overflow-x-auto no-scrollbar" id="val-box-header">
+        <div className="flex items-center gap-2 shrink-0">
+          <div className="p-1.5 bg-blue-50 text-[#155DFC] rounded-lg border border-blue-200/60 shrink-0">
+            <Boxes className="w-4 h-4" />
           </div>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <h2 className="text-xs sm:text-sm font-bold text-slate-900 tracking-tight whitespace-nowrap">Validation Boxes</h2>
+            <span className="hidden xl:inline-flex px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-blue-50 text-blue-600 border border-blue-200/60 whitespace-nowrap">
+              Modular Architecture
+            </span>
+          </div>
+        </div>
 
-          <div className="flex flex-wrap items-center gap-2">
-            <button
-              onClick={() => handleOpenCreateModal('INGESTION_SEARCH')}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg font-medium text-xs transition-colors shadow-sm"
-            >
-              <Database className="w-3.5 h-3.5" />
-              + Search Box
-            </button>
-            <button
-              onClick={() => handleOpenCreateModal('RECONCILIATION')}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-cyan-600 hover:bg-cyan-500 text-white rounded-lg font-medium text-xs transition-colors shadow-sm"
-            >
-              <Layers className="w-3.5 h-3.5" />
-              + Reconciliation Box
-            </button>
-            <button
-              onClick={() => handleOpenCreateModal('CONDITION_CHECK')}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg font-medium text-xs transition-colors shadow-sm"
-            >
-              <CheckCircle2 className="w-3.5 h-3.5" />
-              + Condition Check
-            </button>
-            <button
-              onClick={() => handleOpenCreateModal('REPORT')}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-purple-600 hover:bg-purple-500 text-white rounded-lg font-medium text-xs transition-colors shadow-sm"
-            >
-              <Cpu className="w-3.5 h-3.5" />
-              + Report Box
-            </button>
-            {/* Danger: Clear all validation run history globally */}
-            <button
-              onClick={handleClearAllHistory}
-              disabled={isClearingAll}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-rose-700 hover:bg-rose-600 disabled:opacity-50 text-white rounded-lg font-medium text-xs transition-colors shadow-sm border border-rose-500/40"
-              title="Permanently clear all validation check history across all tasks (cannot be undone)"
-            >
-              <Trash2 className="w-3.5 h-3.5" />
-              {isClearingAll ? 'Clearing...' : 'Clear All History'}
-            </button>
-          </div>
+        <div className="flex items-center gap-1.5 shrink-0" id="val-box-actions-row">
+          <button
+            type="button"
+            onClick={() => handleOpenCreateModal('INGESTION_SEARCH')}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 rounded-lg font-semibold text-xs transition-colors border border-emerald-200/80 shadow-2xs shrink-0 whitespace-nowrap cursor-pointer"
+          >
+            <Database className="w-3.5 h-3.5" />
+            <span>+ Search Box</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => handleOpenCreateModal('RECONCILIATION')}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 bg-cyan-50 hover:bg-cyan-100 text-cyan-700 rounded-lg font-semibold text-xs transition-colors border border-cyan-200/80 shadow-2xs shrink-0 whitespace-nowrap cursor-pointer"
+          >
+            <Layers className="w-3.5 h-3.5" />
+            <span>+ Reconciliation Box</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => handleOpenCreateModal('CONDITION_CHECK')}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 bg-blue-50 hover:bg-blue-100 text-[#155DFC] rounded-lg font-semibold text-xs transition-colors border border-blue-200/80 shadow-2xs shrink-0 whitespace-nowrap cursor-pointer"
+          >
+            <CheckCircle2 className="w-3.5 h-3.5" />
+            <span>+ Condition Check</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => handleOpenCreateModal('REPORT')}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 bg-purple-50 hover:bg-purple-100 text-purple-700 rounded-lg font-semibold text-xs transition-colors border border-purple-200/80 shadow-2xs shrink-0 whitespace-nowrap cursor-pointer"
+          >
+            <Cpu className="w-3.5 h-3.5" />
+            <span>+ Report Box</span>
+          </button>
+          {/* Danger: Clear all validation run history globally */}
+          <button
+            type="button"
+            onClick={handleClearAllHistory}
+            disabled={isClearingAll}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 bg-rose-50 hover:bg-rose-100 disabled:opacity-50 text-rose-700 rounded-lg font-semibold text-xs transition-colors border border-rose-200/80 shrink-0 whitespace-nowrap cursor-pointer"
+            title="Permanently clear all validation check history across all tasks (cannot be undone)"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+            <span>{isClearingAll ? 'Clearing...' : 'Clear History'}</span>
+          </button>
         </div>
       </div>
 

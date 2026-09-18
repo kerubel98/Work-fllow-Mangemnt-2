@@ -22,6 +22,7 @@ import { workflowsRouter } from './routes/workflows.js';
 import { investigationsRouter } from './routes/investigations.js';
 import { validationBoxesRouter } from './routes/validationBoxes.js';
 import resolutionsRouter from './routes/resolutions.js';
+import { workspaceSettingsProposalsRouter } from './routes/workspaceSettingsProposals.js';
 import { mirrorTableManager } from './services/mirrorTableManager.js';
 import { ftpFileStagingService } from './services/ftpFileStagingService.js';
 // dotenv/config auto-loads
@@ -49,6 +50,7 @@ app.use('/api/workflows', workflowsRouter);
 app.use('/api/investigations', investigationsRouter);
 app.use('/api/validation-boxes', validationBoxesRouter);
 app.use('/api/resolutions', resolutionsRouter);
+app.use('/api/settings/proposals', workspaceSettingsProposalsRouter);
 app.use('/api', eventsRouter);
 app.use('/api', collaborationRouter);
 app.use('/api', miscRouter);

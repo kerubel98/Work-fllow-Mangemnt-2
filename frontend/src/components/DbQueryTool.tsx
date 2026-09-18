@@ -415,9 +415,9 @@ export default function DbQueryTool({
         </div>
       )}
 
-      {/* Connection Selector Tabs */}
-      <div className="flex flex-wrap items-center gap-1.5 bg-[#0F172B] p-1.5 rounded-xl border border-slate-800">
-        <span className="text-[10px] font-bold text-slate-400 uppercase font-mono mr-1">ACTIVE DATABASES:</span>
+      {/* Connection Selector Tabs (Clean White Shades) */}
+      <div className="flex flex-wrap items-center gap-1.5 bg-slate-50 p-1.5 rounded-xl border border-slate-200">
+        <span className="text-[10px] font-bold text-slate-500 uppercase font-mono mr-1">ACTIVE DATABASES:</span>
         {databases.map(db => {
           const isAllowed = isAdmin || userAllowedDbs.includes(db.id);
           return (
@@ -433,7 +433,7 @@ export default function DbQueryTool({
               className={`px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all flex items-center space-x-1.5 border cursor-pointer ${
                 selectedDb === db.id
                   ? 'bg-[#155DFC] text-white border-[#155DFC] shadow-xs font-bold'
-                  : 'bg-slate-800/80 text-slate-300 border-slate-700 hover:bg-slate-700 hover:text-white'
+                  : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-100 hover:text-slate-900 shadow-2xs'
               }`}
               id={`tab-db-${db.id}`}
             >
@@ -557,34 +557,57 @@ export default function DbQueryTool({
             </div>
           </div>
 
-          {/* Raw SQL Editor */}
-          <div className="border-t border-slate-200 pt-3 space-y-2">
+          {/* Raw SQL Editor (Modern High-Contrast Code Studio) */}
+          <div className="border-t border-slate-200 pt-3 space-y-2.5">
             <div className="flex justify-between items-center">
-              <span className="text-[10px] font-bold text-blue-700 uppercase tracking-wider font-mono">SQL Statement</span>
-              <span className={`text-[9px] px-1.5 py-0.2 rounded font-mono border ${
-                canUpdate ? 'bg-amber-50 text-amber-700 border-amber-200 font-bold' : 'bg-slate-100 text-slate-500 border-slate-200'
+              <span className="text-[10px] font-bold text-blue-700 uppercase tracking-wider font-mono flex items-center gap-1.5">
+                <FileCode size={13} className="text-[#155DFC]" />
+                <span>SQL Statement Studio</span>
+              </span>
+              <span className={`text-[9px] px-2 py-0.5 rounded font-mono font-bold border ${
+                canUpdate ? 'bg-amber-50 text-amber-700 border-amber-200' : 'bg-slate-100 text-slate-500 border-slate-200'
               }`}>
                 {canUpdate ? 'DML PERMITTED' : 'DML RESTRICTED'}
               </span>
             </div>
 
-            <textarea
-              rows={4}
-              value={customSql}
-              onChange={(e) => setCustomSql(e.target.value)}
-              placeholder="SELECT * FROM table_name LIMIT 25;"
-              className="w-full bg-slate-900 border border-slate-800 rounded-lg p-3 text-xs font-mono text-sky-300 focus:outline-none focus:border-blue-500 shadow-inner"
-              id="textarea-sandbox-sql"
-            />
+            <div className="bg-[#060A14] border-2 border-slate-800/90 rounded-xl overflow-hidden shadow-xl ring-1 ring-white/5">
+              <div className="bg-[#0A1020] px-3 py-1.5 border-b border-slate-800/90 flex items-center justify-between text-[11px] font-mono text-slate-400">
+                <span className="text-cyan-400 font-bold text-[10px]">query.sql</span>
+                <span className="text-slate-500 text-[9px]">Ctrl + Enter to run</span>
+              </div>
+              <div className="flex min-h-[140px]">
+                <div className="w-8 shrink-0 text-right pr-2 select-none text-slate-600 font-mono text-[11px] leading-relaxed border-r border-slate-800/90 bg-[#050811] pt-2.5">
+                  {Array.from({ length: Math.max(customSql.split('\n').length, 5) }, (_, i) => (
+                    <div key={i}>{i + 1}</div>
+                  ))}
+                </div>
+                <textarea
+                  rows={6}
+                  value={customSql}
+                  onChange={(e) => setCustomSql(e.target.value)}
+                  onKeyDown={(e) => {
+                    if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+                      e.preventDefault();
+                      handleExecuteRawSql();
+                    }
+                  }}
+                  placeholder="SELECT * FROM table_name LIMIT 25;"
+                  className="w-full bg-transparent p-2.5 text-xs font-mono text-[#4ADE80] focus:outline-none leading-relaxed placeholder:text-slate-600 caret-cyan-400 font-medium resize-y"
+                  id="textarea-sandbox-sql"
+                  spellCheck={false}
+                />
+              </div>
+            </div>
 
             <button
               type="button"
               onClick={() => handleExecuteRawSql()}
               disabled={isLoading || !customSql.trim()}
-              className="w-full bg-blue-600 hover:bg-blue-700 text-white font-mono py-2 px-3 rounded-lg text-xs transition-colors flex items-center justify-center space-x-1.5 cursor-pointer disabled:opacity-40 font-bold shadow-sm"
+              className="w-full bg-gradient-to-r from-blue-600 to-[#155DFC] hover:from-blue-500 hover:to-blue-600 text-white font-mono py-2.5 px-3 rounded-xl text-xs transition-all flex items-center justify-center space-x-1.5 cursor-pointer disabled:opacity-40 font-bold shadow-md hover:shadow-blue-500/20"
               id="btn-execute-sandbox-sql"
             >
-              {isLoading ? <Loader2 size={13} className="animate-spin" /> : <Play size={13} />}
+              {isLoading ? <Loader2 size={13} className="animate-spin" /> : <Play size={13} className="fill-current text-white" />}
               <span>{isLoading ? 'Executing & Mirroring...' : 'Execute SQL Statement'}</span>
             </button>
           </div>
@@ -604,23 +627,23 @@ export default function DbQueryTool({
         {/* Right Side: Log Feed & Dynamic Results Table */}
         <div className="lg:col-span-8 flex flex-col space-y-4">
           
-          {/* Query Live Console */}
-          <div className="bg-slate-900 border border-slate-800 rounded-xl p-3 font-mono text-[10px] text-slate-300 space-y-1.5 shadow-inner">
-            <div className="flex items-center space-x-1.5 text-blue-300 border-b border-slate-800 pb-1.5 mb-1.5">
-              <Terminal size={12} className="text-blue-400" />
+          {/* Query Live Console (Clean White Shades) */}
+          <div className="bg-slate-50 border border-slate-200 rounded-2xl p-3 font-mono text-[10px] text-slate-700 space-y-1.5 shadow-2xs">
+            <div className="flex items-center space-x-1.5 text-blue-700 border-b border-slate-200 pb-1.5 mb-1.5 font-bold">
+              <Terminal size={12} className="text-[#155DFC]" />
               <span>Query Execution & Mirror Pipeline Console ({currentDb?.name})</span>
             </div>
             {queryLog.length === 0 ? (
-              <span className="text-slate-500">Console idle. Select a table or execute an SQL statement to view pipeline telemetry...</span>
+              <span className="text-slate-400">Console idle. Select a table or execute an SQL statement to view pipeline telemetry...</span>
             ) : (
               queryLog.map((log, index) => (
                 <div
                   key={index}
                   className={
-                    log.includes('[ERROR]') ? 'text-rose-400' :
-                    log.includes('[MIRROR SYNC]') ? 'text-emerald-300 font-bold' :
-                    log.includes('[SUCCESS]') ? 'text-emerald-400' :
-                    'text-slate-300'
+                    log.includes('[ERROR]') ? 'text-rose-600 font-bold' :
+                    log.includes('[MIRROR SYNC]') ? 'text-emerald-700 font-bold' :
+                    log.includes('[SUCCESS]') ? 'text-emerald-700 font-semibold' :
+                    'text-slate-600'
                   }
                 >
                   {log}
@@ -678,7 +701,7 @@ export default function DbQueryTool({
                 </div>
               </div>
             ) : (
-              <div className="overflow-x-auto max-h-[500px] overflow-y-auto">
+              <div className="overflow-x-auto max-h-[640px] min-h-[350px] overflow-y-auto">
                 <table className="w-full text-left border-collapse text-xs">
                   <thead className="sticky top-0 bg-slate-100 z-10 border-b border-slate-200">
                     <tr className="text-[10px] font-mono text-slate-600 font-bold uppercase tracking-wider">

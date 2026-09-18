@@ -5,7 +5,7 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
 import * as XLSX from 'xlsx';
-import { Issue, HashtagPreset, ChatMessage, User, IssueStatus, IssuePriority, EnvironmentSystem, UserRole, QueryApprovalRequest, DatabaseConnection, Transaction, Team } from '../types';
+import { Issue, HashtagPreset, ChatMessage, User, IssueStatus, IssuePriority, EnvironmentSystem, UserRole, QueryApprovalRequest, DatabaseConnection, Transaction, Team, AllowedQueryType } from '../types';
 import GlobalTransactionSettings from './GlobalTransactionSettings';
 import WorkspaceSettings from './WorkspaceSettings';
 import ErrorBoundary from './ErrorBoundary';
@@ -38,6 +38,7 @@ interface IssueDetailViewProps {
   onSendChatMessage: (issueId: string, messageText: string) => void;
   onUpdateCurrentUser?: (user: User) => void;
   onChangeTab?: (tab: string) => void;
+  onWorkspaceSubViewChange?: (subView: 'sandbox' | 'investigation' | 'open_case') => void;
   initialSelectedIssueId?: string | null;
   activeMode?: 'my_tasks' | 'workspace' | 'hashtags' | 'create_task' | 'create_hashtag' | 'open_case' | 'txn_settings' | 'setting';
 }
@@ -60,6 +61,7 @@ export default function IssueDetailView({
   onSendChatMessage,
   onUpdateCurrentUser,
   onChangeTab,
+  onWorkspaceSubViewChange,
   initialSelectedIssueId,
   activeMode
 }: IssueDetailViewProps) {
@@ -69,6 +71,12 @@ export default function IssueDetailView({
   const [workspaceSubView, setWorkspaceSubView] = useState<'sandbox' | 'investigation' | 'open_case'>(
     activeMode === 'open_case' ? 'open_case' : (initialSelectedIssueId ? 'investigation' : 'sandbox')
   );
+
+  useEffect(() => {
+    if (onWorkspaceSubViewChange) {
+      onWorkspaceSubViewChange(workspaceSubView);
+    }
+  }, [workspaceSubView, onWorkspaceSubViewChange]);
 
   useEffect(() => {
     if (activeMode) {
@@ -110,9 +118,15 @@ export default function IssueDetailView({
   const [taskScopeFilter, setTaskScopeFilter] = useState<'ALL' | 'MINE' | 'TEAM' | 'PRIVATE' | 'ASSIGNED'>('ALL');
 
   // Resolve permanent team of current user
-  const userPermTeam = (teams || []).find(
-    t => t.teamType === 'permanent' && (t.managerId === currentUser.id || (t.memberIds && t.memberIds.includes(currentUser.id)))
-  );
+  const userPermTeam = useMemo(() => {
+    if (currentUser.permanentTeamId) {
+      const found = (teams || []).find(t => t.id === currentUser.permanentTeamId);
+      if (found) return found;
+    }
+    return (teams || []).find(
+      t => (t.teamType || 'working') === 'permanent' && (t.managerId === currentUser.id || (t.memberIds && t.memberIds.includes(currentUser.id)))
+    ) || null;
+  }, [currentUser, teams]);
   const effectivePermanentTeamId = (currentUser as any)?.permanentTeamId || userPermTeam?.id;
   const isMemberOfPermanentTeam = Boolean(effectivePermanentTeamId);
   const [shareWorkspaceWithTeam, setShareWorkspaceWithTeam] = useState<boolean>(
@@ -289,6 +303,31 @@ export default function IssueDetailView({
   const [sandboxShowLogs, setSandboxShowLogs] = useState<boolean>(false);
   const [sandboxCopiedSql, setSandboxCopiedSql] = useState<boolean>(false);
   const [sandboxSelectedTemplate, setSandboxSelectedTemplate] = useState<string>('select_all');
+  const [isSandboxEditorCollapsed, setIsSandboxEditorCollapsed] = useState<boolean>(false);
+
+  // Determine allowed databases based on permanent team policy
+  const availableDatabasesForUser = useMemo(() => {
+    if (currentUser.role === 'admin' || currentUser.role === 'superadmin' || !userPermTeam?.allowedDbIds || userPermTeam.allowedDbIds.length === 0) {
+      return databases;
+    }
+    const filtered = databases.filter(d => userPermTeam.allowedDbIds!.includes(d.id));
+    return filtered.length > 0 ? filtered : databases;
+  }, [databases, currentUser, userPermTeam]);
+
+  // Real-time SQL statement type detection & permission verification
+  const detectedSandboxQueryType = useMemo((): AllowedQueryType => {
+    const match = sandboxSql.match(/^\s*(SELECT|INSERT|UPDATE|DELETE|ALTER|CREATE|DROP)\b/i);
+    return match ? (match[1].toUpperCase() as AllowedQueryType) : 'SELECT';
+  }, [sandboxSql]);
+
+  const isCurrentQueryTypePermitted = useMemo(() => {
+    if (currentUser.role === 'admin' || currentUser.role === 'superadmin') return true;
+    if (!userPermTeam) return false;
+    const allowed = userPermTeam.allowedQueryTypes && userPermTeam.allowedQueryTypes.length > 0
+      ? userPermTeam.allowedQueryTypes
+      : ['SELECT' as AllowedQueryType];
+    return allowed.includes(detectedSandboxQueryType);
+  }, [currentUser, userPermTeam, detectedSandboxQueryType]);
 
   // Fetch available tables whenever selected database changes
   useEffect(() => {
@@ -413,6 +452,63 @@ export default function IssueDetailView({
       `[${timestamp}] Target Table: ${currentTable} • Query Type: ${queryType}`,
       `[${timestamp}] Statement: ${sqlToRun.replace(/\s+/g, ' ').slice(0, 120)}...`
     ];
+
+    // Governance Pre-Flight Checks: Permanent Team Policy Enforcement
+    if (currentUser.role !== 'admin' && currentUser.role !== 'superadmin') {
+      if (!userPermTeam) {
+        const errMsg = 'Access Denied: You must belong to a Permanent Team to execute queries in the Query Sandbox.';
+        setSandboxError(errMsg);
+        setIsSandboxExecuting(false);
+        setSandboxExecutionStats({
+          executionTimeMs: 0,
+          rowCount: 0,
+          isDml: isUpdate,
+          queryType,
+          timestamp: new Date().toISOString(),
+          status: 'ERROR',
+          errorMessage: errMsg
+        });
+        return;
+      }
+
+      if (userPermTeam.allowedDbIds && userPermTeam.allowedDbIds.length > 0 && !userPermTeam.allowedDbIds.includes(currentDbId)) {
+        const errMsg = `Access Denied: Your permanent team "${userPermTeam.name}" is not granted access to database "${currentDb.name}".`;
+        setSandboxError(errMsg);
+        setIsSandboxExecuting(false);
+        setSandboxExecutionStats({
+          executionTimeMs: 0,
+          rowCount: 0,
+          isDml: isUpdate,
+          queryType,
+          timestamp: new Date().toISOString(),
+          status: 'ERROR',
+          errorMessage: errMsg
+        });
+        return;
+      }
+
+      const matchType = sqlToRun.match(/^\s*(SELECT|INSERT|UPDATE|DELETE|ALTER|CREATE|DROP)\b/i);
+      const stmtType = matchType ? (matchType[1].toUpperCase() as AllowedQueryType) : 'SELECT';
+      const allowedTypes = userPermTeam.allowedQueryTypes && userPermTeam.allowedQueryTypes.length > 0
+        ? userPermTeam.allowedQueryTypes
+        : ['SELECT' as AllowedQueryType];
+
+      if (!allowedTypes.includes(stmtType)) {
+        const errMsg = `Access Denied: Query type '${stmtType}' is forbidden for your permanent team "${userPermTeam.name}". Allowed query types: [${allowedTypes.join(', ')}].`;
+        setSandboxError(errMsg);
+        setIsSandboxExecuting(false);
+        setSandboxExecutionStats({
+          executionTimeMs: 0,
+          rowCount: 0,
+          isDml: isUpdate,
+          queryType,
+          timestamp: new Date().toISOString(),
+          status: 'ERROR',
+          errorMessage: errMsg
+        });
+        return;
+      }
+    }
 
     try {
       const res = await api.executeQuery({
@@ -2635,47 +2731,177 @@ export default function IssueDetailView({
       )}
 
       {currentMode === 'workspace' && (
-        <div className="space-y-5">
-          {/* Simplified Workspace Header & Navigation Toolbar */}
-          <div className="bg-slate-900 border border-slate-800 rounded-xl px-4 py-2.5 text-white shadow-xs flex flex-wrap items-center justify-between gap-3">
-            {/* Left: Compact Title & Active Context */}
-            <div className="flex items-center gap-2.5">
-              <span className="p-1.5 bg-blue-500/15 rounded-lg text-blue-400 border border-blue-500/20">
+        <div className="space-y-3.5">
+          {/* Simplified Workspace Header & Navigation Toolbar (Uniform White Theme, Single Row) */}
+          <div className="bg-white border border-slate-200/90 rounded-2xl px-3 py-1.5 text-slate-800 shadow-xs flex items-center justify-between gap-2 overflow-x-auto no-scrollbar">
+            {/* Left: Compact Title & Active Context + DB & Table Selectors along the title */}
+            <div className="flex items-center gap-2 min-w-0">
+              <span className="p-1.5 bg-blue-50 rounded-xl text-[#155DFC] border border-blue-100 shrink-0">
                 {workspaceSubView === 'sandbox' ? (
-                  <Terminal size={16} />
+                  <Terminal size={15} />
                 ) : workspaceSubView === 'open_case' ? (
-                  <Plus size={16} />
+                  <Plus size={15} />
                 ) : (
-                  <DatabaseZap size={16} />
+                  <DatabaseZap size={15} />
                 )}
               </span>
-              <div className="flex items-center gap-2">
-                <h2 className="text-sm font-bold text-white tracking-tight">
-                  {workspaceSubView === 'sandbox'
-                    ? 'SQL Query Sandbox'
-                    : workspaceSubView === 'open_case'
-                    ? 'New Case Intake'
-                    : 'Investigation Workspace'}
-                </h2>
-                {selectedIssue && workspaceSubView === 'investigation' && (
-                  <span className="px-2 py-0.5 rounded bg-blue-500/20 text-blue-300 font-mono text-[11px] font-semibold border border-blue-500/30">
-                    Case #{selectedIssue.id}
-                  </span>
-                )}
-              </div>
+              {workspaceSubView !== 'sandbox' && (
+                <div className="flex items-center gap-2 shrink-0">
+                  <h2 className="text-sm font-bold text-slate-900 tracking-tight">
+                    {workspaceSubView === 'open_case'
+                      ? 'New Case Intake'
+                      : 'Investigation Workspace'}
+                  </h2>
+                  {selectedIssue && workspaceSubView === 'investigation' && (
+                    <span className="px-2 py-0.5 rounded-lg bg-blue-50 text-blue-700 font-mono text-[11px] font-semibold border border-blue-200">
+                      Case #{selectedIssue.id}
+                    </span>
+                  )}
+                </div>
+              )}
+
+              {/* DB/BO and Table Selectors (when in SQL Sandbox - Compact Single Row Widths) */}
+              {workspaceSubView === 'sandbox' && (
+                <div className="flex items-center gap-1.5 min-w-0" id="sandbox-header-selectors">
+                  {/* Target Database / BO Selector */}
+                  <div className="flex items-center gap-1 bg-slate-50 hover:bg-white px-2 py-1 rounded-xl border border-slate-200 shadow-2xs transition-colors shrink-0" title="Target Back Office / Database Connection">
+                    <Database size={12} className="text-[#155DFC] shrink-0" />
+                    <span className="text-[10px] font-bold text-[#155DFC] font-mono uppercase tracking-wider shrink-0">BO:</span>
+                    <select
+                      value={sandboxSelectedDbId}
+                      onChange={(e) => {
+                        setSandboxSelectedDbId(e.target.value);
+                        executeSandboxQuery(undefined, undefined, e.target.value);
+                      }}
+                      className="bg-transparent text-slate-800 font-semibold text-xs focus:outline-none cursor-pointer max-w-[110px] sm:max-w-[130px] md:max-w-[150px] truncate"
+                      id="header-select-sandbox-db"
+                    >
+                      {availableDatabasesForUser && availableDatabasesForUser.length > 0 ? (
+                        availableDatabasesForUser.map(db => (
+                          <option key={db.id} value={db.id} className="bg-white text-slate-800">
+                            {db.name} ({db.type})
+                          </option>
+                        ))
+                      ) : (
+                        <option value="" className="bg-white text-slate-400">No DB</option>
+                      )}
+                    </select>
+                  </div>
+
+                  {/* Target Environment Toggle (Prod / UAT) */}
+                  <div className="flex items-center bg-slate-100 p-0.5 rounded-xl border border-slate-200 text-[10px] font-semibold shadow-2xs shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSandboxEnv('production');
+                        executeSandboxQuery(undefined, undefined, undefined, 'production');
+                      }}
+                      className={`px-1.5 py-0.5 rounded-lg transition cursor-pointer text-[10px] ${
+                        sandboxEnv === 'production'
+                          ? 'bg-white text-slate-900 shadow-xs font-bold border border-slate-200/60'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      Prod
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSandboxEnv('testing');
+                        executeSandboxQuery(undefined, undefined, undefined, 'testing');
+                      }}
+                      className={`px-1.5 py-0.5 rounded-lg transition cursor-pointer text-[10px] ${
+                        sandboxEnv === 'testing'
+                          ? 'bg-[#155DFC] text-white shadow-xs font-bold'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      UAT
+                    </button>
+                  </div>
+
+                  {/* Table View Selector */}
+                  <div className="flex items-center gap-1 bg-slate-50 hover:bg-white px-2 py-1 rounded-xl border border-slate-200 shadow-2xs transition-colors shrink-0" title="Target Table">
+                    <Table size={12} className="text-slate-500 shrink-0" />
+                    <span className="text-[10px] font-bold text-slate-500 font-mono uppercase tracking-wider shrink-0">Table:</span>
+                    <select
+                      value={sandboxTable}
+                      onChange={(e) => {
+                        setSandboxTable(e.target.value);
+                        executeSandboxQuery(undefined, e.target.value);
+                      }}
+                      className="bg-transparent font-mono text-xs text-slate-800 font-medium focus:outline-none cursor-pointer max-w-[95px] sm:max-w-[115px] md:max-w-[130px] truncate"
+                      id="header-select-sandbox-table"
+                    >
+                      {sandboxAvailableTables.length === 0 ? (
+                        <option value="" className="bg-white text-slate-400">No tables</option>
+                      ) : (
+                        sandboxAvailableTables.map(t => (
+                          <option key={t} value={t} className="bg-white text-slate-800">
+                            {t}
+                          </option>
+                        ))
+                      )}
+                    </select>
+                  </div>
+
+                  {/* Query Preset Templates */}
+                  <div className="hidden md:flex items-center gap-1 bg-blue-50/80 hover:bg-blue-50 px-2 py-1 rounded-xl border border-blue-200 shadow-2xs transition-colors shrink-0" title="SQL Template Presets">
+                    <Sparkles size={12} className="text-[#155DFC] shrink-0" />
+                    <span className="text-[10px] font-bold text-blue-700 font-mono uppercase tracking-wider shrink-0">Preset:</span>
+                    <select
+                      value={sandboxSelectedTemplate}
+                      onChange={(e) => handleSelectSandboxTemplate(e.target.value)}
+                      className="bg-transparent text-blue-900 font-semibold text-xs focus:outline-none cursor-pointer max-w-[85px] sm:max-w-[105px] truncate"
+                      id="header-select-sandbox-template"
+                    >
+                      {sandboxTemplates.map(t => (
+                        <option key={t.id} value={t.id} className="bg-white text-slate-800">
+                          {t.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {/* Permanent Team Policy Chip */}
+                  {userPermTeam ? (
+                    <div 
+                      id="sandbox-perm-team-policy-chip" 
+                      className="hidden xl:flex items-center gap-1.5 px-2 py-1 rounded-xl bg-purple-50/90 border border-purple-200 text-purple-900 text-[10px] font-mono shrink-0 shadow-2xs"
+                      title={`Governing Permanent Team: ${userPermTeam.name} • Permitted Query Types: ${(userPermTeam.allowedQueryTypes || ['SELECT']).join(', ')}`}
+                    >
+                      <ShieldCheck size={12} className="text-purple-600 shrink-0" />
+                      <span className="font-bold text-purple-950 truncate max-w-[110px]">{userPermTeam.name}</span>
+                      <span className="text-purple-400 font-bold">•</span>
+                      <span className="font-semibold text-purple-800 tracking-wider">
+                        {(userPermTeam.allowedQueryTypes || ['SELECT']).join(', ')}
+                      </span>
+                    </div>
+                  ) : (
+                    <div 
+                      id="sandbox-no-perm-team-chip" 
+                      className="hidden xl:flex items-center gap-1 px-2 py-1 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-[10px] font-mono shrink-0 shadow-2xs"
+                      title="No Permanent Team assigned to user. Safe read-only policy active."
+                    >
+                      <AlertCircle size={12} className="text-amber-600 shrink-0" />
+                      <span className="font-semibold">No Perm Team</span>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
             {/* Right: Modern Segmented Navigation Buttons */}
-            <div className="flex items-center gap-1 bg-slate-950/80 p-1 rounded-lg border border-slate-800/80">
+            <div className="flex items-center gap-1 bg-slate-100 p-0.5 sm:p-1 rounded-xl border border-slate-200 shrink-0">
               {/* Query Sandbox Button */}
               <button
                 type="button"
                 id="btn-workspace-sandbox-nav"
                 onClick={() => setWorkspaceSubView('sandbox')}
-                className={`px-3 py-1 text-xs font-semibold rounded-md flex items-center gap-1.5 transition-all cursor-pointer ${
+                className={`px-2.5 py-1 text-xs font-semibold rounded-lg flex items-center gap-1 transition-all cursor-pointer ${
                   workspaceSubView === 'sandbox'
-                    ? 'bg-blue-600 text-white shadow-xs'
-                    : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
+                    ? 'bg-[#155DFC] text-white shadow-xs font-bold'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-white'
                 }`}
                 title="SQL Query Sandbox"
               >
@@ -2688,10 +2914,10 @@ export default function IssueDetailView({
                 type="button"
                 id="btn-workspace-investigation-nav"
                 onClick={() => setWorkspaceSubView('investigation')}
-                className={`px-3 py-1 text-xs font-semibold rounded-md flex items-center gap-1.5 transition-all cursor-pointer ${
+                className={`px-2.5 py-1 text-xs font-semibold rounded-lg flex items-center gap-1 transition-all cursor-pointer ${
                   workspaceSubView === 'investigation'
-                    ? 'bg-blue-600 text-white shadow-xs'
-                    : 'text-slate-400 hover:text-white hover:bg-slate-800/60'
+                    ? 'bg-[#155DFC] text-white shadow-xs font-bold'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-white'
                 }`}
                 title="Investigation Workspace"
               >
@@ -2704,10 +2930,10 @@ export default function IssueDetailView({
                 type="button"
                 id="btn-workspace-open-case-nav"
                 onClick={() => setWorkspaceSubView(workspaceSubView === 'open_case' ? 'sandbox' : 'open_case')}
-                className={`px-3 py-1 text-xs font-semibold rounded-md flex items-center gap-1.5 transition-all cursor-pointer ${
+                className={`px-2.5 py-1 text-xs font-semibold rounded-lg flex items-center gap-1 transition-all cursor-pointer ${
                   workspaceSubView === 'open_case'
-                    ? 'bg-emerald-600 text-white shadow-xs'
-                    : 'text-emerald-400 hover:text-emerald-300 hover:bg-emerald-950/40'
+                    ? 'bg-emerald-600 text-white shadow-xs font-bold'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-white'
                 }`}
                 title={workspaceSubView === 'open_case' ? 'Back to Sandbox' : 'Open New Case'}
               >
@@ -3054,160 +3280,54 @@ export default function IssueDetailView({
             </div>
           ) : workspaceSubView === 'sandbox' ? (
             /* =========================================================================
-               DEFAULT WORKSPACE SUBVIEW: MODERN MINIMALIST SQL QUERY SANDBOX
+               DEFAULT WORKSPACE SUBVIEW: MODERN HIGH-CONTRAST SQL CODE STUDIO
                ========================================================================= */
-            <div className="space-y-4 animate-fadeIn" id="workspace-sql-sandbox">
+            <div className="space-y-3.5 animate-fadeIn" id="workspace-sql-sandbox">
               
-              {/* 1. TOP CONTROL BAR (SLEEK SINGLE-LINE UNIFIED TOOLBAR) */}
-              <div className="bg-slate-900 border border-slate-800 rounded-xl px-4 py-2.5 text-white shadow-xs flex flex-wrap items-center justify-between gap-3 text-xs">
-                {/* Left Controls: DB Selector, Environment, Table View & Query Presets */}
-                <div className="flex flex-wrap items-center gap-2">
-                  {/* Target Database */}
-                  <div className="flex items-center gap-1.5 bg-slate-950/80 px-2 py-1 rounded-lg border border-slate-800">
-                    <Database size={13} className="text-blue-400" />
-                    <select
-                      value={sandboxSelectedDbId}
-                      onChange={(e) => {
-                        setSandboxSelectedDbId(e.target.value);
-                        executeSandboxQuery(undefined, undefined, e.target.value);
-                      }}
-                      className="bg-transparent text-slate-200 font-semibold text-xs focus:outline-none cursor-pointer"
-                    >
-                      {databases && databases.length > 0 ? (
-                        databases.map(db => (
-                          <option key={db.id} value={db.id} className="bg-slate-900 text-white">
-                            {db.name} ({db.type})
-                          </option>
-                        ))
-                      ) : (
-                        <option value="" className="bg-slate-900 text-slate-400">No databases configured</option>
-                      )}
-                    </select>
+              {/* 1. MODERN HIGH-CONTRAST SQL CODE STUDIO (GENEROUS EXPANDED SPACE & HIGH-CONTRAST CANVAS) */}
+              <div className="bg-[#060A14] border-2 border-slate-800/90 rounded-2xl overflow-hidden shadow-2xl ring-1 ring-white/5 text-slate-100">
+                {/* Editor Header Toolbar */}
+                <div className="bg-[#0A1020] px-4 py-2.5 border-b border-slate-800/90 flex flex-wrap items-center justify-between gap-2 text-xs">
+                  <div className="flex items-center gap-2 font-mono text-[11px] text-slate-400">
+                    <FileCode size={14} className="text-cyan-400" />
+                    <span className="font-bold text-white tracking-wide">SQL Query Sandbox</span>
+                    <span className="text-slate-500 font-mono text-[10px]">query.sql</span>
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" title="Engine Online" />
+                    <span className="text-slate-600">•</span>
+                    <span className="font-semibold text-cyan-300 uppercase text-[10px] bg-cyan-950/80 border border-cyan-700/60 px-2 py-0.5 rounded-md shadow-2xs">
+                      {databases?.find(d => d.id === sandboxSelectedDbId)?.type?.toUpperCase() || 'POSTGRESQL'}
+                    </span>
+                    <span className="text-slate-600 hidden sm:inline">•</span>
+                    <span className="text-slate-300 font-mono text-[10px] hidden sm:inline">
+                      Target Table: <strong className="text-cyan-300 font-bold">{sandboxTable}</strong>
+                    </span>
                   </div>
 
-                  {/* Target Environment Toggle */}
-                  <div className="flex items-center bg-slate-950/80 p-0.5 rounded-lg border border-slate-800 text-[11px] font-semibold">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setSandboxEnv('production');
-                        executeSandboxQuery(undefined, undefined, undefined, 'production');
-                      }}
-                      className={`px-2.5 py-1 rounded-md transition cursor-pointer ${
-                        sandboxEnv === 'production'
-                          ? 'bg-slate-800 text-white shadow-2xs font-bold'
-                          : 'text-slate-400 hover:text-slate-200'
-                      }`}
-                    >
-                      Prod
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setSandboxEnv('testing');
-                        executeSandboxQuery(undefined, undefined, undefined, 'testing');
-                      }}
-                      className={`px-2.5 py-1 rounded-md transition cursor-pointer ${
-                        sandboxEnv === 'testing'
-                          ? 'bg-blue-600 text-white shadow-2xs font-bold'
-                          : 'text-slate-400 hover:text-slate-200'
-                      }`}
-                    >
-                      UAT
-                    </button>
-                  </div>
-
-                  {/* Table View Selector */}
-                  <div className="flex items-center gap-1.5 bg-slate-950/80 px-2 py-1 rounded-lg border border-slate-800">
-                    <Table size={13} className="text-slate-400" />
-                      <select
-                        value={sandboxTable}
-                        onChange={(e) => {
-                          setSandboxTable(e.target.value);
-                          executeSandboxQuery(undefined, e.target.value);
-                        }}
-                        className="bg-transparent font-mono text-xs text-slate-300 focus:outline-none cursor-pointer"
-                      >
-                        {sandboxAvailableTables.length === 0 ? (
-                          <option value="" className="bg-slate-900 text-slate-400">No tables discovered</option>
-                        ) : (
-                          sandboxAvailableTables.map(t => (
-                            <option key={t} value={t} className="bg-slate-900 text-white">
-                              {t}
-                            </option>
-                          ))
-                        )}
-                      </select>
+                  {/* SQL Snippets & Editor Utilities */}
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    {/* Modern High-Contrast SQL Snippet Chips */}
+                    <div className="hidden md:flex items-center gap-1 mr-2">
+                      {[
+                        { label: 'SELECT', val: `SELECT * FROM ${sandboxTable} LIMIT 25;`, cls: 'border-cyan-400/50 bg-cyan-950/70 text-cyan-300 hover:bg-cyan-900/60 shadow-xs' },
+                        { label: 'WHERE', val: sandboxAvailableColumns.length > 0 ? `\nWHERE ${sandboxAvailableColumns[0].name} IS NOT NULL` : "\nWHERE 1=1", cls: 'border-emerald-400/50 bg-emerald-950/70 text-emerald-300 hover:bg-emerald-900/60 shadow-xs' },
+                        { label: 'ORDER BY', val: sandboxAvailableColumns.length > 1 ? `\nORDER BY ${sandboxAvailableColumns[1].name} DESC` : '\nORDER BY 1 DESC', cls: 'border-amber-400/50 bg-amber-950/70 text-amber-300 hover:bg-amber-900/60 shadow-xs' },
+                        { label: 'LIMIT 50', val: ' LIMIT 50', cls: 'border-purple-400/50 bg-purple-950/70 text-purple-300 hover:bg-purple-900/60 shadow-xs' }
+                      ].map((snip, sIdx) => (
+                        <button
+                          key={sIdx}
+                          type="button"
+                          onClick={() => setSandboxSql(prev => prev ? `${prev} ${snip.val}` : snip.val)}
+                          className={`px-2.5 py-0.5 text-[10px] font-mono font-bold rounded-lg border transition cursor-pointer ${snip.cls}`}
+                        >
+                          {snip.label}
+                        </button>
+                      ))}
                     </div>
-
-                    {/* Query Preset Templates */}
-                    <div className="flex items-center gap-1.5 bg-blue-950/60 px-2 py-1 rounded-lg border border-blue-800/60">
-                      <Sparkles size={12} className="text-blue-400" />
-                      <select
-                        value={sandboxSelectedTemplate}
-                        onChange={(e) => handleSelectSandboxTemplate(e.target.value)}
-                        className="bg-transparent text-blue-200 font-medium text-xs focus:outline-none cursor-pointer"
-                      >
-                        {sandboxTemplates.map(t => (
-                          <option key={t.id} value={t.id} className="bg-slate-900 text-white">
-                            {t.name}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
-                  </div>
-
-                  {/* Right: Quick Switch to Investigation */}
-                  {selectedIssue && (
-                    <button
-                      type="button"
-                      onClick={() => setWorkspaceSubView('investigation')}
-                      className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer border border-slate-700"
-                      title="Switch to Case Investigation Window"
-                    >
-                      <DatabaseZap size={13} className="text-blue-400" />
-                      <span>Case #{selectedIssue.id}</span>
-                      <ArrowRight size={11} className="text-slate-400" />
-                    </button>
-                  )}
-                </div>
-
-                {/* 2. MODERN MINIMALIST SQL CODE EDITOR */}
-                <div className="bg-[#0d1117] border border-slate-800 rounded-xl overflow-hidden shadow-xs text-slate-100">
-                  {/* Editor Header Toolbar */}
-                  <div className="bg-slate-950/90 px-4 py-2 border-b border-slate-800 flex flex-wrap items-center justify-between gap-2 text-xs">
-                    <div className="flex items-center gap-2 font-mono text-[11px] text-slate-400">
-                      <FileCode size={13} className="text-blue-400" />
-                      <span className="font-semibold text-slate-300">query.sql</span>
-                      <span className="text-slate-600">•</span>
-                      <span>{databases?.find(d => d.id === sandboxSelectedDbId)?.type?.toUpperCase() || 'POSTGRESQL'}</span>
-                    </div>
-
-                    {/* SQL Snippets & Editor Utilities */}
-                    <div className="flex items-center gap-1.5 flex-wrap">
-                      {/* Snippet Chips */}
-                      <div className="hidden sm:flex items-center gap-1 mr-2">
-                        {[
-                          { label: 'SELECT', val: `SELECT * FROM ${sandboxTable} LIMIT 25;` },
-                          { label: 'WHERE', val: sandboxAvailableColumns.length > 0 ? `\nWHERE ${sandboxAvailableColumns[0].name} IS NOT NULL` : "\nWHERE 1=1" },
-                          { label: 'ORDER BY', val: sandboxAvailableColumns.length > 1 ? `\nORDER BY ${sandboxAvailableColumns[1].name} DESC` : '\nORDER BY 1 DESC' },
-                          { label: 'LIMIT 50', val: ' LIMIT 50' }
-                        ].map((snip, sIdx) => (
-                          <button
-                            key={sIdx}
-                            type="button"
-                            onClick={() => setSandboxSql(prev => prev ? `${prev} ${snip.val}` : snip.val)}
-                            className="px-1.5 py-0.5 bg-slate-800 hover:bg-slate-700 text-slate-300 text-[10px] font-mono rounded border border-slate-700 transition cursor-pointer"
-                          >
-                            {snip.label}
-                          </button>
-                        ))}
-                      </div>
 
                     <button
                       type="button"
                       onClick={handleFormatSandboxSql}
-                      className="px-2 py-1 bg-slate-800/80 hover:bg-slate-700 text-slate-300 hover:text-white rounded text-[11px] font-medium transition flex items-center gap-1 cursor-pointer border border-slate-700"
+                      className="px-2.5 py-1 bg-slate-800/90 hover:bg-slate-700 text-purple-300 hover:text-white rounded-lg text-[11px] font-semibold transition flex items-center gap-1 cursor-pointer border border-purple-500/30 shadow-2xs"
                       title="Format SQL"
                     >
                       <Wand2 size={12} className="text-purple-400" />
@@ -3220,7 +3340,7 @@ export default function IssueDetailView({
                         setSandboxCopiedSql(true);
                         setTimeout(() => setSandboxCopiedSql(false), 2000);
                       }}
-                      className="px-2 py-1 bg-slate-800/80 hover:bg-slate-700 text-slate-300 hover:text-white rounded text-[11px] font-medium transition flex items-center gap-1 cursor-pointer border border-slate-700"
+                      className="px-2.5 py-1 bg-slate-800/90 hover:bg-slate-700 text-slate-300 hover:text-white rounded-lg text-[11px] font-semibold transition flex items-center gap-1 cursor-pointer border border-slate-700 shadow-2xs"
                       title="Copy SQL"
                     >
                       {sandboxCopiedSql ? <Check size={12} className="text-emerald-400" /> : <Clipboard size={12} />}
@@ -3229,88 +3349,149 @@ export default function IssueDetailView({
                     <button
                       type="button"
                       onClick={() => setSandboxSql('')}
-                      className="px-2 py-1 bg-slate-800/80 hover:bg-slate-700 text-rose-400 hover:text-rose-300 rounded text-[11px] font-medium transition flex items-center gap-1 cursor-pointer border border-slate-700"
+                      className="px-2.5 py-1 bg-slate-800/90 hover:bg-rose-950/90 text-rose-400 hover:text-rose-200 rounded-lg text-[11px] font-semibold transition flex items-center gap-1 cursor-pointer border border-rose-900/40 shadow-2xs"
                       title="Clear Editor"
                     >
                       <Eraser size={12} />
                       <span>Clear</span>
                     </button>
+
+                    {/* Toggle Editor Collapse to give maximum space for results */}
+                    <button
+                      type="button"
+                      onClick={() => setIsSandboxEditorCollapsed(prev => !prev)}
+                      className="px-2.5 py-1 bg-slate-800/90 hover:bg-slate-700 text-slate-300 hover:text-white rounded-lg text-[11px] font-semibold transition flex items-center gap-1 cursor-pointer border border-slate-700 shadow-2xs ml-1"
+                      title={isSandboxEditorCollapsed ? "Expand SQL Editor" : "Collapse SQL Editor (Max Space for Results)"}
+                      id="btn-toggle-sandbox-editor"
+                    >
+                      {isSandboxEditorCollapsed ? <ChevronDown size={13} /> : <ChevronUp size={13} />}
+                      <span>{isSandboxEditorCollapsed ? 'Expand Editor' : 'Collapse Editor'}</span>
+                    </button>
                   </div>
                 </div>
 
-                {/* Textarea Editor */}
-                <div className="p-3">
-                  <textarea
-                    rows={5}
-                    value={sandboxSql}
-                    onChange={(e) => setSandboxSql(e.target.value)}
-                    onKeyDown={(e) => {
-                      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
-                        e.preventDefault();
-                        executeSandboxQuery();
-                      }
-                    }}
-                    placeholder="Enter SQL script (e.g. SELECT * FROM transactions_master WHERE status_state = 'PENDING')..."
-                    className="w-full bg-transparent text-emerald-400 font-mono text-xs md:text-sm focus:outline-none leading-relaxed resize-y"
-                    spellCheck={false}
-                  />
-                </div>
+                {/* Collapsible Textarea Editor & Action Bar */}
+                {!isSandboxEditorCollapsed ? (
+                  <>
+                    <div className="flex bg-[#030610] min-h-[240px]">
+                      {/* Visual Line Numbers Gutter with High-Contrast Separator */}
+                      <div className="w-11 shrink-0 text-right pr-3 select-none text-slate-500 font-mono text-xs leading-relaxed border-r border-slate-800/90 bg-[#050811] pt-3.5 pb-3.5">
+                        {Array.from({ length: Math.max(sandboxSql.split('\n').length, 10) }, (_, i) => (
+                          <div key={i} className="hover:text-cyan-400 transition-colors">{i + 1}</div>
+                        ))}
+                      </div>
 
-                {/* Editor Bottom Run Actions */}
-                <div className="bg-slate-950/80 px-4 py-2 border-t border-slate-800 flex items-center justify-between">
-                  <span className="text-[11px] font-mono text-slate-500">
-                    Press <kbd className="px-1 py-0.5 bg-slate-800 border border-slate-700 rounded text-slate-400 text-[10px]">Ctrl</kbd> + <kbd className="px-1 py-0.5 bg-slate-800 border border-slate-700 rounded text-slate-400 text-[10px]">Enter</kbd> to execute
-                  </span>
+                      {/* Code Textarea Canvas with High Contrast Syntax Colors */}
+                      <textarea
+                        rows={10}
+                        value={sandboxSql}
+                        onChange={(e) => setSandboxSql(e.target.value)}
+                        onKeyDown={(e) => {
+                          if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+                            e.preventDefault();
+                            executeSandboxQuery();
+                          }
+                        }}
+                        placeholder="Enter SQL script (e.g. SELECT * FROM transactions_master WHERE status_state = 'PENDING')..."
+                        className="w-full bg-transparent text-[#4ADE80] font-mono text-xs md:text-sm focus:outline-none leading-relaxed p-3.5 resize-y placeholder:text-slate-600 selection:bg-[#155DFC]/60 selection:text-white caret-cyan-400 font-medium"
+                        spellCheck={false}
+                      />
+                    </div>
 
-                  <button
-                    type="button"
-                    id="btn-run-sandbox-sql"
-                    disabled={isSandboxExecuting || !sandboxSql.trim()}
-                    onClick={() => executeSandboxQuery()}
-                    className="px-4 py-1.5 bg-blue-600 hover:bg-blue-500 disabled:bg-slate-800 disabled:text-slate-600 text-white text-xs font-bold rounded-lg transition-all shadow-xs flex items-center gap-1.5 cursor-pointer"
-                  >
-                    {isSandboxExecuting ? (
-                      <>
-                        <RefreshCw size={12} className="animate-spin" />
-                        <span>Running...</span>
-                      </>
-                    ) : (
-                      <>
-                        <Play size={12} className="fill-current text-white" />
-                        <span>Run SQL</span>
-                      </>
-                    )}
-                  </button>
-                </div>
+                    {/* Editor Bottom Run Actions & Metrics */}
+                    <div className="bg-[#0A1020] px-4 py-2.5 border-t border-slate-800/90 flex flex-wrap items-center justify-between gap-2 text-xs">
+                      <div className="flex items-center gap-3 text-[11px] font-mono text-slate-400">
+                        <span>Lines: <strong className="text-white">{sandboxSql.split('\n').length}</strong></span>
+                        <span className="text-slate-700">•</span>
+                        <span>Chars: <strong className="text-white">{sandboxSql.length}</strong></span>
+                        <span className="text-slate-700 hidden sm:inline">•</span>
+                        <span className="hidden sm:inline">
+                          Shortcut: <kbd className="px-1.5 py-0.5 bg-slate-800 border border-slate-700 rounded text-cyan-300 text-[10px] shadow-2xs font-mono font-bold">Ctrl</kbd> + <kbd className="px-1.5 py-0.5 bg-slate-800 border border-slate-700 rounded text-cyan-300 text-[10px] shadow-2xs font-mono font-bold">Enter</kbd>
+                        </span>
+                      </div>
+
+                      <div className="flex items-center gap-3">
+                        {!isCurrentQueryTypePermitted && (
+                          <div id="sandbox-query-forbidden-banner" className="flex items-center gap-1.5 px-2.5 py-1 bg-rose-950/80 border border-rose-800/80 rounded-lg text-rose-300 font-mono text-[11px] font-semibold shadow-xs">
+                            <AlertCircle size={13} className="text-rose-400 shrink-0" />
+                            <span>
+                              {userPermTeam
+                                ? `Forbidden: '${detectedSandboxQueryType}' queries not allowed for permanent team "${userPermTeam.name}". Allowed: [${(userPermTeam.allowedQueryTypes || ['SELECT']).join(', ')}]`
+                                : `Forbidden: You must belong to a permanent team to execute sandbox queries.`}
+                            </span>
+                          </div>
+                        )}
+
+                        <button
+                          type="button"
+                          id="btn-run-sandbox-sql"
+                          disabled={isSandboxExecuting || !sandboxSql.trim() || !isCurrentQueryTypePermitted}
+                          onClick={() => executeSandboxQuery()}
+                          className="px-6 py-2 bg-gradient-to-r from-blue-600 via-[#155DFC] to-indigo-600 hover:from-blue-500 hover:to-indigo-500 disabled:from-slate-800 disabled:to-slate-800 disabled:text-slate-600 text-white text-xs font-mono font-bold rounded-xl transition-all shadow-lg hover:shadow-blue-500/25 flex items-center gap-2 cursor-pointer"
+                          title={!isCurrentQueryTypePermitted ? `Operation '${detectedSandboxQueryType}' forbidden by permanent team policy` : 'Execute SQL Query'}
+                        >
+                          {isSandboxExecuting ? (
+                            <>
+                              <RefreshCw size={13} className="animate-spin" />
+                              <span>Running Query...</span>
+                            </>
+                          ) : (
+                            <>
+                              <Play size={13} className="fill-current text-white" />
+                              <span>Run SQL</span>
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  /* Compact 1-line bar when editor is collapsed for maximum results space */
+                  <div className="px-4 py-2.5 bg-[#0A1020] flex items-center justify-between text-xs border-t border-slate-800/90">
+                    <div className="flex items-center gap-2 truncate max-w-xl text-slate-300 font-mono text-[11px]">
+                      <span className="text-cyan-400 font-bold uppercase text-[10px] bg-cyan-950/80 border border-cyan-800/60 px-1.5 py-0.5 rounded">Active SQL</span>
+                      <span className="truncate text-[#4ADE80] font-medium">{sandboxSql || 'None'}</span>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={isSandboxExecuting || !sandboxSql.trim() || !isCurrentQueryTypePermitted}
+                      onClick={() => executeSandboxQuery()}
+                      className="px-4 py-1.5 bg-[#155DFC] hover:bg-blue-600 disabled:bg-slate-800 disabled:text-slate-600 text-white text-xs font-mono font-bold rounded-lg transition-all shadow-xs flex items-center gap-1.5 cursor-pointer"
+                    >
+                      {isSandboxExecuting ? <RefreshCw size={12} className="animate-spin" /> : <Play size={12} className="fill-current" />}
+                      <span>Re-Run SQL</span>
+                    </button>
+                  </div>
+                )}
               </div>
 
-              {/* 3. CLEAN QUERY RESULTS TABLE & EXPORT */}
-              <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-xs space-y-3" id="query-sandbox-results-table">
+              {/* 3. CLEAN QUERY RESULTS TABLE & EXPORT (WHITE THEME & EXPANDED MAXIMUM DATA SPACE) */}
+              <div className="bg-white border border-slate-200/90 rounded-2xl p-4 shadow-xs space-y-3" id="query-sandbox-results-table">
                 {/* Results Header Toolbar */}
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-3 text-xs">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-200/90 pb-3 text-xs">
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="font-bold text-slate-900 flex items-center gap-1.5">
-                      <Table size={14} className="text-blue-600" />
+                      <Table size={14} className="text-[#155DFC]" />
                       <span>Results</span>
                     </span>
 
                     {sandboxExecutionStats && (
                       <>
-                        <span className="px-2 py-0.5 rounded-md text-[10px] font-mono font-bold bg-emerald-50 text-emerald-800 border border-emerald-200">
+                        <span className="px-2 py-0.5 rounded-lg text-[10px] font-mono font-bold bg-emerald-50 text-emerald-800 border border-emerald-200">
                           {sandboxExecutionStats.isDml
                             ? `DML: ${sandboxExecutionStats.affectedCount || 1} row(s) updated`
                             : `${sandboxResults.length} records`}
                         </span>
-                        <span className="px-2 py-0.5 bg-slate-100 text-slate-600 rounded-md text-[10px] font-mono">
+                        <span className="px-2 py-0.5 bg-slate-100 text-slate-700 rounded-lg text-[10px] font-mono border border-slate-200/60 font-semibold">
                           {sandboxExecutionStats.executionTimeMs}ms
                         </span>
                       </>
                     )}
 
                     <span className="text-[11px] text-slate-500 font-mono">
-                      Target: <strong className="text-slate-700">{databases?.find(d => d.id === sandboxSelectedDbId)?.name || 'DB'}</strong>
+                      Target: <strong className="text-slate-800">{databases?.find(d => d.id === sandboxSelectedDbId)?.name || 'DB'}</strong>
                       {sandboxTable && (
-                        <span> • Table: <strong className="text-slate-700">{sandboxTable}</strong></span>
+                        <span> • Table: <strong className="text-slate-800">{sandboxTable}</strong></span>
                       )}
                     </span>
                   </div>
@@ -3324,14 +3505,14 @@ export default function IssueDetailView({
                         value={sandboxSearchFilter}
                         onChange={(e) => setSandboxSearchFilter(e.target.value)}
                         placeholder="Filter rows..."
-                        className="pl-7 pr-2.5 py-1 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-800 focus:bg-white focus:outline-none focus:ring-1 focus:ring-blue-500 w-36 font-medium"
+                        className="pl-7 pr-2.5 py-1 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 focus:bg-white focus:outline-none focus:ring-1 focus:ring-blue-500 w-40 font-medium shadow-2xs"
                       />
                     </div>
 
                     <button
                       type="button"
                       onClick={handleExportSandboxCsv}
-                      className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-lg border border-slate-200 transition flex items-center gap-1 cursor-pointer"
+                      className="px-2.5 py-1 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold rounded-xl border border-slate-200 transition flex items-center gap-1 cursor-pointer shadow-2xs"
                       title="Download as CSV"
                     >
                       <Download size={12} />
@@ -3341,7 +3522,7 @@ export default function IssueDetailView({
                     <button
                       type="button"
                       onClick={handleExportSandboxJson}
-                      className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-lg border border-slate-200 transition flex items-center gap-1 cursor-pointer"
+                      className="px-2.5 py-1 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold rounded-xl border border-slate-200 transition flex items-center gap-1 cursor-pointer shadow-2xs"
                       title="Download as JSON"
                     >
                       <FileCode size={12} />
@@ -3351,10 +3532,10 @@ export default function IssueDetailView({
                     <button
                       type="button"
                       onClick={() => setSandboxShowLogs(prev => !prev)}
-                      className={`px-2.5 py-1 text-xs font-semibold rounded-lg border transition flex items-center gap-1 cursor-pointer ${
+                      className={`px-2.5 py-1 text-xs font-semibold rounded-xl border transition flex items-center gap-1 cursor-pointer shadow-2xs ${
                         sandboxShowLogs
-                          ? 'bg-slate-900 text-white border-slate-900'
-                          : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-200'
+                          ? 'bg-[#155DFC] text-white border-[#155DFC]'
+                          : 'bg-white hover:bg-slate-50 text-slate-700 border-slate-200'
                       }`}
                       title="Toggle execution logs"
                     >
@@ -3364,12 +3545,12 @@ export default function IssueDetailView({
                   </div>
                 </div>
 
-                {/* Collapsible Execution Plan Logs */}
+                {/* Collapsible Execution Plan Logs (Light Slate Card) */}
                 {sandboxShowLogs && (
-                  <div className="bg-slate-950 border border-slate-800 rounded-lg p-3 font-mono text-xs text-slate-300 space-y-1">
-                    <div className="text-[10px] font-bold text-slate-400 uppercase tracking-wider pb-1 border-b border-slate-800 mb-1 flex items-center justify-between">
+                  <div className="bg-slate-50 border border-slate-200 rounded-xl p-3.5 font-mono text-xs text-slate-700 space-y-1 shadow-2xs">
+                    <div className="text-[10px] font-bold text-slate-500 uppercase tracking-wider pb-1.5 border-b border-slate-200 mb-1.5 flex items-center justify-between">
                       <span>Server Query Planner Execution Trace</span>
-                      <span className={sandboxError ? 'text-rose-400' : 'text-emerald-400'}>
+                      <span className={sandboxError ? 'text-rose-600 font-bold' : 'text-emerald-700 font-bold'}>
                         {sandboxError ? 'ERROR' : '200 OK'}
                       </span>
                     </div>
@@ -3378,10 +3559,10 @@ export default function IssueDetailView({
                         key={lIdx}
                         className={
                           log.includes('[SUCCESS]')
-                            ? 'text-emerald-400 font-semibold'
+                            ? 'text-emerald-700 font-semibold'
                             : log.includes('[ERROR]')
-                            ? 'text-rose-400 font-semibold'
-                            : 'text-slate-300'
+                            ? 'text-rose-700 font-semibold'
+                            : 'text-slate-700'
                         }
                       >
                         {log}
@@ -3392,7 +3573,7 @@ export default function IssueDetailView({
 
                 {/* Query Error Notification */}
                 {sandboxError && (
-                  <div className="p-3 bg-rose-50 border border-rose-200 rounded-lg flex items-start gap-2.5 text-rose-700 text-xs">
+                  <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl flex items-start gap-2.5 text-rose-700 text-xs">
                     <AlertCircle size={16} className="shrink-0 mt-0.5 text-rose-600" />
                     <div className="space-y-0.5">
                       <div className="font-bold text-rose-800">Database Execution Error</div>
@@ -3401,12 +3582,12 @@ export default function IssueDetailView({
                   </div>
                 )}
 
-                {/* RESULTS DATA GRID */}
+                {/* RESULTS DATA GRID (EXPANDED TO max-h-[640px] FOR GENEROUS DISPLAY SPACE) */}
                 {(() => {
                   if (sandboxResults.length === 0) {
                     return (
-                      <div className="p-8 text-center bg-slate-50/60 rounded-xl border border-slate-200 space-y-2">
-                        <Database size={24} className="mx-auto text-slate-400" />
+                      <div className="p-12 text-center bg-slate-50/70 rounded-xl border border-slate-200 space-y-2">
+                        <Database size={28} className="mx-auto text-slate-400" />
                         <h4 className="text-xs font-bold text-slate-700">0 Records Returned</h4>
                         <p className="text-[11px] text-slate-400">
                           The query executed against {databases?.find(d => d.id === sandboxSelectedDbId)?.name || 'the database'} and returned 0 rows.
@@ -3423,8 +3604,8 @@ export default function IssueDetailView({
 
                   if (filteredRows.length === 0) {
                     return (
-                      <div className="p-8 text-center bg-slate-50/60 rounded-xl border border-slate-200 space-y-2">
-                        <Search size={24} className="mx-auto text-slate-400" />
+                      <div className="p-12 text-center bg-slate-50/70 rounded-xl border border-slate-200 space-y-2">
+                        <Search size={28} className="mx-auto text-slate-400" />
                         <h4 className="text-xs font-bold text-slate-700">No Records Match Search Filter</h4>
                         <p className="text-[11px] text-slate-400">
                           Try searching with different terms or clear the filter.
@@ -3438,17 +3619,17 @@ export default function IssueDetailView({
                     : Object.keys(filteredRows[0] || {});
 
                   return (
-                    <div className="overflow-x-auto border border-slate-200 rounded-lg max-h-96 overflow-y-auto">
+                    <div className="overflow-x-auto border border-slate-200 rounded-xl max-h-[640px] min-h-[360px] overflow-y-auto shadow-2xs">
                       <table className="w-full text-left text-xs border-collapse">
-                        <thead className="bg-slate-50 text-slate-700 uppercase text-[10px] font-bold tracking-wider border-b border-slate-200 sticky top-0 z-10 shadow-2xs">
+                        <thead className="bg-slate-50/95 text-slate-700 uppercase text-[10px] font-bold tracking-wider border-b border-slate-200 sticky top-0 z-10 shadow-2xs backdrop-blur-xs font-mono">
                           <tr>
-                            <th className="py-2 px-3 w-10 text-slate-400 text-center font-mono">#</th>
+                            <th className="py-2.5 px-3 w-12 text-slate-400 text-center font-mono bg-slate-50">#</th>
                             {headers.map(h => (
-                              <th key={h} className="py-2 px-3 font-bold whitespace-nowrap">
+                              <th key={h} className="py-2.5 px-3 font-bold whitespace-nowrap bg-slate-50">
                                 {h}
                               </th>
                             ))}
-                            <th className="py-2 px-3 text-right whitespace-nowrap">Actions</th>
+                            <th className="py-2.5 px-3 text-right whitespace-nowrap bg-slate-50">Actions</th>
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-slate-100 font-mono text-[11px]">

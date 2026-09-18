@@ -36,7 +36,8 @@ import {
   Edit2,
   Square,
   AlertCircle,
-  SlidersHorizontal
+  SlidersHorizontal,
+  Users
 } from 'lucide-react';
 import { api } from '../../api/client';
 import { globalMappingService } from '../../services/globalMappingService';
@@ -127,8 +128,8 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
     setLoading(true);
     try {
       const [wfs, boxes] = await Promise.all([
-        api.getWorkflows(),
-        api.getValidationBoxes()
+        api.getWorkflows(currentUser?.teamId),
+        api.getValidationBoxes(undefined, currentUser?.teamId)
       ]);
       const safeWfs = Array.isArray(wfs) ? wfs.filter(Boolean) : [];
       const safeBoxes = Array.isArray(boxes) ? boxes.filter(Boolean) : [];
@@ -1095,6 +1096,9 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
         const newId = `wf-${Date.now()}`;
         savedWf = await api.createWorkflow({
           id: newId,
+          teamId: currentUser?.teamId || 'team-cards',
+          isPublic: true,
+          visibility: 'team',
           ...payload
         });
       }
@@ -1102,7 +1106,7 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
       setSaveSuccessMsg('Vertical Flowchart saved! Intermediate Report columns are now synced with Investigation View.');
       setTimeout(() => setSaveSuccessMsg(''), 4000);
 
-      const refreshed = await api.getWorkflows();
+      const refreshed = await api.getWorkflows(currentUser?.teamId);
       const safeRefreshed = Array.isArray(refreshed) ? refreshed.filter(Boolean) : [];
       setWorkflows(safeRefreshed);
       const targetId = savedWf?.id || (activeWorkflow ? activeWorkflow.id : '');
@@ -1167,56 +1171,53 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
   return (
     <div className="space-y-4">
       {/* Top Header & Settings Bar */}
-      <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 shadow-xl text-white">
-        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
-          <div>
-            <div className="flex items-center gap-2 mb-1">
-              <div className="p-1.5 bg-purple-600/30 text-purple-400 border border-purple-500/40 rounded-lg">
-                <GitFork size={20} />
-              </div>
-              <h2 className="text-lg font-bold tracking-tight">Workflow Studio (Vertical Flowchart Maker)</h2>
-              <span className="px-2 py-0.5 rounded text-[11px] font-mono font-bold bg-purple-500/20 text-purple-300 border border-purple-500/30 flex items-center gap-1">
+      <div className="bg-white border border-slate-200/90 rounded-2xl p-2.5 sm:p-3 text-slate-800 shadow-xs" id="workflow-studio-header">
+        <div className="flex items-center justify-between gap-2 overflow-x-auto no-scrollbar">
+          <div className="flex items-center gap-2 shrink-0">
+            <div className="p-1.5 bg-purple-50 text-purple-600 border border-purple-200/60 rounded-lg shrink-0">
+              <GitFork size={18} />
+            </div>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <h2 className="text-xs sm:text-sm font-bold text-slate-900 tracking-tight whitespace-nowrap">Workflow Studio</h2>
+              <span className="hidden xl:inline-flex px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-purple-50 text-purple-600 border border-purple-200/60 items-center gap-1 whitespace-nowrap">
                 <span>Top ➔ Down Flow</span>
-                <ArrowDown size={11} className="text-purple-300" />
+                <ArrowDown size={10} className="text-purple-600" />
               </span>
               {activeWorkflow && (
-                <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 flex items-center gap-1.5 shadow-2xs">
-                  <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
-                  <span>Selected: <strong className="text-white">{activeWorkflow.name}</strong></span>
+                <span className="px-2 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200/80 flex items-center gap-1.5 shadow-2xs whitespace-nowrap">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                  <span>Selected: <strong className="text-emerald-900 font-bold">{activeWorkflow.name}</strong></span>
                 </span>
               )}
             </div>
-            <p className="text-xs text-slate-400">
-              Arrange validation blocks vertically, connect downward wire paths, and configure branch outcomes: <strong className="text-emerald-400">Continue</strong>, <strong className="text-rose-400">Stop</strong>, or <strong className="text-purple-400">Report</strong> (which adds a column to the Investigation View).
-            </p>
           </div>
 
           {/* Quick Actions */}
-          <div className="flex items-center gap-2 flex-wrap">
+          <div className="flex items-center gap-1.5 shrink-0" id="workflow-studio-actions-row">
             <button
               type="button"
               onClick={handleCreateNewFlowchart}
-              className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-md transition"
+              className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-xs transition shrink-0 whitespace-nowrap"
               title="Create a brand new blank flowchart pipeline"
             >
-              <Plus size={14} />
+              <Plus size={13} />
               <span>+ New Flowchart</span>
             </button>
 
-            <div className="flex items-center gap-1.5 bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 shadow-2xs">
-              <GitFork size={13} className="text-purple-400 shrink-0" />
+            <div className="flex items-center gap-1 bg-slate-50 border border-slate-200 rounded-lg px-2 py-1 text-slate-700 shrink-0">
+              <GitFork size={12} className="text-purple-600 shrink-0" />
               <select
                 value={activeWorkflow?.id || ''}
                 onChange={(e) => {
                   const found = (workflows || []).find(w => w && w.id === e.target.value);
                   if (found) selectWorkflow(found);
                 }}
-                className="bg-transparent text-xs text-slate-100 font-semibold focus:outline-none cursor-pointer"
+                className="bg-transparent text-xs text-slate-800 font-semibold focus:outline-none cursor-pointer max-w-[130px] sm:max-w-[150px] truncate"
                 title="Select active workflow to inspect and edit"
               >
-                <option value="" className="bg-slate-900 text-slate-400">-- Select Workflow ({(workflows || []).filter(Boolean).length}) --</option>
+                <option value="" className="bg-white text-slate-500">-- Select Workflow ({(workflows || []).filter(Boolean).length}) --</option>
                 {(workflows || []).filter(Boolean).map(wf => (
-                  <option key={wf.id} value={wf.id} className="bg-slate-900 text-white">
+                  <option key={wf.id} value={wf.id} className="bg-white text-slate-800">
                     {wf.name} {activeWorkflow?.id === wf.id ? '✓ (Active)' : ''}
                   </option>
                 ))}
@@ -1224,34 +1225,41 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
             </div>
 
             {activeWorkflow && (
+              <div className="flex items-center gap-1 px-2 py-1 bg-blue-50 border border-blue-200/60 text-blue-700 rounded-lg text-xs font-mono shrink-0 whitespace-nowrap">
+                <Users size={11} className="text-blue-500 shrink-0" />
+                <span>Team: #{activeWorkflow.teamId || currentUser?.teamId || 'team-cards'}</span>
+              </div>
+            )}
+
+            {activeWorkflow && (
               <button
                 type="button"
                 onClick={handleDeleteWorkflow}
-                className="px-2.5 py-1.5 bg-rose-950/40 hover:bg-rose-900/70 border border-rose-700/60 hover:border-rose-500 text-rose-300 hover:text-white rounded-lg text-xs font-semibold transition cursor-pointer flex items-center gap-1.5 shadow-2xs"
+                className="px-2 py-1.5 bg-rose-50 hover:bg-rose-100 border border-rose-200 text-rose-700 rounded-lg text-xs font-semibold transition cursor-pointer flex items-center gap-1 shadow-2xs shrink-0 whitespace-nowrap"
                 title={`Delete workflow "${activeWorkflow.name}"`}
               >
-                <Trash2 size={13} className="text-rose-400" />
-                <span>Delete Workflow</span>
+                <Trash2 size={12} className="text-rose-500" />
+                <span>Delete</span>
               </button>
             )}
 
             <button
               type="button"
               onClick={handleAutoAlignVertical}
-              className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 rounded-lg text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition"
+              className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 border border-slate-200 text-slate-700 rounded-lg text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition shrink-0 whitespace-nowrap"
               title="Cleanly arrange all nodes vertically"
             >
-              <AlignVerticalJustifyCenter size={13} className="text-purple-400" />
-              <span>Auto-Align Vertical</span>
+              <AlignVerticalJustifyCenter size={12} className="text-purple-600" />
+              <span>Align</span>
             </button>
 
             <button
               type="button"
               onClick={() => initDefaultFlowchart(validationBoxes)}
-              className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 rounded-lg text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition"
+              className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 border border-slate-200 text-slate-700 rounded-lg text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition shrink-0 whitespace-nowrap"
               title="Load standard two-stage template"
             >
-              <Sparkles size={13} className="text-amber-400" />
+              <Sparkles size={12} className="text-amber-500" />
               <span>Sample Flow</span>
             </button>
 
@@ -1262,11 +1270,11 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
                 setShowAggregatorModal(true);
                 resetRuleForm(aggregatorTab);
               }}
-              className="px-3 py-1.5 bg-indigo-950/70 hover:bg-indigo-900 border border-indigo-700/60 text-indigo-200 hover:text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition shadow-sm"
+              className="px-2.5 py-1.5 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 text-indigo-700 rounded-lg text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition shadow-2xs shrink-0 whitespace-nowrap"
               title="Configure aggregated Pass and Fail outcome messages for this workflow"
             >
-              <Sliders size={13} className="text-indigo-400" />
-              <span>Message Aggregator</span>
+              <Sliders size={12} className="text-indigo-600" />
+              <span>Aggregator</span>
               {messageAggregations.length > 0 && (
                 <span className="px-1.5 py-0.2 rounded-full text-[10px] font-mono font-bold bg-indigo-600 text-white shadow-2xs">
                   {messageAggregations.length}
@@ -1278,32 +1286,32 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
               type="button"
               onClick={handleSaveWorkflow}
               disabled={isSaving}
-              className="px-4 py-1.5 bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-md transition disabled:opacity-50"
+              className="px-3.5 py-1.5 bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-xs transition disabled:opacity-50 shrink-0 whitespace-nowrap"
             >
-              <Save size={14} />
+              <Save size={13} />
               <span>{isSaving ? 'Saving...' : 'Save Flowchart'}</span>
             </button>
           </div>
         </div>
 
         {/* Workflow Title and Description Fields */}
-        <div className="mt-3 pt-3 border-t border-slate-800 grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+        <div className="mt-2.5 pt-2.5 border-t border-slate-200 grid grid-cols-1 md:grid-cols-3 gap-2.5 text-xs">
           <div>
-            <label className="block text-[11px] font-mono text-slate-400 mb-1">Workflow Name:</label>
+            <label className="block text-[11px] font-medium text-slate-600 mb-1">Workflow Name:</label>
             <input
               type="text"
               value={workflowName}
               onChange={(e) => setWorkflowName(e.target.value)}
-              className="w-full bg-slate-950 border border-slate-800 rounded px-2.5 py-1 text-white font-semibold focus:outline-none focus:border-purple-500"
+              className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1 text-slate-800 font-semibold focus:outline-none focus:border-purple-500 focus:bg-white"
               placeholder="e.g. Vertical Clearing Pipeline"
             />
           </div>
           <div>
-            <label className="block text-[11px] font-mono text-slate-400 mb-1">Category:</label>
+            <label className="block text-[11px] font-medium text-slate-600 mb-1">Category:</label>
             <select
               value={workflowCategory}
               onChange={(e: any) => setWorkflowCategory(e.target.value)}
-              className="w-full bg-slate-950 border border-slate-800 rounded px-2.5 py-1 text-white focus:outline-none focus:border-purple-500"
+              className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1 text-slate-800 focus:outline-none focus:border-purple-500 focus:bg-white"
             >
               <option value="Settlement">Settlement</option>
               <option value="Reconciliation">Reconciliation</option>
@@ -1313,20 +1321,20 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
             </select>
           </div>
           <div>
-            <label className="block text-[11px] font-mono text-slate-400 mb-1">Description:</label>
+            <label className="block text-[11px] font-medium text-slate-600 mb-1">Description:</label>
             <input
               type="text"
               value={workflowDescription}
               onChange={(e) => setWorkflowDescription(e.target.value)}
-              className="w-full bg-slate-950 border border-slate-800 rounded px-2.5 py-1 text-slate-300 focus:outline-none focus:border-purple-500"
+              className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1 text-slate-700 focus:outline-none focus:border-purple-500 focus:bg-white"
               placeholder="Brief summary of this vertical flow"
             />
           </div>
         </div>
 
         {saveSuccessMsg && (
-          <div className="mt-2 p-2 bg-emerald-950/80 border border-emerald-600/50 rounded text-emerald-300 text-xs flex items-center gap-2 animate-in fade-in">
-            <CheckCircle2 size={14} className="text-emerald-400" />
+          <div className="mt-2 p-2 bg-emerald-50 border border-emerald-200 rounded-lg text-emerald-800 text-xs flex items-center gap-2 animate-in fade-in">
+            <CheckCircle2 size={14} className="text-emerald-600" />
             <span>{saveSuccessMsg}</span>
           </div>
         )}

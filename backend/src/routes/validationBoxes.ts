@@ -44,7 +44,8 @@ async function hydrateBoxConfigurations(box: ValidationBox): Promise<ValidationB
 validationBoxesRouter.get('/', async (req: Request, res: Response) => {
   try {
     const boxType = req.query.boxType as ValidationBoxType | undefined;
-    let boxes = await repo.getValidationBoxes();
+    const teamId = req.query.teamId as string | undefined;
+    let boxes = await repo.getValidationBoxes(teamId);
     if (boxType) {
       boxes = boxes.filter(b => b.boxType === boxType);
     }
@@ -89,7 +90,10 @@ validationBoxesRouter.post('/', async (req: Request, res: Response) => {
       dualSourceCondition,
       outputColumns,
       statusBinding,
-      messageTemplate
+      messageTemplate,
+      teamId,
+      isPublic,
+      visibility
     } = req.body;
 
     if (!name || !boxType) {
@@ -132,6 +136,9 @@ validationBoxesRouter.post('/', async (req: Request, res: Response) => {
       outputColumns: outputColumns || undefined,
       statusBinding: statusBinding || undefined,
       messageTemplate: messageTemplate || undefined,
+      teamId: teamId || undefined,
+      isPublic: isPublic !== undefined ? isPublic : true,
+      visibility: visibility || 'team',
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
     };

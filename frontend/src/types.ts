@@ -50,6 +50,13 @@ export interface DirectMessage {
   isRead: boolean;
 }
 
+export type AllowedQueryType = 'SELECT' | 'UPDATE' | 'INSERT' | 'DELETE' | 'ALTER' | 'CREATE' | 'DROP';
+
+export interface MemberPrivilege {
+  allowedDbIds: string[];
+  allowedQueryTypes: AllowedQueryType[];
+}
+
 export interface Team {
   id: string;
   name: string;
@@ -59,6 +66,9 @@ export interface Team {
   managerName: string;
   memberIds: string[];
   createdAt: string;
+  allowedDbIds?: string[];
+  allowedQueryTypes?: AllowedQueryType[];
+  memberPrivileges?: Record<string, MemberPrivilege>;
 }
 
 export type TeamRelationshipType =
@@ -375,6 +385,15 @@ export interface DatabaseConnection {
   secure?: boolean;
   passive?: boolean;
   baseDirectory?: string;
+  scope?: 'global' | 'team';
+  teamId?: string;
+  createdByUserId?: string;
+  promotionStatus?: 'NONE' | 'PENDING_ADMIN_APPROVAL' | 'APPROVED' | 'REJECTED';
+  promotionRequestedAt?: string;
+  promotionRequestedBy?: string;
+  promotionReviewedAt?: string;
+  promotionReviewedBy?: string;
+  promotionNotes?: string;
 }
 
 export interface FtpFieldMapping {
@@ -1422,6 +1441,18 @@ export interface WorkspaceSettingProposal {
   appliedAt?: string;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface TeamEscalationTarget {
+  relationshipId: string;
+  relationshipType: string;
+  relationshipDescription?: string;
+  targetTeamId: string;
+  targetTeamName: string;
+  targetTeamType: string;
+  targetTeamDescription?: string;
+  managerId?: string;
+  managerName?: string;
 }
 
 

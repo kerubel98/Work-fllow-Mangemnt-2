@@ -3,9 +3,10 @@ import { repo } from '../store/repository.js';
 import { executeLiveQueryOnDb } from '../services/dbConnectionManager.js';
 export const workflowsRouter = Router();
 // GET /api/workflows - List all workflows
-workflowsRouter.get('/', async (_req, res) => {
+workflowsRouter.get('/', async (req, res) => {
     try {
-        const workflows = await repo.getWorkflows();
+        const teamId = req.query.teamId;
+        const workflows = await repo.getWorkflows(teamId);
         return res.json(workflows);
     }
     catch (err) {
@@ -112,7 +113,10 @@ workflowsRouter.post('/', async (req, res) => {
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString(),
             isSystemDefault: false,
-            version: data.version || '2.0.0'
+            version: data.version || '2.0.0',
+            teamId: data.teamId || undefined,
+            isPublic: data.isPublic !== undefined ? data.isPublic : true,
+            visibility: data.visibility || 'team'
         };
         const saved = await repo.createWorkflow(newWorkflow);
         return res.status(201).json(saved);

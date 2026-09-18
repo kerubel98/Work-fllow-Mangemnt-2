@@ -6,9 +6,10 @@ import { executeLiveQueryOnDb } from '../services/dbConnectionManager.js';
 export const workflowsRouter = Router();
 
 // GET /api/workflows - List all workflows
-workflowsRouter.get('/', async (_req: Request, res: Response) => {
+workflowsRouter.get('/', async (req: Request, res: Response) => {
   try {
-    const workflows = await repo.getWorkflows();
+    const teamId = req.query.teamId as string | undefined;
+    const workflows = await repo.getWorkflows(teamId);
     return res.json(workflows);
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
@@ -118,7 +119,10 @@ workflowsRouter.post('/', async (req: Request, res: Response) => {
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       isSystemDefault: false,
-      version: data.version || '2.0.0'
+      version: data.version || '2.0.0',
+      teamId: data.teamId || undefined,
+      isPublic: data.isPublic !== undefined ? data.isPublic : true,
+      visibility: data.visibility || 'team'
     };
 
     const saved = await repo.createWorkflow(newWorkflow);

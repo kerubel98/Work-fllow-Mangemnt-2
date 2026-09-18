@@ -320,6 +320,18 @@ export const repo = {
         }
         return false;
     },
+    async getTeamSpecificConnections(teamId) {
+        if (isPostgresConnected) {
+            return await postgresRepo.getTeamSpecificConnections(teamId);
+        }
+        return store.databases.filter(d => d.scope === 'team' && d.teamId === teamId);
+    },
+    async getAdminTeamResources() {
+        if (isPostgresConnected) {
+            return await postgresRepo.getAdminTeamResources();
+        }
+        return store.databases.filter(d => d.scope === 'team' || (d.promotionStatus && d.promotionStatus !== 'NONE'));
+    },
     // ================= SYSTEMS =================
     async getSystems() {
         if (isPostgresConnected) {
@@ -380,6 +392,36 @@ export const repo = {
         }
         return store.teams;
     },
+    async getTeamById(id) {
+        if (isPostgresConnected) {
+            return await postgresRepo.getTeamById(id);
+        }
+        if (isMongoConnected) {
+            return await TeamModel.findOne({ id }).lean();
+        }
+        return store.teams.find(t => t.id === id) || null;
+    },
+    async getUserPermanentTeam(userId) {
+        if (isPostgresConnected) {
+            return await postgresRepo.getUserPermanentTeam(userId);
+        }
+        const user = store.users.find(u => u.id === userId);
+        if (user?.permanentTeamId) {
+            const team = store.teams.find(t => t.id === user.permanentTeamId && t.teamType === 'permanent');
+            if (team)
+                return team;
+        }
+        return store.teams.find(t => t.teamType === 'permanent' && (t.managerId === userId || (t.memberIds && t.memberIds.includes(userId)))) || null;
+    },
+    async syncUserPermanentTeam(userId, teamId) {
+        if (isPostgresConnected) {
+            return await postgresRepo.syncUserPermanentTeam(userId, teamId);
+        }
+        const user = store.users.find(u => u.id === userId);
+        if (user) {
+            user.permanentTeamId = teamId || undefined;
+        }
+    },
     async createTeam(team) {
         if (isPostgresConnected) {
             return await postgresRepo.createTeam(team);
@@ -405,6 +447,17 @@ export const repo = {
                 updated = store.teams[idx];
         }
         return updated;
+    },
+    async updateTeamMemberPrivileges(teamId, memberPrivileges) {
+        if (isPostgresConnected) {
+            return await postgresRepo.updateTeamMemberPrivileges(teamId, memberPrivileges);
+        }
+        const t = store.teams.find(team => team.id === teamId);
+        if (t) {
+            t.memberPrivileges = memberPrivileges;
+            return t;
+        }
+        return null;
     },
     async deleteTeam(id) {
         if (isPostgresConnected) {
@@ -928,8 +981,8 @@ export const repo = {
         return org;
     },
     // ================= VALIDATION WORKFLOWS & STAGES =================
-    async getWorkflows() {
-        return await postgresRepo.getValidationWorkflows();
+    async getWorkflows(teamId) {
+        return await postgresRepo.getValidationWorkflows(teamId);
     },
     async getWorkflowById(id) {
         return await postgresRepo.getValidationWorkflowById(id);
@@ -1191,9 +1244,9 @@ export const repo = {
         return store.centralTransactions.filter(r => r.batchId === batchId);
     },
     // ================= STANDALONE VALIDATION BOXES =================
-    async getValidationBoxes() {
+    async getValidationBoxes(teamId) {
         if (isPostgresConnected) {
-            return await postgresRepo.getValidationBoxes();
+            return await postgresRepo.getValidationBoxes(teamId);
         }
         return store.validationBoxes;
     },

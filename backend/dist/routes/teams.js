@@ -4,26 +4,65 @@ import { eventService } from '../services/events.js';
 import { queryPg, isPostgresConnected } from '../config/postgres.js';
 export const teamsRouter = Router();
 // ================= TEAMS =================
-teamsRouter.get('/', async (_req, res) => {
+teamsRouter.get('/', async (req, res) => {
     try {
         const teams = await repo.getTeams();
+        const userId = req.query.userId;
+        const all = req.query.all === 'true';
+        const userRole = req.query.userRole;
+        if (userId && !all && userRole !== 'admin') {
+            const userTeams = teams.filter(t => t.managerId === userId ||
+                (t.memberIds && t.memberIds.includes(userId)));
+            return res.json(userTeams);
+        }
         return res.json(teams);
     }
     catch (err) {
         return res.status(500).json({ error: err.message });
     }
 });
+// Helper to enforce that a user can only belong to ONE permanent team
+async function validateSinglePermanentTeamMembership(targetTeamId, isPermanent, managerId, memberIds) {
+    if (!isPermanent)
+        return { valid: true };
+    const allTeams = await repo.getTeams();
+    const otherPermanentTeams = allTeams.filter(t => t.teamType === 'permanent' && t.id !== targetTeamId);
+    const candidateUsers = Array.from(new Set([managerId, ...memberIds].filter(Boolean)));
+    const allUsers = await repo.getUsers();
+    for (const userId of candidateUsers) {
+        const existingTeam = otherPermanentTeams.find(t => t.managerId === userId || (t.memberIds && t.memberIds.includes(userId)));
+        if (existingTeam) {
+            const user = allUsers.find(u => u.id === userId);
+            const username = user ? user.username : userId;
+            return {
+                valid: false,
+                error: `User "${username}" (ID: ${userId}) is already a member of permanent team "${existingTeam.name}". A user can only belong to one permanent team.`
+            };
+        }
+    }
+    return { valid: true };
+}
 teamsRouter.post('/', async (req, res) => {
     try {
         const teamData = req.body;
+        const isPermanent = (teamData.teamType || 'working') === 'permanent';
+        const managerId = teamData.managerId || 'usr-4';
+        const memberIds = teamData.memberIds || ['usr-1', 'usr-2'];
+        // Enforce Single Permanent Team Invariant
+        const validation = await validateSinglePermanentTeamMembership(null, isPermanent, managerId, memberIds);
+        if (!validation.valid) {
+            return res.status(400).json({ error: validation.error });
+        }
         const newTeam = {
             id: teamData.id || `team-${Date.now()}`,
             name: teamData.name || 'New Squad',
             description: teamData.description || '',
             teamType: teamData.teamType || 'working',
-            managerId: teamData.managerId || 'usr-4',
+            managerId,
             managerName: teamData.managerName || 'manager_alex',
-            memberIds: teamData.memberIds || ['usr-1', 'usr-2'],
+            memberIds,
+            allowedDbIds: teamData.allowedDbIds || [],
+            allowedQueryTypes: teamData.allowedQueryTypes || ['SELECT'],
             createdAt: new Date().toISOString()
         };
         const saved = await repo.createTeam(newTeam);
@@ -36,11 +75,87 @@ teamsRouter.post('/', async (req, res) => {
 });
 teamsRouter.put('/:id', async (req, res) => {
     try {
+        const existing = await repo.getTeamById(req.params.id);
+        if (!existing)
+            return res.status(404).json({ error: 'Team not found' });
+        const effectiveTeamType = req.body.teamType !== undefined ? req.body.teamType : existing.teamType;
+        const isPermanent = (effectiveTeamType || 'working') === 'permanent';
+        const effectiveManagerId = req.body.managerId !== undefined ? req.body.managerId : existing.managerId;
+        const effectiveMemberIds = req.body.memberIds !== undefined ? req.body.memberIds : existing.memberIds;
+        // Enforce Single Permanent Team Invariant
+        const validation = await validateSinglePermanentTeamMembership(req.params.id, isPermanent, effectiveManagerId, effectiveMemberIds || []);
+        if (!validation.valid) {
+            return res.status(400).json({ error: validation.error });
+        }
         const updated = await repo.updateTeam(req.params.id, req.body);
         if (!updated)
             return res.status(404).json({ error: 'Team not found' });
         eventService.broadcastEvent('team:updated', updated);
         return res.json(updated);
+    }
+    catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+});
+// PUT /api/teams/:id/member-privileges - Manager allocates privileges to team members within admin ceiling
+teamsRouter.put('/:id/member-privileges', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { memberPrivileges, callerUserId, callerRole } = req.body;
+        const team = await repo.getTeamById(id);
+        if (!team)
+            return res.status(404).json({ error: 'Team not found' });
+        // Authorization check: Only team manager or admin can allocate member privileges
+        if (callerUserId && callerRole !== 'admin') {
+            if (team.managerId !== callerUserId) {
+                return res.status(403).json({
+                    error: 'Access Denied: Only the designated Team Manager or a Workspace Admin can allocate member privileges.'
+                });
+            }
+        }
+        if (!memberPrivileges || typeof memberPrivileges !== 'object') {
+            return res.status(400).json({ error: 'memberPrivileges object map is required.' });
+        }
+        // 1. Determine Team's Permitted Database Ceiling (Admin-granted global DBs + Team-specific DBs)
+        const teamAllowedDbIds = new Set(team.allowedDbIds || []);
+        const teamSpecificDbs = await repo.getTeamSpecificConnections(team.id);
+        teamSpecificDbs.forEach(d => teamAllowedDbIds.add(d.id));
+        // 2. Determine Team's Permitted Query Type Ceiling
+        const teamAllowedQueryTypes = new Set(team.allowedQueryTypes && team.allowedQueryTypes.length > 0
+            ? team.allowedQueryTypes
+            : ['SELECT']);
+        // 3. Enforce Strict Privilege Ceiling for each member
+        for (const [userId, privs] of Object.entries(memberPrivileges)) {
+            const allowedDbIds = Array.isArray(privs?.allowedDbIds) ? privs.allowedDbIds : [];
+            const allowedQueryTypes = Array.isArray(privs?.allowedQueryTypes) ? privs.allowedQueryTypes : ['SELECT'];
+            for (const dbId of allowedDbIds) {
+                if (!teamAllowedDbIds.has(dbId)) {
+                    return res.status(400).json({
+                        error: `Privilege Ceiling Exceeded for user ${userId}: Database "${dbId}" has not been granted to team "${team.name}" by Workspace Admin.`
+                    });
+                }
+            }
+            for (const qType of allowedQueryTypes) {
+                if (!teamAllowedQueryTypes.has(qType)) {
+                    return res.status(400).json({
+                        error: `Privilege Ceiling Exceeded for user ${userId}: Query privilege "${qType}" exceeds the operations permitted for team "${team.name}" by Workspace Admin. Team permitted types: [${Array.from(teamAllowedQueryTypes).join(', ')}]`
+                    });
+                }
+            }
+        }
+        // 4. Persist updated member privileges
+        const updated = await repo.updateTeamMemberPrivileges(id, memberPrivileges);
+        if (!updated)
+            return res.status(404).json({ error: 'Could not update team member privileges.' });
+        eventService.broadcastEvent('team:member-privileges:updated', {
+            teamId: id,
+            memberPrivileges
+        });
+        return res.json({
+            success: true,
+            team: updated,
+            ...updated
+        });
     }
     catch (err) {
         return res.status(500).json({ error: err.message });
@@ -212,7 +327,12 @@ teamsRouter.post('/tasks', async (req, res) => {
             creatorId: taskData.creatorId || 'usr-1',
             creatorName: taskData.creatorName || 'admin',
             dueDate: taskData.dueDate || new Date(Date.now() + 7 * 86400000).toISOString(),
-            createdAt: new Date().toISOString()
+            createdAt: new Date().toISOString(),
+            isPublic: taskData.isPublic !== undefined ? taskData.isPublic : true,
+            visibility: taskData.visibility || 'team',
+            escalatedToTeamId: taskData.escalatedToTeamId,
+            escalationReason: taskData.escalationReason,
+            escalatedAt: taskData.escalatedAt
         };
         const saved = await repo.createTeamTask(newTask);
         eventService.broadcastEvent('task:created', saved);
@@ -234,11 +354,86 @@ teamsRouter.put('/tasks/:id', async (req, res) => {
         return res.status(500).json({ error: err.message });
     }
 });
+teamsRouter.post('/tasks/:id/escalate', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { targetTeamId, escalationReason } = req.body;
+        if (!targetTeamId) {
+            return res.status(400).json({ error: 'targetTeamId is required for escalation' });
+        }
+        const tasks = await repo.getTeamTasks();
+        const task = tasks.find(t => t.id === id);
+        if (!task) {
+            return res.status(404).json({ error: 'Task not found' });
+        }
+        if (isPostgresConnected) {
+            const matrixRes = await queryPg(`SELECT * FROM team_relationships 
+         WHERE source_team_id = $1 
+           AND target_team_id = $2 
+           AND relationship_type IN ('ESCALATION_TARGET', 'PARENT_UNIT');`, [task.teamId, targetTeamId]);
+            if (matrixRes.rows.length === 0) {
+                return res.status(400).json({
+                    error: `Escalation Matrix Violation: Team '${targetTeamId}' is not an authorized ESCALATION_TARGET or PARENT_UNIT for team '${task.teamId}'.`
+                });
+            }
+        }
+        const updated = await repo.updateTeamTask(id, {
+            escalatedToTeamId: targetTeamId,
+            escalationReason: escalationReason || 'Escalated to higher operational unit',
+            escalatedAt: new Date().toISOString()
+        });
+        eventService.broadcastEvent('task:escalated', updated);
+        return res.json(updated);
+    }
+    catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+});
 teamsRouter.delete('/tasks/:id', async (req, res) => {
     try {
         const success = await repo.deleteTeamTask(req.params.id);
         eventService.broadcastEvent('task:deleted', { id: req.params.id });
         return res.json({ success });
+    }
+    catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+});
+// ================= ESCALATION MATRIX =================
+teamsRouter.get('/:teamId/escalation-matrix', async (req, res) => {
+    try {
+        const { teamId } = req.params;
+        if (isPostgresConnected) {
+            const sql = `
+        SELECT r.id as relationship_id,
+               r.relationship_type,
+               r.description as relationship_description,
+               t.id as target_team_id,
+               t.name as target_team_name,
+               t.team_type as target_team_type,
+               t.description as target_team_description,
+               t.manager_id,
+               t.manager_name
+        FROM team_relationships r
+        JOIN teams t ON r.target_team_id = t.id
+        WHERE r.source_team_id = $1 
+          AND r.relationship_type IN ('ESCALATION_TARGET', 'PARENT_UNIT')
+        ORDER BY CASE WHEN r.relationship_type = 'ESCALATION_TARGET' THEN 1 ELSE 2 END;
+      `;
+            const dbRes = await queryPg(sql, [teamId]);
+            return res.json(dbRes.rows.map(r => ({
+                relationshipId: r.relationship_id,
+                relationshipType: r.relationship_type,
+                relationshipDescription: r.relationship_description,
+                targetTeamId: r.target_team_id,
+                targetTeamName: r.target_team_name,
+                targetTeamType: r.target_team_type,
+                targetTeamDescription: r.target_team_description,
+                managerId: r.manager_id,
+                managerName: r.manager_name
+            })));
+        }
+        return res.json([]);
     }
     catch (err) {
         return res.status(500).json({ error: err.message });

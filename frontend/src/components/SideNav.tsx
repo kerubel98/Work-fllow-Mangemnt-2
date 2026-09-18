@@ -4,7 +4,7 @@ import {
   BarChart3, Settings, Search,
   Layers, ShieldCheck, Users, Bell, CheckSquare, 
   MessageSquare, AlertCircle, X, CheckCheck, Trash2, ArrowRight, DatabaseZap, Plus, Sliders,
-  PanelLeftClose, PanelLeftOpen
+  PanelLeftClose, PanelLeftOpen, Server
 } from 'lucide-react';
 
 
@@ -26,6 +26,7 @@ export const isAuthorizedTabForUser = (user: User | null, tab: string) => {
     case 'workspace_settings':
       return true;
     case 'system_settings':
+    case 'admin_team_resources':
       return user.role === 'admin' || (user.role as any) === 'system_admin' || user.username?.toLowerCase() === 'admin';
     default:
       return false;
@@ -522,6 +523,24 @@ export default function SideNav({
                     <Sliders size={16} />
                   </button>
                 )}
+
+                {(currentUser?.role === 'admin' || (currentUser?.role as any) === 'system_admin' || currentUser?.username?.toLowerCase() === 'admin' || (currentUser?.role as string)?.toLowerCase() === 'administrator') && (
+                  <button
+                    onClick={() => {
+                      setShowNotificationPanel(false);
+                      onSelectNavigation('admin_team_resources');
+                    }}
+                    className={`flex items-center justify-center w-9 h-9 mx-auto rounded-lg text-xs font-medium tracking-wide transition-all cursor-pointer ${
+                      activeNavigation === 'admin_team_resources' && !showNotificationPanel
+                        ? 'bg-[#155DFC] text-white shadow-xs font-bold'
+                        : 'text-slate-400 hover:text-white hover:bg-slate-800/80'
+                    }`}
+                    id="nav-admin-team-resources"
+                    title="Team Resources Monitor"
+                  >
+                    <Server size={16} />
+                  </button>
+                )}
               </div>
             ) : (
               <div className="space-y-0.5 pt-1.5 border-t border-slate-800/80 mt-1">
@@ -565,6 +584,26 @@ export default function SideNav({
                   >
                     <Users size={13} />
                     <span>Users</span>
+                  </button>
+                )}
+
+                {/* Team Resources Monitor (Admin Route) */}
+                {(currentUser?.role === 'admin' || (currentUser?.role as any) === 'system_admin' || currentUser?.username?.toLowerCase() === 'admin' || (currentUser?.role as string)?.toLowerCase() === 'administrator') && (
+                  <button
+                    onClick={() => {
+                      setShowNotificationPanel(false);
+                      onSelectNavigation('admin_team_resources');
+                    }}
+                    className={`w-full flex items-center space-x-2.5 px-2.5 py-1.5 pl-5 rounded-lg text-xs font-medium tracking-wide transition-all cursor-pointer ${
+                      activeNavigation === 'admin_team_resources' && !showNotificationPanel
+                        ? 'bg-[#155DFC] text-white shadow-xs font-bold'
+                        : 'text-slate-400 hover:text-white hover:bg-slate-800/80'
+                    }`}
+                    id="nav-admin-team-resources"
+                    title="Monitor team-scoped connections and review promotion requests"
+                  >
+                    <Server size={13} />
+                    <span>Team Resources</span>
                   </button>
                 )}
 

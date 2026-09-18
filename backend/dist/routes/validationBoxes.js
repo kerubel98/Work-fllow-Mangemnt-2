@@ -43,7 +43,8 @@ async function hydrateBoxConfigurations(box) {
 validationBoxesRouter.get('/', async (req, res) => {
     try {
         const boxType = req.query.boxType;
-        let boxes = await repo.getValidationBoxes();
+        const teamId = req.query.teamId;
+        let boxes = await repo.getValidationBoxes(teamId);
         if (boxType) {
             boxes = boxes.filter(b => b.boxType === boxType);
         }
@@ -70,7 +71,7 @@ validationBoxesRouter.get('/:id', async (req, res) => {
 // POST /api/validation-boxes - Create a new validation box
 validationBoxesRouter.post('/', async (req, res) => {
     try {
-        const { id, name, description, boxType, category, targetDbId, targetTable, searchParameters, checkStep, columnConfigurationIds, columnConfigurations, matchKeyInput, matchKeyExternal, multiRowPolicy, groupConfig, dualSourceCondition, outputColumns, statusBinding, messageTemplate } = req.body;
+        const { id, name, description, boxType, category, targetDbId, targetTable, searchParameters, checkStep, columnConfigurationIds, columnConfigurations, matchKeyInput, matchKeyExternal, multiRowPolicy, groupConfig, dualSourceCondition, outputColumns, statusBinding, messageTemplate, teamId, isPublic, visibility } = req.body;
         if (!name || !boxType) {
             return res.status(400).json({ error: 'Name and boxType (INGESTION_SEARCH, CONDITION_CHECK, RECONCILIATION, or REPORT) are required.' });
         }
@@ -107,6 +108,9 @@ validationBoxesRouter.post('/', async (req, res) => {
             outputColumns: outputColumns || undefined,
             statusBinding: statusBinding || undefined,
             messageTemplate: messageTemplate || undefined,
+            teamId: teamId || undefined,
+            isPublic: isPublic !== undefined ? isPublic : true,
+            visibility: visibility || 'team',
             createdAt: new Date().toISOString(),
             updatedAt: new Date().toISOString()
         };

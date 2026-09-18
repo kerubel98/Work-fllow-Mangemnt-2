@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { DatabaseColumnConfiguration } from '../types';
+import { DatabaseColumnConfiguration, WorkspaceSettingProposal, TeamEscalationTarget } from '../types';
 
 const API_BASE_URL = '/api';
 
@@ -249,6 +249,25 @@ export const api = {
     fetchApi<{ success: boolean; message: string }>(`/db/databases/${id}`, {
       method: 'DELETE'
     }),
+  getTeamDatabases: (teamId: string) =>
+    fetchApi<any[]>(`/db/team-databases?teamId=${encodeURIComponent(teamId)}`),
+  createTeamDatabase: (teamId: string, dbData: any) =>
+    fetchApi<any>('/db/team-databases', {
+      method: 'POST',
+      body: JSON.stringify({ ...dbData, teamId })
+    }),
+  requestTeamDatabasePromotion: (dbId: string, requesterId: string, notes?: string) =>
+    fetchApi<any>(`/db/team-databases/${dbId}/request-promotion`, {
+      method: 'POST',
+      body: JSON.stringify({ requesterId, notes })
+    }),
+  reviewTeamDatabasePromotion: (dbId: string, action: 'APPROVE' | 'REJECT', reviewerId: string, notes?: string) =>
+    fetchApi<any>(`/db/team-databases/${dbId}/review-promotion`, {
+      method: 'POST',
+      body: JSON.stringify({ action, reviewerId, notes })
+    }),
+  getAdminTeamResources: () =>
+    fetchApi<any[]>('/db/admin/team-resources'),
   testConnection: (data: { dbId?: string; type?: string; host?: string; port?: number; connectionString?: string; databaseName?: string; username?: string }) =>
     fetchApi<{ success: boolean; message: string; pingMs: number; lastTestedAt: string; dbInfo?: any }>('/db/test-connection', {
       method: 'POST',
@@ -451,6 +470,11 @@ export const api = {
       method: 'PUT',
       body: JSON.stringify(updates)
     }),
+  updateTeamMemberPrivileges: (teamId: string, memberPrivileges: Record<string, any>, callerUserId?: string, callerRole?: string) =>
+    fetchApi<any>(`/teams/${teamId}/member-privileges`, {
+      method: 'PUT',
+      body: JSON.stringify({ memberPrivileges, callerUserId, callerRole })
+    }),
   deleteTeam: (id: string) =>
     fetchApi<{ success: boolean }>(`/teams/${id}`, { method: 'DELETE' }),
   getTeamTasks: (teamId?: string) =>
@@ -467,6 +491,13 @@ export const api = {
     }),
   deleteTeamTask: (id: string) =>
     fetchApi<{ success: boolean }>(`/teams/tasks/${id}`, { method: 'DELETE' }),
+  escalateTeamTask: (taskId: string, targetTeamId: string, escalationReason?: string) =>
+    fetchApi<any>(`/teams/tasks/${encodeURIComponent(taskId)}/escalate`, {
+      method: 'POST',
+      body: JSON.stringify({ targetTeamId, escalationReason })
+    }),
+  getTeamEscalationMatrix: (teamId: string) =>
+    fetchApi<TeamEscalationTarget[]>(`/teams/${encodeURIComponent(teamId)}/escalation-matrix`),
   getTeamInsights: (teamId?: string) =>
     fetchApi<any[]>(`/teams/insights/all${teamId ? `?teamId=${teamId}` : ''}`),
   createTeamInsight: (data: any) =>
@@ -623,7 +654,8 @@ export const api = {
     }),
 
   // ================= Workflows & Stages =================
-  getWorkflows: () => fetchApi<any[]>('/workflows'),
+  getWorkflows: (teamId?: string) =>
+    fetchApi<any[]>(`/workflows${teamId ? `?teamId=${encodeURIComponent(teamId)}` : ''}`),
   getWorkflow: (id: string) => fetchApi<any>(`/workflows/${id}`),
   createWorkflow: (workflow: any) =>
     fetchApi<any>('/workflows', {
@@ -800,8 +832,13 @@ export const api = {
     fetchApi<any>(`/transactions/table-mappings/validate/${encodeURIComponent(dbId)}/${encodeURIComponent(tableName)}`),
 
   // ================= Validation Boxes =================
-  getValidationBoxes: (boxType?: string) =>
-    fetchApi<any[]>(`/validation-boxes${boxType ? `?boxType=${boxType}` : ''}`),
+  getValidationBoxes: (boxType?: string, teamId?: string) => {
+    const params = new URLSearchParams();
+    if (boxType) params.append('boxType', boxType);
+    if (teamId) params.append('teamId', teamId);
+    const qs = params.toString();
+    return fetchApi<any[]>(`/validation-boxes${qs ? `?${qs}` : ''}`);
+  },
   getValidationBox: (id: string) =>
     fetchApi<any>(`/validation-boxes/${id}`),
   createValidationBox: (boxData: any) =>
@@ -890,6 +927,36 @@ export const api = {
     }>('/db/column-configurations/test', {
       method: 'POST',
       body: JSON.stringify({ config, sampleRows })
+    }),
+
+  // ================= Workspace Setting Proposals (Maker-Checker & Escalation) =================
+  getWorkspaceSettingProposals: (params?: { teamId?: string; status?: string }) => {
+    const query = new URLSearchParams();
+    if (params?.teamId) query.append('teamId', params.teamId);
+    if (params?.status) query.append('status', params.status);
+    const qs = query.toString();
+    return fetchApi<WorkspaceSettingProposal[]>(`/settings/proposals${qs ? `?${qs}` : ''}`);
+  },
+
+  getWorkspaceSettingProposalById: (id: string) =>
+    fetchApi<WorkspaceSettingProposal>(`/settings/proposals/${encodeURIComponent(id)}`),
+
+  createWorkspaceSettingProposal: (proposal: Partial<WorkspaceSettingProposal>) =>
+    fetchApi<WorkspaceSettingProposal>('/settings/proposals', {
+      method: 'POST',
+      body: JSON.stringify(proposal)
+    }),
+
+  reviewWorkspaceSettingProposal: (id: string, action: 'APPROVE' | 'REJECT', checkerId: string, checkerName?: string, feedback?: string) =>
+    fetchApi<WorkspaceSettingProposal>(`/settings/proposals/${encodeURIComponent(id)}/review`, {
+      method: 'POST',
+      body: JSON.stringify({ action, checkerId, checkerName, feedback })
+    }),
+
+  escalateWorkspaceSettingProposal: (id: string, targetTeamId: string, reason: string, escalatedBy?: string, escalatedByName?: string) =>
+    fetchApi<WorkspaceSettingProposal>(`/settings/proposals/${encodeURIComponent(id)}/escalate`, {
+      method: 'POST',
+      body: JSON.stringify({ targetTeamId, reason, escalatedBy, escalatedByName })
     })
 };
 

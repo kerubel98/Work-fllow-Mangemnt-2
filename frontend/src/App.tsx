@@ -31,6 +31,7 @@ const ManagerialDashboard = lazy(() => import('./components/ManagerialDashboard'
 const AdminPanel = lazy(() => import('./components/AdminPanel'));
 const WorkspaceSettings = lazy(() => import('./components/WorkspaceSettings'));
 const SystemSettings = lazy(() => import('./components/settings/SystemSettings'));
+const AdminTeamResourcesMonitor = lazy(() => import('./components/AdminTeamResourcesMonitor'));
 
 function PanelLoadingSkeleton() {
   return (
@@ -111,11 +112,12 @@ export default function App() {
 
   // Deep-linking target states for Notifications & Navigation
   const [deepLinkTeamId, setDeepLinkTeamId] = useState<string | null>(null);
-  const [deepLinkTeamTab, setDeepLinkTeamTab] = useState<'members' | 'discussion' | 'tasks' | 'timeline' | 'dashboard' | 'insights' | null>(null);
+  const [deepLinkTeamTab, setDeepLinkTeamTab] = useState<'members' | 'discussion' | 'tasks' | 'timeline' | 'dashboard' | 'insights' | 'team_settings' | 'approvals' | 'grants' | 'ai-strategy' | 'relationships' | null>(null);
   const [deepLinkTaskId, setDeepLinkTaskId] = useState<string | null>(null);
   const [deepLinkIssueId, setDeepLinkIssueId] = useState<string | null>(null);
   const [deepLinkDirectUserId, setDeepLinkDirectUserId] = useState<string | null>(null);
 
+  const [activeTeamName, setActiveTeamName] = useState<string | null>(null);
   const [createTeamSignal, setCreateTeamSignal] = useState(0);
 
   const handleTriggerCreateTeam = () => {
@@ -214,6 +216,7 @@ export default function App() {
 
   // Active view navigation
   const [activeNavigation, setActiveNavigation] = useState<string>('workspace');
+  const [workspaceSubView, setWorkspaceSubView] = useState<'sandbox' | 'investigation' | 'open_case'>('sandbox');
   const [adminPanelSubTab, setAdminPanelSubTab] = useState<'analytics' | 'connection_settings' | 'user_admin' | 'systems' | 'plugins'>('analytics');
   const [systemSettingsTab, setSystemSettingsTab] = useState<'dictionary' | 'connections' | 'environment'>('dictionary');
 
@@ -719,6 +722,11 @@ export default function App() {
     api.updateTeamTask(taskId, { status }).catch(err => console.warn('Could not update task status in API:', err));
   };
 
+  const handleUpdateTeamTask = (taskId: string, updates: Partial<TeamTask>) => {
+    setTeamTasks(prev => prev.map(t => t.id === taskId ? { ...t, ...updates } : t));
+    api.updateTeamTask(taskId, updates).catch(err => console.warn('Could not update task in API:', err));
+  };
+
   const handleDeleteTeamTask = (taskId: string) => {
     setTeamTasks(prev => prev.filter(t => t.id !== taskId));
     api.deleteTeamTask(taskId).catch(err => console.warn('Could not delete task in API:', err));
@@ -1037,7 +1045,7 @@ export default function App() {
   const isAuthorizedTab = (tab: string) => {
     if (!currentUser) return false;
     const isAdmin = currentUser.role === 'admin' || currentUser.username?.toLowerCase() === 'admin' || (currentUser.role as string)?.toLowerCase() === 'administrator';
-    if (tab === 'txn_settings' || tab === 'system_settings') {
+    if (tab === 'txn_settings' || tab === 'system_settings' || tab === 'admin_team_resources') {
       return isAdmin;
     }
     return true;
@@ -1057,6 +1065,9 @@ export default function App() {
         currentUser={effectiveUser || currentUser} 
         onLogout={handleLogout} 
         onlineCount={onlineCount} 
+        activeNavigation={activeNavigation}
+        activeTeamName={activeTeamName}
+        workspaceSubView={workspaceSubView}
       />
 
       {/* 2. Primary Layout Switcher */}
@@ -1107,6 +1118,7 @@ export default function App() {
                   onCreateHashtagPreset={handleCreateHashtagPreset} 
                   onSendChatMessage={handleSendChatMessage} 
                   onChangeTab={setActiveNavigation}
+                  onWorkspaceSubViewChange={setWorkspaceSubView}
                   initialSelectedIssueId={deepLinkIssueId}
                   activeMode={
                     activeNavigation === 'my_tasks'
@@ -1127,6 +1139,7 @@ export default function App() {
                   currentUser={effectiveUser || currentUser}
                   users={users}
                   teams={teams}
+                  databases={databases}
                   tasks={teamTasks}
                   insights={teamInsights}
                   messages={teamMessages}
@@ -1134,6 +1147,7 @@ export default function App() {
                   onUpdateTeam={handleUpdateTeam}
                   onAddTask={handleAddTeamTask}
                   onUpdateTaskStatus={handleUpdateTeamTaskStatus}
+                  onUpdateTask={handleUpdateTeamTask}
                   onDeleteTask={handleDeleteTeamTask}
                   onAddInsight={handleAddTeamInsight}
                   onDeleteInsight={handleDeleteTeamInsight}
@@ -1143,6 +1157,7 @@ export default function App() {
                   initialActiveTab={deepLinkTeamTab}
                   initialSelectedTaskId={deepLinkTaskId}
                   onOpenPersonalChat={handleOpenPersonalChat}
+                  onActiveTeamChange={setActiveTeamName}
                 />
               </ErrorBoundary>
             )}
@@ -1278,6 +1293,20 @@ export default function App() {
                   onUpdateDb={handleUpdateDatabase}
                   onNavigateToWorkspace={() => setActiveNavigation('workspace')}
                   initialTab={systemSettingsTab}
+                />
+              </ErrorBoundary>
+            )}
+
+            {activeNavigation === 'admin_team_resources' && isAuthorizedTab('admin_team_resources') && (
+              <ErrorBoundary fallbackTitle="Admin Team Resources Monitor Error">
+                <AdminTeamResourcesMonitor
+                  currentUser={effectiveUser || currentUser!}
+                  teams={teams}
+                  databases={databases}
+                  onRefreshDatabases={() => {
+                    api.getDatabases().then(dbs => setDatabases(dbs)).catch(() => {});
+                  }}
+                  onNavigateToWorkspace={() => setActiveNavigation('workspace')}
                 />
               </ErrorBoundary>
             )}

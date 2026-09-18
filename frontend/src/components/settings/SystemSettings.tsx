@@ -772,53 +772,51 @@ export default function SystemSettings({
   return (
     <div className="space-y-3.5 max-w-7xl mx-auto pb-8">
       {/* Top Banner Header */}
-      <div className="bg-[#0F172B] text-white rounded-xl p-3 sm:p-3.5 shadow-sm border border-slate-800 flex flex-col md:flex-row md:items-center justify-between gap-3">
-        <div className="space-y-1">
-          <div className="flex items-center space-x-2">
-            <span className="px-2 py-0.5 rounded-full text-[10px] font-mono tracking-wider font-bold bg-blue-500/20 text-blue-300 border border-blue-400/30 uppercase flex items-center gap-1">
-              <ShieldCheck size={11} className="text-blue-400" />
-              Administrator View Only
-            </span>
-            <span className="text-xs text-slate-400 font-mono">v2.4.0 Engine</span>
+      <div className="bg-white text-slate-800 rounded-2xl p-2.5 sm:p-3 shadow-xs border border-slate-200/90 flex items-center justify-between gap-2 overflow-x-auto no-scrollbar" id="system-settings-header">
+        <div className="flex items-center gap-2 shrink-0">
+          <div className="p-1.5 bg-blue-50 text-[#155DFC] rounded-lg border border-blue-200/60 shrink-0">
+            <Sliders size={18} />
           </div>
-          <h1 className="text-base lg:text-lg font-black tracking-tight text-white flex items-center gap-2">
-            <Sliders className="text-blue-400" size={20} />
-            System Administration Settings
-          </h1>
-          <p className="text-[11px] text-slate-300 max-w-2xl leading-relaxed">
-            Configure system-wide parameters, manage real database connections, curate the Global Column Data Dictionary, and establish physical-to-global table schema mappings.
-          </p>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <h1 className="text-xs sm:text-sm font-bold tracking-tight text-slate-900 whitespace-nowrap">
+              System Administration Settings
+            </h1>
+            <span className="hidden xl:inline-flex px-1.5 py-0.5 rounded-full text-[10px] font-mono tracking-wider font-bold bg-blue-50 text-blue-600 border border-blue-200/60 uppercase items-center gap-1 whitespace-nowrap">
+              <ShieldCheck size={10} className="text-blue-600" />
+              Admin
+            </span>
+          </div>
         </div>
 
         {/* Status Counters */}
-        <div className="flex items-center gap-2 self-start md:self-auto shrink-0">
-          <div className="px-3 py-1.5 rounded-lg bg-slate-800/80 border border-slate-700/80 text-center">
-            <span className="text-[9px] uppercase font-bold text-slate-400 block tracking-wider font-mono">Databases</span>
-            <span className="text-sm font-black text-white">{databases.length}</span>
+        <div className="flex items-center gap-2 shrink-0">
+          <div className="px-2.5 py-1 rounded-lg bg-slate-50 border border-slate-200 text-center flex items-center gap-1.5">
+            <span className="text-[10px] font-bold text-slate-500 tracking-wider font-mono">Databases:</span>
+            <span className="text-xs font-black text-slate-800">{databases.length}</span>
           </div>
-          <div className="px-3 py-1.5 rounded-lg bg-slate-800/80 border border-slate-700/80 text-center">
-            <span className="text-[9px] uppercase font-bold text-slate-400 block tracking-wider font-mono">Dict Columns</span>
-            <span className="text-sm font-black text-blue-400">{fields.length}</span>
+          <div className="px-2.5 py-1 rounded-lg bg-slate-50 border border-slate-200 text-center flex items-center gap-1.5">
+            <span className="text-[10px] font-bold text-slate-500 tracking-wider font-mono">Dict Columns:</span>
+            <span className="text-xs font-black text-[#155DFC]">{fields.length}</span>
           </div>
         </div>
       </div>
 
       {/* Main Tab Navigation Bar */}
-      <div className="bg-[#0F172B] rounded-xl border border-slate-800 shadow-xs p-1 flex items-center gap-1 overflow-x-auto">
+      <div className="bg-slate-100/90 rounded-2xl border border-slate-200 shadow-xs p-1 flex items-center gap-1 overflow-x-auto no-scrollbar" id="system-settings-tabs">
         <button
           type="button"
           onClick={() => setActiveTab('dictionary')}
-          className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition whitespace-nowrap ${
+          className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition whitespace-nowrap shrink-0 cursor-pointer ${
             activeTab === 'dictionary'
-              ? 'bg-[#155DFC] text-white shadow-xs'
-              : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
+              ? 'bg-[#155DFC] text-white shadow-xs font-bold'
+              : 'text-slate-600 hover:text-slate-900 hover:bg-white'
           }`}
           id="tab-sys-dict"
         >
           <BookOpen className="w-3.5 h-3.5" />
           <span>Global Mapping Dictionary</span>
           <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${
-            activeTab === 'dictionary' ? 'bg-[#0F172B]/60 text-white' : 'bg-slate-800 text-slate-300'
+            activeTab === 'dictionary' ? 'bg-blue-700 text-white' : 'bg-slate-200 text-slate-700'
           }`}>
             {fields.length}
           </span>
@@ -827,17 +825,17 @@ export default function SystemSettings({
         <button
           type="button"
           onClick={() => setActiveTab('connections')}
-          className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition whitespace-nowrap ${
+          className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition whitespace-nowrap shrink-0 cursor-pointer ${
             activeTab === 'connections'
-              ? 'bg-[#155DFC] text-white shadow-xs'
-              : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
+              ? 'bg-[#155DFC] text-white shadow-xs font-bold'
+              : 'text-slate-600 hover:text-slate-900 hover:bg-white'
           }`}
           id="tab-sys-conn"
         >
           <Database className="w-3.5 h-3.5" />
           <span>Connection Settings</span>
           <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${
-            activeTab === 'connections' ? 'bg-[#0F172B]/60 text-white' : 'bg-slate-800 text-slate-300'
+            activeTab === 'connections' ? 'bg-blue-700 text-white' : 'bg-slate-200 text-slate-700'
           }`}>
             {databases.length}
           </span>
@@ -846,10 +844,10 @@ export default function SystemSettings({
         <button
           type="button"
           onClick={() => setActiveTab('environment')}
-          className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition whitespace-nowrap ${
+          className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition whitespace-nowrap shrink-0 cursor-pointer ${
             activeTab === 'environment'
-              ? 'bg-[#155DFC] text-white shadow-xs'
-              : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
+              ? 'bg-[#155DFC] text-white shadow-xs font-bold'
+              : 'text-slate-600 hover:text-slate-900 hover:bg-white'
           }`}
           id="tab-sys-env"
         >
@@ -860,17 +858,17 @@ export default function SystemSettings({
         <button
           type="button"
           onClick={() => setActiveTab('staging')}
-          className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition whitespace-nowrap ${
+          className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition whitespace-nowrap shrink-0 cursor-pointer ${
             activeTab === 'staging'
-              ? 'bg-[#155DFC] text-white shadow-xs'
-              : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
+              ? 'bg-[#155DFC] text-white shadow-xs font-bold'
+              : 'text-slate-600 hover:text-slate-900 hover:bg-white'
           }`}
           id="tab-sys-staging"
         >
           <FileSpreadsheet className="w-3.5 h-3.5" />
           <span>FTP File Staging & Parsing</span>
           <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${
-            activeTab === 'staging' ? 'bg-[#0F172B]/60 text-white' : 'bg-slate-800 text-slate-300'
+            activeTab === 'staging' ? 'bg-blue-700 text-white' : 'bg-slate-200 text-slate-700'
           }`}>
             {databases.filter(d => d.type === 'FTP' || d.type === 'SFTP').length}
           </span>

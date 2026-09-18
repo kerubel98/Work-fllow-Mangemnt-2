@@ -7,26 +7,81 @@ import { queryPg, isPostgresConnected } from '../config/postgres.js';
 export const teamsRouter = Router();
 
 // ================= TEAMS =================
-teamsRouter.get('/', async (_req: Request, res: Response) => {
+teamsRouter.get('/', async (req: Request, res: Response) => {
   try {
     const teams = await repo.getTeams();
+    const userId = req.query.userId as string | undefined;
+    const all = req.query.all === 'true';
+    const userRole = req.query.userRole as string | undefined;
+
+    if (userId && !all && userRole !== 'admin') {
+      const userTeams = teams.filter(t => 
+        t.managerId === userId || 
+        (t.memberIds && t.memberIds.includes(userId))
+      );
+      return res.json(userTeams);
+    }
+
     return res.json(teams);
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
   }
 });
 
+// Helper to enforce that a user can only belong to ONE permanent team
+async function validateSinglePermanentTeamMembership(
+  targetTeamId: string | null,
+  isPermanent: boolean,
+  managerId: string,
+  memberIds: string[]
+): Promise<{ valid: boolean; error?: string }> {
+  if (!isPermanent) return { valid: true };
+
+  const allTeams = await repo.getTeams();
+  const otherPermanentTeams = allTeams.filter(t => t.teamType === 'permanent' && t.id !== targetTeamId);
+  const candidateUsers = Array.from(new Set([managerId, ...memberIds].filter(Boolean)));
+  const allUsers = await repo.getUsers();
+
+  for (const userId of candidateUsers) {
+    const existingTeam = otherPermanentTeams.find(t => 
+      t.managerId === userId || (t.memberIds && t.memberIds.includes(userId))
+    );
+    if (existingTeam) {
+      const user = allUsers.find(u => u.id === userId);
+      const username = user ? user.username : userId;
+      return {
+        valid: false,
+        error: `User "${username}" (ID: ${userId}) is already a member of permanent team "${existingTeam.name}". A user can only belong to one permanent team.`
+      };
+    }
+  }
+
+  return { valid: true };
+}
+
 teamsRouter.post('/', async (req: Request, res: Response) => {
   try {
     const teamData: Partial<Team> = req.body;
+    const isPermanent = (teamData.teamType || 'working') === 'permanent';
+    const managerId = teamData.managerId || 'usr-4';
+    const memberIds = teamData.memberIds || ['usr-1', 'usr-2'];
+
+    // Enforce Single Permanent Team Invariant
+    const validation = await validateSinglePermanentTeamMembership(null, isPermanent, managerId, memberIds);
+    if (!validation.valid) {
+      return res.status(400).json({ error: validation.error });
+    }
+
     const newTeam: Team = {
       id: teamData.id || `team-${Date.now()}`,
       name: teamData.name || 'New Squad',
       description: teamData.description || '',
       teamType: teamData.teamType || 'working',
-      managerId: teamData.managerId || 'usr-4',
+      managerId,
       managerName: teamData.managerName || 'manager_alex',
-      memberIds: teamData.memberIds || ['usr-1', 'usr-2'],
+      memberIds,
+      allowedDbIds: teamData.allowedDbIds || [],
+      allowedQueryTypes: teamData.allowedQueryTypes || ['SELECT'],
       createdAt: new Date().toISOString()
     };
     const saved = await repo.createTeam(newTeam);
@@ -39,10 +94,104 @@ teamsRouter.post('/', async (req: Request, res: Response) => {
 
 teamsRouter.put('/:id', async (req: Request, res: Response) => {
   try {
+    const existing = await repo.getTeamById(req.params.id);
+    if (!existing) return res.status(404).json({ error: 'Team not found' });
+
+    const effectiveTeamType = req.body.teamType !== undefined ? req.body.teamType : existing.teamType;
+    const isPermanent = (effectiveTeamType || 'working') === 'permanent';
+    const effectiveManagerId = req.body.managerId !== undefined ? req.body.managerId : existing.managerId;
+    const effectiveMemberIds = req.body.memberIds !== undefined ? req.body.memberIds : existing.memberIds;
+
+    // Enforce Single Permanent Team Invariant
+    const validation = await validateSinglePermanentTeamMembership(
+      req.params.id,
+      isPermanent,
+      effectiveManagerId,
+      effectiveMemberIds || []
+    );
+    if (!validation.valid) {
+      return res.status(400).json({ error: validation.error });
+    }
+
     const updated = await repo.updateTeam(req.params.id, req.body);
     if (!updated) return res.status(404).json({ error: 'Team not found' });
     eventService.broadcastEvent('team:updated', updated);
     return res.json(updated);
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /api/teams/:id/member-privileges - Manager allocates privileges to team members within admin ceiling
+teamsRouter.put('/:id/member-privileges', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { memberPrivileges, callerUserId, callerRole } = req.body;
+
+    const team = await repo.getTeamById(id);
+    if (!team) return res.status(404).json({ error: 'Team not found' });
+
+    // Authorization check: Only team manager or admin can allocate member privileges
+    if (callerUserId && callerRole !== 'admin') {
+      if (team.managerId !== callerUserId) {
+        return res.status(403).json({
+          error: 'Access Denied: Only the designated Team Manager or a Workspace Admin can allocate member privileges.'
+        });
+      }
+    }
+
+    if (!memberPrivileges || typeof memberPrivileges !== 'object') {
+      return res.status(400).json({ error: 'memberPrivileges object map is required.' });
+    }
+
+    // 1. Determine Team's Permitted Database Ceiling (Admin-granted global DBs + Team-specific DBs)
+    const teamAllowedDbIds = new Set<string>(team.allowedDbIds || []);
+    const teamSpecificDbs = await repo.getTeamSpecificConnections(team.id);
+    teamSpecificDbs.forEach(d => teamAllowedDbIds.add(d.id));
+
+    // 2. Determine Team's Permitted Query Type Ceiling
+    const teamAllowedQueryTypes = new Set<string>(
+      team.allowedQueryTypes && team.allowedQueryTypes.length > 0
+        ? team.allowedQueryTypes
+        : ['SELECT']
+    );
+
+    // 3. Enforce Strict Privilege Ceiling for each member
+    for (const [userId, privs] of Object.entries(memberPrivileges as Record<string, any>)) {
+      const allowedDbIds: string[] = Array.isArray(privs?.allowedDbIds) ? privs.allowedDbIds : [];
+      const allowedQueryTypes: string[] = Array.isArray(privs?.allowedQueryTypes) ? privs.allowedQueryTypes : ['SELECT'];
+
+      for (const dbId of allowedDbIds) {
+        if (!teamAllowedDbIds.has(dbId)) {
+          return res.status(400).json({
+            error: `Privilege Ceiling Exceeded for user ${userId}: Database "${dbId}" has not been granted to team "${team.name}" by Workspace Admin.`
+          });
+        }
+      }
+
+      for (const qType of allowedQueryTypes) {
+        if (!teamAllowedQueryTypes.has(qType)) {
+          return res.status(400).json({
+            error: `Privilege Ceiling Exceeded for user ${userId}: Query privilege "${qType}" exceeds the operations permitted for team "${team.name}" by Workspace Admin. Team permitted types: [${Array.from(teamAllowedQueryTypes).join(', ')}]`
+          });
+        }
+      }
+    }
+
+    // 4. Persist updated member privileges
+    const updated = await repo.updateTeamMemberPrivileges(id, memberPrivileges);
+    if (!updated) return res.status(404).json({ error: 'Could not update team member privileges.' });
+
+    eventService.broadcastEvent('team:member-privileges:updated', {
+      teamId: id,
+      memberPrivileges
+    });
+
+    return res.json({
+      success: true,
+      team: updated,
+      ...updated
+    });
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
   }

@@ -665,35 +665,8 @@ export const postgresRepo = {
   },
 
   // ================= DATABASE CONNECTIONS =================
-  async getDatabaseConnections(): Promise<DatabaseConnection[]> {
-    const pool = getPostgresPool();
-    const { rows } = await pool.query('SELECT * FROM database_connections ORDER BY name ASC;');
-    return rows.map(r => ({
-      id: r.id,
-      name: r.name,
-      type: r.type,
-      host: r.host,
-      port: r.port || undefined,
-      connectionString: r.connection_string || undefined,
-      databaseName: r.database_name || undefined,
-      username: r.username || undefined,
-      password: r.password || undefined,
-      status: r.status,
-      apiEndpoint: r.api_endpoint || '',
-      createdByAdmin: r.created_by_admin,
-      requiresAccessApproval: r.requires_access_approval,
-      description: r.description || undefined,
-      allowedRoles: parseJson(r.allowed_roles, []),
-      allowedTables: parseJson(r.allowed_tables, []),
-      availableTables: parseJson(r.available_tables, [])
-    }));
-  },
-
-  async getDatabaseConnectionById(id: string): Promise<DatabaseConnection | null> {
-    const pool = getPostgresPool();
-    const { rows } = await pool.query('SELECT * FROM database_connections WHERE id = $1 LIMIT 1;', [id]);
-    if (!rows.length) return null;
-    const r = rows[0];
+  // Helper to map PostgreSQL row to DatabaseConnection entity
+  mapDbConnectionRow(r: any): DatabaseConnection {
     return {
       id: r.id,
       name: r.name,
@@ -711,15 +684,63 @@ export const postgresRepo = {
       description: r.description || undefined,
       allowedRoles: parseJson(r.allowed_roles, []),
       allowedTables: parseJson(r.allowed_tables, []),
-      availableTables: parseJson(r.available_tables, [])
+      availableTables: parseJson(r.available_tables, []),
+      scope: r.scope || 'global',
+      teamId: r.team_id || undefined,
+      createdByUserId: r.created_by_user_id || undefined,
+      promotionStatus: r.promotion_status || 'NONE',
+      promotionRequestedAt: r.promotion_requested_at ? new Date(r.promotion_requested_at).toISOString() : undefined,
+      promotionRequestedBy: r.promotion_requested_by || undefined,
+      promotionReviewedAt: r.promotion_reviewed_at ? new Date(r.promotion_reviewed_at).toISOString() : undefined,
+      promotionReviewedBy: r.promotion_reviewed_by || undefined,
+      promotionNotes: r.promotion_notes || undefined
     };
+  },
+
+  // ================= DATABASE CONNECTIONS =================
+  async getDatabaseConnections(): Promise<DatabaseConnection[]> {
+    const pool = getPostgresPool();
+    const { rows } = await pool.query('SELECT * FROM database_connections ORDER BY name ASC;');
+    return rows.map(r => this.mapDbConnectionRow(r));
+  },
+
+  async getDatabaseConnectionById(id: string): Promise<DatabaseConnection | null> {
+    const pool = getPostgresPool();
+    const { rows } = await pool.query('SELECT * FROM database_connections WHERE id = $1 LIMIT 1;', [id]);
+    if (!rows.length) return null;
+    return this.mapDbConnectionRow(rows[0]);
+  },
+
+  async getTeamSpecificConnections(teamId: string): Promise<DatabaseConnection[]> {
+    const pool = getPostgresPool();
+    const { rows } = await pool.query(
+      `SELECT * FROM database_connections WHERE scope = 'team' AND team_id = $1 ORDER BY name ASC;`,
+      [teamId]
+    );
+    return rows.map(r => this.mapDbConnectionRow(r));
+  },
+
+  async getAdminTeamResources(): Promise<DatabaseConnection[]> {
+    const pool = getPostgresPool();
+    const { rows } = await pool.query(
+      `SELECT * FROM database_connections 
+       WHERE scope = 'team' OR promotion_status != 'NONE' 
+       ORDER BY promotion_requested_at DESC NULLS LAST, name ASC;`
+    );
+    return rows.map(r => this.mapDbConnectionRow(r));
   },
 
   async createDatabaseConnection(conn: DatabaseConnection): Promise<DatabaseConnection> {
     const pool = getPostgresPool();
     await pool.query(
-      `INSERT INTO database_connections (id, name, type, host, port, connection_string, database_name, username, password, status, api_endpoint, created_by_admin, requires_access_approval, description, allowed_roles, allowed_tables, available_tables)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+      `INSERT INTO database_connections (
+         id, name, type, host, port, connection_string, database_name, username, password, 
+         status, api_endpoint, created_by_admin, requires_access_approval, description, 
+         allowed_roles, allowed_tables, available_tables,
+         scope, team_id, created_by_user_id, promotion_status, 
+         promotion_requested_at, promotion_requested_by, promotion_reviewed_at, promotion_reviewed_by, promotion_notes
+       )
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)
        ON CONFLICT (id) DO UPDATE SET
          name = EXCLUDED.name,
          type = EXCLUDED.type,
@@ -736,7 +757,16 @@ export const postgresRepo = {
          description = EXCLUDED.description,
          allowed_roles = EXCLUDED.allowed_roles,
          allowed_tables = EXCLUDED.allowed_tables,
-         available_tables = EXCLUDED.available_tables;`,
+         available_tables = EXCLUDED.available_tables,
+         scope = EXCLUDED.scope,
+         team_id = EXCLUDED.team_id,
+         created_by_user_id = EXCLUDED.created_by_user_id,
+         promotion_status = EXCLUDED.promotion_status,
+         promotion_requested_at = EXCLUDED.promotion_requested_at,
+         promotion_requested_by = EXCLUDED.promotion_requested_by,
+         promotion_reviewed_at = EXCLUDED.promotion_reviewed_at,
+         promotion_reviewed_by = EXCLUDED.promotion_reviewed_by,
+         promotion_notes = EXCLUDED.promotion_notes;`,
       [
         conn.id,
         conn.name,
@@ -754,7 +784,16 @@ export const postgresRepo = {
         conn.description || '',
         JSON.stringify(conn.allowedRoles || []),
         JSON.stringify(conn.allowedTables || []),
-        JSON.stringify(conn.availableTables || [])
+        JSON.stringify(conn.availableTables || []),
+        conn.scope || 'global',
+        conn.teamId || null,
+        conn.createdByUserId || null,
+        conn.promotionStatus || 'NONE',
+        conn.promotionRequestedAt || null,
+        conn.promotionRequestedBy || null,
+        conn.promotionReviewedAt || null,
+        conn.promotionReviewedBy || null,
+        conn.promotionNotes || null
       ]
     );
     return conn;
@@ -860,6 +899,9 @@ export const postgresRepo = {
       managerId: r.manager_id,
       managerName: r.manager_name,
       memberIds: parseJson(r.member_ids, []),
+      allowedDbIds: parseJson(r.allowed_db_ids, []),
+      allowedQueryTypes: parseJson(r.allowed_query_types, ['SELECT']),
+      memberPrivileges: parseJson(r.member_privileges, {}),
       createdAt: r.created_at?.toISOString() || new Date().toISOString()
     }));
   },
@@ -877,22 +919,66 @@ export const postgresRepo = {
       managerId: r.manager_id,
       managerName: r.manager_name,
       memberIds: parseJson(r.member_ids, []),
+      allowedDbIds: parseJson(r.allowed_db_ids, []),
+      allowedQueryTypes: parseJson(r.allowed_query_types, ['SELECT']),
+      memberPrivileges: parseJson(r.member_privileges, {}),
       createdAt: r.created_at?.toISOString() || new Date().toISOString()
     };
+  },
+
+  async getUserPermanentTeam(userId: string): Promise<Team | null> {
+    const pool = getPostgresPool();
+    // 1. Check if user row explicitly links to a permanent team
+    const userRes = await pool.query('SELECT permanent_team_id FROM users WHERE id = $1 LIMIT 1;', [userId]);
+    if (userRes.rows.length && userRes.rows[0].permanent_team_id) {
+      const team = await this.getTeamById(userRes.rows[0].permanent_team_id);
+      if (team && team.teamType === 'permanent') return team;
+    }
+    // 2. Direct search on teams table for permanent team where user is manager or member
+    const { rows } = await pool.query(
+      `SELECT * FROM teams 
+       WHERE team_type = 'permanent' 
+         AND (manager_id = $1 OR member_ids::jsonb @> to_jsonb($1::text))
+       LIMIT 1;`,
+      [userId]
+    );
+    if (!rows.length) return null;
+    const r = rows[0];
+    return {
+      id: r.id,
+      name: r.name,
+      description: r.description,
+      teamType: r.team_type,
+      managerId: r.manager_id,
+      managerName: r.manager_name,
+      memberIds: parseJson(r.member_ids, []),
+      allowedDbIds: parseJson(r.allowed_db_ids, []),
+      allowedQueryTypes: parseJson(r.allowed_query_types, ['SELECT']),
+      memberPrivileges: parseJson(r.member_privileges, {}),
+      createdAt: r.created_at?.toISOString() || new Date().toISOString()
+    };
+  },
+
+  async syncUserPermanentTeam(userId: string, teamId: string | null): Promise<void> {
+    const pool = getPostgresPool();
+    await pool.query('UPDATE users SET permanent_team_id = $1 WHERE id = $2;', [teamId, userId]);
   },
 
   async createTeam(team: Team): Promise<Team> {
     const pool = getPostgresPool();
     await pool.query(
-      `INSERT INTO teams (id, name, description, team_type, manager_id, manager_name, member_ids, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+      `INSERT INTO teams (id, name, description, team_type, manager_id, manager_name, member_ids, allowed_db_ids, allowed_query_types, member_privileges, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
        ON CONFLICT (id) DO UPDATE SET
          name = EXCLUDED.name,
          description = EXCLUDED.description,
          team_type = EXCLUDED.team_type,
          manager_id = EXCLUDED.manager_id,
          manager_name = EXCLUDED.manager_name,
-         member_ids = EXCLUDED.member_ids;`,
+         member_ids = EXCLUDED.member_ids,
+         allowed_db_ids = EXCLUDED.allowed_db_ids,
+         allowed_query_types = EXCLUDED.allowed_query_types,
+         member_privileges = EXCLUDED.member_privileges;`,
       [
         team.id,
         team.name,
@@ -901,10 +987,33 @@ export const postgresRepo = {
         team.managerId,
         team.managerName,
         JSON.stringify(team.memberIds || []),
+        JSON.stringify(team.allowedDbIds || []),
+        JSON.stringify(team.allowedQueryTypes || ['SELECT']),
+        JSON.stringify(team.memberPrivileges || {}),
         team.createdAt || new Date()
       ]
     );
+
+    // If permanent team, synchronize all member users' permanent_team_id
+    if ((team.teamType || 'permanent') === 'permanent') {
+      const allMembers = Array.from(new Set([team.managerId, ...(team.memberIds || [])]));
+      for (const memberId of allMembers) {
+        if (memberId) {
+          await this.syncUserPermanentTeam(memberId, team.id);
+        }
+      }
+    }
+
     return team;
+  },
+
+  async updateTeamMemberPrivileges(teamId: string, memberPrivileges: Record<string, any>): Promise<Team | null> {
+    const pool = getPostgresPool();
+    await pool.query(
+      `UPDATE teams SET member_privileges = $1 WHERE id = $2;`,
+      [JSON.stringify(memberPrivileges || {}), teamId]
+    );
+    return await this.getTeamById(teamId);
   },
 
   async updateTeam(id: string, updates: Partial<Team>): Promise<Team | null> {
@@ -912,11 +1021,24 @@ export const postgresRepo = {
     if (!existing) return null;
     const merged = { ...existing, ...updates };
     await this.createTeam(merged);
+
+    // If permanent team and members were removed, clean up their permanent_team_id
+    if (merged.teamType === 'permanent' && updates.memberIds) {
+      const newMemberSet = new Set([merged.managerId, ...(updates.memberIds || [])]);
+      const oldMembers = Array.from(new Set([existing.managerId, ...(existing.memberIds || [])]));
+      for (const oldMem of oldMembers) {
+        if (!newMemberSet.has(oldMem)) {
+          await this.syncUserPermanentTeam(oldMem, null);
+        }
+      }
+    }
+
     return merged;
   },
 
   async deleteTeam(id: string): Promise<boolean> {
     const pool = getPostgresPool();
+    await pool.query('UPDATE users SET permanent_team_id = NULL WHERE permanent_team_id = $1;', [id]);
     const res = await pool.query('DELETE FROM teams WHERE id = $1;', [id]);
     return (res.rowCount ?? 0) > 0;
   },
@@ -3447,7 +3569,7 @@ export const postgresRepo = {
         }
       } else if (proposal.settingType === 'COLUMN_CONFIG') {
         if (changes.id) {
-          await this.saveDatabaseColumnConfiguration(changes);
+          await this.createColumnConfiguration(changes as unknown as DatabaseColumnConfiguration);
         }
       } else if (proposal.settingType === 'VALIDATION_BOX') {
         if (changes.id) {
