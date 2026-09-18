@@ -3,14 +3,16 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { Issue, HashtagPreset, User, Team, IssueStatus, IssuePriority } from '../types';
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, BarChart, Bar, Cell } from 'recharts';
+import { api } from '../api/client';
 import { 
   TrendingUp, CheckCircle, Shield, FileSpreadsheet, Percent, Clock, 
   Users, UserPlus, Plus, Trash2, UserX, Layers, Info, X, ShieldAlert,
   Briefcase, Check, Search, Filter, CheckSquare, ArrowUpRight, CheckCircle2,
-  ListTodo, UserCheck, LayoutDashboard, SlidersHorizontal, RefreshCw, AlertCircle
+  ListTodo, UserCheck, LayoutDashboard, SlidersHorizontal, RefreshCw, AlertCircle,
+  Tag, Target, Award, ArrowRight, GitCommit, FileCode, CheckCheck, Sparkles, Save
 } from 'lucide-react';
 
 interface ManagerialDashboardProps {
@@ -44,6 +46,58 @@ export default function ManagerialDashboard({
   const [taskSearchTerm, setTaskSearchTerm] = useState('');
   const [taskStatusFilter, setTaskStatusFilter] = useState<'ALL' | 'Open' | 'Investigating' | 'Resolved' | 'Closed'>('ALL');
   const [taskPriorityFilter, setTaskPriorityFilter] = useState<'ALL' | 'Low' | 'Medium' | 'High' | 'Critical'>('ALL');
+
+  // Dashboard Section Navigation: 'overview' | 'hashtags' | 'unresolved_scripts' | 'teams'
+  const [activeDashboardTab, setActiveDashboardTab] = useState<'overview' | 'hashtags' | 'unresolved_scripts' | 'teams'>('overview');
+
+  // Hashtag Analytics & Unresolved Scripts State
+  const [hashtagAnalyticsData, setHashtagAnalyticsData] = useState<{
+    hashtagAnalytics: any[];
+    issuesAwaitingSolution: any[];
+    totalTrackedTags: number;
+  } | null>(null);
+  const [isLoadingAnalytics, setIsLoadingAnalytics] = useState(false);
+
+  // Manager KPI Attachment State
+  const [editingKpiTag, setEditingKpiTag] = useState<string | null>(null);
+  const [targetResolutionHours, setTargetResolutionHours] = useState<number>(24);
+  const [expectedAccuracyPercent, setExpectedAccuracyPercent] = useState<number>(99);
+  const [assignedTeamId, setAssignedTeamId] = useState<string>('');
+  const [isSavingKpi, setIsSavingKpi] = useState(false);
+  const [kpiSuccessMsg, setKpiSuccessMsg] = useState<string | null>(null);
+
+  useEffect(() => {
+    setIsLoadingAnalytics(true);
+    api.getHashtagAnalytics()
+      .then(res => {
+        if (res) setHashtagAnalyticsData(res);
+      })
+      .catch(e => console.warn('Could not load hashtag analytics:', e))
+      .finally(() => setIsLoadingAnalytics(false));
+  }, []);
+
+  const handleSaveKpi = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingKpiTag) return;
+    setIsSavingKpi(true);
+    try {
+      const kpis = [{
+        targetResolutionHours: Number(targetResolutionHours),
+        expectedAccuracyPercent: Number(expectedAccuracyPercent),
+        assignedTeamId: assignedTeamId || undefined
+      }];
+      await api.updateHashtagKpis(editingKpiTag, kpis);
+      setKpiSuccessMsg(`KPI SLA targets successfully updated for ${editingKpiTag}!`);
+      const updated = await api.getHashtagAnalytics();
+      if (updated) setHashtagAnalyticsData(updated);
+      setEditingKpiTag(null);
+      setTimeout(() => setKpiSuccessMsg(null), 4000);
+    } catch (err: any) {
+      alert('Failed to update hashtag KPIs: ' + (err?.message || 'Unknown error'));
+    } finally {
+      setIsSavingKpi(false);
+    }
+  };
 
   // Team management state
   const [showCreateModal, setShowCreateModal] = useState(false);
@@ -210,24 +264,24 @@ export default function ManagerialDashboard({
   };
 
   return (
-    <div className="space-y-6" id="dashboard-view">
+    <div className="space-y-3.5" id="dashboard-view">
       
       {/* Dashboard Top Banner */}
-      <div className="bg-gradient-to-r from-slate-900 via-slate-800 to-blue-950 text-white rounded-2xl p-5 shadow-sm border border-slate-700/80">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-          <div className="flex items-start space-x-3.5">
-            <div className="p-2.5 bg-blue-500/20 text-blue-400 rounded-xl border border-blue-400/30 mt-0.5 shrink-0">
-              <LayoutDashboard size={22} />
+      <div className="bg-[#0F172B] border border-slate-800 text-white rounded-xl p-3 sm:p-3.5 shadow-sm">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+          <div className="flex items-start space-x-3">
+            <div className="p-2 bg-blue-500/20 text-blue-400 rounded-lg border border-blue-400/30 mt-0.5 shrink-0">
+              <LayoutDashboard size={18} />
             </div>
             <div>
               <div className="flex items-center space-x-2">
-                <span className="text-xs font-bold uppercase tracking-widest text-blue-400 font-mono">Unified Operational Level Active</span>
+                <span className="text-[10px] font-bold uppercase tracking-widest text-blue-400 font-mono">Unified Operational Level Active</span>
                 <span className="bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[10px] px-2 py-0.5 rounded-full font-mono font-medium">
                   Full Administrative Access
                 </span>
               </div>
-              <h2 className="text-base font-bold text-white mt-1">Operational & Task Dashboard</h2>
-              <p className="text-xs text-slate-300 mt-1 leading-relaxed max-w-3xl">
+              <h2 className="text-sm font-bold text-white mt-0.5">Operational & Task Dashboard</h2>
+              <p className="text-[11px] text-slate-300 mt-0.5 leading-relaxed max-w-3xl">
                 All users operate at an equal level with full privileges. Track task completion progress, monitor tasks assigned to you or created by you, manage operational teams, and execute database fixes.
               </p>
             </div>
@@ -236,18 +290,18 @@ export default function ManagerialDashboard({
           <div className="flex items-center space-x-2 shrink-0">
             <button
               onClick={() => setShowCreateModal(true)}
-              className="px-3.5 py-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold rounded-xl flex items-center justify-center space-x-1.5 shadow-sm transition-colors cursor-pointer"
+              className="px-3 py-1.5 bg-[#155DFC] hover:bg-[#155DFC]/90 text-white text-xs font-bold rounded-lg flex items-center justify-center space-x-1.5 shadow-xs transition-colors cursor-pointer"
               id="btn-create-team-dashboard"
             >
-              <Plus size={15} />
+              <Plus size={14} />
               <span>Create Team</span>
             </button>
             {onChangeTab && (
               <button
                 onClick={() => onChangeTab('workspace')}
-                className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-medium rounded-xl flex items-center justify-center space-x-1.5 transition-colors cursor-pointer"
+                className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-medium rounded-lg flex items-center justify-center space-x-1.5 transition-colors cursor-pointer"
               >
-                <ArrowUpRight size={15} />
+                <ArrowUpRight size={14} />
                 <span>Go to Workspace</span>
               </button>
             )}
@@ -255,8 +309,91 @@ export default function ManagerialDashboard({
         </div>
       </div>
 
-      {/* Task Progress KPI Cards Section */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+      {/* Dashboard Sub-Navigation Tabs */}
+      <div className="bg-[#0F172B] border border-slate-800 rounded-xl p-1 shadow-xs flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center gap-1">
+          <button
+            type="button"
+            onClick={() => setActiveDashboardTab('overview')}
+            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
+              activeDashboardTab === 'overview'
+                ? 'bg-[#155DFC] text-white shadow-xs'
+                : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
+            }`}
+          >
+            <LayoutDashboard size={14} />
+            <span>Overview & Tasks</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveDashboardTab('hashtags')}
+            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
+              activeDashboardTab === 'hashtags'
+                ? 'bg-[#155DFC] text-white shadow-xs'
+                : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
+            }`}
+          >
+            <Tag size={14} />
+            <span>Hashtag Intelligence & KPIs</span>
+            <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-mono font-bold ${
+              activeDashboardTab === 'hashtags' ? 'bg-[#0F172B]/60 text-white' : 'bg-slate-800 text-slate-300'
+            }`}>
+              {hashtags.length}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveDashboardTab('unresolved_scripts')}
+            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
+              activeDashboardTab === 'unresolved_scripts'
+                ? 'bg-[#155DFC] text-white shadow-xs'
+                : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
+            }`}
+          >
+            <AlertCircle size={14} />
+            <span>Awaiting Solution Scripts</span>
+            {((hashtagAnalyticsData?.issuesAwaitingSolution || []).length > 0 || issues.filter(i => i.status !== 'Resolved' && i.status !== 'Closed' && !i.solutionScript).length > 0) && (
+              <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-mono font-bold ${
+                activeDashboardTab === 'unresolved_scripts' ? 'bg-rose-500/30 text-rose-200 border border-rose-500/40' : 'bg-rose-950/60 text-rose-300 border border-rose-800/50'
+              }`}>
+                {hashtagAnalyticsData?.issuesAwaitingSolution?.length || issues.filter(i => i.status !== 'Resolved' && i.status !== 'Closed' && !i.solutionScript).length}
+              </span>
+            )}
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveDashboardTab('teams')}
+            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
+              activeDashboardTab === 'teams'
+                ? 'bg-[#155DFC] text-white shadow-xs'
+                : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
+            }`}
+          >
+            <Users size={14} />
+            <span>Teams & Workspaces</span>
+            <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-mono font-bold ${
+              activeDashboardTab === 'teams' ? 'bg-[#0F172B]/60 text-white' : 'bg-slate-800 text-slate-300'
+            }`}>
+              {teams.length}
+            </span>
+          </button>
+        </div>
+
+        {kpiSuccessMsg && (
+          <div className="text-xs text-emerald-700 font-bold px-3 py-1 bg-emerald-50 rounded-xl border border-emerald-200 flex items-center gap-1.5 animate-pulse">
+            <CheckCheck size={14} />
+            <span>{kpiSuccessMsg}</span>
+          </div>
+        )}
+      </div>
+
+      {activeDashboardTab === 'overview' && (
+        <div className="space-y-6">
+          {/* Task Progress KPI Cards Section */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         
         {/* Card 1: Tasks Assigned to Me */}
         <div className="bg-white border border-slate-200/80 rounded-2xl p-5 space-y-3 shadow-sm hover:border-blue-300 transition-all">
@@ -657,10 +794,13 @@ export default function ManagerialDashboard({
         )}
 
       </div>
+    </div>
+  )}
 
-      {/* Team Management Section */}
-      <div className="bg-white border border-slate-200/80 rounded-2xl p-6 space-y-5 shadow-sm" id="team-management-panel">
-        <div className="flex justify-between items-center border-b border-slate-100 pb-4">
+  {/* Team Management Section */}
+  {activeDashboardTab === 'teams' && (
+    <div className="bg-white border border-slate-200/80 rounded-2xl p-6 space-y-5 shadow-sm" id="team-management-panel">
+      <div className="flex justify-between items-center border-b border-slate-100 pb-4">
           <div className="flex items-center space-x-2.5">
             <div className="p-2 bg-blue-50 text-blue-600 rounded-lg border border-blue-100">
               <Users size={18} />
@@ -809,134 +949,642 @@ export default function ManagerialDashboard({
           </div>
         )}
       </div>
+    )}
 
-      {/* Analytics Charts Grid */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        
-        {/* Chart A: Line Chart trend over time (8 cols) */}
-        <div className="lg:col-span-8 bg-white border border-slate-200/80 rounded-2xl p-6 space-y-4 shadow-sm">
-          <div className="flex justify-between items-center border-b border-slate-100 pb-3">
-            <div>
-              <h3 className="text-xs font-bold text-slate-800 font-mono uppercase">Case Reconciliation Trend</h3>
-              <p className="text-[11px] text-slate-500">Weekly breakdown comparing raised tasks versus resolutions.</p>
+    {/* Section: Overview Analytics & SQL Audit Ledger */}
+    {activeDashboardTab === 'overview' && (
+      <div className="space-y-6">
+        {/* Analytics Charts Grid */}
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+          
+          {/* Chart A: Line Chart trend over time (8 cols) */}
+          <div className="lg:col-span-8 bg-white border border-slate-200/80 rounded-2xl p-6 space-y-4 shadow-sm">
+            <div className="flex justify-between items-center border-b border-slate-100 pb-3">
+              <div>
+                <h3 className="text-xs font-bold text-slate-800 font-mono uppercase">Case Reconciliation Trend</h3>
+                <p className="text-[11px] text-slate-500">Weekly breakdown comparing raised tasks versus resolutions.</p>
+              </div>
+              <button
+                onClick={handleExportMetrics}
+                className="px-3 py-1.5 bg-blue-50 hover:bg-blue-100/80 border border-blue-200 text-blue-700 text-xs font-medium rounded-lg flex items-center space-x-1.5 cursor-pointer transition-colors shadow-sm"
+              >
+                <FileSpreadsheet size={13} className="text-blue-600" />
+                <span>Export Audit CSV</span>
+              </button>
             </div>
-            <button
-              onClick={handleExportMetrics}
-              className="px-3 py-1.5 bg-blue-50 hover:bg-blue-100/80 border border-blue-200 text-blue-700 text-xs font-medium rounded-lg flex items-center space-x-1.5 cursor-pointer transition-colors shadow-sm"
-            >
-              <FileSpreadsheet size={13} className="text-blue-600" />
-              <span>Export Audit CSV</span>
-            </button>
-          </div>
 
-          <div className="h-[230px] w-full text-xs font-mono">
-            <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={timeSeriesData} margin={{ top: 10, right: 10, left: -25, bottom: 0 }}>
-                <defs>
-                  <linearGradient id="colorRaised" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#ef4444" stopOpacity={0.15}/>
-                    <stop offset="95%" stopColor="#ef4444" stopOpacity={0}/>
-                  </linearGradient>
-                  <linearGradient id="colorResolved" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="5%" stopColor="#2563eb" stopOpacity={0.25}/>
-                    <stop offset="95%" stopColor="#2563eb" stopOpacity={0}/>
-                  </linearGradient>
-                </defs>
-                <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
-                <XAxis dataKey="day" stroke="#94a3b8" />
-                <YAxis stroke="#94a3b8" />
-                <Tooltip contentStyle={{ backgroundColor: '#ffffff', borderColor: '#e2e8f0', borderRadius: '12px', color: '#0f172a', boxShadow: '0 10px 15px -3px rgba(0,0,0,0.05)' }} />
-                <Area type="monotone" dataKey="Raised" stroke="#ef4444" fillOpacity={1} fill="url(#colorRaised)" strokeWidth={2} />
-                <Area type="monotone" dataKey="Resolved" stroke="#2563eb" fillOpacity={1} fill="url(#colorResolved)" strokeWidth={2.5} />
-              </AreaChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-
-        {/* Chart B: Bar distribution by criticalities (4 cols) */}
-        <div className="lg:col-span-4 bg-white border border-slate-200/80 rounded-2xl p-6 space-y-4 shadow-sm">
-          <div>
-            <h3 className="text-xs font-bold text-slate-800 font-mono uppercase">Priority Distribution</h3>
-            <p className="text-[11px] text-slate-500">Breakdown of reported issues by urgency weight.</p>
-          </div>
-
-          {priorityData.length === 0 ? (
-            <div className="h-[200px] flex items-center justify-center text-xs text-slate-400 font-mono">
-              0 active requests recorded.
-            </div>
-          ) : (
             <div className="h-[230px] w-full text-xs font-mono">
               <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={priorityData} layout="vertical" margin={{ top: 10, right: 10, left: -10, bottom: 5 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" horizontal={false} />
-                  <XAxis type="number" stroke="#94a3b8" />
-                  <YAxis dataKey="name" type="category" stroke="#94a3b8" />
-                  <Tooltip contentStyle={{ backgroundColor: '#ffffff', borderColor: '#e2e8f0', borderRadius: '12px', color: '#0f172a' }} />
-                  <Bar dataKey="count" fill="#3b82f6" radius={[0, 6, 6, 0]}>
-                    {priorityData.map((entry, index) => (
-                      <Cell key={`cell-${index}`} fill={entry.color} />
-                    ))}
-                  </Bar>
-                </BarChart>
+                <AreaChart data={timeSeriesData} margin={{ top: 10, right: 10, left: -25, bottom: 0 }}>
+                  <defs>
+                    <linearGradient id="colorRaised" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#ef4444" stopOpacity={0.15}/>
+                      <stop offset="95%" stopColor="#ef4444" stopOpacity={0}/>
+                    </linearGradient>
+                    <linearGradient id="colorResolved" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="5%" stopColor="#2563eb" stopOpacity={0.25}/>
+                      <stop offset="95%" stopColor="#2563eb" stopOpacity={0}/>
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+                  <XAxis dataKey="day" stroke="#94a3b8" />
+                  <YAxis stroke="#94a3b8" />
+                  <Tooltip contentStyle={{ backgroundColor: '#ffffff', borderColor: '#e2e8f0', borderRadius: '12px', color: '#0f172a', boxShadow: '0 10px 15px -3px rgba(0,0,0,0.05)' }} />
+                  <Area type="monotone" dataKey="Raised" stroke="#ef4444" fillOpacity={1} fill="url(#colorRaised)" strokeWidth={2} />
+                  <Area type="monotone" dataKey="Resolved" stroke="#2563eb" fillOpacity={1} fill="url(#colorResolved)" strokeWidth={2.5} />
+                </AreaChart>
               </ResponsiveContainer>
+            </div>
+          </div>
+
+          {/* Chart B: Bar distribution by criticalities (4 cols) */}
+          <div className="lg:col-span-4 bg-white border border-slate-200/80 rounded-2xl p-6 space-y-4 shadow-sm">
+            <div>
+              <h3 className="text-xs font-bold text-slate-800 font-mono uppercase">Priority Distribution</h3>
+              <p className="text-[11px] text-slate-500">Breakdown of reported issues by urgency weight.</p>
+            </div>
+
+            {priorityData.length === 0 ? (
+              <div className="h-[200px] flex items-center justify-center text-xs text-slate-400 font-mono">
+                0 active requests recorded.
+              </div>
+            ) : (
+              <div className="h-[230px] w-full text-xs font-mono">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={priorityData} layout="vertical" margin={{ top: 10, right: 10, left: -10, bottom: 5 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" horizontal={false} />
+                    <XAxis type="number" stroke="#94a3b8" />
+                    <YAxis dataKey="name" type="category" stroke="#94a3b8" />
+                    <Tooltip contentStyle={{ backgroundColor: '#ffffff', borderColor: '#e2e8f0', borderRadius: '12px', color: '#0f172a' }} />
+                    <Bar dataKey="count" fill="#3b82f6" radius={[0, 6, 6, 0]}>
+                      {priorityData.map((entry, index) => (
+                        <Cell key={`cell-${index}`} fill={entry.color} />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+            )}
+          </div>
+
+        </div>
+
+        {/* SQL Resolution Audit Ledger */}
+        <div className="bg-white border border-slate-200/80 rounded-2xl p-6 space-y-4 shadow-sm">
+          <div className="border-b border-slate-100 pb-3 flex items-center space-x-2.5">
+            <Shield size={18} className="text-blue-600" />
+            <div>
+              <h3 className="text-xs font-bold text-slate-800 font-mono uppercase">Database Resolution Audit Ledger</h3>
+              <p className="text-[11px] text-slate-500">Security compliance tracking all live SQL execution mutations on cases.</p>
+            </div>
+          </div>
+
+          {executedFixes.length === 0 ? (
+            <div className="p-8 text-center text-slate-400 bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono">
+              Ledger clear. No live SQL execution mutations recorded.
+            </div>
+          ) : (
+            <div className="space-y-3.5">
+              {executedFixes.map(issue => (
+                <div key={issue.id} className="p-4 bg-slate-50 border border-slate-200/80 rounded-xl font-mono text-xs space-y-2.5">
+                  <div className="flex justify-between items-center text-[10px] border-b border-slate-200 pb-2">
+                    <div className="flex items-center space-x-2">
+                      <span className="font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">SUCCESS</span>
+                      <span className="text-slate-600 font-bold">CASE: {issue.id}</span>
+                    </div>
+                    <span className="text-slate-500">
+                      Timestamp: {issue.solutionExecutedAt ? new Date(issue.solutionExecutedAt).toLocaleString() : 'Unknown'}
+                    </span>
+                  </div>
+                  
+                  <div>
+                    <span className="text-slate-500 block text-[9px] uppercase font-bold">Executed Statement:</span>
+                    <pre className="bg-slate-900 p-2.5 rounded-lg text-[10px] text-sky-300 font-mono overflow-x-auto border border-slate-800 shadow-inner mt-1">
+                      {issue.solutionScript}
+                    </pre>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-4 text-[10px] pt-1">
+                    <div>
+                      <span className="text-slate-400 block text-[9px] uppercase font-bold">REPORTER:</span>
+                      <span className="text-slate-700 font-medium">@{issue.creatorName}</span>
+                    </div>
+                    <div>
+                      <span className="text-slate-400 block text-[9px] uppercase font-bold">Dry-run verification:</span>
+                      <span className="text-slate-700 font-medium font-mono">Verified safe execution</span>
+                    </div>
+                  </div>
+                </div>
+              ))}
             </div>
           )}
         </div>
-
       </div>
+    )}
 
-      {/* SQL Resolution Audit Ledger */}
-      <div className="bg-white border border-slate-200/80 rounded-2xl p-6 space-y-4 shadow-sm">
-        <div className="border-b border-slate-100 pb-3 flex items-center space-x-2.5">
-          <Shield size={18} className="text-blue-600" />
-          <div>
-            <h3 className="text-xs font-bold text-slate-800 font-mono uppercase">Database Resolution Audit Ledger</h3>
-            <p className="text-[11px] text-slate-500">Security compliance tracking all live SQL execution mutations on cases.</p>
+    {/* Section: Hashtag Operational Intelligence & KPIs */}
+    {activeDashboardTab === 'hashtags' && (
+      <div className="space-y-6">
+        {/* Header Banner */}
+        <div className="bg-white border border-slate-200/80 rounded-2xl p-6 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div className="flex items-center space-x-3">
+            <div className="p-2.5 bg-gradient-to-br from-blue-500 to-indigo-600 text-white rounded-xl shadow-sm">
+              <Tag size={20} />
+            </div>
+            <div>
+              <h3 className="text-sm font-bold text-slate-900 font-mono uppercase tracking-wider flex items-center space-x-2">
+                <span>Hashtag Operational Intelligence</span>
+                <span className="text-[10px] bg-blue-100 text-blue-700 font-bold px-2 py-0.5 rounded-full font-mono">
+                  Live Sync
+                </span>
+              </h3>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Monitor issue clusters, resolution velocity, accuracy benchmarks, and managerial KPI SLA targets by hashtag.
+              </p>
+            </div>
           </div>
+          <button
+            onClick={() => {
+              setIsLoadingAnalytics(true);
+              api.getHashtagAnalytics()
+                .then(res => res && setHashtagAnalyticsData(res))
+                .catch(e => console.warn(e))
+                .finally(() => setIsLoadingAnalytics(false));
+            }}
+            disabled={isLoadingAnalytics}
+            className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-xl flex items-center space-x-1.5 border border-slate-200 transition-colors cursor-pointer self-start md:self-auto"
+          >
+            <RefreshCw size={13} className={isLoadingAnalytics ? 'animate-spin text-blue-600' : 'text-slate-500'} />
+            <span>Refresh Analytics</span>
+          </button>
         </div>
 
-        {executedFixes.length === 0 ? (
-          <div className="p-8 text-center text-slate-400 bg-slate-50 border border-slate-200 rounded-xl text-xs font-mono">
-            Ledger clear. No live SQL execution mutations recorded.
-          </div>
-        ) : (
-          <div className="space-y-3.5">
-            {executedFixes.map(issue => (
-              <div key={issue.id} className="p-4 bg-slate-50 border border-slate-200/80 rounded-xl font-mono text-xs space-y-2.5">
-                <div className="flex justify-between items-center text-[10px] border-b border-slate-200 pb-2">
-                  <div className="flex items-center space-x-2">
-                    <span className="font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">SUCCESS</span>
-                    <span className="text-slate-600 font-bold">CASE: {issue.id}</span>
-                  </div>
-                  <span className="text-slate-500">
-                    Timestamp: {issue.solutionExecutedAt ? new Date(issue.solutionExecutedAt).toLocaleString() : 'Unknown'}
-                  </span>
-                </div>
-                
-                <div>
-                  <span className="text-slate-500 block text-[9px] uppercase font-bold">Executed Statement:</span>
-                  <pre className="bg-slate-900 p-2.5 rounded-lg text-[10px] text-sky-300 font-mono overflow-x-auto border border-slate-800 shadow-inner mt-1">
-                    {issue.solutionScript}
-                  </pre>
-                </div>
-
-                <div className="grid grid-cols-2 gap-4 text-[10px] pt-1">
-                  <div>
-                    <span className="text-slate-400 block text-[9px] uppercase font-bold">REPORTER:</span>
-                    <span className="text-slate-700 font-medium">@{issue.creatorName}</span>
-                  </div>
-                  <div>
-                    <span className="text-slate-400 block text-[9px] uppercase font-bold">Dry-run verification:</span>
-                    <span className="text-slate-700 font-medium font-mono">Verified safe execution</span>
-                  </div>
-                </div>
-              </div>
-            ))}
+        {kpiSuccessMsg && (
+          <div className="p-3.5 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-xl text-xs font-mono flex items-center space-x-2">
+            <CheckCircle2 size={16} className="text-emerald-600 shrink-0" />
+            <span>{kpiSuccessMsg}</span>
           </div>
         )}
-      </div>
 
-      {/* Modal: Create New Team */}
+        {/* 4 Top Metric Cards */}
+        {(() => {
+          const tagAnalytics = hashtagAnalyticsData?.hashtagAnalytics || [];
+          const totalTracked = hashtagAnalyticsData?.totalTrackedTags || hashtags.length;
+          const totalIssuesInTags = tagAnalytics.reduce((acc, t) => acc + (t.totalTasks || 0), 0);
+          const totalResolvedInTags = tagAnalytics.reduce((acc, t) => acc + (t.resolvedTasks || 0), 0);
+          const overallResolvedRate = totalIssuesInTags > 0 ? Math.round((totalResolvedInTags / totalIssuesInTags) * 100) : 0;
+          const awaitingCount = hashtagAnalyticsData?.issuesAwaitingSolution?.length || 0;
+
+          return (
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              <div className="bg-white border border-slate-200/80 rounded-2xl p-5 shadow-sm space-y-1.5">
+                <div className="flex justify-between items-center text-slate-400">
+                  <span className="text-[11px] font-bold uppercase font-mono tracking-wider">Tracked Clusters</span>
+                  <Tag size={16} className="text-blue-500" />
+                </div>
+                <div className="text-2xl font-black text-slate-900 font-mono">{totalTracked}</div>
+                <p className="text-[10px] text-slate-500 font-sans">Active operational hashtag taxonomies</p>
+              </div>
+
+              <div className="bg-white border border-slate-200/80 rounded-2xl p-5 shadow-sm space-y-1.5">
+                <div className="flex justify-between items-center text-slate-400">
+                  <span className="text-[11px] font-bold uppercase font-mono tracking-wider">Total Clustered Volume</span>
+                  <Layers size={16} className="text-indigo-500" />
+                </div>
+                <div className="text-2xl font-black text-slate-900 font-mono">{totalIssuesInTags}</div>
+                <p className="text-[10px] text-slate-500 font-sans">{totalResolvedInTags} resolved across all clusters</p>
+              </div>
+
+              <div className="bg-white border border-slate-200/80 rounded-2xl p-5 shadow-sm space-y-1.5">
+                <div className="flex justify-between items-center text-slate-400">
+                  <span className="text-[11px] font-bold uppercase font-mono tracking-wider">Cluster Resolution Rate</span>
+                  <TrendingUp size={16} className="text-emerald-500" />
+                </div>
+                <div className="text-2xl font-black text-emerald-600 font-mono">{overallResolvedRate}%</div>
+                <p className="text-[10px] text-slate-500 font-sans">Average closure rate across tags</p>
+              </div>
+
+              <div className="bg-white border border-slate-200/80 rounded-2xl p-5 shadow-sm space-y-1.5">
+                <div className="flex justify-between items-center text-slate-400">
+                  <span className="text-[11px] font-bold uppercase font-mono tracking-wider">Awaiting Scripts</span>
+                  <AlertCircle size={16} className="text-amber-500" />
+                </div>
+                <div className="text-2xl font-black text-amber-600 font-mono">{awaitingCount}</div>
+                <p className="text-[10px] text-slate-500 font-sans">Open tasks requiring solution proposals</p>
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* Visual Charts Grid for Hashtags */}
+        {(() => {
+          const tagAnalytics = (hashtagAnalyticsData?.hashtagAnalytics || []).slice(0, 8);
+          const chartDataVolume = tagAnalytics.map(t => ({
+            tag: t.tag.replace('#', ''),
+            Resolved: t.resolvedTasks || 0,
+            Active: (t.totalTasks || 0) - (t.resolvedTasks || 0)
+          }));
+          const chartDataVelocity = tagAnalytics.map(t => ({
+            tag: t.tag.replace('#', ''),
+            avgHours: t.avgResolutionHours || 0,
+            targetSla: t.kpis?.[0]?.targetResolutionHours || 24
+          }));
+
+          return (
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+              {/* Chart A: Volume Breakdown */}
+              <div className="lg:col-span-7 bg-white border border-slate-200/80 rounded-2xl p-6 space-y-4 shadow-sm">
+                <div>
+                  <h3 className="text-xs font-bold text-slate-800 font-mono uppercase">Volume Breakdown by Hashtag</h3>
+                  <p className="text-[11px] text-slate-500">Distribution of active versus resolved tasks per operational cluster.</p>
+                </div>
+                {chartDataVolume.length === 0 ? (
+                  <div className="h-[220px] flex items-center justify-center text-xs text-slate-400 font-mono">
+                    No hashtag task activity recorded yet.
+                  </div>
+                ) : (
+                  <div className="h-[220px] w-full text-xs font-mono">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={chartDataVolume} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+                        <XAxis dataKey="tag" stroke="#94a3b8" />
+                        <YAxis stroke="#94a3b8" />
+                        <Tooltip contentStyle={{ backgroundColor: '#ffffff', borderColor: '#e2e8f0', borderRadius: '12px', color: '#0f172a' }} />
+                        <Bar dataKey="Active" fill="#f59e0b" stackId="a" radius={[0, 0, 0, 0]} />
+                        <Bar dataKey="Resolved" fill="#10b981" stackId="a" radius={[4, 4, 0, 0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                )}
+              </div>
+
+              {/* Chart B: Resolution Velocity vs Target SLA */}
+              <div className="lg:col-span-5 bg-white border border-slate-200/80 rounded-2xl p-6 space-y-4 shadow-sm">
+                <div>
+                  <h3 className="text-xs font-bold text-slate-800 font-mono uppercase">Resolution Velocity vs Target SLA</h3>
+                  <p className="text-[11px] text-slate-500">Average resolution turnaround (hours) compared to manager target SLA.</p>
+                </div>
+                {chartDataVelocity.length === 0 ? (
+                  <div className="h-[220px] flex items-center justify-center text-xs text-slate-400 font-mono">
+                    No velocity metrics recorded yet.
+                  </div>
+                ) : (
+                  <div className="h-[220px] w-full text-xs font-mono">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={chartDataVelocity} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
+                        <XAxis dataKey="tag" stroke="#94a3b8" />
+                        <YAxis stroke="#94a3b8" />
+                        <Tooltip contentStyle={{ backgroundColor: '#ffffff', borderColor: '#e2e8f0', borderRadius: '12px', color: '#0f172a' }} />
+                        <Bar dataKey="avgHours" fill="#3b82f6" name="Avg Hours" radius={[4, 4, 0, 0]} />
+                        <Bar dataKey="targetSla" fill="#94a3b8" name="Target SLA" radius={[4, 4, 0, 0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* Managerial KPI & SLA Attachments Table */}
+        <div className="bg-white border border-slate-200/80 rounded-2xl p-6 space-y-4 shadow-sm">
+          <div className="flex justify-between items-center border-b border-slate-100 pb-3">
+            <div className="flex items-center space-x-2.5">
+              <Target size={18} className="text-blue-600" />
+              <div>
+                <h3 className="text-xs font-bold text-slate-800 font-mono uppercase">Managerial KPI & SLA Attachments</h3>
+                <p className="text-[11px] text-slate-500">Attach SLAs, accuracy expectations, and assign responsible unit teams to hashtags.</p>
+              </div>
+            </div>
+          </div>
+
+          <div className="overflow-x-auto rounded-xl border border-slate-200">
+            <table className="w-full text-left text-xs font-mono">
+              <thead className="bg-slate-100 border-b border-slate-200 text-slate-600 uppercase text-[10px]">
+                <tr>
+                  <th className="px-3.5 py-2.5">Hashtag & Category</th>
+                  <th className="px-3.5 py-2.5">Total Tasks</th>
+                  <th className="px-3.5 py-2.5">Resolved %</th>
+                  <th className="px-3.5 py-2.5">Avg Velocity</th>
+                  <th className="px-3.5 py-2.5">Target SLA</th>
+                  <th className="px-3.5 py-2.5">Min Accuracy</th>
+                  <th className="px-3.5 py-2.5">Assigned Unit Team</th>
+                  <th className="px-3.5 py-2.5 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 bg-white text-slate-700">
+                {(hashtagAnalyticsData?.hashtagAnalytics || hashtags.map(h => ({
+                  tag: h.tag,
+                  category: h.category,
+                  totalTasks: 0,
+                  resolvedTasks: 0,
+                  resolutionRatePercent: 0,
+                  avgResolutionHours: 0,
+                  kpis: h.kpis || []
+                }))).map(item => {
+                  const currentKpi = item.kpis?.[0];
+                  const targetHours = currentKpi?.targetResolutionHours ?? 24;
+                  const targetAcc = currentKpi?.expectedAccuracyPercent ?? 99;
+                  const assignedTeam = teams.find(t => t.id === currentKpi?.assignedTeamId);
+
+                  return (
+                    <tr key={item.tag} className="hover:bg-blue-50/40 transition-colors">
+                      <td className="px-3.5 py-3">
+                        <div className="flex items-center space-x-2">
+                          <span className="font-bold text-blue-700 bg-blue-50 px-2 py-0.5 rounded border border-blue-200">
+                            {item.tag}
+                          </span>
+                        </div>
+                        {item.category && (
+                          <span className="text-[10px] text-slate-400 block mt-0.5 font-sans">
+                            {item.category}
+                          </span>
+                        )}
+                      </td>
+                      <td className="px-3.5 py-3 font-bold text-slate-900">{item.totalTasks}</td>
+                      <td className="px-3.5 py-3">
+                        <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                          item.resolutionRatePercent >= 80 ? 'bg-emerald-100 text-emerald-800' :
+                          item.resolutionRatePercent >= 40 ? 'bg-amber-100 text-amber-800' :
+                          'bg-slate-100 text-slate-600'
+                        }`}>
+                          {item.resolutionRatePercent}%
+                        </span>
+                      </td>
+                      <td className="px-3.5 py-3">
+                        {item.avgResolutionHours > 0 ? `${item.avgResolutionHours}h` : 'N/A'}
+                      </td>
+                      <td className="px-3.5 py-3">
+                        <span className="text-slate-800 font-bold">{targetHours}h</span>
+                      </td>
+                      <td className="px-3.5 py-3">
+                        <span className="text-emerald-700 font-bold">{targetAcc}%</span>
+                      </td>
+                      <td className="px-3.5 py-3">
+                        {assignedTeam ? (
+                          <span className="px-2 py-0.5 bg-indigo-50 border border-indigo-200 text-indigo-700 rounded text-[10px] font-bold">
+                            {assignedTeam.name}
+                          </span>
+                        ) : (
+                          <span className="text-slate-400 italic text-[10px]">Unassigned</span>
+                        )}
+                      </td>
+                      <td className="px-3.5 py-3 text-right">
+                        <button
+                          onClick={() => {
+                            setEditingKpiTag(item.tag);
+                            setTargetResolutionHours(targetHours);
+                            setExpectedAccuracyPercent(targetAcc);
+                            setAssignedTeamId(currentKpi?.assignedTeamId || '');
+                          }}
+                          className="px-2.5 py-1 bg-blue-50 hover:bg-blue-100 border border-blue-200 text-blue-700 text-[11px] font-bold rounded-lg transition-colors cursor-pointer inline-flex items-center space-x-1"
+                        >
+                          <SlidersHorizontal size={11} />
+                          <span>Configure KPI</span>
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {/* Section: Awaiting Solution Scripts Queue */}
+    {activeDashboardTab === 'unresolved_scripts' && (
+      <div className="space-y-6">
+        <div className="bg-white border border-slate-200/80 rounded-2xl p-6 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div className="flex items-center space-x-3">
+            <div className="p-2.5 bg-gradient-to-br from-amber-500 to-orange-600 text-white rounded-xl shadow-sm">
+              <AlertCircle size={20} />
+            </div>
+            <div>
+              <h3 className="text-sm font-bold text-slate-900 font-mono uppercase tracking-wider">
+                Unresolved Tasks Awaiting Solution Scripts
+              </h3>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Track open operational incidents that lack peer consensus or an approved solution script to resolve discrepancies.
+              </p>
+            </div>
+          </div>
+          <span className="text-xs font-mono bg-amber-50 border border-amber-200 text-amber-800 px-3 py-1.5 rounded-xl font-bold">
+            {(hashtagAnalyticsData?.issuesAwaitingSolution || []).length} Pending Solutions
+          </span>
+        </div>
+
+        {(() => {
+          const awaitingIssues = (hashtagAnalyticsData?.issuesAwaitingSolution && hashtagAnalyticsData.issuesAwaitingSolution.length > 0)
+            ? hashtagAnalyticsData.issuesAwaitingSolution
+            : issues.filter(i => (i.status === 'Open' || i.status === 'Investigating') && !i.solutionScript);
+
+          if (awaitingIssues.length === 0) {
+            return (
+              <div className="p-12 text-center bg-slate-50 border border-dashed border-slate-200 rounded-2xl space-y-3">
+                <CheckCircle2 size={36} className="mx-auto text-emerald-500" />
+                <h4 className="text-sm font-bold text-slate-800 font-mono">Pipeline Clear!</h4>
+                <p className="text-xs text-slate-500 max-w-md mx-auto">
+                  All active cases currently have assigned solution scripts, automated workflows, or have reached resolution.
+                </p>
+              </div>
+            );
+          }
+
+          return (
+            <div className="overflow-x-auto rounded-2xl border border-slate-200 shadow-sm">
+              <table className="w-full text-left text-xs font-mono">
+                <thead className="bg-slate-100 border-b border-slate-200 text-slate-600 uppercase text-[10px]">
+                  <tr>
+                    <th className="px-3.5 py-2.5">Task ID</th>
+                    <th className="px-3.5 py-2.5">Title & Hashtag</th>
+                    <th className="px-3.5 py-2.5">Priority</th>
+                    <th className="px-3.5 py-2.5">Assigned Technician</th>
+                    <th className="px-3.5 py-2.5">Reporter</th>
+                    <th className="px-3.5 py-2.5">Reported Aging</th>
+                    <th className="px-3.5 py-2.5">Status</th>
+                    <th className="px-3.5 py-2.5 text-right">Collaboration</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 bg-white text-slate-700">
+                  {awaitingIssues.map((task: any) => {
+                    const assignedUser = users.find(u => u.id === task.assignedTechUserId);
+                    const createdAtDate = new Date(task.createdAt || Date.now());
+                    const hoursAgo = Math.max(1, Math.round((Date.now() - createdAtDate.getTime()) / (1000 * 60 * 60)));
+
+                    return (
+                      <tr key={task.id} className="hover:bg-amber-50/40 transition-colors">
+                        <td className="px-3.5 py-3">
+                          <button
+                            onClick={() => onChangeTab && onChangeTab('workspace')}
+                            className="font-bold text-blue-600 hover:underline flex items-center space-x-1 cursor-pointer"
+                          >
+                            <span>{task.id}</span>
+                            <ArrowUpRight size={12} />
+                          </button>
+                        </td>
+                        <td className="px-3.5 py-3 max-w-xs">
+                          <div className="font-bold text-slate-900 truncate font-sans text-xs">
+                            {task.title}
+                          </div>
+                          {task.linkedHashtag && (
+                            <span className="inline-block bg-blue-50 text-blue-700 font-bold px-1.5 py-0.2 rounded text-[9px] mt-0.5 border border-blue-100">
+                              {task.linkedHashtag}
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-3.5 py-3">
+                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold uppercase ${
+                            task.priority === 'Critical' ? 'bg-red-100 text-red-700 border border-red-200' :
+                            task.priority === 'High' ? 'bg-amber-100 text-amber-700 border border-amber-200' :
+                            'bg-blue-100 text-blue-700 border border-blue-200'
+                          }`}>
+                            {task.priority || 'Medium'}
+                          </span>
+                        </td>
+                        <td className="px-3.5 py-3">
+                          {assignedUser ? (
+                            <span className="px-2 py-0.5 bg-slate-100 text-slate-700 rounded font-semibold text-[11px]">
+                              @{assignedUser.username}
+                            </span>
+                          ) : (
+                            <span className="text-slate-400 italic text-[10px]">Unassigned</span>
+                          )}
+                        </td>
+                        <td className="px-3.5 py-3">
+                          <span className="text-slate-600 font-medium">@{task.creatorName || 'Unknown'}</span>
+                        </td>
+                        <td className="px-3.5 py-3">
+                          <span className={`font-bold ${hoursAgo > 24 ? 'text-red-600' : 'text-slate-700'}`}>
+                            {hoursAgo}h ago
+                          </span>
+                        </td>
+                        <td className="px-3.5 py-3">
+                          <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-50 text-amber-800 border border-amber-200">
+                            {task.status || 'Open'}
+                          </span>
+                        </td>
+                        <td className="px-3.5 py-3 text-right">
+                          <button
+                            onClick={() => onChangeTab && onChangeTab('workspace')}
+                            className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-lg inline-flex items-center space-x-1.5 transition-colors cursor-pointer shadow-xs"
+                          >
+                            <span>Propose in Chat</span>
+                            <ArrowRight size={12} />
+                          </button>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          );
+        })()}
+      </div>
+    )}
+
+    {/* Modal: Configure Hashtag Managerial KPIs */}
+    {editingKpiTag && (
+      <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4 z-50">
+        <div className="bg-white rounded-2xl border border-slate-200 shadow-xl max-w-md w-full p-6 space-y-5 animate-in fade-in zoom-in-95 duration-150">
+          <div className="flex justify-between items-center border-b border-slate-100 pb-3">
+            <div className="flex items-center space-x-2">
+              <Target size={18} className="text-blue-600" />
+              <h3 className="text-sm font-bold text-slate-900 font-mono">
+                Configure SLA & KPIs: <span className="text-blue-600">{editingKpiTag}</span>
+              </h3>
+            </div>
+            <button 
+              onClick={() => setEditingKpiTag(null)}
+              className="text-slate-400 hover:text-slate-600 p-1 rounded-lg hover:bg-slate-100 transition-colors cursor-pointer"
+            >
+              <X size={16} />
+            </button>
+          </div>
+
+          <form onSubmit={handleSaveKpi} className="space-y-4 text-xs font-mono">
+            <div>
+              <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">
+                Target SLA Resolution Turnaround (Hours) *
+              </label>
+              <input
+                type="number"
+                min="1"
+                max="720"
+                required
+                value={targetResolutionHours}
+                onChange={e => setTargetResolutionHours(Number(e.target.value))}
+                className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-slate-800 focus:outline-none focus:ring-1 focus:ring-blue-500 font-sans"
+              />
+              <p className="text-[10px] text-slate-500 mt-1 font-sans">
+                Maximum acceptable time from case inception to verified resolution.
+              </p>
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">
+                Minimum Expected Accuracy Threshold (%) *
+              </label>
+              <input
+                type="number"
+                min="50"
+                max="100"
+                step="0.1"
+                required
+                value={expectedAccuracyPercent}
+                onChange={e => setExpectedAccuracyPercent(Number(e.target.value))}
+                className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-slate-800 focus:outline-none focus:ring-1 focus:ring-blue-500 font-sans"
+              />
+              <p className="text-[10px] text-slate-500 mt-1 font-sans">
+                Target benchmark precision expected by the validation box tests.
+              </p>
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">
+                Responsible Unit Team
+              </label>
+              <select
+                value={assignedTeamId}
+                onChange={e => setAssignedTeamId(e.target.value)}
+                className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-slate-800 focus:outline-none focus:ring-1 focus:ring-blue-500 font-sans cursor-pointer"
+              >
+                <option value="">All Teams (Shared Ownership)</option>
+                {teams.map(t => (
+                  <option key={t.id} value={t.id}>{t.name}</option>
+                ))}
+              </select>
+              <p className="text-[10px] text-slate-500 mt-1 font-sans">
+                Operational squad accountable for meeting this hashtag SLA.
+              </p>
+            </div>
+
+            <div className="flex justify-end space-x-2 pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setEditingKpiTag(null)}
+                className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium rounded-lg transition-colors cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                disabled={isSavingKpi}
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-bold rounded-lg transition-colors cursor-pointer inline-flex items-center space-x-1.5"
+              >
+                {isSavingKpi ? <RefreshCw size={13} className="animate-spin" /> : <Save size={13} />}
+                <span>Save KPI Targets</span>
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    )}
+
+    {/* Modal: Create New Team */}
       {showCreateModal && (
         <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4 z-50">
           <div className="bg-white rounded-2xl border border-slate-200 shadow-xl max-w-lg w-full p-6 space-y-5 animate-in fade-in zoom-in-95 duration-150">

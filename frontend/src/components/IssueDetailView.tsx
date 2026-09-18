@@ -5,7 +5,7 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
 import * as XLSX from 'xlsx';
-import { Issue, HashtagPreset, ChatMessage, User, IssueStatus, IssuePriority, EnvironmentSystem, UserRole, QueryApprovalRequest, DatabaseConnection, Transaction } from '../types';
+import { Issue, HashtagPreset, ChatMessage, User, IssueStatus, IssuePriority, EnvironmentSystem, UserRole, QueryApprovalRequest, DatabaseConnection, Transaction, Team } from '../types';
 import GlobalTransactionSettings from './GlobalTransactionSettings';
 import WorkspaceSettings from './WorkspaceSettings';
 import ErrorBoundary from './ErrorBoundary';
@@ -17,7 +17,7 @@ import {
   Settings, Database, UserCheck, FileCode, Check, Send, Sparkles, Plus, Download, ShieldCheck,
   Server, ArrowUpRight, Cpu, Layers, RefreshCw, Clipboard, Upload, FileText, ToggleLeft, ToggleRight,
   Filter, User as UserIcon, ListFilter, ArrowRightLeft, DatabaseZap, CheckSquare, ListTodo, Tag, Search, Zap, Table, X, ArrowLeft,
-  FileSpreadsheet, Link2, ArrowRight, Eye, EyeOff, ChevronDown, ChevronUp, CheckCircle, ShieldAlert, Trash2, Edit3, Wand2, Type, Eraser, MoreHorizontal, CheckCheck, Undo2, SlidersHorizontal, BookmarkCheck, Save
+  FileSpreadsheet, Link2, ArrowRight, Eye, EyeOff, ChevronDown, ChevronUp, CheckCircle, ShieldAlert, Trash2, Edit3, Wand2, Type, Eraser, MoreHorizontal, CheckCheck, Undo2, SlidersHorizontal, BookmarkCheck, Save, Users, Lock, Globe
 } from 'lucide-react';
 
 interface IssueDetailViewProps {
@@ -26,6 +26,7 @@ interface IssueDetailViewProps {
   currentUser: User;
   systems: EnvironmentSystem[];
   users: User[];
+  teams?: Team[];
   databases?: DatabaseConnection[];
   transactions?: Transaction[];
   queryApprovals?: QueryApprovalRequest[];
@@ -35,6 +36,7 @@ interface IssueDetailViewProps {
   onCreateIssue?: (newIssue: Omit<Issue, 'id' | 'createdAt' | 'creatorId' | 'creatorName' | 'status'>) => void;
   onCreateHashtagPreset: (newPreset: HashtagPreset) => void;
   onSendChatMessage: (issueId: string, messageText: string) => void;
+  onUpdateCurrentUser?: (user: User) => void;
   onChangeTab?: (tab: string) => void;
   initialSelectedIssueId?: string | null;
   activeMode?: 'my_tasks' | 'workspace' | 'hashtags' | 'create_task' | 'create_hashtag' | 'open_case' | 'txn_settings' | 'setting';
@@ -46,6 +48,7 @@ export default function IssueDetailView({
   currentUser,
   systems,
   users,
+  teams = [],
   databases = [],
   transactions = [],
   queryApprovals = [],
@@ -55,6 +58,7 @@ export default function IssueDetailView({
   onCreateIssue,
   onCreateHashtagPreset,
   onSendChatMessage,
+  onUpdateCurrentUser,
   onChangeTab,
   initialSelectedIssueId,
   activeMode
@@ -103,6 +107,42 @@ export default function IssueDetailView({
   const [statusFilter, setStatusFilter] = useState<string>('ALL');
   const [priorityFilter, setPriorityFilter] = useState<string>('ALL');
   const [hashtagFilter, setHashtagFilter] = useState<string>('ALL');
+  const [taskScopeFilter, setTaskScopeFilter] = useState<'ALL' | 'MINE' | 'TEAM' | 'PRIVATE' | 'ASSIGNED'>('ALL');
+
+  // Resolve permanent team of current user
+  const userPermTeam = (teams || []).find(
+    t => t.teamType === 'permanent' && (t.managerId === currentUser.id || (t.memberIds && t.memberIds.includes(currentUser.id)))
+  );
+  const effectivePermanentTeamId = (currentUser as any)?.permanentTeamId || userPermTeam?.id;
+  const isMemberOfPermanentTeam = Boolean(effectivePermanentTeamId);
+  const [shareWorkspaceWithTeam, setShareWorkspaceWithTeam] = useState<boolean>(
+    currentUser.shareWorkspaceWithTeam !== false
+  );
+  const [isUpdatingWorkspaceSharing, setIsUpdatingWorkspaceSharing] = useState(false);
+  const [workspaceSharingFeedback, setWorkspaceSharingFeedback] = useState<string | null>(null);
+
+  const handleToggleWorkspaceSharing = async () => {
+    const nextVal = !shareWorkspaceWithTeam;
+    setIsUpdatingWorkspaceSharing(true);
+    try {
+      await api.updateWorkspaceSharing(currentUser.id, nextVal);
+      setShareWorkspaceWithTeam(nextVal);
+      setWorkspaceSharingFeedback(
+        nextVal
+          ? `Workspace access granted to permanent team (${userPermTeam?.name || 'Unit Team'}).`
+          : 'Workspace access restricted to personal only.'
+      );
+      if (onUpdateCurrentUser) {
+        onUpdateCurrentUser({ ...currentUser, shareWorkspaceWithTeam: nextVal });
+      }
+    } catch (err: any) {
+      alert('Failed to update workspace sharing: ' + err.message);
+    } finally {
+      setIsUpdatingWorkspaceSharing(false);
+      setTimeout(() => setWorkspaceSharingFeedback(null), 4000);
+    }
+  };
+
   const [showTaskDetailModal, setShowTaskDetailModal] = useState(false);
   const [taskDeleteSuccess, setTaskDeleteSuccess] = useState<string | null>(null);
   const [taskToDeleteConfirm, setTaskToDeleteConfirm] = useState<{ id: string; title: string } | null>(null);
@@ -502,8 +542,6 @@ export default function IssueDetailView({
     }
   };
 
-  // Task scope filter state (All Tasks, Assigned to Me, Created by Me)
-  const [taskScopeFilter, setTaskScopeFilter] = useState<'ALL' | 'ASSIGNED' | 'CREATED'>('ALL');
 
   // Create Task Modal state
   const [showCreateTaskModal, setShowCreateTaskModal] = useState(false);
@@ -1330,7 +1368,11 @@ export default function IssueDetailView({
 
   // Counts for tasks
   const assignedCount = issues.filter(i => i.assignedTechUserId === currentUser.id).length;
-  const createdCount = issues.filter(i => i.creatorId === currentUser.id).length;
+  const myCreatedCount = issues.filter(i => i.creatorId === currentUser.id).length;
+  const teamSharedCount = isMemberOfPermanentTeam 
+    ? issues.filter(i => i.teamId === effectivePermanentTeamId && i.visibility === 'TEAM_PUBLIC').length 
+    : 0;
+  const privateCount = issues.filter(i => i.creatorId === currentUser.id && i.visibility === 'PERSONAL_PRIVATE').length;
 
   // Filters issues based on Search + Status + Hashtag + Task Scope
   const filteredIssues = issues.filter(issue => {
@@ -1342,8 +1384,12 @@ export default function IssueDetailView({
     let matchesScope = true;
     if (taskScopeFilter === 'ASSIGNED') {
       matchesScope = issue.assignedTechUserId === currentUser.id;
-    } else if (taskScopeFilter === 'CREATED') {
+    } else if (taskScopeFilter === 'MINE') {
       matchesScope = issue.creatorId === currentUser.id;
+    } else if (taskScopeFilter === 'TEAM') {
+      matchesScope = issue.teamId === effectivePermanentTeamId && issue.visibility === 'TEAM_PUBLIC';
+    } else if (taskScopeFilter === 'PRIVATE') {
+      matchesScope = issue.creatorId === currentUser.id && issue.visibility === 'PERSONAL_PRIVATE';
     }
 
     return matchesSearch && matchesStatus && matchesHashtag && matchesScope;
@@ -2111,26 +2157,26 @@ export default function IssueDetailView({
   };
 
   return (
-    <div className="space-y-5" id="issue-tracking-system">
+    <div className="space-y-3" id="issue-tracking-system">
       
       {/* Top Mode Toggle Navigation Bar */}
-      <div className="bg-white border border-slate-200/80 rounded-2xl p-2.5 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-        <div className="flex flex-wrap items-center space-x-1.5 bg-slate-100 p-1 rounded-xl w-full sm:w-auto">
+      <div className="bg-[#0F172B] border border-slate-800 rounded-xl p-1.5 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center space-x-1 bg-slate-900/90 p-0.5 rounded-lg w-full sm:w-auto">
           <button
             onClick={() => {
               setCurrentMode('my_tasks');
               if (onChangeTab) onChangeTab('my_tasks');
             }}
-            className={`px-4 py-2 rounded-lg text-xs font-bold transition-all flex items-center space-x-2 cursor-pointer ${
+            className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all flex items-center space-x-1.5 cursor-pointer ${
               currentMode === 'my_tasks'
-                ? 'bg-blue-600 text-white shadow-xs'
-                : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/60'
+                ? 'bg-[#155DFC] text-white shadow-xs'
+                : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
             }`}
           >
-            <ListTodo size={15} />
+            <ListTodo size={14} />
             <span>My Tasks</span>
             <span className={`ml-1 font-mono text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
-              currentMode === 'my_tasks' ? 'bg-blue-500/30 text-white' : 'bg-slate-200 text-slate-700'
+              currentMode === 'my_tasks' ? 'bg-[#0F172B]/60 text-white' : 'bg-slate-800 text-slate-300'
             }`}>
               {issues.length}
             </span>
@@ -2141,13 +2187,13 @@ export default function IssueDetailView({
               setCurrentMode('workspace');
               if (onChangeTab) onChangeTab('workspace');
             }}
-            className={`px-4 py-2 rounded-lg text-xs font-bold transition-all flex items-center space-x-2 cursor-pointer ${
+            className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all flex items-center space-x-1.5 cursor-pointer ${
               currentMode === 'workspace'
-                ? 'bg-blue-600 text-white shadow-xs'
-                : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/60'
+                ? 'bg-[#155DFC] text-white shadow-xs'
+                : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
             }`}
           >
-            <DatabaseZap size={15} />
+            <DatabaseZap size={14} />
             <span>Workspace</span>
           </button>
 
@@ -2156,16 +2202,16 @@ export default function IssueDetailView({
               setCurrentMode('hashtags');
               if (onChangeTab) onChangeTab('hashtags');
             }}
-            className={`px-4 py-2 rounded-lg text-xs font-bold transition-all flex items-center space-x-2 cursor-pointer ${
+            className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all flex items-center space-x-1.5 cursor-pointer ${
               currentMode === 'hashtags'
-                ? 'bg-blue-600 text-white shadow-xs'
-                : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/60'
+                ? 'bg-[#155DFC] text-white shadow-xs'
+                : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
             }`}
           >
-            <Tag size={15} />
+            <Tag size={14} />
             <span>Hashtags</span>
             <span className={`ml-1 font-mono text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
-              currentMode === 'hashtags' ? 'bg-blue-500/30 text-white' : 'bg-slate-200 text-slate-700'
+              currentMode === 'hashtags' ? 'bg-[#0F172B]/60 text-white' : 'bg-slate-800 text-slate-300'
             }`}>
               {hashtags.length}
             </span>
@@ -2179,15 +2225,15 @@ export default function IssueDetailView({
               setCurrentMode('setting');
               if (onChangeTab) onChangeTab('workspace_settings');
             }}
-            className={`px-3.5 py-2 rounded-xl text-xs font-bold transition-all flex items-center space-x-2 cursor-pointer border ${
+            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center space-x-1.5 cursor-pointer border ${
               currentMode === 'setting'
-                ? 'bg-indigo-600 text-white border-indigo-600 shadow-sm font-bold'
-                : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100 hover:text-indigo-600'
+                ? 'bg-[#155DFC] text-white border-[#155DFC] shadow-xs font-bold'
+                : 'bg-slate-800/80 text-slate-300 border-slate-700 hover:bg-slate-700 hover:text-white'
             }`}
             id="workspace-setting-tab"
             title="Workspace Preferences & Operating Rules"
           >
-            <Settings size={15} />
+            <Settings size={14} />
             <span>Workspace Settings</span>
           </button>
         </div>
@@ -2195,82 +2241,166 @@ export default function IssueDetailView({
 
       {/* DYNAMIC MODE ROUTER */}
       {currentMode === 'my_tasks' && (
-        <div className="space-y-5">
+        <div className="space-y-3">
           {/* My Tasks Header Banner */}
-          <div className="bg-gradient-to-r from-slate-900 via-blue-950 to-slate-900 border border-slate-800 rounded-2xl p-6 text-white shadow-md flex flex-col md:flex-row md:items-center justify-between gap-4">
-            <div className="space-y-1.5">
+          <div className="bg-[#0F172B] border border-slate-800 rounded-xl p-3 sm:p-3.5 text-white shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-3">
+            <div className="space-y-1">
               <div className="flex items-center space-x-2">
-                <span className="p-1.5 bg-blue-500/20 rounded-lg text-blue-400">
-                  <ListTodo size={20} />
+                <span className="p-1 bg-blue-500/20 rounded-md text-blue-400">
+                  <ListTodo size={16} />
                 </span>
-                <h2 className="text-lg font-bold">My Tasks & Operational Discrepancies</h2>
-                <span className="px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold bg-blue-600/30 text-blue-300 border border-blue-500/30">
+                <h2 className="text-sm font-bold">My Tasks & Operational Discrepancies</h2>
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-[#155DFC]/20 text-blue-300 border border-[#155DFC]/30">
                   {filteredIssues.length} Tasks
                 </span>
               </div>
-              <p className="text-xs text-slate-300 max-w-2xl">
+              <p className="text-[11px] text-slate-300 max-w-2xl leading-relaxed">
                 Manage, filter, and assign operational issue logs. Change task status directly, create shortcut hashtag presets, and jump into the workspace to investigate transactions.
               </p>
             </div>
 
-            <div className="flex flex-wrap items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2 shrink-0">
               <button
                 onClick={() => setCurrentMode('create_hashtag')}
-                className="px-3.5 py-2 bg-slate-800/80 hover:bg-slate-700 text-slate-200 border border-slate-700/80 text-xs font-semibold rounded-xl flex items-center space-x-2 transition-all cursor-pointer"
+                className="px-3 py-1.5 bg-slate-800/80 hover:bg-slate-700 text-slate-200 border border-slate-700/80 text-xs font-semibold rounded-lg flex items-center space-x-1.5 transition-all cursor-pointer"
               >
-                <Tag size={14} className="text-blue-400" />
+                <Tag size={13} className="text-blue-400" />
                 <span>+ Create Hashtag</span>
               </button>
               <button
                 onClick={() => setCurrentMode('create_task')}
-                className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold rounded-xl flex items-center space-x-2 shadow-sm transition-all cursor-pointer"
+                className="px-3.5 py-1.5 bg-[#155DFC] hover:bg-[#155DFC]/90 text-white text-xs font-bold rounded-lg flex items-center space-x-1.5 shadow-xs transition-all cursor-pointer"
               >
-                <Plus size={15} />
+                <Plus size={14} />
                 <span>+ Create Task</span>
               </button>
             </div>
           </div>
 
+          {/* Personal Workspace & Permanent Team Sharing Status Card */}
+          <div className="bg-white border border-slate-200/90 rounded-xl p-2.5 sm:p-3 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+            <div className="flex items-start sm:items-center gap-2.5">
+              <div className="p-1.5 bg-blue-50 text-[#155DFC] rounded-lg shrink-0">
+                <Users size={16} />
+              </div>
+              <div className="space-y-0.5">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-bold text-slate-800">
+                    {currentUser.username}'s Personal Workspace
+                  </span>
+                  {isMemberOfPermanentTeam ? (
+                    <span className="px-2 py-0.5 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-full text-[10px] font-semibold flex items-center gap-1">
+                      <Users size={10} />
+                      <span>Team: {userPermTeam?.name || 'Unit Team'}</span>
+                    </span>
+                  ) : (
+                    <span className="px-2 py-0.5 bg-amber-50 text-amber-700 border border-amber-200 rounded-full text-[10px] font-semibold flex items-center gap-1">
+                      <Lock size={10} />
+                      <span>Solo Operator (No Permanent Team)</span>
+                    </span>
+                  )}
+                </div>
+                <p className="text-[11px] text-slate-500">
+                  {isMemberOfPermanentTeam
+                    ? (shareWorkspaceWithTeam
+                        ? `Workspace is accessible to permanent team members in ${userPermTeam?.name || 'your unit team'}. Tasks default to Team Public.`
+                        : `Workspace sharing is paused. Only tasks specifically marked public or assigned to members are accessible.`)
+                    : 'Tasks created in this workspace remain private to you until a permanent team is assigned.'}
+                </p>
+                {workspaceSharingFeedback && (
+                  <p className="text-[11px] text-blue-600 font-semibold animate-pulse">
+                    {workspaceSharingFeedback}
+                  </p>
+                )}
+              </div>
+            </div>
+
+            {isMemberOfPermanentTeam && (
+              <div className="flex items-center gap-2 self-start sm:self-center shrink-0">
+                <button
+                  type="button"
+                  disabled={isUpdatingWorkspaceSharing}
+                  onClick={handleToggleWorkspaceSharing}
+                  className={`px-2.5 py-1 rounded-lg text-xs font-bold flex items-center gap-1.5 transition-all shadow-xs cursor-pointer border ${
+                    shareWorkspaceWithTeam
+                      ? 'bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-600'
+                      : 'bg-slate-100 hover:bg-slate-200 text-slate-700 border-slate-300'
+                  }`}
+                  title="Toggle whether your workspace tasks are shared with your permanent team members"
+                >
+                  {isUpdatingWorkspaceSharing ? (
+                    <RefreshCw size={12} className="animate-spin" />
+                  ) : shareWorkspaceWithTeam ? (
+                    <Globe size={12} />
+                  ) : (
+                    <Lock size={12} />
+                  )}
+                  <span>
+                    {shareWorkspaceWithTeam ? 'Team Sharing: Active' : 'Team Sharing: Paused'}
+                  </span>
+                </button>
+              </div>
+            )}
+          </div>
+
           {/* Filter Toolbar */}
-          <div className="bg-white border border-slate-200/80 rounded-2xl p-4 shadow-sm space-y-3">
-            <div className="grid grid-cols-1 md:grid-cols-12 gap-3 items-center">
+          <div className="bg-white border border-slate-200/80 rounded-xl p-2.5 shadow-xs space-y-2">
+            <div className="grid grid-cols-1 md:grid-cols-12 gap-2.5 items-center">
               {/* Search */}
-              <div className="md:col-span-4 relative">
+              <div className="md:col-span-3 relative">
                 <Search size={14} className="absolute left-3 top-2.5 text-slate-400" />
                 <input
                   type="text"
-                  placeholder="Search by ID, title, description, user..."
+                  placeholder="Search by ID, title, user..."
                   value={searchTerm}
                   onChange={(e) => setSearchTerm(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl py-2 pl-9 pr-3 text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:border-blue-500 focus:bg-white transition-all"
+                  className="w-full bg-slate-50 border border-slate-200 rounded-lg py-1.5 pl-8 pr-3 text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:border-[#155DFC] focus:bg-white transition-all"
                 />
               </div>
 
               {/* Scope selector */}
-              <div className="md:col-span-3 flex bg-slate-100 p-1 rounded-xl text-xs font-medium">
+              <div className="md:col-span-5 flex bg-slate-100 p-0.5 rounded-lg text-xs font-medium overflow-x-auto">
                 <button
                   onClick={() => setTaskScopeFilter('ALL')}
-                  className={`flex-1 py-1 px-2 rounded-lg text-center transition-all cursor-pointer ${
-                    taskScopeFilter === 'ALL' ? 'bg-white text-blue-700 font-bold shadow-xs' : 'text-slate-600 hover:text-slate-900'
+                  className={`flex-1 py-1 px-2 rounded-md text-center transition-all cursor-pointer whitespace-nowrap ${
+                    taskScopeFilter === 'ALL' ? 'bg-[#155DFC] text-white font-bold shadow-xs' : 'text-slate-600 hover:text-slate-900'
                   }`}
                 >
                   All ({issues.length})
                 </button>
                 <button
+                  onClick={() => setTaskScopeFilter('MINE')}
+                  className={`flex-1 py-1 px-2 rounded-md text-center transition-all cursor-pointer whitespace-nowrap ${
+                    taskScopeFilter === 'MINE' ? 'bg-[#155DFC] text-white font-bold shadow-xs' : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  My Tasks ({myCreatedCount})
+                </button>
+                {isMemberOfPermanentTeam && (
+                  <button
+                    onClick={() => setTaskScopeFilter('TEAM')}
+                    className={`flex-1 py-1 px-2 rounded-md text-center transition-all cursor-pointer whitespace-nowrap ${
+                      taskScopeFilter === 'TEAM' ? 'bg-[#155DFC] text-white font-bold shadow-xs' : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    Team Shared ({teamSharedCount})
+                  </button>
+                )}
+                <button
+                  onClick={() => setTaskScopeFilter('PRIVATE')}
+                  className={`flex-1 py-1 px-2 rounded-md text-center transition-all cursor-pointer whitespace-nowrap ${
+                    taskScopeFilter === 'PRIVATE' ? 'bg-[#155DFC] text-white font-bold shadow-xs' : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  Private ({privateCount})
+                </button>
+                <button
                   onClick={() => setTaskScopeFilter('ASSIGNED')}
-                  className={`flex-1 py-1 px-2 rounded-lg text-center transition-all cursor-pointer ${
-                    taskScopeFilter === 'ASSIGNED' ? 'bg-white text-blue-700 font-bold shadow-xs' : 'text-slate-600 hover:text-slate-900'
+                  className={`flex-1 py-1 px-2 rounded-md text-center transition-all cursor-pointer whitespace-nowrap ${
+                    taskScopeFilter === 'ASSIGNED' ? 'bg-[#155DFC] text-white font-bold shadow-xs' : 'text-slate-600 hover:text-slate-900'
                   }`}
                 >
                   Assigned ({assignedCount})
-                </button>
-                <button
-                  onClick={() => setTaskScopeFilter('CREATED')}
-                  className={`flex-1 py-1 px-2 rounded-lg text-center transition-all cursor-pointer ${
-                    taskScopeFilter === 'CREATED' ? 'bg-white text-blue-700 font-bold shadow-xs' : 'text-slate-600 hover:text-slate-900'
-                  }`}
-                >
-                  Created ({createdCount})
                 </button>
               </div>
 
@@ -2290,13 +2420,13 @@ export default function IssueDetailView({
               </div>
 
               {/* Priority Filter */}
-              <div className="md:col-span-2">
+              <div className="md:col-span-1">
                 <select
                   value={priorityFilter}
                   onChange={(e) => setPriorityFilter(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl py-2 px-3 text-xs text-slate-800 focus:outline-none focus:border-blue-500 cursor-pointer font-medium"
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl py-2 px-2 text-xs text-slate-800 focus:outline-none focus:border-blue-500 cursor-pointer font-medium"
                 >
-                  <option value="ALL">All Priorities</option>
+                  <option value="ALL">Priority</option>
                   <option value="Critical">Critical</option>
                   <option value="High">High</option>
                   <option value="Medium">Medium</option>
@@ -2311,7 +2441,7 @@ export default function IssueDetailView({
                   onChange={(e) => setHashtagFilter(e.target.value)}
                   className="w-full bg-slate-50 border border-slate-200 rounded-xl py-2 px-2 text-xs text-slate-800 focus:outline-none focus:border-blue-500 cursor-pointer font-medium"
                 >
-                  <option value="ALL">Hashtags</option>
+                  <option value="ALL">#Tags</option>
                   {hashtags.map(h => (
                     <option key={h.tag} value={h.tag}>{h.tag}</option>
                   ))}
@@ -2328,7 +2458,7 @@ export default function IssueDetailView({
                 <span className="font-semibold">{taskDeleteSuccess}</span>
               </div>
               <button 
-                type="button"
+                type="button" 
                 onClick={() => setTaskDeleteSuccess(null)} 
                 className="text-emerald-600 hover:text-emerald-800 p-1 rounded-md hover:bg-emerald-100 transition-colors"
                 title="Dismiss"
@@ -2358,6 +2488,7 @@ export default function IssueDetailView({
                   <tr className="bg-slate-50/80 border-b border-slate-200 text-[10px] font-bold text-slate-500 uppercase tracking-wider">
                     <th className="py-3 px-4">Task ID</th>
                     <th className="py-3 px-4">Title & Details</th>
+                    <th className="py-3 px-4">Visibility</th>
                     <th className="py-3 px-4">Assigned To</th>
                     <th className="py-3 px-4">Priority</th>
                     <th className="py-3 px-4">Status (Interactive)</th>
@@ -2367,7 +2498,7 @@ export default function IssueDetailView({
                 <tbody className="divide-y divide-slate-100">
                   {filteredIssues.length === 0 ? (
                     <tr>
-                      <td colSpan={6} className="py-12 text-center text-slate-400 italic">
+                      <td colSpan={7} className="py-12 text-center text-slate-400 italic">
                         No tasks found matching current filters.
                       </td>
                     </tr>
@@ -2394,6 +2525,36 @@ export default function IssueDetailView({
                           <div className="text-[11px] text-slate-500 truncate">{issue.description}</div>
                         </td>
                         <td className="py-3.5 px-4">
+                          <button
+                            type="button"
+                            disabled={issue.creatorId !== currentUser.id && currentUser.role !== 'admin'}
+                            onClick={() => {
+                              const nextVis = (issue.visibility === 'PERSONAL_PRIVATE') ? 'TEAM_PUBLIC' : 'PERSONAL_PRIVATE';
+                              api.updateIssueVisibility(issue.id, nextVis).then(() => {
+                                onUpdateIssue(issue.id, { visibility: nextVis });
+                              }).catch(err => alert('Failed to update visibility: ' + err.message));
+                            }}
+                            title={issue.creatorId === currentUser.id ? "Click to toggle task visibility (Team Public vs Private)" : "Only creator can toggle task visibility"}
+                            className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-[10px] font-semibold border transition-all ${
+                              issue.visibility === 'PERSONAL_PRIVATE'
+                                ? 'bg-amber-50 text-amber-800 border-amber-200 hover:bg-amber-100'
+                                : 'bg-emerald-50 text-emerald-800 border-emerald-200 hover:bg-emerald-100'
+                            } ${issue.creatorId === currentUser.id ? 'cursor-pointer shadow-2xs' : 'cursor-default opacity-85'}`}
+                          >
+                            {issue.visibility === 'PERSONAL_PRIVATE' ? (
+                              <>
+                                <EyeOff size={11} className="text-amber-700" />
+                                <span>Private</span>
+                              </>
+                            ) : (
+                              <>
+                                <Eye size={11} className="text-emerald-700" />
+                                <span>Team Public</span>
+                              </>
+                            )}
+                          </button>
+                        </td>
+                        <td className="py-3.5 px-4">
                           <span className="font-medium text-slate-700">
                             @{issue.assignedTechUserName || issue.creatorName}
                           </span>
@@ -2417,6 +2578,27 @@ export default function IssueDetailView({
                         </td>
                         <td className="py-3.5 px-4 text-right">
                           <div className="flex items-center justify-end space-x-1.5 ml-auto">
+                            <button
+                              type="button"
+                              onClick={async () => {
+                                try {
+                                  const dossier = await api.getAuditDossier(issue.id);
+                                  const blob = new Blob([JSON.stringify(dossier, null, 2)], { type: 'application/json' });
+                                  const url = URL.createObjectURL(blob);
+                                  const a = document.createElement('a');
+                                  a.href = url;
+                                  a.download = `audit_dossier_${issue.id}.json`;
+                                  a.click();
+                                  URL.revokeObjectURL(url);
+                                } catch (e: any) {
+                                  alert('Could not download audit dossier: ' + e.message);
+                                }
+                              }}
+                              className="p-1.5 text-slate-500 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition-colors cursor-pointer border border-slate-200"
+                              title="Export Unified Immutable Audit Dossier (JSON)"
+                            >
+                              <Download size={13} />
+                            </button>
                             <button
                               type="button"
                               onClick={() => {
@@ -3425,21 +3607,27 @@ export default function IssueDetailView({
               </div>
             </div>
           ) : (
-            <InvestigationWorkspace
-              issues={issues}
-              selectedIssueId={selectedIssue.id}
-              onSelectIssueId={(id) => setSelectedIssueId(id)}
-              currentUser={currentUser}
-              users={users}
-              databases={databases}
-              systems={systems}
-              hashtags={hashtags}
-              onUpdateIssue={onUpdateIssue}
-              onDeleteIssue={onDeleteIssue}
-              onSendChatMessage={onSendChatMessage}
-              onSubmitQueryApproval={onSubmitQueryApproval}
-              onOpenNewCase={() => setWorkspaceSubView('open_case')}
-            />
+            <ErrorBoundary
+              fallbackTitle="Investigation Workspace Error"
+              fallbackMessage="An unexpected error occurred while rendering the Investigation Workspace. You can retry or return to the SQL Sandbox."
+            >
+              <InvestigationWorkspace
+                issues={issues}
+                selectedIssueId={selectedIssue.id}
+                onSelectIssueId={(id) => setSelectedIssueId(id)}
+                currentUser={currentUser}
+                users={users}
+                databases={databases}
+                systems={systems}
+                hashtags={hashtags}
+                teams={teams}
+                onUpdateIssue={onUpdateIssue}
+                onDeleteIssue={onDeleteIssue}
+                onSendChatMessage={onSendChatMessage}
+                onSubmitQueryApproval={onSubmitQueryApproval}
+                onOpenNewCase={() => setWorkspaceSubView('open_case')}
+              />
+            </ErrorBoundary>
           )}
         </div>
       )}
@@ -3714,38 +3902,38 @@ export default function IssueDetailView({
 
       {/* Minimal Hashtag Table View */}
       {currentMode === 'hashtags' && selectedHashtagTag === null && (
-        <div className="space-y-5">
+        <div className="space-y-3">
           {/* Header Banner for Hashtags Catalog */}
-          <div className="bg-gradient-to-r from-slate-900 via-blue-950 to-slate-900 border border-slate-800 rounded-2xl p-6 text-white shadow-md flex flex-col md:flex-row md:items-center justify-between gap-4">
-            <div className="space-y-1.5">
-              <div className="flex items-center space-x-2.5">
-                <div className="p-2 bg-blue-500/20 text-blue-400 rounded-xl">
-                  <Tag size={20} />
-                </div>
-                <h2 className="text-lg font-bold">Hashtags & Resolution Shortcuts Catalog</h2>
-                <span className="px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold bg-blue-600/30 text-blue-300 border border-blue-500/30">
+          <div className="bg-[#0F172B] border border-slate-800 rounded-xl p-3 sm:p-3.5 text-white shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-3">
+            <div className="space-y-1">
+              <div className="flex items-center space-x-2">
+                <span className="p-1 bg-blue-500/20 rounded-md text-blue-400">
+                  <Tag size={16} />
+                </span>
+                <h2 className="text-sm font-bold">Hashtags & Resolution Shortcuts Catalog</h2>
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-[#155DFC]/20 text-blue-300 border border-[#155DFC]/30">
                   {hashtags.length} Presets
                 </span>
               </div>
-              <p className="text-xs text-slate-300 max-w-2xl">
+              <p className="text-[11px] text-slate-300 max-w-2xl leading-relaxed">
                 Search, view, and create shortcut presets for automated batch transaction reconciliation. Click any hashtag item to view its complete specifications and associated tasks.
               </p>
             </div>
 
-            <div className="flex items-center space-x-2">
+            <div className="flex items-center space-x-2 shrink-0">
               <button
                 type="button"
                 onClick={() => setCurrentMode('create_hashtag')}
-                className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold rounded-xl flex items-center space-x-2 shadow-sm transition-all cursor-pointer"
+                className="px-3.5 py-1.5 bg-[#155DFC] hover:bg-[#155DFC]/90 text-white text-xs font-bold rounded-lg flex items-center space-x-1.5 shadow-xs transition-all cursor-pointer"
               >
-                <Plus size={15} />
+                <Plus size={14} />
                 <span>+ Create Hashtag</span>
               </button>
             </div>
           </div>
 
           {/* Search Bar */}
-          <div className="bg-white border border-slate-200/80 rounded-2xl p-4 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div className="bg-white border border-slate-200/80 rounded-xl p-2.5 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
             <div className="relative flex-1 max-w-md">
               <Search size={14} className="absolute left-3 top-2.5 text-slate-400" />
               <input
@@ -3836,17 +4024,17 @@ export default function IssueDetailView({
           CREATE TASK WORKSPACE VIEW
           ========================================================================= */}
       {currentMode === 'create_task' && (
-        <div className="space-y-5">
+        <div className="space-y-3">
           {/* Header Banner for Create Task */}
-          <div className="bg-gradient-to-r from-slate-900 via-blue-950 to-slate-900 border border-slate-800 rounded-2xl p-6 text-white shadow-md flex flex-col md:flex-row md:items-center justify-between gap-4">
-            <div className="space-y-1.5">
-              <div className="flex items-center space-x-2.5">
-                <div className="p-2 bg-blue-500/20 text-blue-400 rounded-xl">
-                  <Plus size={20} />
-                </div>
-                <h2 className="text-lg font-bold">Create Task & Open Investigation Space</h2>
+          <div className="bg-[#0F172B] border border-slate-800 rounded-xl p-3 sm:p-3.5 text-white shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-3">
+            <div className="space-y-1">
+              <div className="flex items-center space-x-2">
+                <span className="p-1 bg-blue-500/20 rounded-md text-blue-400">
+                  <Plus size={16} />
+                </span>
+                <h2 className="text-sm font-bold">Create Task & Open Investigation Space</h2>
               </div>
-              <p className="text-xs text-slate-300 max-w-2xl">
+              <p className="text-[11px] text-slate-300 max-w-2xl leading-relaxed">
                 Assign task, connect external database, upload files, and map columns for reconciliation directly in your workspace.
               </p>
             </div>
@@ -3854,15 +4042,15 @@ export default function IssueDetailView({
             <button
               type="button"
               onClick={() => setCurrentMode('workspace')}
-              className="px-4 py-2 bg-slate-800/90 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold rounded-xl flex items-center space-x-2 transition-all cursor-pointer self-start md:self-center"
+              className="px-3.5 py-1.5 bg-slate-800/90 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold rounded-lg flex items-center space-x-1.5 transition-all cursor-pointer self-start md:self-center"
             >
-              <ArrowLeft size={14} />
+              <ArrowLeft size={13} />
               <span>Back to Workspace</span>
             </button>
           </div>
 
           {/* Form Container */}
-          <div className="bg-white border border-slate-200/80 rounded-2xl p-6 shadow-sm space-y-5">
+          <div className="bg-white border border-slate-200/80 rounded-xl p-4 sm:p-5 shadow-xs space-y-4">
             <form onSubmit={handleCreateTaskSubmit} className="space-y-5">
               {/* Basic Task Information */}
               <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -4559,17 +4747,17 @@ export default function IssueDetailView({
           CREATE HASHTAG WORKSPACE VIEW
           ========================================================================= */}
       {currentMode === 'create_hashtag' && (
-        <div className="space-y-5">
+        <div className="space-y-3">
           {/* Header Banner for Create Hashtag */}
-          <div className="bg-gradient-to-r from-slate-900 via-blue-950 to-slate-900 border border-slate-800 rounded-2xl p-6 text-white shadow-md flex flex-col md:flex-row md:items-center justify-between gap-4">
-            <div className="space-y-1.5">
-              <div className="flex items-center space-x-2.5">
-                <div className="p-2 bg-blue-500/20 text-blue-400 rounded-xl">
-                  <Tag size={20} />
-                </div>
-                <h2 className="text-lg font-bold">Create # Resolution Preset & Rule Shortcut</h2>
+          <div className="bg-[#0F172B] border border-slate-800 rounded-xl p-3 sm:p-3.5 text-white shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-3">
+            <div className="space-y-1">
+              <div className="flex items-center space-x-2">
+                <span className="p-1 bg-blue-500/20 rounded-md text-blue-400">
+                  <Tag size={16} />
+                </span>
+                <h2 className="text-sm font-bold">Create # Resolution Preset & Rule Shortcut</h2>
               </div>
-              <p className="text-xs text-slate-300 max-w-2xl">
+              <p className="text-[11px] text-slate-300 max-w-2xl leading-relaxed">
                 Define reusable determination rules, expected file structure headers, and SQL resolution scripts for batch transaction processing directly in your workspace.
               </p>
             </div>
@@ -4577,15 +4765,15 @@ export default function IssueDetailView({
             <button
               type="button"
               onClick={() => setCurrentMode('hashtags')}
-              className="px-4 py-2 bg-slate-800/90 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold rounded-xl flex items-center space-x-2 transition-all cursor-pointer self-start md:self-center"
+              className="px-3.5 py-1.5 bg-slate-800/90 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold rounded-lg flex items-center space-x-1.5 transition-all cursor-pointer self-start md:self-center"
             >
-              <ArrowLeft size={14} />
+              <ArrowLeft size={13} />
               <span>Back to Hashtags</span>
             </button>
           </div>
 
           {/* Form Container */}
-          <div className="bg-white border border-slate-200/80 rounded-2xl p-6 shadow-sm space-y-5">
+          <div className="bg-white border border-slate-200/80 rounded-xl p-4 sm:p-5 shadow-xs space-y-4">
             <form onSubmit={handleSaveHashtagPreset} className="space-y-4">
               <div>
                 <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">

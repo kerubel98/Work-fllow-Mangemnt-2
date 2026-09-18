@@ -1,5 +1,47 @@
 import { getPostgresPool, isPostgresConnected } from './postgres.js';
-import { INITIAL_USERS, INITIAL_HASHTAGS, INITIAL_PLUGINS, INITIAL_DBS, INITIAL_SYSTEMS, INITIAL_TEAMS, INITIAL_ISSUES, INITIAL_ORGANIZATIONS } from '../store/dataStore.js';
+import { INITIAL_USERS, INITIAL_HASHTAGS, INITIAL_PLUGINS, INITIAL_DBS, INITIAL_SYSTEMS, INITIAL_TEAMS, INITIAL_TEAM_RELATIONSHIPS, INITIAL_ISSUES, INITIAL_ORGANIZATIONS } from '../store/dataStore.js';
+async function seedTeamsAndRelationshipsIfEmpty(pool) {
+    try {
+        const { rows: teamRows } = await pool.query('SELECT COUNT(*)::int as count FROM teams;');
+        if (teamRows[0].count === 0) {
+            console.log('🌱 Seeding default teams in PostgreSQL...');
+            for (const team of INITIAL_TEAMS) {
+                await pool.query(`INSERT INTO teams (id, name, description, team_type, manager_id, manager_name, member_ids, created_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+           ON CONFLICT (id) DO NOTHING;`, [
+                    team.id,
+                    team.name,
+                    team.description,
+                    team.teamType || 'permanent',
+                    team.managerId,
+                    team.managerName,
+                    JSON.stringify(team.memberIds || []),
+                    team.createdAt || new Date()
+                ]);
+            }
+        }
+        const { rows: relRows } = await pool.query('SELECT COUNT(*)::int as count FROM team_relationships;');
+        if (relRows[0].count === 0) {
+            console.log('🌱 Seeding default team relationships in PostgreSQL...');
+            for (const rel of INITIAL_TEAM_RELATIONSHIPS) {
+                await pool.query(`INSERT INTO team_relationships (id, source_team_id, target_team_id, relationship_type, description, created_by, created_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)
+           ON CONFLICT (source_team_id, target_team_id, relationship_type) DO NOTHING;`, [
+                    rel.id,
+                    rel.sourceTeamId,
+                    rel.targetTeamId,
+                    rel.relationshipType,
+                    rel.description || null,
+                    rel.createdBy || 'system',
+                    rel.createdAt || new Date()
+                ]);
+            }
+        }
+    }
+    catch (err) {
+        console.warn('Could not seed teams/relationships in PostgreSQL:', err.message);
+    }
+}
 export async function seedPostgres() {
     if (!isPostgresConnected)
         return;
@@ -7,7 +49,8 @@ export async function seedPostgres() {
     try {
         const { rows } = await pool.query('SELECT COUNT(*)::int as count FROM users;');
         if (rows[0].count > 0) {
-            return; // Already seeded
+            await seedTeamsAndRelationshipsIfEmpty(pool);
+            return; // Already seeded other tables
         }
         console.log('🌱 Seeding initial PostgreSQL data...');
         // 1. Organizations

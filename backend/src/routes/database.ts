@@ -10,10 +10,11 @@ import { QueryApprovalRequestModel } from '../models/QueryApprovalRequest.js';
 import { store } from '../store/dataStore.js';
 import { repo } from '../store/repository.js';
 import { DatabaseConnection, ConnectionUsageLog, QueryApprovalRequest, DbAccessRequest, DatabaseColumnConfiguration, RuleColumnPriority, RuleAggregation, SemanticRowRoleConfig, SemanticCrossRowRule, TransactionTypeGroupConfig, TypeColumnCondition, ColumnValueLabelMapping } from '../types.js';
-import { discoverTablesForDb, getTableColumnsForDb, executeLiveQueryOnDb, testExternalDbConnection } from '../services/dbConnectionManager.js';
+import { discoverTablesForDb, getTableColumnsForDb, executeLiveQueryOnDb, testExternalDbConnection, evictExternalDbPool } from '../services/dbConnectionManager.js';
 import { mirrorTableManager } from '../services/mirrorTableManager.js';
 import { ftpFileStagingService } from '../services/ftpFileStagingService.js';
 import { discoverFtpFilesRecursive } from '../services/ftpConnectionService.js';
+import { ftpSchedulerService } from '../services/ftpSchedulerService.js';
 
 export const databaseRouter = Router();
 
@@ -266,10 +267,13 @@ databaseRouter.post('/test-connection', async (req: Request, res: Response) => {
 
   let dbRecord: any = null;
   if (dbId) {
-    if (isMongoConnected) {
-      dbRecord = await DatabaseConnectionModel.findOne({ id: dbId });
-    } else {
-      dbRecord = store.databases.find(d => d.id === dbId);
+    dbRecord = await repo.getDatabaseById(dbId);
+    if (!dbRecord) {
+      if (isMongoConnected) {
+        dbRecord = await DatabaseConnectionModel.findOne({ id: dbId });
+      } else {
+        dbRecord = store.databases.find(d => d.id === dbId);
+      }
     }
     if (dbRecord) {
       if (!connectionString && dbRecord.connectionString) {
@@ -278,15 +282,19 @@ databaseRouter.post('/test-connection', async (req: Request, res: Response) => {
         targetHost = parsed.host;
         targetPort = parsed.port;
         if (parsed.databaseName) targetDbName = parsed.databaseName;
+        if (parsed.username) targetUser = parsed.username;
       } else {
         targetType = dbRecord.type || targetType;
         targetHost = dbRecord.host || targetHost;
         if (dbRecord.port) targetPort = dbRecord.port;
+        if (dbRecord.databaseName || dbRecord.database_name) targetDbName = dbRecord.databaseName || dbRecord.database_name;
+        if (dbRecord.username) targetUser = dbRecord.username;
       }
     }
   }
 
   const timestamp = new Date().toISOString();
+  const effectivePassword = req.body.password || dbRecord?.password;
 
   // Special FTP/SFTP connection test
   if (targetType === 'FTP' || targetType === 'SFTP') {
@@ -299,7 +307,7 @@ databaseRouter.post('/test-connection', async (req: Request, res: Response) => {
       connectionString,
       databaseName: targetDbName,
       username: targetUser,
-      password: req.body.password,
+      password: effectivePassword,
       status: 'offline',
       apiEndpoint: ''
     });
@@ -484,6 +492,7 @@ databaseRouter.post('/databases', async (req: Request, res: Response) => {
 // PUT /api/db/databases/:id - Update database connection settings
 databaseRouter.put('/databases/:id', async (req: Request, res: Response) => {
   try {
+    await evictExternalDbPool(req.params.id);
     const updated = await repo.updateDatabase(req.params.id, req.body);
     if (!updated) return res.status(404).json({ error: 'Database connection not found' });
     return res.json(updated);
@@ -495,6 +504,7 @@ databaseRouter.put('/databases/:id', async (req: Request, res: Response) => {
 // DELETE /api/db/databases/:id - Delete a database connection setting
 databaseRouter.delete('/databases/:id', async (req: Request, res: Response) => {
   try {
+    await evictExternalDbPool(req.params.id);
     const success = await repo.deleteDatabase(req.params.id);
     if (!success) return res.status(404).json({ error: 'Database connection not found' });
     return res.json({ success: true, message: 'Database connection deleted successfully' });
@@ -510,15 +520,17 @@ databaseRouter.get('/databases/:id/tables', async (req: Request, res: Response) 
     if (!db) return res.status(404).json({ error: 'Database connection not found' });
     
     let discovered: string[] = [];
-    if (!db.availableTables || db.availableTables.length === 0) {
-      try {
-        discovered = await discoverTablesForDb(db);
-        if (discovered.length > 0) {
-          db.availableTables = discovered;
-          await repo.updateDatabase(db.id, { availableTables: discovered }).catch(() => {});
+    if (db.type !== 'FTP' && db.type !== 'SFTP') {
+      if (!db.availableTables || db.availableTables.length === 0) {
+        try {
+          discovered = await discoverTablesForDb(db);
+          if (discovered.length > 0) {
+            db.availableTables = discovered;
+            await repo.updateDatabase(db.id, { availableTables: discovered }).catch(() => {});
+          }
+        } catch (discErr: any) {
+          console.warn(`[database.ts] Auto-discovery for ${db.name}:`, discErr.message);
         }
-      } catch (discErr: any) {
-        console.warn(`[database.ts] Auto-discovery for ${db.name}:`, discErr.message);
       }
     }
 
@@ -528,17 +540,30 @@ databaseRouter.get('/databases/:id/tables', async (req: Request, res: Response) 
       ...discovered
     ];
 
+    // For FTP/SFTP, automatically include all staged mirror tables from PostgreSQL and staging configs
+    if (db.type === 'FTP' || db.type === 'SFTP') {
+      try {
+        const configs = await repo.getFtpStagingConfigs();
+        const dbConfigs = configs.filter(c => c.ftpConnectionId === db.id);
+        dbConfigs.forEach(c => {
+          if (c.stagingTableName) combined.push(c.stagingTableName);
+          if (c.fileNamePattern) combined.push(c.fileNamePattern);
+        });
+      } catch {}
+    }
+
     // Also check for PostgreSQL UNLOGGED mirror tables for this database
     try {
       const safeDbPrefix = mirrorTableManager.getMirrorTableName(db.name || db.id, '').replace(/_+$/, '');
       const mirrorRes = await queryPg(
         `SELECT table_name FROM information_schema.tables 
-         WHERE table_schema = 'public' AND table_name LIKE $1`,
+         WHERE table_schema = 'public' AND (table_name LIKE $1 OR table_name LIKE 'mirror_ftp_%')`,
         [`${safeDbPrefix}_%`]
       );
       if (mirrorRes.rows && mirrorRes.rows.length > 0) {
         for (const r of mirrorRes.rows) {
-          const rawTable = r.table_name.replace(`${safeDbPrefix}_`, '');
+          combined.push(r.table_name);
+          const rawTable = r.table_name.replace(`${safeDbPrefix}_`, '').replace(/^mirror_ftp_/, '');
           if (rawTable) combined.push(rawTable);
         }
       }
@@ -609,33 +634,61 @@ databaseRouter.get('/databases/:id/tables/:tableName/columns', async (req: Reque
     const db = await repo.getDatabaseById(req.params.id);
     if (!db) return res.status(404).json({ error: 'Database connection not found' });
 
+    const tableName = req.params.tableName;
     let columns: any[] = [];
-    try {
-      columns = await getTableColumnsForDb(db, req.params.tableName);
-    } catch (discoveryErr: any) {
-      console.warn(`[database.ts] Live table discovery error for ${db.name}.${req.params.tableName}:`, discoveryErr.message);
-    }
 
-    // Fallback to PostgreSQL UNLOGGED mirror table if live discovery returns empty
-    if (!columns || columns.length === 0) {
-      const mirrorName = mirrorTableManager.getMirrorTableName(db.name || db.id, req.params.tableName);
+    // Fast-path: If table is a PostgreSQL mirror table, inspect PostgreSQL catalog directly
+    if (tableName.startsWith('mirror_')) {
       try {
         const mirrorRes = await queryPg(
           `SELECT column_name AS name, data_type AS type, is_nullable AS nullable
            FROM information_schema.columns
            WHERE table_schema = 'public' AND table_name = $1
            ORDER BY ordinal_position`,
-          [mirrorName]
+          [tableName.toLowerCase()]
         );
         if (mirrorRes.rows && mirrorRes.rows.length > 0) {
-          const sysCols = new Set(['_mirror_id', '_batch_id', '_rule_block_id', '_validation_status', '_fetched_at', '_raw_payload']);
+          const sysCols = new Set(['_staging_id', '_staged_at', '_raw_row_index', 'raw_payload', '_mirror_id', '_batch_id', '_rule_block_id', '_validation_status', '_fetched_at']);
           columns = mirrorRes.rows
             .filter((r: any) => !sysCols.has(r.name))
             .map((r: any) => ({
               name: r.name,
               type: String(r.type).toUpperCase(),
               nullable: r.nullable === 'YES',
-              isPrimary: r.name === 'id' || r.name === 'tran_id' || r.name === 'transaction_id'
+              isPrimary: r.name === 'id' || r.name === '_staging_id' || r.name === 'transaction_id'
+            }));
+        }
+      } catch (mirrorErr: any) {
+        console.warn(`[database.ts] Mirror columns error for ${tableName}:`, mirrorErr.message);
+      }
+    } else {
+      try {
+        columns = await getTableColumnsForDb(db, tableName);
+      } catch (discoveryErr: any) {
+        console.warn(`[database.ts] Live table discovery error for ${db.name}.${tableName}:`, discoveryErr.message);
+      }
+    }
+
+    // Fallback to PostgreSQL UNLOGGED mirror table if live discovery returns empty
+    if (!columns || columns.length === 0) {
+      const mirrorName = mirrorTableManager.getMirrorTableName(db.name || db.id, tableName);
+      try {
+        const mirrorRes = await queryPg(
+          `SELECT column_name AS name, data_type AS type, is_nullable AS nullable
+           FROM information_schema.columns
+           WHERE table_schema = 'public' AND table_name = $1
+           ORDER BY ordinal_position`,
+          [mirrorName.toLowerCase()]
+        );
+        if (mirrorRes.rows && mirrorRes.rows.length > 0) {
+          const sysCols = new Set(['_staging_id', '_staged_at', '_raw_row_index', 'raw_payload', '_mirror_id', '_batch_id', '_rule_block_id', '_validation_status', '_fetched_at']);
+          columns = mirrorRes.rows
+            .filter((r: any) => !sysCols.has(r.name))
+            .map((r: any) => ({
+              name: r.name,
+              type: String(r.type).toUpperCase(),
+              nullable: r.nullable === 'YES',
+              isPrimary: r.name === 'id' || r.name === '_staging_id' || r.name === 'transaction_id'
             }));
         }
       } catch {
@@ -646,7 +699,7 @@ databaseRouter.get('/databases/:id/tables/:tableName/columns', async (req: Reque
     return res.json({
       dbId: db.id,
       dbName: db.name,
-      tableName: req.params.tableName,
+      tableName,
       columns: columns || []
     });
   } catch (err: any) {
@@ -661,8 +714,46 @@ databaseRouter.get('/databases/:id/tables/:tableName/preview', async (req: Reque
     if (!db) return res.status(404).json({ error: 'Database connection not found' });
     const tableName = req.params.tableName;
     const limit = Math.min(Math.max(Number(req.query.limit) || 25, 1), 100);
+    const sysCols = new Set(['_staging_id', '_staged_at', '_raw_row_index', 'raw_payload', '_mirror_id', '_batch_id', '_rule_block_id', '_validation_status', '_fetched_at']);
 
-    // 1. Try querying real external database first
+    // 1. Fast-path: If tableName is already a mirror table, query PostgreSQL UNLOGGED table directly
+    if (tableName.startsWith('mirror_')) {
+      try {
+        const mirrorQueryRes = await queryPg(`SELECT * FROM "${tableName}" LIMIT $1`, [limit]);
+        let cleanCols: string[] = [];
+        if (mirrorQueryRes.rows && mirrorQueryRes.rows.length > 0) {
+          const allCols = Object.keys(mirrorQueryRes.rows[0]);
+          cleanCols = allCols.filter(c => !sysCols.has(c));
+        } else {
+          // Empty table: introspect schema columns
+          const colRes = await queryPg(
+            `SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = $1 ORDER BY ordinal_position`,
+            [tableName.toLowerCase()]
+          );
+          cleanCols = colRes.rows.map((r: any) => r.column_name).filter((c: string) => !sysCols.has(c));
+        }
+
+        const cleanRows = (mirrorQueryRes.rows || []).map(r => {
+          const rowObj: any = {};
+          cleanCols.forEach(c => { rowObj[c] = r[c]; });
+          return rowObj;
+        });
+
+        return res.json({
+          dbId: db.id,
+          dbName: db.name,
+          tableName,
+          columns: cleanCols,
+          rows: cleanRows,
+          rowCount: cleanRows.length,
+          source: 'MIRROR_TABLE'
+        });
+      } catch (mirrorErr: any) {
+        console.warn(`[database.ts] Direct mirror preview query on ${tableName} failed:`, mirrorErr.message);
+      }
+    }
+
+    // 2. Try querying real external database
     try {
       const liveRes = await executeLiveQueryOnDb(db, `SELECT * FROM ${tableName} LIMIT ${limit}`);
       if (liveRes && liveRes.rows && liveRes.rows.length > 0) {
@@ -680,12 +771,11 @@ databaseRouter.get('/databases/:id/tables/:tableName/preview', async (req: Reque
       console.warn(`[database.ts] Live preview query on ${db.name}.${tableName} failed:`, liveErr.message);
     }
 
-    // 2. Fallback to PostgreSQL UNLOGGED mirror table
+    // 3. Fallback to PostgreSQL UNLOGGED mirror table
     const mirrorName = mirrorTableManager.getMirrorTableName(db.name || db.id, tableName);
     try {
-      const mirrorQueryRes = await queryPg(`SELECT * FROM ${mirrorName} LIMIT $1`, [limit]);
+      const mirrorQueryRes = await queryPg(`SELECT * FROM "${mirrorName}" LIMIT $1`, [limit]);
       if (mirrorQueryRes.rows && mirrorQueryRes.rows.length > 0) {
-        const sysCols = new Set(['_mirror_id', '_batch_id', '_rule_block_id', '_validation_status', '_fetched_at', '_raw_payload']);
         const allCols = Object.keys(mirrorQueryRes.rows[0]);
         const cleanCols = allCols.filter(c => !sysCols.has(c));
         const cleanRows = mirrorQueryRes.rows.map(r => {
@@ -707,7 +797,7 @@ databaseRouter.get('/databases/:id/tables/:tableName/preview', async (req: Reque
       // Mirror table may not exist
     }
 
-    // 3. Fallback: inspect schema columns and return empty sample array
+    // 4. Fallback: inspect schema columns and return empty sample array
     let columns: any[] = [];
     try {
       columns = await getTableColumnsForDb(db, tableName);
@@ -1841,6 +1931,10 @@ databaseRouter.post('/ftp-staging/discover-recursive', async (req: Request, res:
     }
 
     const files = await discoverFtpFilesRecursive(db, baseDir);
+    // Background audit for unconfigured remote folders
+    ftpFileStagingService.detectAndNotifyUnconfiguredFolders(db, files).catch(err => {
+      console.warn('[FTP Staging] Audit unconfigured folders failed:', err?.message || err);
+    });
     return res.json(files);
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
@@ -1890,6 +1984,44 @@ databaseRouter.post('/ftp-staging/stage-file', async (req: Request, res: Respons
     // Trigger full staging
     const stageResult = await ftpFileStagingService.stageFtpFileForValidation(db, stagingConfig);
     return res.json(stageResult);
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/db/ftp-staging/run-scheduled - Trigger scheduled ingestion event (type-based or all)
+databaseRouter.post('/ftp-staging/run-scheduled', async (req: Request, res: Response) => {
+  try {
+    const { targetType, connectionId, forceAll } = req.body;
+    const result = await ftpSchedulerService.runScheduledFtpStaging({
+      targetType,
+      connectionId,
+      forceAll: forceAll !== undefined ? forceAll : true
+    });
+    return res.json(result);
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/db/ftp-staging/unconfigured-folders - Get audit of detected unconfigured folders
+databaseRouter.get('/ftp-staging/unconfigured-folders', async (req: Request, res: Response) => {
+  try {
+    const connectionId = req.query.connectionId as string | undefined;
+    const folders = await repo.getUnconfiguredFolders(connectionId);
+    return res.json(folders);
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/db/ftp-staging/resolve-unconfigured-folder - Mark unconfigured folder resolved
+databaseRouter.post('/ftp-staging/resolve-unconfigured-folder', async (req: Request, res: Response) => {
+  try {
+    const { folderPath, connectionId } = req.body;
+    if (!folderPath || !connectionId) return res.status(400).json({ error: 'folderPath and connectionId are required' });
+    await repo.resolveUnconfiguredFolder(folderPath, connectionId);
+    return res.json({ success: true });
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
   }

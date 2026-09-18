@@ -10,6 +10,8 @@ export interface User {
   canExecuteSelect?: boolean;
   canExecuteUpdate?: boolean;
   allowedDbIds?: string[];
+  permanentTeamId?: string;
+  shareWorkspaceWithTeam?: boolean;
 }
 
 export type NotificationType = 'chat' | 'task_assigned' | 'team_added' | 'issue_assigned' | 'system';
@@ -54,6 +56,29 @@ export interface Team {
   createdAt: string;
 }
 
+export type TeamRelationshipType =
+  | 'PARENT_UNIT'
+  | 'SUB_UNIT'
+  | 'ESCALATION_TARGET'
+  | 'PEER_COLLABORATOR'
+  | 'UPSTREAM_PROVIDER'
+  | 'DOWNSTREAM_CONSUMER'
+  | 'AUDIT_COMPLIANCE_REVIEWER';
+
+export interface TeamRelationship {
+  id: string;
+  sourceTeamId: string;
+  targetTeamId: string;
+  relationshipType: TeamRelationshipType;
+  description?: string;
+  createdBy?: string;
+  createdAt: string;
+  sourceTeamName?: string;
+  targetTeamName?: string;
+  sourceTeamType?: 'permanent' | 'working';
+  targetTeamType?: 'permanent' | 'working';
+}
+
 export interface TeamTask {
   id: string;
   teamId: string;
@@ -69,6 +94,11 @@ export interface TeamTask {
   dueDate?: string;
   startDate?: string;
   milestone?: string;
+  isPublic?: boolean;
+  visibility?: 'team' | 'public' | 'private';
+  escalatedToTeamId?: string;
+  escalationReason?: string;
+  escalatedAt?: string;
 }
 
 export interface TeamInsight {
@@ -93,6 +123,37 @@ export interface TeamDiscussionMessage {
   timestamp: string;
 }
 
+export type SolutionProcessType = 'READ_ONLY_AUDIT' | 'INTERNAL_STAGED_FIX' | 'CAUTIOUS_PROCESS';
+
+export interface ChatMention {
+  type: 'user' | 'team';
+  id: string;
+  name: string;
+}
+
+export interface ChatInvestigationSummary {
+  issueId: string;
+  totalRecords: number;
+  discrepancyCount: number;
+  affectedAmount?: number;
+  keyFindings: string;
+  validationStatus?: string;
+  timestamp: string;
+}
+
+export interface ChatSolutionProposal {
+  id: string;
+  script: string;
+  processType: SolutionProcessType;
+  proposedBy: string;
+  proposedByName: string;
+  proposedAt: string;
+  accepted?: boolean;
+  acceptedBy?: string;
+  acceptedByName?: string;
+  acceptedAt?: string;
+}
+
 export interface ChatMessage {
   id: string;
   senderId: string;
@@ -100,6 +161,9 @@ export interface ChatMessage {
   senderRole: UserRole;
   text: string;
   timestamp: string;
+  mentions?: ChatMention[];
+  attachedSummary?: ChatInvestigationSummary;
+  solutionProposal?: ChatSolutionProposal;
 }
 
 export type IssueStatus = 'Open' | 'Investigating' | 'Resolved' | 'Closed';
@@ -142,12 +206,28 @@ export interface Issue {
   customFilters?: { column: string; value: string }[];
   transactionCount?: number;
   datasetStatus?: string;
+  teamId?: string;
+  visibility?: 'TEAM_PUBLIC' | 'PERSONAL_PRIVATE';
+  processType?: SolutionProcessType;
+  workflowId?: string;
+  acceptedScriptProposalId?: string;
+  initialSnapshot?: Record<string, any>[];
 }
 
 export interface CriteriaRule {
   column: string;
   operator: 'is_required' | 'must_be_numeric' | 'value_greater_than' | 'length_matches';
   value?: string;
+}
+
+export interface HashtagKpi {
+  id: string;
+  assignedTeamId?: string;
+  assignedTeamName?: string;
+  targetResolutionHours: number;
+  expectedAccuracyPercent: number;
+  maxPendingDays: number;
+  createdAt: string;
 }
 
 export interface HashtagPreset {
@@ -160,6 +240,48 @@ export interface HashtagPreset {
   createdAt: string;
   fileTemplateData?: Record<string, string>[];
   criteriaRules?: CriteriaRule[];
+  workflowId?: string;
+  workflowName?: string;
+  processType?: SolutionProcessType;
+  kpis?: HashtagKpi[];
+}
+
+export interface TransactionReversionSnapshot {
+  id: string;
+  taskId: string;
+  transactionId?: string;
+  processType: SolutionProcessType;
+  beforeState: Record<string, any> | Record<string, any>[];
+  afterState?: Record<string, any> | Record<string, any>[];
+  reason?: string;
+  createdBy: string;
+  createdAt: string;
+  revertedAt?: string;
+  revertedBy?: string;
+}
+
+export interface UnifiedAuditDossier {
+  taskId: string;
+  taskTitle: string;
+  taskStatus: string;
+  priority: string;
+  creator: { id: string; name: string };
+  assignedTech?: { id?: string; name?: string };
+  teamId?: string;
+  visibility: string;
+  linkedHashtag?: string;
+  createdAt: string;
+  solutionScript?: string;
+  processType?: SolutionProcessType;
+  solutionExecuted?: boolean;
+  solutionExecutedAt?: string;
+  chatHistory: ChatMessage[];
+  investigationSummary?: Record<string, any>;
+  validationExecutions: any[];
+  initialTransactionsSnapshot: Record<string, any>[];
+  currentTransactionsSnapshot: Record<string, any>[];
+  reversionHistory: TransactionReversionSnapshot[];
+  generatedAt: string;
 }
 
 export interface EnvironmentConfig {
@@ -243,12 +365,47 @@ export interface FtpFieldMapping {
   transform?: 'NONE' | 'UPPERCASE' | 'LOWERCASE' | 'TRIM' | 'NUMERIC_CLEAN';
 }
 
+export interface FolderStructureException {
+  id: string;
+  folderPattern: string; // e.g. "legacy/**", "branch_reports/*", "special"
+  description?: string;
+  note?: string;
+  fileFormat?: 'CSV' | 'TSV' | 'PIPE' | 'SEMICOLON' | 'CUSTOM_DELIMITED' | 'EXCEL' | 'XML' | 'JSON' | 'FIXED_WIDTH' | 'TXT';
+  customDelimiter?: string;
+  hasHeader?: boolean;
+  headerRowIndex?: number;
+  headerRowCount?: number;
+  dataStartRow?: number;
+  excelSheetName?: string;
+  xmlRootElement?: string;
+  xmlRecordElement?: string;
+  fieldMappings?: FtpFieldMapping[];
+}
+
+export interface FtpStagingScheduleConfig {
+  enabled: boolean;
+  frequency: 'MANUAL' | 'EVERY_15_MIN' | 'HOURLY' | 'EVERY_6_HOURS' | 'DAILY';
+  scheduledTime?: string; // "02:00" for DAILY
+  targetType: 'ALL' | 'CSV' | 'EXCEL' | 'XML' | 'TXT';
+  lastRunAt?: string;
+  nextRunAt?: string;
+}
+
+export interface FtpSkippedMismatch {
+  fileName: string;
+  folder: string;
+  expectedFormat: string;
+  detectedFormat?: string;
+  reason: string;
+  timestamp: string;
+}
+
 export interface FtpFileStagingConfig {
   id: string;
   name: string;
   ftpConnectionId: string;
   fileNamePattern: string;
-  fileFormat: 'CSV' | 'TSV' | 'PIPE' | 'SEMICOLON' | 'CUSTOM_DELIMITED' | 'EXCEL' | 'XML' | 'JSON' | 'FIXED_WIDTH';
+  fileFormat: 'CSV' | 'TSV' | 'PIPE' | 'SEMICOLON' | 'CUSTOM_DELIMITED' | 'EXCEL' | 'XML' | 'JSON' | 'FIXED_WIDTH' | 'TXT';
   customDelimiter?: string;
   hasHeader: boolean;
   headerRowIndex: number;
@@ -263,16 +420,24 @@ export interface FtpFileStagingConfig {
   excelSheetName?: string;
   folderTraversalMode?: 'SINGLE_FILE' | 'DIRECTORY_SCAN' | 'RECURSIVE_SCAN';
   sourceDirectoryPath?: string;
+  rootDirectoryPath?: string;
+  folderExceptions?: FolderStructureException[];
+  mismatchHandling?: 'SKIP_AND_NOTIFY' | 'ABORT';
+  scheduleConfig?: FtpStagingScheduleConfig;
+  unconfiguredFolderAction?: 'NOTIFY_ADMIN';
   selectedImportantColumns?: string[];
   xmlRootElement?: string;
   xmlRecordElement?: string;
   fieldMappings: FtpFieldMapping[];
   stagingTableName?: string;
+  stagingMode?: 'APPEND' | 'REPLACE';
+  isPermanentTable?: boolean;
   sampleFileName?: string;
   lastStagedAt?: string;
   lastStagedStatus?: 'IDLE' | 'STAGED_READY' | 'FAILED';
   lastStagedCount?: number;
   lastErrorMessage?: string;
+  lastSkippedMismatches?: FtpSkippedMismatch[];
   createdAt?: string;
   updatedAt?: string;
 }
@@ -677,6 +842,9 @@ export interface DatabaseValidationWorkflow {
   updatedAt?: string;
   isSystemDefault?: boolean;
   version?: string;
+  teamId?: string;
+  isPublic?: boolean;
+  visibility?: 'team' | 'public' | 'private';
 }
 
 export interface RuleExecutionAuditEntry {
@@ -939,6 +1107,9 @@ export interface ValidationBox {
 
   createdAt?: string;
   updatedAt?: string;
+  teamId?: string;
+  isPublic?: boolean;
+  visibility?: 'team' | 'public' | 'private';
 }
 
 // ==========================================
@@ -1133,5 +1304,100 @@ export interface DatabaseColumnConfiguration {
   createdAt?: string;
   updatedAt?: string;
 }
+
+export interface ResolutionApprovalRequest {
+  id: string;
+  taskId: string;
+  transactionId: string;
+  teamId: string;
+  makerId: string;
+  makerName: string;
+  proposedAction: 'FORCE_MATCH' | 'WRITE_OFF' | 'MANUAL_REVERSAL' | 'OVERRIDE_VERDICT' | string;
+  proposedStatus: 'VERIFIED_MATCH' | 'RECONCILED' | string;
+  justificationNote: string;
+  evidenceSnapshot: Record<string, any>;
+  checkerId?: string;
+  checkerName?: string;
+  rejectionReason?: string;
+  status: 'PENDING' | 'APPROVED' | 'REJECTED';
+  createdAt: string;
+  reviewedAt?: string;
+}
+
+export interface CrossFunctionalProjectGroup {
+  id: string;
+  name: string;
+  description?: string;
+  strategicObjectiveId?: string;
+  memberUserIds: string[];
+  createdBy: string;
+  createdAt: string;
+}
+
+export interface TeamDashboardVisibilityGrant {
+  id: string;
+  grantorTeamId: string;
+  granteeTeamId: string;
+  accessLevel: 'FULL' | 'PARTIAL_KPI';
+  grantedBy: string;
+  createdAt: string;
+}
+
+export interface AIStrategicObjective {
+  id: string;
+  title: string;
+  description?: string;
+  targetMetric?: string;
+  targetValue?: number;
+  currentValue?: number;
+  linkedHashtags?: string[];
+  assignedTeamIds?: string[];
+  createdAt: string;
+}
+
+// ==========================================
+// WORKSPACE SETTING PROPOSALS (MAKER-CHECKER & ESCALATION)
+// ==========================================
+
+export type SettingProposalType = 
+  | 'WORKSPACE_CONFIG' 
+  | 'TABLE_MAPPING' 
+  | 'COLUMN_CONFIG' 
+  | 'VALIDATION_BOX' 
+  | 'WORKFLOW';
+
+export type SettingProposalStatus = 
+  | 'PENDING_TEAM_APPROVAL' 
+  | 'ESCALATED_TO_TARGET_TEAM' 
+  | 'APPROVED' 
+  | 'REJECTED';
+
+export interface WorkspaceSettingProposal {
+  id: string;
+  settingType: SettingProposalType;
+  settingKey: string;
+  title: string;
+  proposedChanges: Record<string, any>;
+  currentSnapshot?: Record<string, any>;
+  justification: string;
+  makerId: string;
+  makerName: string;
+  teamId: string;
+  teamName?: string;
+  status: SettingProposalStatus;
+  checkerId?: string;
+  checkerName?: string;
+  checkerFeedback?: string;
+  escalatedTeamId?: string;
+  escalatedTeamName?: string;
+  escalationReason?: string;
+  escalatedById?: string;
+  escalatedByName?: string;
+  escalatedAt?: string;
+  appliedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
 
 

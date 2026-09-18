@@ -5,20 +5,21 @@
 
 import React, { useState, useMemo, useRef, useEffect } from 'react';
 import {
-  Issue, DatabaseConnection, EnvironmentSystem, HashtagPreset, QueryApprovalRequest, User,
+  Issue, DatabaseConnection, EnvironmentSystem, HashtagPreset, QueryApprovalRequest, User, Team, SolutionProcessType,
   DatabaseValidationWorkflow, ProcessingStage, ValidationResultStatus, PipelineAction,
   TransactionInvestigationStatus, TransactionExecutionSummary, RuleExecutionAuditEntry, GlobalTransactionSchemaField
 } from '../../types';
-import { executeBatchInvestigation } from '../../services/investigationEngine';
 import { aggregateParentIssueStatus } from '../../services/statusAggregator';
 import { createBatchPlan } from '../../services/batchPlanner';
+import { executeBatchInvestigation } from '../../services/investigationEngine';
 import { api } from '../../api/client';
 import {
   Database, Search, Download, Terminal, Copy, Check, Filter,
   Eye, EyeOff, Plus, X, Server, ChevronRight, Play, Code2, Table,
   CheckCircle2, AlertTriangle, RefreshCw, FileSpreadsheet,
   Layers, SlidersHorizontal, ArrowUpDown, ChevronDown, ArrowUpAZ, ArrowDownZA,
-  Sliders, ShieldAlert, CheckSquare, Square, RotateCcw, ShieldCheck, CheckCircle, Zap, Activity, GitBranch
+  Sliders, ShieldAlert, CheckSquare, Square, RotateCcw, ShieldCheck, CheckCircle, Zap, Activity, GitBranch,
+  MessageSquare, History, Undo2, Send, Bookmark, AtSign, CheckCheck, FileCode, Users, Sparkles
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 
@@ -50,6 +51,26 @@ export interface OrchestratedRow {
 interface ColumnFilterState {
   sortDirection: 'asc' | 'desc' | null;
   selectedValues: Set<string> | null; // null means all values are selected
+}
+
+export function formatValidationDetail(detail: any, defaultText: string = 'Validation Discrepancy'): string {
+  if (detail === null || detail === undefined || detail === '') return defaultText;
+  if (typeof detail === 'string') return detail;
+  if (typeof detail === 'object') {
+    if (detail instanceof Error) return detail.message;
+    const keys = Object.keys(detail);
+    if (keys.length === 0) return defaultText;
+    const messages = keys.map(k => {
+      const val = detail[k];
+      if (typeof val === 'string') return val;
+      if (val && typeof val === 'object') {
+        return val.message || val.rule || val.error || val.detail || JSON.stringify(val);
+      }
+      return String(val);
+    }).filter(Boolean);
+    return messages.length > 0 ? messages.join('; ') : defaultText;
+  }
+  return String(detail);
 }
 
 /**
@@ -122,6 +143,7 @@ interface ValidationOrchestratorWorkspaceProps {
   databases: DatabaseConnection[];
   systems: EnvironmentSystem[];
   hashtags: HashtagPreset[];
+  teams?: Team[];
   onUpdateIssue: (issueId: string, updates: Partial<Issue>) => void;
   onDeleteIssue?: (issueId: string) => void;
   onSendChatMessage: (issueId: string, text: string) => void;
@@ -138,6 +160,7 @@ export default function ValidationOrchestratorWorkspace({
   databases,
   systems,
   hashtags,
+  teams = [],
   onUpdateIssue,
   onDeleteIssue,
   onSendChatMessage,
@@ -233,9 +256,10 @@ export default function ValidationOrchestratorWorkspace({
           if (matchedWf) {
             setActiveWorkflow(matchedWf);
           }
-          if (latestExec.execution_summary?.results) {
+          const execSummary = latestExec.executionSummary || latestExec.execution_summary;
+          if (execSummary?.results) {
             const serverMap: Record<string, any> = {};
-            const resultMap = latestExec.execution_summary.results;
+            const resultMap = execSummary.results;
             Object.keys(resultMap).forEach(k => {
               serverMap[k] = {
                 transaction_id: k,
@@ -251,13 +275,13 @@ export default function ValidationOrchestratorWorkspace({
             setServerEvaluatedRecords(serverMap);
             setLiveExecutionMetrics({
               jobId: `lookup-${latestExec.id || latestWfId}`,
-              passedCount: latestExec.passed_count ?? 0,
-              failedCount: latestExec.failed_count ?? 0,
-              durationMs: latestExec.duration_ms ?? 0,
+              passedCount: latestExec.passedCount ?? latestExec.passed_count ?? 0,
+              failedCount: latestExec.failedCount ?? latestExec.failed_count ?? 0,
+              durationMs: latestExec.durationMs ?? latestExec.duration_ms ?? 0,
               cachedHits: 1,
-              liveSource: `PostgreSQL Lookup Table (task_workflow_executions) - Executed by ${latestExec.executed_by || 'investigator'}`
+              liveSource: `PostgreSQL Lookup Table (task_workflow_executions) - Executed by ${latestExec.executedBy || latestExec.executed_by || 'investigator'}`
             });
-            setLiveProgressMsg(`Conducted workflow [${latestExec.workflow_name || latestWfId}] loaded from PostgreSQL lookup table (conducted by ${latestExec.executed_by || 'investigator'}).`);
+            setLiveProgressMsg(`Conducted workflow [${latestExec.workflowName || latestExec.workflow_name || latestWfId}] loaded from PostgreSQL lookup table (conducted by ${latestExec.executedBy || latestExec.executed_by || 'investigator'}).`);
           }
           setHasExecutedValidation(true);
         } else {
@@ -580,6 +604,326 @@ export default function ValidationOrchestratorWorkspace({
     };
   }, []);
 
+  // Process Type classification for the current task
+  const currentProcessType: SolutionProcessType = (selectedIssue?.processType as SolutionProcessType) || 'INTERNAL_STAGED_FIX';
+
+  // Automatically bind workflow from hashtag or task config on task selection
+  useEffect(() => {
+    if (!selectedIssue) return;
+    const taskWfId = (selectedIssue as any).workflowId || (selectedIssue as any).workflow_id;
+    const taskTag = selectedIssue.linkedHashtag || (selectedIssue as any).hashtag;
+
+    if (taskWfId && availableWorkflows.length > 0) {
+      const found = availableWorkflows.find(w => w.id === taskWfId);
+      if (found && (!activeWorkflow || activeWorkflow.id !== found.id)) {
+        setActiveWorkflow(found);
+        return;
+      }
+    }
+
+    if (taskTag && hashtags.length > 0 && availableWorkflows.length > 0) {
+      const preset = hashtags.find(h => h.tag.toUpperCase() === taskTag.toUpperCase());
+      if (preset?.workflowId) {
+        const found = availableWorkflows.find(w => w.id === preset.workflowId);
+        if (found && (!activeWorkflow || activeWorkflow.id !== found.id)) {
+          setActiveWorkflow(found);
+        }
+      }
+    }
+  }, [selectedIssue?.id, (selectedIssue as any)?.workflowId, selectedIssue?.linkedHashtag, hashtags, availableWorkflows]);
+
+  // In-Flight Workflow Evolution & Live Accuracy Testing
+  const [accuracyMetrics, setAccuracyMetrics] = useState<{
+    evaluated: number;
+    cleanCount: number;
+    discrepancyCount: number;
+    accuracyPercent: number;
+    testedAt: string;
+  } | null>(null);
+  const [isTestingAccuracy, setIsTestingAccuracy] = useState(false);
+
+  const [showAddBoxModal, setShowAddBoxModal] = useState(false);
+  const [showSwapWorkflowModal, setShowSwapWorkflowModal] = useState(false);
+  const [newBoxStageName, setNewBoxStageName] = useState('In-Flight Verification');
+  const [newBoxRuleName, setNewBoxRuleName] = useState('');
+  const [newBoxTargetCol, setNewBoxTargetCol] = useState('');
+  const [newBoxOperator, setNewBoxOperator] = useState<string>('NOT_NULL');
+  const [newBoxExpectedVal, setNewBoxExpectedVal] = useState('');
+
+  const handleTestAccuracy = async () => {
+    if (!activeWorkflow || effectiveRows.length === 0) {
+      alert('Please select a workflow and ensure the dataset has rows to test.');
+      return;
+    }
+    setIsTestingAccuracy(true);
+    try {
+      const total = effectiveRows.length;
+      let flagged = 0;
+      effectiveRows.forEach(row => {
+        const sampleKeys = Object.keys(row).filter(k => !k.startsWith('_'));
+        let hasViolation = false;
+        if (activeWorkflow.steps && activeWorkflow.steps.length > 0) {
+          activeWorkflow.steps.forEach(step => {
+            const val = row[step.inputField || sampleKeys[0]];
+            if (val === undefined || val === null || String(val).trim() === '') {
+              hasViolation = true;
+            }
+          });
+        }
+        if (row._validation_status === 'FAIL' || hasViolation) {
+          flagged++;
+        }
+      });
+      const clean = Math.max(0, total - flagged);
+      const acc = total > 0 ? Number(((clean / total) * 100).toFixed(1)) : 100;
+      setAccuracyMetrics({
+        evaluated: total,
+        cleanCount: clean,
+        discrepancyCount: flagged,
+        accuracyPercent: acc,
+        testedAt: new Date().toLocaleTimeString()
+      });
+    } catch (err: any) {
+      console.warn('Accuracy test error:', err);
+    } finally {
+      setIsTestingAccuracy(false);
+    }
+  };
+
+  const handleAddValidationBox = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newBoxRuleName.trim() || !activeWorkflow) return;
+
+    const newStep: any = {
+      id: `step-${Date.now()}`,
+      name: newBoxRuleName.trim(),
+      stage: newBoxStageName,
+      inputField: newBoxTargetCol || columnDefs[0]?.key || 'id',
+      operator: newBoxOperator,
+      expectedValue: newBoxExpectedVal,
+      severity: 'WARNING',
+      action: 'CONTINUE'
+    };
+
+    const updatedWf: DatabaseValidationWorkflow = {
+      ...activeWorkflow,
+      steps: [...(activeWorkflow.steps || []), newStep]
+    };
+
+    setActiveWorkflow(updatedWf);
+    setShowAddBoxModal(false);
+    setNewBoxRuleName('');
+    setNewBoxTargetCol('');
+    setNewBoxExpectedVal('');
+    alert(`Validation Box "${newStep.name}" added in-flight to active investigation workflow!`);
+  };
+
+  const handleSwapWorkflow = (wf: DatabaseValidationWorkflow) => {
+    setActiveWorkflow(wf);
+    setShowSwapWorkflowModal(false);
+    if (selectedIssue?.id) {
+      onUpdateIssue(selectedIssue.id, { workflowId: wf.id } as any);
+    }
+  };
+
+  const handleResetToHashtagDefault = () => {
+    const taskTag = selectedIssue.linkedHashtag || (selectedIssue as any).hashtag;
+    if (!taskTag) return;
+    const preset = hashtags.find(h => h.tag.toUpperCase() === taskTag.toUpperCase());
+    if (preset?.workflowId) {
+      const defWf = availableWorkflows.find(w => w.id === preset.workflowId);
+      if (defWf) {
+        setActiveWorkflow(defWf);
+        if (selectedIssue?.id) {
+          onUpdateIssue(selectedIssue.id, { workflowId: defWf.id } as any);
+        }
+        alert(`Reset to hashtag default workflow "${defWf.name}".`);
+      }
+    }
+  };
+
+  // Granular Point-in-Time Reversion (Rollback Engine)
+  const [isRevertingTask, setIsRevertingTask] = useState(false);
+  const [revertingRowId, setRevertingRowId] = useState<string | null>(null);
+  const [reversionSuccessAlert, setReversionSuccessAlert] = useState<string | null>(null);
+  const [reversionHistory, setReversionHistory] = useState<any[]>([]);
+  const [showReversionHistory, setShowReversionHistory] = useState(false);
+
+  const handleRevertEntireTask = async () => {
+    if (!selectedIssue?.id) return;
+    const ok = window.confirm(
+      `Are you sure you want to rollback staged changes for Task #${selectedIssue.id}?\n\nAll internal extracted transactions will be restored to their pre-change state snapshot.`
+    );
+    if (!ok) return;
+
+    setIsRevertingTask(true);
+    try {
+      const res = await api.revertTaskData(selectedIssue.id, undefined, currentUser.id);
+      setReversionSuccessAlert(`Successfully rolled back Task #${selectedIssue.id} to snapshot! (${res.restoredRowsCount || 'All'} rows restored).`);
+      const updated = await api.getTaskTransactions(selectedIssue.id, 1, 5000);
+      if (updated?.rows) setTaskDatasetRows(updated.rows);
+      setTimeout(() => setReversionSuccessAlert(null), 5000);
+    } catch (err: any) {
+      alert(`Revert failed: ${err?.message || 'Unknown error'}`);
+    } finally {
+      setIsRevertingTask(false);
+    }
+  };
+
+  const handleRevertSingleRecord = async (transactionId: string) => {
+    if (!selectedIssue?.id) return;
+    const ok = window.confirm(`Restore transaction record "${transactionId}" to its pre-change snapshot state?`);
+    if (!ok) return;
+
+    setRevertingRowId(transactionId);
+    try {
+      await api.revertTaskData(selectedIssue.id, transactionId, currentUser.id);
+      setReversionSuccessAlert(`Transaction "${transactionId}" restored to pre-change state.`);
+      const updated = await api.getTaskTransactions(selectedIssue.id, 1, 5000);
+      if (updated?.rows) setTaskDatasetRows(updated.rows);
+      setTimeout(() => setReversionSuccessAlert(null), 4000);
+    } catch (err: any) {
+      alert(`Record restore failed: ${err?.message || 'Unknown error'}`);
+    } finally {
+      setRevertingRowId(null);
+    }
+  };
+
+  const handleViewReversionHistory = async () => {
+    if (!selectedIssue?.id) return;
+    try {
+      const res = await api.getTaskReversions(selectedIssue.id);
+      setReversionHistory(res?.snapshots || []);
+      setShowReversionHistory(true);
+    } catch (err: any) {
+      console.warn('Could not load reversion history:', err);
+    }
+  };
+
+  // Collaborative Chat Consensus & Solution Adoption
+  const [showChatDrawer, setShowChatDrawer] = useState(false);
+  const [chatInputText, setChatInputText] = useState('');
+  const [isSendingChat, setIsSendingChat] = useState(false);
+  const [chatMentions, setChatMentions] = useState<{ type: 'user' | 'team'; id: string; name: string }[]>([]);
+  const [showMentionMenu, setShowMentionMenu] = useState(false);
+  const [attachSummaryActive, setAttachSummaryActive] = useState(false);
+  const [proposeScriptActive, setProposeScriptActive] = useState(false);
+  const [proposedScriptCode, setProposedScriptCode] = useState('');
+  const [proposedScriptProcessType, setProposedScriptProcessType] = useState<SolutionProcessType>('INTERNAL_STAGED_FIX');
+  const [acceptingProposalId, setAcceptingProposalId] = useState<string | null>(null);
+
+  const handleSendChat = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!chatInputText.trim() && !proposeScriptActive) return;
+    if (!selectedIssue?.id) return;
+
+    setIsSendingChat(true);
+    try {
+      let summaryPayload: any = undefined;
+      if (attachSummaryActive) {
+        summaryPayload = {
+          issueId: selectedIssue.id,
+          totalRecords: effectiveRows.length,
+          discrepancyCount: aggregateStats.anomaliesCount,
+          keyFindings: `Evaluated ${effectiveRows.length} rows against [${activeWorkflow?.name || 'Workflow'}]. Found ${aggregateStats.anomaliesCount} anomalies.`
+        };
+      }
+
+      let proposalPayload: any = undefined;
+      if (proposeScriptActive && proposedScriptCode.trim()) {
+        proposalPayload = {
+          script: proposedScriptCode.trim(),
+          processType: proposedScriptProcessType,
+          proposedBy: currentUser.username || currentUser.id
+        };
+      }
+
+      const msgText = chatInputText.trim() || (proposalPayload ? 'Proposed a solution script for peer consensus.' : 'Investigation update.');
+      const clientMessage: any = {
+        id: `msg-${Date.now()}`,
+        senderId: currentUser.id,
+        senderName: currentUser.username,
+        senderRole: currentUser.role,
+        text: msgText,
+        timestamp: new Date().toISOString(),
+        mentions: chatMentions.length > 0 ? chatMentions : undefined,
+        attachedSummary: summaryPayload || undefined,
+        solutionProposal: proposalPayload ? {
+          id: `prop-${Date.now()}`,
+          script: proposalPayload.script,
+          processType: proposalPayload.processType,
+          proposedBy: currentUser.id,
+          proposedByName: currentUser.username,
+          proposedAt: new Date().toISOString(),
+          accepted: false
+        } : undefined
+      };
+
+      // Optimistically update chat in UI
+      const currentChat = selectedIssue.chat || [];
+      onUpdateIssue(selectedIssue.id, { chat: [...currentChat, clientMessage] });
+
+      const res = await api.postIssueChat(selectedIssue.id, {
+        senderId: currentUser.id,
+        senderName: currentUser.username,
+        senderRole: currentUser.role,
+        text: msgText,
+        mentions: chatMentions,
+        attachedSummary: summaryPayload,
+        solutionProposal: proposalPayload,
+        issueContext: {
+          title: selectedIssue.title,
+          description: selectedIssue.description,
+          status: selectedIssue.status,
+          priority: selectedIssue.priority,
+          creatorId: selectedIssue.creatorId,
+          creatorName: selectedIssue.creatorName,
+          linkedHashtag: selectedIssue.linkedHashtag,
+          firstLevelMappedData: selectedIssue.firstLevelMappedData
+        }
+      });
+
+      if (res?.chat) {
+        onUpdateIssue(selectedIssue.id, { chat: res.chat });
+      }
+
+      setChatInputText('');
+      setChatMentions([]);
+      setAttachSummaryActive(false);
+      setProposeScriptActive(false);
+      setProposedScriptCode('');
+    } catch (err: any) {
+      console.warn('Backend chat sync note:', err?.message);
+    } finally {
+      setIsSendingChat(false);
+    }
+  };
+
+  const handleAcceptSolutionProposal = async (msgId: string) => {
+    if (!selectedIssue?.id) return;
+    setAcceptingProposalId(msgId);
+    try {
+      const res = await api.acceptChatSolution(
+        selectedIssue.id,
+        msgId,
+        currentUser.id,
+        currentUser.username
+      );
+      if (res?.chat) {
+        onUpdateIssue(selectedIssue.id, {
+          chat: res.chat,
+          solutionScript: res.solutionScript,
+          processType: res.processType
+        });
+      }
+      alert('Solution script accepted by consensus! Staged execution has been locked in.');
+    } catch (err: any) {
+      alert(`Could not accept solution script: ${err?.message || 'Unknown error'}`);
+    } finally {
+      setAcceptingProposalId(null);
+    }
+  };
+
   // Compute Orchestrated Row Results using the Centralized Shared Investigation Engine
   const orchestratedRows: OrchestratedRow[] = useMemo(() => {
     const isTaskValidated = hasExecutedValidation
@@ -620,7 +964,7 @@ export default function ValidationOrchestratorWorkspace({
               stepId: step.id,
               status: rowValStatus === 'PASS' ? 'PASSED' : 'FAILED',
               badgeText: rowValStatus,
-              detail: row._validation_details || (rowValStatus === 'PASS' ? 'Verified in conducted workflow' : 'Discrepancy detected in conducted workflow'),
+              detail: formatValidationDetail(row._validation_details, rowValStatus === 'PASS' ? 'Verified in conducted workflow' : 'Discrepancy detected in conducted workflow'),
               resultStatus: rowValStatus === 'PASS' ? 'PASS' : 'FAIL',
               actionTaken: rowValStatus === 'PASS' ? 'CONTINUE' : 'FLAG'
             };
@@ -676,7 +1020,9 @@ export default function ValidationOrchestratorWorkspace({
       };
     });
 
-    const batchSummaries = executeBatchInvestigation(mergedEffectiveRows, activeWorkflow);
+    const batchSummaries = typeof executeBatchInvestigation === 'function' && activeWorkflow
+      ? executeBatchInvestigation(mergedEffectiveRows, activeWorkflow)
+      : {};
 
     return mergedEffectiveRows.map((row, rowIdx) => {
       const rowKeyCandidates = getRowCandidateKeys(row, rowIdx);
@@ -773,7 +1119,7 @@ export default function ValidationOrchestratorWorkspace({
             badgeText: rowValStatus,
             detail: (hasTargetRecordExplicit && !targetRecord)
               ? `Record not found in target database (${targetDbName}.${targetTableName})`
-              : (row._validation_details || (rowValStatus === 'PASS' ? 'Condition satisfied' : 'Discrepancy detected in conducted workflow')),
+              : formatValidationDetail(row._validation_details, rowValStatus === 'PASS' ? 'Condition satisfied' : 'Discrepancy detected in conducted workflow'),
             resultStatus: rowValStatus === 'PASS' ? 'PASS' : 'FAIL',
             actionTaken: rowValStatus === 'PASS' ? 'CONTINUE' : 'FLAG'
           };
@@ -1087,7 +1433,7 @@ export default function ValidationOrchestratorWorkspace({
 
   const currentWorkflowExecution = useMemo(() => {
     if (!activeWorkflow || !taskWorkflowExecutions) return null;
-    return taskWorkflowExecutions.find((e: any) => e.workflow_id === activeWorkflow.id);
+    return taskWorkflowExecutions.find((e: any) => (e.workflow_id || e.workflowId) === activeWorkflow.id) || null;
   }, [activeWorkflow, taskWorkflowExecutions]);
 
   // Workflows conducted on this investigation (ordered chronologically, latest first)
@@ -1132,9 +1478,10 @@ export default function ValidationOrchestratorWorkspace({
 
     const conductedExec = taskWorkflowExecutions.find((x: any) => (x.workflow_id || x.workflowId) === chosenId);
     if (conductedExec) {
-      if (conductedExec.execution_summary?.results) {
+      const execSummary = conductedExec.executionSummary || conductedExec.execution_summary;
+      if (execSummary?.results) {
         const serverMap: Record<string, any> = {};
-        const resultMap = conductedExec.execution_summary.results;
+        const resultMap = execSummary.results;
         Object.keys(resultMap).forEach(k => {
           serverMap[k] = {
             transaction_id: k,
@@ -1149,14 +1496,14 @@ export default function ValidationOrchestratorWorkspace({
         });
         setServerEvaluatedRecords(serverMap);
         setLiveExecutionMetrics({
-          jobId: `lookup-${conductedExec.id || conductedExec.workflow_id}`,
-          passedCount: conductedExec.passed_count ?? 0,
-          failedCount: conductedExec.failed_count ?? 0,
-          durationMs: conductedExec.duration_ms ?? 0,
+          jobId: `lookup-${conductedExec.id || conductedExec.workflow_id || conductedExec.workflowId}`,
+          passedCount: conductedExec.passedCount ?? conductedExec.passed_count ?? 0,
+          failedCount: conductedExec.failedCount ?? conductedExec.failed_count ?? 0,
+          durationMs: conductedExec.durationMs ?? conductedExec.duration_ms ?? 0,
           cachedHits: 1,
-          liveSource: `PostgreSQL Lookup Table (task_workflow_executions) - Executed by ${conductedExec.executed_by || 'investigator'}`
+          liveSource: `PostgreSQL Lookup Table (task_workflow_executions) - Executed by ${conductedExec.executedBy || conductedExec.executed_by || 'investigator'}`
         });
-        setLiveProgressMsg(`Loaded conducted validation for [${conductedExec.workflow_name || chosen.name}] from PostgreSQL lookup table.`);
+        setLiveProgressMsg(`Loaded conducted validation for [${conductedExec.workflowName || conductedExec.workflow_name || chosen.name}] from PostgreSQL lookup table.`);
       }
       setHasExecutedValidation(true);
     } else {
@@ -1526,7 +1873,7 @@ export default function ValidationOrchestratorWorkspace({
         };
       }
       if (rowValStatus === 'FAIL') {
-        const failMsg = row?.sourceRecord?._validation_details || 'Validation Discrepancy';
+        const failMsg = formatValidationDetail(row?.sourceRecord?._validation_details, 'Validation Discrepancy');
         return {
           status: 'FAIL',
           message: failMsg,
@@ -1634,7 +1981,7 @@ export default function ValidationOrchestratorWorkspace({
         checkType: step.checkType,
         status: stepStatus,
         actionTaken,
-        detail: detail || (stepStatus === 'PASS' ? 'Condition satisfied' : stepStatus === 'FAIL' ? 'Condition discrepancy' : 'Pending verification')
+        detail: formatValidationDetail(detail || (stepStatus === 'PASS' ? 'Condition satisfied' : stepStatus === 'FAIL' ? 'Condition discrepancy' : 'Pending verification'))
       };
     });
 
@@ -1684,7 +2031,7 @@ export default function ValidationOrchestratorWorkspace({
       }
 
       if (rowValStatus === 'FAIL') {
-        const failMsg = row?.sourceRecord?._validation_details || 'Validation Discrepancy';
+        const failMsg = formatValidationDetail(row?.sourceRecord?._validation_details, 'Validation Discrepancy');
         return {
           status: 'FAIL',
           message: failMsg,
@@ -1855,7 +2202,7 @@ export default function ValidationOrchestratorWorkspace({
         )}
 
         <span className="max-w-[260px] truncate text-[11px] font-bold">
-          {outcome.message}
+          {typeof outcome.message === 'string' ? outcome.message : formatValidationDetail(outcome.message, 'Validation Discrepancy')}
         </span>
 
         <span className={`px-1.5 py-0.2 rounded-full text-[9px] font-mono font-bold shrink-0 ${isFail
@@ -1984,13 +2331,127 @@ export default function ValidationOrchestratorWorkspace({
 
         {/* Right: Actions, Filters, Search & Export in Single Row */}
         <div className="flex items-center gap-1.5 flex-wrap">
+          {/* Staged Execution & Process Type Classification Badge */}
+          <div
+            className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-[10px] font-bold font-mono border shadow-2xs ${
+              currentProcessType === 'CAUTIOUS_PROCESS'
+                ? 'bg-amber-500/20 text-amber-200 border-amber-400/50'
+                : currentProcessType === 'READ_ONLY_AUDIT'
+                  ? 'bg-cyan-500/20 text-cyan-200 border-cyan-400/50'
+                  : 'bg-blue-500/20 text-blue-200 border-blue-400/50'
+            }`}
+            title={
+              currentProcessType === 'CAUTIOUS_PROCESS'
+                ? 'Cautious Process: High-impact external database synchronization. Pre-change snapshot and Maker-Checker review required.'
+                : currentProcessType === 'READ_ONLY_AUDIT'
+                  ? 'Read-Only Audit: Diagnostic checks only, zero data modification.'
+                  : 'Internal Staged Fix: Modifications apply strictly to internal working tables (external production DB shielded).'
+            }
+          >
+            <ShieldAlert size={11} className={currentProcessType === 'CAUTIOUS_PROCESS' ? 'text-amber-300' : 'text-blue-300'} />
+            <span>
+              {currentProcessType === 'CAUTIOUS_PROCESS'
+                ? 'CAUTIOUS (MAKER-CHECKER)'
+                : currentProcessType === 'READ_ONLY_AUDIT'
+                  ? 'READ-ONLY AUDIT'
+                  : 'INTERNAL STAGING (PROTECTED)'}
+            </span>
+          </div>
+
+          {/* Test Accuracy Button & Metric Pill */}
+          <button
+            type="button"
+            onClick={handleTestAccuracy}
+            disabled={isTestingAccuracy || !activeWorkflow}
+            className="px-2.5 py-1 bg-white/10 hover:bg-white/20 text-emerald-100 border border-emerald-400/30 rounded text-[11px] font-bold flex items-center gap-1.5 transition cursor-pointer"
+            title="Evaluate validation box accuracy against extracted dataset rows in memory"
+          >
+            <ShieldCheck size={12} className={isTestingAccuracy ? 'animate-spin text-emerald-300' : 'text-emerald-300'} />
+            <span>{isTestingAccuracy ? 'Testing...' : 'Test Accuracy'}</span>
+            {accuracyMetrics && (
+              <span className="ml-1 bg-emerald-700/90 text-white px-1.5 py-0.2 rounded font-mono text-[9px]">
+                {accuracyMetrics.accuracyPercent}%
+              </span>
+            )}
+          </button>
+
+          {/* Workflow In-Flight Evolution Controls */}
+          <div className="flex items-center bg-white/10 border border-white/20 rounded overflow-hidden">
+            <button
+              type="button"
+              onClick={() => setShowAddBoxModal(true)}
+              className="px-2 py-1 text-emerald-100 hover:bg-white/15 text-[11px] font-semibold flex items-center gap-1 transition cursor-pointer"
+              title="Add an in-flight validation box to the active investigation pipeline"
+            >
+              <Plus size={11} className="text-emerald-300" />
+              <span>+ Box</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowSwapWorkflowModal(true)}
+              className="px-2 py-1 border-l border-white/15 text-emerald-100 hover:bg-white/15 text-[11px] font-semibold flex items-center gap-1 transition cursor-pointer"
+              title="Swap to an alternative validation workflow definition"
+            >
+              <GitBranch size={11} className="text-emerald-300" />
+              <span>Swap WF</span>
+            </button>
+            {(selectedIssue.linkedHashtag || (selectedIssue as any).hashtag) && (
+              <button
+                type="button"
+                onClick={handleResetToHashtagDefault}
+                className="px-2 py-1 border-l border-white/15 text-emerald-100 hover:bg-white/15 text-[11px] font-semibold flex items-center gap-1 transition cursor-pointer"
+                title="Reset workflow to hashtag preset default"
+              >
+                <RotateCcw size={10} className="text-amber-300" />
+              </button>
+            )}
+          </div>
+
+          {/* Revert Staged Fixes & History */}
+          <div className="flex items-center bg-rose-950/60 border border-rose-500/40 rounded overflow-hidden">
+            <button
+              type="button"
+              onClick={handleRevertEntireTask}
+              disabled={isRevertingTask}
+              className="px-2.5 py-1 text-rose-200 hover:bg-rose-900/50 text-[11px] font-bold flex items-center gap-1 transition cursor-pointer"
+              title="Revert all staged changes on this task dataset back to pre-change snapshot"
+            >
+              <RotateCcw size={11} className={isRevertingTask ? 'animate-spin' : ''} />
+              <span>{isRevertingTask ? 'Reverting...' : 'Revert Task'}</span>
+            </button>
+            <button
+              type="button"
+              onClick={handleViewReversionHistory}
+              className="px-1.5 py-1 border-l border-rose-500/30 text-rose-300 hover:bg-rose-900/50 text-[11px] cursor-pointer"
+              title="View task reversion snapshot history"
+            >
+              <History size={11} />
+            </button>
+          </div>
+
+          {/* Collaborative Chat & Script Consensus Drawer Button */}
+          <button
+            type="button"
+            onClick={() => setShowChatDrawer(true)}
+            className="px-3 py-1 bg-indigo-600 hover:bg-indigo-500 text-white rounded text-[11px] font-bold flex items-center gap-1.5 transition cursor-pointer shadow-xs border border-indigo-400/40"
+            title="Open Collaborative Discussion: tag operators, attach investigation summary, and accept solution scripts"
+          >
+            <MessageSquare size={12} />
+            <span>Discussion</span>
+            {(selectedIssue.chat || []).length > 0 && (
+              <span className="bg-white/20 text-white px-1.5 py-0.2 rounded-full text-[9px] font-mono">
+                {(selectedIssue.chat || []).length}
+              </span>
+            )}
+          </button>
+
           {/* Workflow Execution Lookup Status */}
           {currentWorkflowExecution && (
             <div className="flex items-center gap-1.5 bg-emerald-900/90 text-emerald-100 border border-emerald-500/40 px-2.5 py-1 rounded text-[10px] font-mono shadow-xs">
               <CheckCircle2 size={12} className="text-emerald-300" />
               <span>Evaluated on Task:</span>
               <span className="font-bold text-emerald-200">
-                {currentWorkflowExecution.passed_count} PASS / {currentWorkflowExecution.failed_count} FAIL
+                {currentWorkflowExecution.passedCount ?? currentWorkflowExecution.passed_count ?? 0} PASS / {currentWorkflowExecution.failedCount ?? currentWorkflowExecution.failed_count ?? 0} FAIL
               </span>
               <span className="text-emerald-400/60">|</span>
               <button
@@ -3097,7 +3558,9 @@ export default function ValidationOrchestratorWorkspace({
 
                     {/* Data Cells */}
                     {visibleDatasetColumns.map((col) => {
-                      const val = String(row.sourceRecord[col.key] ?? '');
+                      const src = row.sourceRecord || row.canonical_data || row || {};
+                      const rawVal = src[col.key];
+                      const val = typeof rawVal === 'object' && rawVal !== null ? JSON.stringify(rawVal) : String(rawVal ?? '');
                       const isSelectedCell = selectedCell.rowIdx === rowIdx && selectedCell.colKey === col.key;
 
                       return (
@@ -3126,7 +3589,7 @@ export default function ValidationOrchestratorWorkspace({
                           (row.sourceRecord?._isDuplicate || row.sourceRecord?.is_duplicate) ? (
                             <span
                               className="inline-flex items-center gap-1 text-[10px] font-bold font-mono px-2 py-0.5 rounded-full bg-amber-100 text-amber-900 border border-amber-300 shadow-2xs"
-                              title={`Cross-task collision detected in Central Repository. Present in: ${Array.isArray(row.sourceRecord._allTaskIds) ? row.sourceRecord._allTaskIds.join(', ') : (row.sourceRecord._duplicateFromTaskId || 'Multiple tasks')}`}
+                              title={`Cross-task collision detected in Central Repository. Present in: ${Array.isArray(row.sourceRecord?._allTaskIds) ? row.sourceRecord._allTaskIds.join(', ') : (row.sourceRecord?._duplicateFromTaskId || 'Multiple tasks')}`}
                             >
                               <AlertTriangle size={11} className="text-amber-700" />
                               DUPLICATE
@@ -3147,14 +3610,14 @@ export default function ValidationOrchestratorWorkspace({
                               }`}
                             title={
                               [
-                                `Status: ${row.investigationStatus}`,
+                                `Status: ${String(row.investigationStatus || 'PENDING')}`,
                                 row.executionSummary?.statusFlagText ? `Note: ${row.executionSummary.statusFlagText}` : null,
                                 (row.sourceRecord?._isDuplicate || row.sourceRecord?.isDuplicate) ? `Duplicate from Task #${row.sourceRecord?._duplicateFromTaskId || row.sourceRecord?._originalTaskId || 'Prior'}` : null,
                                 row.sourceRecord?._batchId ? `Batch: ${row.sourceRecord._batchId}` : null
                               ].filter(Boolean).join(' | ')
                             }
                           >
-                            {row.investigationStatus}
+                            {typeof row.investigationStatus === 'string' ? row.investigationStatus : String(row.investigationStatus || 'PENDING')}
                           </span>
                         )}
                       </div>
@@ -3168,9 +3631,9 @@ export default function ValidationOrchestratorWorkspace({
 
                     {/* Intermediate Function REPORT Cells */}
                     {visibleReportColumns.map(rc => {
-                      const reportVal = row.sourceRecord[`_report_${rc.key}`]
+                      const reportVal = row.sourceRecord?.[`_report_${rc.key}`]
                         ?? row.executionSummary?.intermediateReports?.[rc.key]
-                        ?? (rc.sourceField ? row.sourceRecord[rc.sourceField] : null)
+                        ?? (rc.sourceField && row.sourceRecord ? row.sourceRecord[rc.sourceField] : null)
                         ?? '';
                       return (
                         <td
@@ -3179,7 +3642,7 @@ export default function ValidationOrchestratorWorkspace({
                         >
                           {reportVal ? (
                             <span className="inline-flex items-center gap-1 bg-purple-100 text-purple-900 px-1.5 py-0.5 rounded border border-purple-200 text-[11px]">
-                              {String(reportVal)}
+                              {typeof reportVal === 'object' ? JSON.stringify(reportVal) : String(reportVal)}
                             </span>
                           ) : (
                             <span className="text-slate-300 italic">—</span>
@@ -3239,6 +3702,15 @@ export default function ValidationOrchestratorWorkspace({
                             title="Toggle transaction investigation state independently without affecting parent issue"
                           >
                             {row.investigationStatus === 'CLOSED' ? 'Reopen' : 'Close Txn'}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleRevertSingleRecord(row.sourceRecord?.transaction_id || row.sourceRecord?.refnum || row.rowId)}
+                            disabled={revertingRowId === (row.sourceRecord?.transaction_id || row.sourceRecord?.refnum || row.rowId)}
+                            className="px-2 py-0.5 rounded text-[10px] font-bold border transition cursor-pointer bg-rose-50 text-rose-700 hover:bg-rose-100 border-rose-200"
+                            title="Restore this individual record to its pre-change snapshot state"
+                          >
+                            {revertingRowId === (row.sourceRecord?.transaction_id || row.sourceRecord?.refnum || row.rowId) ? '...' : 'Revert'}
                           </button>
                           {row.remedySql && (
                             <button
@@ -3514,7 +3986,7 @@ export default function ValidationOrchestratorWorkspace({
                       Consolidated Outcome
                     </div>
                     <div className="text-sm font-bold">
-                      {evalOutcome.message}
+                      {typeof evalOutcome.message === 'string' ? evalOutcome.message : formatValidationDetail(evalOutcome.message, 'Validation Discrepancy')}
                     </div>
                     {evalOutcome.matchedRuleName && (
                       <div className="text-[11px] opacity-80 font-mono">
@@ -3561,7 +4033,7 @@ export default function ValidationOrchestratorWorkspace({
                               </span>
                             </div>
                             <p className="text-[11px] text-slate-500 truncate mt-0.5">
-                              {step.detail}
+                              {typeof step.detail === 'string' ? step.detail : formatValidationDetail(step.detail, 'Step Detail')}
                             </p>
                           </div>
                         </div>
@@ -3899,6 +4371,524 @@ export default function ValidationOrchestratorWorkspace({
                 Close
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Toast Alert for Reversion Success */}
+      {reversionSuccessAlert && (
+        <div className="fixed bottom-12 right-6 z-50 bg-slate-900 text-white border border-emerald-500/50 px-4 py-3 rounded-xl shadow-2xl flex items-center gap-3 animate-in fade-in slide-in-from-bottom-4 duration-200">
+          <div className="w-8 h-8 rounded-lg bg-emerald-500/20 text-emerald-400 flex items-center justify-center shrink-0">
+            <CheckCheck size={18} />
+          </div>
+          <div>
+            <div className="text-xs font-bold text-emerald-300 font-mono">Point-in-Time Rollback Success</div>
+            <p className="text-[11px] text-slate-300">{reversionSuccessAlert}</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setReversionSuccessAlert(null)}
+            className="text-slate-400 hover:text-white p-1 ml-2 cursor-pointer"
+          >
+            <X size={14} />
+          </button>
+        </div>
+      )}
+
+      {/* REVERSION HISTORY MODAL */}
+      {showReversionHistory && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4 animate-in fade-in duration-150">
+          <div className="bg-white border border-slate-200 rounded-2xl p-6 max-w-xl w-full shadow-2xl space-y-4 animate-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center space-x-2.5">
+                <div className="w-9 h-9 rounded-xl bg-rose-100 text-rose-700 flex items-center justify-center">
+                  <History size={18} />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900">Task Snapshot & Reversion History</h3>
+                  <p className="text-[11px] text-slate-500 font-mono">Task #{selectedIssue.id} Audit Snapshots</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowReversionHistory(false)}
+                className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg cursor-pointer"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="max-h-72 overflow-y-auto space-y-2 pr-1">
+              {reversionHistory.length === 0 ? (
+                <div className="p-8 text-center text-slate-400 text-xs">
+                  No previous snapshots recorded for this task. Snapshots are captured automatically when running staged fixes.
+                </div>
+              ) : (
+                reversionHistory.map((snap, idx) => (
+                  <div key={idx} className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-1 text-xs">
+                    <div className="flex items-center justify-between font-mono text-[11px]">
+                      <span className="font-bold text-slate-800">
+                        {snap.transactionId ? `Record #${snap.transactionId}` : 'Full Batch Snapshot'}
+                      </span>
+                      <span className="text-slate-500">{new Date(snap.createdAt).toLocaleString()}</span>
+                    </div>
+                    <div className="flex items-center gap-2 text-[10px] font-mono">
+                      <span className="px-1.5 py-0.2 bg-blue-100 text-blue-800 rounded font-bold">
+                        {snap.processType}
+                      </span>
+                      <span className="text-slate-500">Captured by: {snap.createdBy || 'operator'}</span>
+                      {snap.revertedAt && (
+                        <span className="px-1.5 py-0.2 bg-rose-100 text-rose-800 rounded font-bold">
+                          Reverted {new Date(snap.revertedAt).toLocaleDateString()}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+
+            <div className="flex justify-end pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setShowReversionHistory(false)}
+                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-xl cursor-pointer"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ADD IN-FLIGHT VALIDATION BOX MODAL */}
+      {showAddBoxModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4 animate-in fade-in duration-150">
+          <div className="bg-white border border-slate-200 rounded-2xl p-6 max-w-md w-full shadow-2xl space-y-4 animate-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center space-x-2.5">
+                <div className="w-9 h-9 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center">
+                  <Plus size={18} />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900">Add In-Flight Validation Box</h3>
+                  <p className="text-[11px] text-slate-500">Attach an additional verification stage to this investigation</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowAddBoxModal(false)}
+                className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg cursor-pointer"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <form onSubmit={handleAddValidationBox} className="space-y-3.5 text-xs">
+              <div>
+                <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">
+                  Validation Box Name *
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. In-Flight Authorization Code Check"
+                  value={newBoxRuleName}
+                  onChange={e => setNewBoxRuleName(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-slate-800 focus:outline-none focus:border-emerald-600 font-sans"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">
+                    Target Column
+                  </label>
+                  <select
+                    value={newBoxTargetCol}
+                    onChange={e => setNewBoxTargetCol(e.target.value)}
+                    className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-slate-800 focus:outline-none focus:border-emerald-600 font-mono text-xs cursor-pointer"
+                  >
+                    {columnDefs.map(c => (
+                      <option key={c.key} value={c.key}>{c.label} ({c.key})</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">
+                    Operator
+                  </label>
+                  <select
+                    value={newBoxOperator}
+                    onChange={e => setNewBoxOperator(e.target.value)}
+                    className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-slate-800 focus:outline-none focus:border-emerald-600 font-mono text-xs cursor-pointer"
+                  >
+                    <option value="NOT_NULL">NOT NULL / EXISTS</option>
+                    <option value="EQUALS">EQUALS</option>
+                    <option value="GREATER_THAN">GREATER THAN</option>
+                    <option value="NUMERIC">MUST BE NUMERIC</option>
+                  </select>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">
+                  Expected Value (Optional)
+                </label>
+                <input
+                  type="text"
+                  placeholder="e.g. SETTLED or 0.00"
+                  value={newBoxExpectedVal}
+                  onChange={e => setNewBoxExpectedVal(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-slate-800 focus:outline-none focus:border-emerald-600 font-sans"
+                />
+              </div>
+
+              <div className="flex justify-end space-x-2 pt-2 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setShowAddBoxModal(false)}
+                  className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold rounded-xl cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={!newBoxRuleName.trim()}
+                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-bold rounded-xl shadow-xs cursor-pointer"
+                >
+                  Attach to Pipeline
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* SWAP WORKFLOW MODAL */}
+      {showSwapWorkflowModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4 animate-in fade-in duration-150">
+          <div className="bg-white border border-slate-200 rounded-2xl p-6 max-w-lg w-full shadow-2xl space-y-4 animate-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center space-x-2.5">
+                <div className="w-9 h-9 rounded-xl bg-blue-100 text-blue-700 flex items-center justify-center">
+                  <GitBranch size={18} />
+                </div>
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900">Swap Investigation Workflow</h3>
+                  <p className="text-[11px] text-slate-500">Switch active validation rules pipeline for Task #{selectedIssue.id}</p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowSwapWorkflowModal(false)}
+                className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg cursor-pointer"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="max-h-72 overflow-y-auto space-y-2 pr-1">
+              {availableWorkflows.map(wf => (
+                <div
+                  key={wf.id}
+                  onClick={() => handleSwapWorkflow(wf)}
+                  className={`p-3 rounded-xl border transition-all cursor-pointer flex items-center justify-between ${
+                    activeWorkflow?.id === wf.id
+                      ? 'bg-blue-50 border-blue-400 text-blue-950 font-bold'
+                      : 'bg-white border-slate-200 hover:bg-slate-50 text-slate-800'
+                  }`}
+                >
+                  <div>
+                    <div className="text-xs font-bold text-slate-900">{wf.name}</div>
+                    <div className="text-[10px] text-slate-500 font-mono">
+                      {(wf.stages || []).length} Stages • {wf.steps?.length || 0} Rules • Category: {wf.category}
+                    </div>
+                  </div>
+                  {activeWorkflow?.id === wf.id ? (
+                    <span className="px-2 py-0.5 bg-blue-600 text-white rounded text-[10px] font-bold">Active</span>
+                  ) : (
+                    <button
+                      type="button"
+                      className="px-2 py-1 bg-slate-100 hover:bg-blue-600 hover:text-white rounded text-[10px] font-semibold text-slate-700 transition"
+                    >
+                      Select
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+
+            <div className="flex justify-end pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setShowSwapWorkflowModal(false)}
+                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-xl cursor-pointer"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* COLLABORATIVE CHAT & SOLUTION SCRIPT CONSENSUS DRAWER */}
+      {showChatDrawer && (
+        <div className="fixed inset-y-0 right-0 z-50 w-full sm:w-[480px] bg-white border-l border-slate-300 shadow-2xl flex flex-col animate-in slide-in-from-right duration-200">
+          {/* Drawer Header */}
+          <div className="p-4 bg-slate-900 text-white flex items-center justify-between border-b border-slate-800">
+            <div className="flex items-center space-x-2.5">
+              <div className="w-8 h-8 rounded-lg bg-indigo-500/20 text-indigo-400 flex items-center justify-center">
+                <MessageSquare size={16} />
+              </div>
+              <div>
+                <div className="flex items-center space-x-2">
+                  <h3 className="text-xs font-bold text-white">Team Consensus & Solution Hub</h3>
+                  <span className="text-[10px] font-mono px-1.5 py-0.2 bg-blue-500/30 text-blue-300 rounded font-bold">
+                    #{selectedIssue.id}
+                  </span>
+                </div>
+                <p className="text-[10px] text-slate-400">Collaborate, mention teammates, and stage agreed scripts</p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => setShowChatDrawer(false)}
+              className="text-slate-400 hover:text-white p-1 rounded-lg cursor-pointer"
+            >
+              <X size={16} />
+            </button>
+          </div>
+
+          {/* Drawer Message List */}
+          <div className="flex-1 overflow-y-auto p-4 space-y-3 bg-slate-50/50">
+            {(selectedIssue.chat || []).length === 0 ? (
+              <div className="p-8 text-center text-slate-400 text-xs space-y-2">
+                <MessageSquare size={24} className="mx-auto text-slate-300" />
+                <p>No messages posted for this task yet.</p>
+                <p className="text-[11px] text-slate-500">Mention peers with @, attach the investigation summary, or propose a solution script.</p>
+              </div>
+            ) : (
+              (selectedIssue.chat || []).map((msg: any) => {
+                const isMe = msg.senderId === currentUser.id;
+                return (
+                  <div key={msg.id} className="space-y-1.5">
+                    <div className="flex items-center justify-between text-[10px] text-slate-500 font-mono px-1">
+                      <span className="font-bold text-slate-800">
+                        {msg.senderName} ({msg.senderRole || 'operator'})
+                      </span>
+                      <span>{new Date(msg.timestamp).toLocaleTimeString()}</span>
+                    </div>
+
+                    <div className={`p-3 rounded-2xl text-xs space-y-2 border ${
+                      isMe ? 'bg-blue-50/80 border-blue-200 text-slate-800' : 'bg-white border-slate-200 text-slate-800'
+                    }`}>
+                      {/* Mentions badges */}
+                      {Array.isArray(msg.mentions) && msg.mentions.length > 0 && (
+                        <div className="flex flex-wrap gap-1">
+                          {msg.mentions.map((m: any, mIdx: number) => (
+                            <span key={mIdx} className="px-1.5 py-0.2 rounded-full text-[10px] font-bold bg-indigo-100 text-indigo-800 border border-indigo-200">
+                              @{m.name}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* Text */}
+                      {msg.text && <p className="leading-relaxed">{msg.text}</p>}
+
+                      {/* Attached Investigation Summary Card */}
+                      {msg.attachedSummary && (
+                        <div className="p-2.5 bg-slate-100 rounded-xl border border-slate-200 space-y-1 text-[11px]">
+                          <div className="font-bold text-slate-700 flex items-center gap-1 font-mono uppercase text-[10px]">
+                            <ShieldCheck size={12} className="text-emerald-600" />
+                            <span>Attached Investigation Summary</span>
+                          </div>
+                          <div className="grid grid-cols-2 gap-2 text-[10px] font-mono text-slate-600">
+                            <div>Total Records: <strong>{msg.attachedSummary.totalRecords}</strong></div>
+                            <div>Discrepancies: <strong className="text-rose-600">{msg.attachedSummary.discrepancyCount}</strong></div>
+                          </div>
+                          {msg.attachedSummary.keyFindings && (
+                            <p className="text-[10px] text-slate-600 italic font-sans">{msg.attachedSummary.keyFindings}</p>
+                          )}
+                        </div>
+                      )}
+
+                      {/* Proposed Solution Script Card */}
+                      {msg.solutionProposal && (
+                        <div className="p-3 bg-slate-900 text-slate-100 rounded-xl space-y-2 border border-slate-800">
+                          <div className="flex items-center justify-between text-[10px] font-mono">
+                            <span className="font-bold text-emerald-400 flex items-center gap-1">
+                              <FileCode size={11} />
+                              <span>Proposed Solution Script</span>
+                            </span>
+                            <span className="px-1.5 py-0.2 bg-blue-500/30 text-blue-300 rounded font-bold">
+                              {msg.solutionProposal.processType || 'INTERNAL_STAGED_FIX'}
+                            </span>
+                          </div>
+
+                          <pre className="bg-black/50 p-2 rounded text-[11px] font-mono text-emerald-300 overflow-x-auto whitespace-pre-wrap max-h-32">
+                            {msg.solutionProposal.script}
+                          </pre>
+
+                          <div className="flex items-center justify-between pt-1">
+                            <span className="text-[10px] text-slate-400 font-mono">
+                              By: {msg.solutionProposal.proposedBy}
+                            </span>
+                            {msg.solutionProposal.accepted ? (
+                              <span className="px-2 py-0.5 bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 rounded text-[10px] font-bold flex items-center gap-1">
+                                <CheckCheck size={11} />
+                                <span>Accepted by {msg.solutionProposal.acceptedBy || 'consensus'}</span>
+                              </span>
+                            ) : (
+                              <button
+                                type="button"
+                                disabled={acceptingProposalId === msg.id}
+                                onClick={() => handleAcceptSolutionProposal(msg.id)}
+                                className="px-3 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-[10px] font-bold shadow-xs cursor-pointer flex items-center gap-1 transition"
+                              >
+                                <CheckCircle size={11} />
+                                <span>{acceptingProposalId === msg.id ? 'Accepting...' : 'Accept Solution Script'}</span>
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+
+          {/* Drawer Input Form */}
+          <div className="p-3 bg-white border-t border-slate-200 space-y-2.5">
+            {/* Quick Mentions Pills */}
+            <div className="flex items-center gap-1.5 overflow-x-auto text-[10px] pb-1">
+              <span className="text-slate-400 font-mono font-bold uppercase text-[9px] shrink-0">Mention:</span>
+              {(users || []).slice(0, 4).map(u => (
+                <button
+                  key={u.id}
+                  type="button"
+                  onClick={() => {
+                    if (!chatMentions.some(m => m.id === u.id)) {
+                      setChatMentions(prev => [...prev, { type: 'user', id: u.id, name: u.username }]);
+                    }
+                  }}
+                  className="px-1.5 py-0.5 bg-slate-100 hover:bg-indigo-50 text-slate-700 hover:text-indigo-700 rounded border border-slate-200 shrink-0 cursor-pointer"
+                >
+                  @{u.username}
+                </button>
+              ))}
+              {(teams || []).map(t => (
+                <button
+                  key={t.id}
+                  type="button"
+                  onClick={() => {
+                    if (!chatMentions.some(m => m.id === t.id)) {
+                      setChatMentions(prev => [...prev, { type: 'team', id: t.id, name: t.name }]);
+                    }
+                  }}
+                  className="px-1.5 py-0.5 bg-purple-50 hover:bg-purple-100 text-purple-700 rounded border border-purple-200 shrink-0 cursor-pointer font-bold"
+                >
+                  @{t.name}
+                </button>
+              ))}
+            </div>
+
+            {/* Selected Mentions Tag Pills */}
+            {chatMentions.length > 0 && (
+              <div className="flex flex-wrap items-center gap-1">
+                {chatMentions.map((m, mIdx) => (
+                  <span key={mIdx} className="px-2 py-0.5 bg-indigo-100 text-indigo-800 rounded-full text-[10px] font-bold flex items-center gap-1">
+                    <span>@{m.name}</span>
+                    <button
+                      type="button"
+                      onClick={() => setChatMentions(prev => prev.filter((_, i) => i !== mIdx))}
+                      className="hover:text-rose-600 cursor-pointer"
+                    >
+                      ×
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
+
+            {/* Script Proposer Box */}
+            {proposeScriptActive && (
+              <div className="p-2.5 bg-slate-900 rounded-xl border border-slate-800 space-y-2 text-xs">
+                <div className="flex items-center justify-between text-white font-mono text-[10px]">
+                  <span className="font-bold text-emerald-400">Propose Solution Script</span>
+                  <select
+                    value={proposedScriptProcessType}
+                    onChange={e => setProposedScriptProcessType(e.target.value as SolutionProcessType)}
+                    className="bg-slate-800 text-white rounded px-2 py-0.5 border border-slate-700 text-[10px]"
+                  >
+                    <option value="INTERNAL_STAGED_FIX">INTERNAL_STAGED_FIX</option>
+                    <option value="CAUTIOUS_PROCESS">CAUTIOUS_PROCESS</option>
+                    <option value="READ_ONLY_AUDIT">READ_ONLY_AUDIT</option>
+                  </select>
+                </div>
+                <textarea
+                  rows={3}
+                  value={proposedScriptCode}
+                  onChange={e => setProposedScriptCode(e.target.value)}
+                  placeholder="UPDATE task_dataset_transactions SET status = 'RECONCILED' WHERE ..."
+                  className="w-full bg-black/60 text-emerald-300 font-mono text-xs p-2 rounded border border-slate-800 focus:outline-none"
+                />
+              </div>
+            )}
+
+            {/* Actions Bar & Message Input */}
+            <form onSubmit={handleSendChat} className="space-y-2">
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  value={chatInputText}
+                  onChange={e => setChatInputText(e.target.value)}
+                  placeholder="Type a message or discuss solution..."
+                  className="flex-1 bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs text-slate-800 focus:outline-none focus:border-indigo-600"
+                />
+                <button
+                  type="submit"
+                  disabled={isSendingChat || (!chatInputText.trim() && !proposeScriptActive)}
+                  className="px-3.5 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-bold rounded-xl text-xs cursor-pointer shadow-xs flex items-center gap-1"
+                >
+                  <Send size={13} />
+                  <span>Send</span>
+                </button>
+              </div>
+
+              <div className="flex items-center justify-between text-[11px] pt-1">
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setAttachSummaryActive(prev => !prev)}
+                    className={`px-2 py-1 rounded-lg border text-[10px] font-semibold flex items-center gap-1 cursor-pointer transition ${
+                      attachSummaryActive
+                        ? 'bg-emerald-50 text-emerald-700 border-emerald-300'
+                        : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'
+                    }`}
+                  >
+                    <ShieldCheck size={11} />
+                    <span>{attachSummaryActive ? 'Summary Attached ✓' : 'Attach Summary'}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setProposeScriptActive(prev => !prev)}
+                    className={`px-2 py-1 rounded-lg border text-[10px] font-semibold flex items-center gap-1 cursor-pointer transition ${
+                      proposeScriptActive
+                        ? 'bg-indigo-50 text-indigo-700 border-indigo-300'
+                        : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100'
+                    }`}
+                  >
+                    <FileCode size={11} />
+                    <span>{proposeScriptActive ? 'Script Editor Active' : 'Propose Script'}</span>
+                  </button>
+                </div>
+              </div>
+            </form>
           </div>
         </div>
       )}

@@ -36,6 +36,10 @@ function mapToPgType(externalType: string): string {
   return 'VARCHAR(255)';
 }
 
+export function derive64BitAdvisoryLockSql(paramIndex: number = 1): string {
+  return `('x' || substr(md5($${paramIndex}), 1, 16))::bit(64)::bigint`;
+}
+
 function sanitizeIdentifier(name: string): string {
   return name.toLowerCase().replace(/[^a-z0-9_]/g, '_').substring(0, 50);
 }
@@ -45,6 +49,9 @@ export const mirrorTableManager = {
    * Generates a deterministic, standard mirror table name.
    */
   getMirrorTableName(dbName: string, tableName: string): string {
+    if (tableName.startsWith('mirror_')) {
+      return tableName.toLowerCase().replace(/[^a-z0-9_]/g, '_').substring(0, 63);
+    }
     const safeDb = sanitizeIdentifier(dbName);
     const safeTable = sanitizeIdentifier(tableName);
     return `mirror_${safeDb}_${safeTable}`;
@@ -60,6 +67,16 @@ export const mirrorTableManager = {
 
     if (tableCache.has(mirrorName)) {
       return mirrorName;
+    }
+
+    // Acquire 64-bit transaction-scoped advisory lock to prevent concurrent DDL catalog race conditions
+    try {
+      await queryPg(
+        `SELECT pg_advisory_xact_lock(('x' || substr(md5($1), 1, 16))::bit(64)::bigint)`,
+        [`mirror_ddl_${mirrorName}`]
+      );
+    } catch (lockErr: any) {
+      console.warn(`[MirrorManager] Advisory lock warning for ${mirrorName}:`, lockErr.message);
     }
 
     // Fast-path: Check if mirror table already exists in PostgreSQL
@@ -115,6 +132,13 @@ export const mirrorTableManager = {
 
     await queryPg(ddl);
     try {
+      await queryPg(`ALTER TABLE ${mirrorName} ADD COLUMN IF NOT EXISTS _mirror_id UUID DEFAULT gen_random_uuid();`);
+      await queryPg(`ALTER TABLE ${mirrorName} ADD COLUMN IF NOT EXISTS _batch_id VARCHAR(64);`);
+      await queryPg(`ALTER TABLE ${mirrorName} ADD COLUMN IF NOT EXISTS _rule_block_id VARCHAR(64);`);
+      await queryPg(`ALTER TABLE ${mirrorName} ADD COLUMN IF NOT EXISTS _validation_status VARCHAR(32) DEFAULT 'PENDING';`);
+      await queryPg(`ALTER TABLE ${mirrorName} ADD COLUMN IF NOT EXISTS _validation_action VARCHAR(32) DEFAULT 'CONTINUE';`);
+      await queryPg(`ALTER TABLE ${mirrorName} ADD COLUMN IF NOT EXISTS _validation_details JSONB DEFAULT '{}'::jsonb;`);
+      await queryPg(`ALTER TABLE ${mirrorName} ADD COLUMN IF NOT EXISTS _mirrored_at TIMESTAMPTZ DEFAULT NOW();`);
       await queryPg(`ALTER TABLE ${mirrorName} ADD COLUMN IF NOT EXISTS payload JSONB DEFAULT '{}'::jsonb;`);
     } catch {}
     tableCache.add(mirrorName);
@@ -149,6 +173,7 @@ export const mirrorTableManager = {
 
     for (const rawKey of Object.keys(sample)) {
       const sanitized = sanitizeIdentifier(rawKey);
+      if (sanitized === '_staging_id' || sanitized === '_mirror_id') continue;
       if (validColumns.has(sanitized) && !insertCols.includes(sanitized)) {
         insertCols.push(sanitized);
         recordFieldMap[sanitized] = rawKey;
@@ -203,6 +228,7 @@ export const mirrorTableManager = {
       const sql = `
         INSERT INTO ${mirrorName} (${insertCols.join(', ')})
         VALUES ${valuePlaceholders.join(',\n')}
+        ON CONFLICT DO NOTHING
       `;
 
       await queryPg(sql, values);
@@ -284,6 +310,10 @@ export const mirrorTableManager = {
    * Should be called after investigation job/task completion to prevent unbounded growth.
    */
   async cleanupMirrorBatch(mirrorName: string, batchId: string): Promise<number> {
+    // Permanent FTP staged tables must never be purged
+    if (mirrorName.startsWith('mirror_ftp_')) {
+      return 0;
+    }
     try {
       const result = await queryPg(
         `DELETE FROM ${mirrorName} WHERE _batch_id = $1`,
@@ -303,6 +333,10 @@ export const mirrorTableManager = {
    * Prevents indefinite accumulation of transient reconciliation data.
    */
   async cleanupOldMirrorRows(mirrorName: string, maxAgeHours = 24): Promise<number> {
+    // Permanent FTP staged tables must never be purged
+    if (mirrorName.startsWith('mirror_ftp_')) {
+      return 0;
+    }
     try {
       const result = await queryPg(
         `DELETE FROM ${mirrorName} WHERE _mirrored_at < NOW() - INTERVAL '${maxAgeHours} hours'`

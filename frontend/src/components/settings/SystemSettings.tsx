@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, Suspense, lazy } from 'react';
 import { 
   User, 
   DatabaseConnection, 
@@ -15,7 +15,8 @@ import {
 import { globalMappingService, DEFAULT_GLOBAL_STANDARD_FIELDS } from '../../services/globalMappingService';
 import { api } from '../../api/client';
 import AdminDbConnections from '../admin/AdminDbConnections';
-import FtpFileStagingSettings from './FtpFileStagingSettings';
+
+const FtpFileStagingSettings = lazy(() => import('./FtpFileStagingSettings'));
 import { 
   Sliders, Database, BookOpen, Settings, Plus, Edit3, Trash2, 
   Check, Save, RefreshCw, ArrowRight, ShieldCheck, AlertCircle, 
@@ -769,55 +770,55 @@ export default function SystemSettings({
   }
 
   return (
-    <div className="space-y-6 max-w-7xl mx-auto pb-12">
+    <div className="space-y-3.5 max-w-7xl mx-auto pb-8">
       {/* Top Banner Header */}
-      <div className="bg-gradient-to-r from-slate-900 via-slate-800 to-blue-950 text-white rounded-2xl p-6 shadow-md border border-slate-700 flex flex-col md:flex-row md:items-center justify-between gap-4">
+      <div className="bg-[#0F172B] text-white rounded-xl p-3 sm:p-3.5 shadow-sm border border-slate-800 flex flex-col md:flex-row md:items-center justify-between gap-3">
         <div className="space-y-1">
           <div className="flex items-center space-x-2">
-            <span className="px-2.5 py-0.5 rounded-full text-[10px] font-mono tracking-wider font-bold bg-blue-500/20 text-blue-300 border border-blue-400/30 uppercase flex items-center gap-1">
+            <span className="px-2 py-0.5 rounded-full text-[10px] font-mono tracking-wider font-bold bg-blue-500/20 text-blue-300 border border-blue-400/30 uppercase flex items-center gap-1">
               <ShieldCheck size={11} className="text-blue-400" />
               Administrator View Only
             </span>
             <span className="text-xs text-slate-400 font-mono">v2.4.0 Engine</span>
           </div>
-          <h1 className="text-xl lg:text-2xl font-black tracking-tight text-white flex items-center gap-2.5">
-            <Sliders className="text-blue-400" size={24} />
+          <h1 className="text-base lg:text-lg font-black tracking-tight text-white flex items-center gap-2">
+            <Sliders className="text-blue-400" size={20} />
             System Administration Settings
           </h1>
-          <p className="text-xs text-slate-300 max-w-2xl leading-relaxed">
+          <p className="text-[11px] text-slate-300 max-w-2xl leading-relaxed">
             Configure system-wide parameters, manage real database connections, curate the Global Column Data Dictionary, and establish physical-to-global table schema mappings.
           </p>
         </div>
 
         {/* Status Counters */}
-        <div className="flex items-center gap-3 self-start md:self-auto">
-          <div className="px-3.5 py-2 rounded-xl bg-slate-800/80 border border-slate-700/80 text-center">
-            <span className="text-[10px] uppercase font-bold text-slate-400 block tracking-wider font-mono">Databases</span>
-            <span className="text-base font-black text-white">{databases.length}</span>
+        <div className="flex items-center gap-2 self-start md:self-auto shrink-0">
+          <div className="px-3 py-1.5 rounded-lg bg-slate-800/80 border border-slate-700/80 text-center">
+            <span className="text-[9px] uppercase font-bold text-slate-400 block tracking-wider font-mono">Databases</span>
+            <span className="text-sm font-black text-white">{databases.length}</span>
           </div>
-          <div className="px-3.5 py-2 rounded-xl bg-slate-800/80 border border-slate-700/80 text-center">
-            <span className="text-[10px] uppercase font-bold text-slate-400 block tracking-wider font-mono">Dict Columns</span>
-            <span className="text-base font-black text-blue-400">{fields.length}</span>
+          <div className="px-3 py-1.5 rounded-lg bg-slate-800/80 border border-slate-700/80 text-center">
+            <span className="text-[9px] uppercase font-bold text-slate-400 block tracking-wider font-mono">Dict Columns</span>
+            <span className="text-sm font-black text-blue-400">{fields.length}</span>
           </div>
         </div>
       </div>
 
       {/* Main Tab Navigation Bar */}
-      <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-1.5 flex items-center gap-2 overflow-x-auto">
+      <div className="bg-[#0F172B] rounded-xl border border-slate-800 shadow-xs p-1 flex items-center gap-1 overflow-x-auto">
         <button
           type="button"
           onClick={() => setActiveTab('dictionary')}
-          className={`px-4 py-2.5 rounded-lg text-xs font-bold flex items-center gap-2 transition whitespace-nowrap ${
+          className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition whitespace-nowrap ${
             activeTab === 'dictionary'
-              ? 'bg-blue-600 text-white shadow-sm'
-              : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50'
+              ? 'bg-[#155DFC] text-white shadow-xs'
+              : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
           }`}
           id="tab-sys-dict"
         >
-          <BookOpen className="w-4 h-4" />
+          <BookOpen className="w-3.5 h-3.5" />
           <span>Global Mapping Dictionary</span>
-          <span className={`px-1.5 py-0.5 rounded-full text-[10px] font-bold ${
-            activeTab === 'dictionary' ? 'bg-blue-700 text-white' : 'bg-slate-100 text-slate-600'
+          <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${
+            activeTab === 'dictionary' ? 'bg-[#0F172B]/60 text-white' : 'bg-slate-800 text-slate-300'
           }`}>
             {fields.length}
           </span>
@@ -826,17 +827,17 @@ export default function SystemSettings({
         <button
           type="button"
           onClick={() => setActiveTab('connections')}
-          className={`px-4 py-2.5 rounded-lg text-xs font-bold flex items-center gap-2 transition whitespace-nowrap ${
+          className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition whitespace-nowrap ${
             activeTab === 'connections'
-              ? 'bg-blue-600 text-white shadow-sm'
-              : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50'
+              ? 'bg-[#155DFC] text-white shadow-xs'
+              : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
           }`}
           id="tab-sys-conn"
         >
-          <Database className="w-4 h-4" />
+          <Database className="w-3.5 h-3.5" />
           <span>Connection Settings</span>
-          <span className={`px-1.5 py-0.5 rounded-full text-[10px] font-bold ${
-            activeTab === 'connections' ? 'bg-blue-700 text-white' : 'bg-slate-100 text-slate-600'
+          <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${
+            activeTab === 'connections' ? 'bg-[#0F172B]/60 text-white' : 'bg-slate-800 text-slate-300'
           }`}>
             {databases.length}
           </span>
@@ -845,31 +846,31 @@ export default function SystemSettings({
         <button
           type="button"
           onClick={() => setActiveTab('environment')}
-          className={`px-4 py-2.5 rounded-lg text-xs font-bold flex items-center gap-2 transition whitespace-nowrap ${
+          className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition whitespace-nowrap ${
             activeTab === 'environment'
-              ? 'bg-blue-600 text-white shadow-sm'
-              : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50'
+              ? 'bg-[#155DFC] text-white shadow-xs'
+              : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
           }`}
           id="tab-sys-env"
         >
-          <Server className="w-4 h-4" />
+          <Server className="w-3.5 h-3.5" />
           <span>Environment & Table Mappings</span>
         </button>
 
         <button
           type="button"
           onClick={() => setActiveTab('staging')}
-          className={`px-4 py-2.5 rounded-lg text-xs font-bold flex items-center gap-2 transition whitespace-nowrap ${
+          className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition whitespace-nowrap ${
             activeTab === 'staging'
-              ? 'bg-purple-700 text-white shadow-sm'
-              : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50'
+              ? 'bg-[#155DFC] text-white shadow-xs'
+              : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
           }`}
           id="tab-sys-staging"
         >
-          <FileSpreadsheet className="w-4 h-4 text-purple-400" />
+          <FileSpreadsheet className="w-3.5 h-3.5" />
           <span>FTP File Staging & Parsing</span>
-          <span className={`px-1.5 py-0.5 rounded-full text-[10px] font-bold ${
-            activeTab === 'staging' ? 'bg-purple-900 text-white' : 'bg-purple-100 text-purple-800'
+          <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-bold ${
+            activeTab === 'staging' ? 'bg-[#0F172B]/60 text-white' : 'bg-slate-800 text-slate-300'
           }`}>
             {databases.filter(d => d.type === 'FTP' || d.type === 'SFTP').length}
           </span>
@@ -1495,12 +1496,19 @@ export default function SystemSettings({
       {/* TAB 4: FTP FILE STAGING & PARSING                                         */}
       {/* ========================================================================= */}
       {activeTab === 'staging' && (
-        <FtpFileStagingSettings
-          databases={databases}
-          preSelectedDbId={selectedFtpDbId}
-          onNavigateToConnections={() => setActiveTab('connections')}
-          onNavigateToValidationBoxes={onNavigateToWorkspace}
-        />
+        <Suspense fallback={
+          <div className="w-full h-80 flex flex-col items-center justify-center gap-3 p-8 bg-white rounded-xl border border-slate-200">
+            <div className="w-8 h-8 border-3 border-purple-600 border-t-transparent rounded-full animate-spin" />
+            <span className="text-xs font-semibold text-slate-500">Loading FTP & File Staging Studio...</span>
+          </div>
+        }>
+          <FtpFileStagingSettings
+            databases={databases}
+            preSelectedDbId={selectedFtpDbId}
+            onNavigateToConnections={() => setActiveTab('connections')}
+            onNavigateToValidationBoxes={onNavigateToWorkspace}
+          />
+        </Suspense>
       )}
 
       {/* ========================================================================= */}

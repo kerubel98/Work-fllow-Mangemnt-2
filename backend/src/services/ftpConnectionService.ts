@@ -26,7 +26,7 @@ export interface FtpConnectionConfig {
  */
 export function isSftpConnection(db: DatabaseConnection, config: FtpConnectionConfig): boolean {
   if (db.type === 'SFTP') return true;
-  if (config.port === 22) return true;
+  if (config.port === 22 || config.port === 2222) return true;
   if (db.connectionString) {
     const cs = db.connectionString.toLowerCase();
     if (cs.startsWith('sftp:') || cs.startsWith('ssh:')) return true;
@@ -186,7 +186,7 @@ export async function testFtpConnection(db: DatabaseConnection): Promise<{ succe
   }
 
   const start = Date.now();
-  const client = new ftp.Client(2500);
+  const client = new ftp.Client(10000);
   client.ftp.verbose = false;
 
   try {
@@ -209,8 +209,20 @@ export async function testFtpConnection(db: DatabaseConnection): Promise<{ succe
       latencyMs
     };
   } catch (ftpErr: any) {
+    // If standard FTP fails or times out, test SFTP handshake as fallback
+    try {
+      const sftpFallback = await testSftpConnection(config);
+      if (sftpFallback.success) {
+        return {
+          success: true,
+          message: `Connected using SFTP (Note: Connection protocol was set to FTP, but port ${config.port} is running SSH/SFTP).`,
+          latencyMs: sftpFallback.latencyMs
+        };
+      }
+    } catch {}
+
     // Check socket reachability fallback
-    const sock = await testSocketPing(config.host, config.port, 2500);
+    const sock = await testSocketPing(config.host, config.port, 4000);
     if (sock.connected) {
       return {
         success: true,
@@ -449,7 +461,7 @@ export async function discoverFtpFiles(db: DatabaseConnection): Promise<string[]
     const files = await fetchSftpFilesRecursive(config, config.baseDirectory, 2);
     return files.map(f => f.fullPath);
   } else {
-    const client = new ftp.Client(2500);
+    const client = new ftp.Client(30000);
     client.ftp.verbose = false;
 
     try {
@@ -494,7 +506,7 @@ export async function discoverFtpFilesRecursive(
   if (isSftpConnection(db, config)) {
     return await fetchSftpFilesRecursive(config, rootDir, maxDepth);
   } else {
-    const client = new ftp.Client(2500);
+    const client = new ftp.Client(30000);
     client.ftp.verbose = false;
     const results: FtpFileEntry[] = [];
     const validExtensions = new Set(['.csv', '.tsv', '.txt', '.json', '.dat', '.xml', '.xlsx', '.xls']);
@@ -549,6 +561,86 @@ export async function discoverFtpFilesRecursive(
 }
 
 /**
+ * Resolves normalized remote file path using configured baseDirectory.
+ */
+export function resolveRemotePath(baseDir: string, remotePath: string): string {
+  const cleanBase = (baseDir || '/').replace(/\/+$/, '');
+  const trimmedPath = remotePath.trim();
+  if (cleanBase && trimmedPath.startsWith(cleanBase)) {
+    return trimmedPath;
+  }
+  const stripped = trimmedPath.replace(/^\/+/, '');
+  return cleanBase ? `${cleanBase}/${stripped}` : `/${stripped}`;
+}
+
+/**
+ * Downloads a file buffer from an FTP server using candidate path fallbacks.
+ */
+async function downloadFtpWithClient(
+  config: FtpConnectionConfig,
+  remotePath: string,
+  timeoutMs = 30000,
+  maxBytes = 52428800
+): Promise<Buffer> {
+  const client = new ftp.Client(timeoutMs);
+  client.ftp.verbose = false;
+
+  try {
+    await client.access({
+      host: config.host,
+      port: config.port,
+      user: config.user,
+      password: config.password,
+      secure: config.secure
+    });
+
+    const candidatePaths: string[] = [];
+    const normalized = resolveRemotePath(config.baseDirectory, remotePath);
+    candidatePaths.push(normalized);
+
+    const relative = remotePath.trim().replace(/^\/+/, '');
+    if (!candidatePaths.includes(relative)) candidatePaths.push(relative);
+
+    const absolute = `/${relative}`;
+    if (!candidatePaths.includes(absolute)) candidatePaths.push(absolute);
+
+    let lastError: any = null;
+    for (const targetPath of candidatePaths) {
+      try {
+        const chunks: Buffer[] = [];
+        let totalLength = 0;
+        const memoryStream = new Writable({
+          write(chunk, _encoding, callback) {
+            if (chunk != null) {
+              const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+              chunks.push(buf);
+              totalLength += buf.length;
+            }
+            callback();
+          }
+        });
+
+        await client.downloadTo(memoryStream, targetPath);
+        if (chunks.length > 0) {
+          return Buffer.concat(chunks);
+        }
+      } catch (err: any) {
+        lastError = err;
+        // If error is network timeout or connection reset, rethrow immediately for outer retry
+        if (err.message && (err.message.includes('Timeout') || err.message.includes('closed') || err.message.includes('ECONNRESET'))) {
+          throw err;
+        }
+      }
+    }
+
+    if (lastError) throw lastError;
+    throw new Error(`File '${remotePath}' not found on FTP server.`);
+  } finally {
+    try { client.close(); } catch {}
+  }
+}
+
+/**
  * Downloads full or partial file binary buffer from remote FTP/SFTP server.
  */
 export async function fetchRemoteFileBuffer(
@@ -562,43 +654,22 @@ export async function fetchRemoteFileBuffer(
     return await fetchSftpFileBuffer(config, remotePath, maxBytes);
   }
 
-  const client = new ftp.Client(2500);
-  client.ftp.verbose = false;
-  const chunks: Buffer[] = [];
-  let totalLength = 0;
+  const customTimeout = (db as any).connectionTimeout || (db as any).timeout;
+  const timeoutMs = customTimeout ? Math.max(Number(customTimeout), 15000) : 30000;
 
   try {
-    await client.access({
-      host: config.host,
-      port: config.port,
-      user: config.user,
-      password: config.password,
-      secure: config.secure
-    });
-
-    const memoryStream = new Writable({
-      write(chunk, _encoding, callback) {
-        if (chunk == null) {
-          callback();
-          return;
-        }
-        const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-        chunks.push(buf);
-        totalLength += buf.length;
-        callback();
-      }
-    });
-
-    const fullPath = remotePath.startsWith('/')
-      ? remotePath
-      : (config.baseDirectory.endsWith('/') ? `${config.baseDirectory}${remotePath}` : `${config.baseDirectory}/${remotePath}`);
-
-    await client.downloadTo(memoryStream, fullPath);
-    return Buffer.concat(chunks);
+    return await downloadFtpWithClient(config, remotePath, timeoutMs, maxBytes);
   } catch (err: any) {
+    if (err.message && (err.message.includes('Timeout') || err.message.includes('closed') || err.message.includes('ECONNRESET'))) {
+      console.warn(`[ftpConnectionService] FTP download attempt 1 for '${remotePath}' timed out (${err.message}). Retrying with 45s timeout...`);
+      try {
+        await new Promise(r => setTimeout(r, 500));
+        return await downloadFtpWithClient(config, remotePath, 45000, maxBytes);
+      } catch (retryErr: any) {
+        throw new Error(`FTP download failed for '${remotePath}': ${retryErr.message}`);
+      }
+    }
     throw new Error(`FTP download failed for '${remotePath}': ${err.message}`);
-  } finally {
-    try { client.close(); } catch {}
   }
 }
 
@@ -619,6 +690,33 @@ function inferType(val: any): string {
  * Introspects column headers and field types from a remote FTP data file.
  */
 export async function inspectFtpFileColumns(db: DatabaseConnection, filename: string): Promise<ColumnMetadata[]> {
+  // Fast-path: If the table requested is a staged PostgreSQL UNLOGGED mirror table
+  if (filename.startsWith('mirror_')) {
+    const { queryPg } = await import('../config/postgres.js');
+    try {
+      const res = await queryPg(
+        `SELECT column_name AS name, data_type AS type, is_nullable AS nullable
+         FROM information_schema.columns
+         WHERE table_schema = 'public' AND table_name = $1
+         ORDER BY ordinal_position`,
+        [filename.toLowerCase()]
+      );
+      if (res.rows && res.rows.length > 0) {
+        const sysCols = new Set(['_staging_id', '_staged_at', '_raw_row_index', 'raw_payload', '_mirror_id', '_batch_id', '_rule_block_id', '_validation_status', '_fetched_at']);
+        return res.rows
+          .filter((r: any) => !sysCols.has(r.name))
+          .map((r: any) => ({
+            name: r.name,
+            type: String(r.type).toUpperCase(),
+            nullable: r.nullable === 'YES',
+            isPrimary: r.name === 'id' || r.name === '_staging_id' || r.name === 'transaction_id'
+          }));
+      }
+    } catch (err: any) {
+      console.warn(`[ftpConnectionService] Mirror table columns introspection failed for ${filename}:`, err.message);
+    }
+  }
+
   const buf = await fetchRemoteFileBuffer(db, filename, 65536);
   if (!buf || buf.length === 0) {
     throw new Error(`Failed to inspect columns for '${filename}': File is empty or could not be downloaded from remote server.`);
@@ -696,12 +794,69 @@ export async function readFtpFileRows(
 
   // Extract filename from SQL query or direct filename parameter
   let targetFile = queryOrFile.trim();
-  const selectMatch = queryOrFile.match(/FROM\s+["`]?([a-zA-Z0-9_.-]+)["`]?/i);
+  const selectMatch = queryOrFile.match(/FROM\s+[`"']?([a-zA-Z0-9_.-]+)[`"']?/i);
   if (selectMatch) {
     targetFile = selectMatch[1];
   }
 
-  const buf = await fetchRemoteFileBuffer(db, targetFile, 5242880);
+  // Fast-path: If target is a staged PostgreSQL UNLOGGED mirror table, query PostgreSQL directly
+  if (targetFile.startsWith('mirror_')) {
+    const { queryPg } = await import('../config/postgres.js');
+    const cleanQuery = queryOrFile.trim().toUpperCase().startsWith('SELECT')
+      ? queryOrFile.trim()
+      : `SELECT * FROM "${targetFile}" LIMIT ${limit}`;
+
+    const res = await queryPg(cleanQuery);
+    const executionTimeMs = Date.now() - start;
+    const columns = res.fields?.map(f => f.name) || (res.rows.length > 0 ? Object.keys(res.rows[0]) : []);
+    return {
+      columns,
+      rows: res.rows,
+      rowCount: res.rowCount ?? res.rows.length,
+      executionTimeMs
+    };
+  }
+
+  let buf: Buffer;
+  try {
+    buf = await fetchRemoteFileBuffer(db, targetFile, 5242880);
+  } catch (fetchErr: any) {
+    // If remote FTP download fails, check if this feed was already staged into a PostgreSQL mirror table
+    const { queryPg } = await import('../config/postgres.js');
+    const { mirrorTableManager } = await import('./mirrorTableManager.js');
+    const safeBase = targetFile.toLowerCase().replace(/[^a-z0-9_]/g, '_').substring(0, 50);
+    const mirrorCandidates = [
+      mirrorTableManager.getMirrorTableName(db.name || db.id, targetFile),
+      `mirror_ftp_${safeBase}`,
+      `mirror_${safeBase}`
+    ];
+
+    for (const mirrorName of mirrorCandidates) {
+      try {
+        const mRes = await queryPg(`SELECT * FROM "${mirrorName}" LIMIT $1`, [limit]);
+        if (mRes.rows && mRes.rows.length > 0) {
+          console.log(`[readFtpFileRows] Served ${mRes.rows.length} rows from PostgreSQL mirror table '${mirrorName}' as fallback for remote file '${targetFile}'`);
+          const sysCols = new Set(['_staging_id', '_staged_at', '_raw_row_index', 'raw_payload', '_mirror_id', '_batch_id', '_rule_block_id', '_validation_status', '_fetched_at']);
+          const allCols = Object.keys(mRes.rows[0]);
+          const cleanCols = allCols.filter(c => !sysCols.has(c));
+          const cleanRows = mRes.rows.map(r => {
+            const rowObj: any = {};
+            cleanCols.forEach(c => { rowObj[c] = r[c]; });
+            return rowObj;
+          });
+          return {
+            columns: cleanCols,
+            rows: cleanRows,
+            rowCount: cleanRows.length,
+            executionTimeMs: Date.now() - start
+          };
+        }
+      } catch {}
+    }
+
+    throw fetchErr;
+  }
+
   if (!buf || buf.length === 0) {
     throw new Error(`Failed to read records from '${targetFile}': File is empty or could not be retrieved from remote server.`);
   }

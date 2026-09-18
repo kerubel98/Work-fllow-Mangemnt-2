@@ -16,6 +16,7 @@ import {
   DualSourceCondition,
   DatabaseColumnConfiguration
 } from '../types';
+import { api } from '../api/client';
 
 /**
  * Evaluates attached Database Table Column Configurations (Completeness, Value Ranges, Patterns, Value Labels, and Uniqueness)
@@ -128,6 +129,7 @@ export function evaluateAttachedColumnConfigurations(
 
       case 'DUPLICATE_CHECK':
       case 'UNIQUE_CONSTRAINT': {
+        // In individual row evaluation, check that all key columns required for uniqueness are present
         for (const col of cols) {
           const val = resolveRecordField(evalTarget, col.columnName);
           if (val === undefined || val === null || String(val).trim() === '') {
@@ -355,17 +357,15 @@ export function evaluateRuleCondition(
 
         // If target database was queried and returned no matching record:
         if (hasExplicitTarget && !targetRec) {
-          const targetDbStr = record._target_db || stage?.name || rule.targetTable || 'target database';
-          const paramSummary = configuredStepParams.map(p => `"${p}": "${resolveRecordField(record, p) ?? 'null'}"`).join(', ');
           return {
             status: 'FAIL',
             badgeText: '404 Missing',
-            message: rule.failureMessage || `Record not found in ${targetDbStr}`,
-            detail: `Lookup parameters [${paramSummary}] returned 0 records from target system.`
+            message: rule.failureMessage || `Record not found in ${stage?.name || rule.targetTable || 'data source'}`,
+            detail: `Target record lookup returned no matching record.`
           };
         }
 
-        // In simulated/mock test scenarios without live query: check that ALL configured parameters are present
+        // Record existence check: verify ALL configured parameters are present
         const allParamsPresent = configuredStepParams.length > 0
           ? configuredStepParams.every(p => {
               const v = resolveRecordField(record, p);
@@ -373,6 +373,7 @@ export function evaluateRuleCondition(
             })
           : (recordVal !== undefined && recordVal !== null && String(recordVal).trim() !== '');
 
+        // In simulated/mock test scenarios, ORD-FAIL-TEST or missing values indicate absence
         const isSimulatedMissing = String(recordVal) === 'ORD-FAIL-TEST' || record.simulatedMissing === true;
         if (!allParamsPresent || isSimulatedMissing) {
           const paramSummary = configuredStepParams.map(p => `"${p}": "${resolveRecordField(record, p) ?? 'null'}"`).join(', ');
@@ -919,8 +920,7 @@ export function evaluateDependencyCondition(
  */
 export function executeWorkflowForTransaction(
   transactionRecord: Record<string, any>,
-  workflow: DatabaseValidationWorkflow,
-  recordIndex?: number
+  workflow: DatabaseValidationWorkflow
 ): TransactionExecutionSummary {
   // Resolve transactionId strictly from workflow configured parameters first
   const configuredParams: string[] = [];
@@ -946,11 +946,11 @@ export function executeWorkflowForTransaction(
     transactionRecord._rowId ||
     transactionRecord.rowId ||
     primaryParamVal ||
-    (recordIndex !== undefined ? `ROW-${recordIndex + 1}` : `TXN-${Date.now()}`)
+    `TXN-${Date.now()}`
   );
 
+  let currentWorkingRecord: Record<string, any> = { ...transactionRecord };
   const auditTrail: RuleExecutionAuditEntry[] = [];
-  const intermediateReports: Record<string, any> = {};
   let previousResult: ValidationResultStatus | null = null;
   let previousAction: PipelineAction | null = null;
   let isHalted = false;
@@ -1020,13 +1020,26 @@ export function executeWorkflowForTransaction(
         continue;
       }
 
-      // Evaluate condition
-      const evalResult = evaluateRuleCondition(transactionRecord, rule, stage);
+      // Evaluate condition against active working record
+      const evalResult = evaluateRuleCondition(currentWorkingRecord, rule, stage);
       const action = resolveRuleAction(evalResult.status, rule);
       const durationMs = Date.now() - startTime;
 
       if (evalResult.status === 'ERROR') {
         hasTechnicalError = true;
+      }
+
+      // Forward enriched mirror record downstream on PASS, keep original record on FAIL
+      if (evalResult.status === 'PASS') {
+        const targetRec = currentWorkingRecord._target_record ?? currentWorkingRecord.canonical_data?._target_record ?? currentWorkingRecord._mirrorData ?? currentWorkingRecord._externalData;
+        if (targetRec && typeof targetRec === 'object') {
+          currentWorkingRecord = {
+            ...currentWorkingRecord,
+            ...targetRec,
+            _inputData: currentWorkingRecord._inputData || transactionRecord,
+            _mirrorData: targetRec
+          };
+        }
       }
 
       auditTrail.push({
@@ -1052,22 +1065,6 @@ export function executeWorkflowForTransaction(
       previousResult = evalResult.status;
       previousAction = action;
 
-      // Extract and register intermediate REPORT output if configured
-      const isReportConfigured = action === 'REPORT' || rule.onPassAction === 'REPORT' || rule.onFailAction === 'REPORT' || Boolean(rule.reportColumnName);
-      if (isReportConfigured) {
-        const reportKey = rule.reportColumnName || rule.name;
-        let reportValue: any;
-        if (rule.reportField && transactionRecord[rule.reportField] !== undefined) {
-          reportValue = transactionRecord[rule.reportField];
-        } else if (evalResult.dbValue !== undefined) {
-          reportValue = evalResult.dbValue;
-        } else {
-          reportValue = evalResult.badgeText || evalResult.status;
-        }
-        intermediateReports[reportKey] = reportValue;
-        transactionRecord[`_report_${reportKey}`] = reportValue;
-      }
-
       // Handle pipeline action semantics
       if (action === 'CLOSE') {
         isClosed = true;
@@ -1079,7 +1076,7 @@ export function executeWorkflowForTransaction(
         haltReason = `Pipeline STOPPED by rule '${rule.name}' in '${stage.name}' (Result: ${evalResult.status})`;
         break;
       }
-      // If action is CONTINUE or REPORT, proceed to next rule / stage
+      // If action is CONTINUE, proceed to next rule / stage
     }
   }
 
@@ -1203,8 +1200,7 @@ export function executeWorkflowForTransaction(
     haltReason,
     isClosed,
     hasTechnicalError,
-    remedySql,
-    intermediateReports
+    remedySql
   };
 }
 
@@ -1237,27 +1233,45 @@ export function executeBatchInvestigation(
   }
 
   records.forEach((record, idx) => {
-    const summary = executeWorkflowForTransaction(record, workflow, idx);
-    // Key by primary transactionId
+    const summary = executeWorkflowForTransaction(record, workflow);
     result[summary.transactionId] = summary;
-    // Also key by standardized row indices for UI workspace resilience
     result[`ROW-${idx + 1}`] = summary;
     result[String(idx)] = summary;
 
-    // Index by ALL configured parameters present in this record
     for (const param of configuredParams) {
       const val = resolveRecordField(record, param);
       if (val !== undefined && val !== null && String(val).trim() !== '') {
         result[String(val)] = summary;
       }
     }
-
-    // Composite tuple key
-    const tupleKey = configuredParams
-      .map(p => String(resolveRecordField(record, p) ?? '').trim())
-      .filter(Boolean)
-      .join(':::');
-    if (tupleKey) result[tupleKey] = summary;
   });
   return result;
+}
+
+
+/**
+ * Execute standalone validation check step via backend endpoint or local rule evaluator.
+ */
+export async function testValidationStepRemote(
+  step: ValidationCheckStep,
+  record: Record<string, any>
+): Promise<ConditionEvaluationResult> {
+  try {
+    const res = await api.testValidationBox({
+      boxType: 'CONDITION_CHECK',
+      checkStep: step,
+      sampleRecord: record
+    });
+    return {
+      status: res.verdict === 'PASS' ? 'PASS' : res.verdict === 'FAIL' ? 'FAIL' : 'ERROR',
+      badgeText: res.verdict,
+      message: res.message || 'Evaluated via backend engine'
+    };
+  } catch (err: any) {
+    return {
+      status: 'ERROR',
+      badgeText: 'API Error',
+      message: err.message || 'Failed to contact backend investigation engine'
+    };
+  }
 }

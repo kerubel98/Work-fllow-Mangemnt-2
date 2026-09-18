@@ -4,12 +4,13 @@
  */
 
 import React, { useState, useRef } from 'react';
-import { User, Team, TeamTask, TeamInsight, TeamDiscussionMessage } from '../types';
+import { User, Team, TeamTask, TeamInsight, TeamDiscussionMessage, TeamRelationship, TeamRelationshipType } from '../types';
 import { 
   Users, MessageSquare, CheckSquare, Lightbulb, Plus, Send, 
   ShieldCheck, UserCheck, Briefcase, Tag, Trash2, Clock, 
   CheckCircle2, AlertCircle, Sparkles, Filter, ChevronRight, UserPlus, X, Check,
-  ArrowLeft, Crown, Calendar, TrendingUp, BarChart2, Target, Flag
+  ArrowLeft, Crown, Calendar, TrendingUp, BarChart2, Target, Flag,
+  Network, GitFork, ArrowUpRight, ArrowDownLeft, Share2, Layers
 } from 'lucide-react';
 
 interface TeamWorkspaceProps {
@@ -29,7 +30,7 @@ interface TeamWorkspaceProps {
   onSendMessage: (msg: Omit<TeamDiscussionMessage, 'id' | 'timestamp'>) => void;
   openCreateModalSignal?: number;
   initialSelectedTeamId?: string | null;
-  initialActiveTab?: 'members' | 'discussion' | 'tasks' | 'timeline' | 'dashboard' | 'insights' | null;
+  initialActiveTab?: 'members' | 'discussion' | 'tasks' | 'timeline' | 'dashboard' | 'insights' | 'relationships' | null;
   initialSelectedTaskId?: string | null;
   onOpenPersonalChat?: (userId: string) => void;
 }
@@ -56,8 +57,10 @@ export default function TeamWorkspace({
   onOpenPersonalChat
 }: TeamWorkspaceProps) {
 
-  // Active sub-tab state inside Team Workspace: 'members' | 'discussion' | 'tasks' | 'timeline' | 'dashboard' | 'insights'
-  const [activeTab, setActiveTab] = useState<'members' | 'discussion' | 'tasks' | 'timeline' | 'dashboard' | 'insights'>(
+  // Active sub-tab state inside Team Workspace
+  const [activeTab, setActiveTab] = useState<
+    'members' | 'discussion' | 'tasks' | 'timeline' | 'dashboard' | 'insights' | 'approvals' | 'grants' | 'ai-strategy' | 'relationships'
+  >(
     initialActiveTab || 'members'
   );
 
@@ -79,6 +82,14 @@ export default function TeamWorkspace({
   }, [initialActiveTab]);
 
   const currentTeam = selectedTeamId ? teams.find(t => t.id === selectedTeamId) : null;
+  const currentTeamId = currentTeam ? currentTeam.id : '';
+  const teamTasks = tasks.filter(t => t.teamId === currentTeamId);
+  const teamInsights = insights.filter(i => i.teamId === currentTeamId);
+  const teamMessages = messages.filter(m => m.teamId === currentTeamId);
+
+  // Users in current team
+  const currentTeamMemberIds = currentTeam ? [currentTeam.managerId, ...(currentTeam.memberIds || [])] : [];
+  const currentTeamUsers = users.filter(u => currentTeamMemberIds.includes(u.id));
 
   // Modals state
   const [showAddTaskModal, setShowAddTaskModal] = useState(false);
@@ -135,15 +146,207 @@ export default function TeamWorkspace({
   // Task filter
   const [taskFilterStatus, setTaskFilterStatus] = useState<string>('All');
 
-  // Filtered lists for current team
-  const currentTeamId = currentTeam ? currentTeam.id : '';
-  const teamTasks = tasks.filter(t => t.teamId === currentTeamId);
-  const teamInsights = insights.filter(i => i.teamId === currentTeamId);
-  const teamMessages = messages.filter(m => m.teamId === currentTeamId);
+  // Maker-Checker & Team Governance State
+  const [pendingResolutions, setPendingResolutions] = useState<any[]>([]);
+  const [teamKpis, setTeamKpis] = useState<any>(null);
+  const [visibilityGrants, setVisibilityGrants] = useState<any[]>([]);
+  const [aiObjectives, setAiObjectives] = useState<any[]>([]);
+  const [reviewReason, setReviewReason] = useState<Record<string, string>>({});
 
-  // Users in current team
-  const currentTeamMemberIds = currentTeam ? [currentTeam.managerId, ...currentTeam.memberIds] : [];
-  const currentTeamUsers = users.filter(u => currentTeamMemberIds.includes(u.id));
+  // Team Relationships State
+  const [teamRelationships, setTeamRelationships] = useState<TeamRelationship[]>([]);
+  const [isLoadingRelationships, setIsLoadingRelationships] = useState(false);
+  const [showDefineRelModal, setShowDefineRelModal] = useState(false);
+  const [targetTeamIdForRel, setTargetTeamIdForRel] = useState('');
+  const [relType, setRelType] = useState<TeamRelationshipType>('PARENT_UNIT');
+  const [relDescription, setRelDescription] = useState('');
+  const [relError, setRelError] = useState<string | null>(null);
+  const [isSubmittingRel, setIsSubmittingRel] = useState(false);
+
+  // Org Hierarchy Directory View State
+  const [directoryViewMode, setDirectoryViewMode] = useState<'cards' | 'hierarchy'>('cards');
+  const [orgHierarchyData, setOrgHierarchyData] = useState<any>(null);
+  const [isLoadingHierarchy, setIsLoadingHierarchy] = useState(false);
+
+  // Fetch Team Relationships
+  const loadTeamRelationships = React.useCallback(async () => {
+    if (!currentTeamId) return;
+    setIsLoadingRelationships(true);
+    try {
+      const res = await fetch(`/api/teams/relationships?teamId=${encodeURIComponent(currentTeamId)}`);
+      if (res.ok) {
+        const data = await res.json();
+        if (Array.isArray(data)) {
+          setTeamRelationships(data);
+        }
+      }
+    } catch (err: any) {
+      console.warn('Failed to load team relationships:', err);
+    } finally {
+      setIsLoadingRelationships(false);
+    }
+  }, [currentTeamId]);
+
+  // Fetch Org Hierarchy
+  const loadOrgHierarchy = React.useCallback(async () => {
+    setIsLoadingHierarchy(true);
+    try {
+      const res = await fetch('/api/teams/hierarchy');
+      if (res.ok) {
+        const data = await res.json();
+        setOrgHierarchyData(data);
+      }
+    } catch (err: any) {
+      console.warn('Failed to load org hierarchy:', err);
+    } finally {
+      setIsLoadingHierarchy(false);
+    }
+  }, []);
+
+  React.useEffect(() => {
+    loadTeamRelationships();
+  }, [loadTeamRelationships]);
+
+  React.useEffect(() => {
+    if (directoryViewMode === 'hierarchy' || !selectedTeamId) {
+      loadOrgHierarchy();
+    }
+  }, [directoryViewMode, selectedTeamId, loadOrgHierarchy]);
+
+  // Handler for defining a new relationship
+  const handleDefineRelationshipSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!currentTeamId || !targetTeamIdForRel || !relType) {
+      setRelError('Please select a target team and relationship type.');
+      return;
+    }
+    if (currentTeamId === targetTeamIdForRel) {
+      setRelError('A team cannot define a relationship to itself.');
+      return;
+    }
+    setIsSubmittingRel(true);
+    setRelError(null);
+    try {
+      const res = await fetch('/api/teams/relationships', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sourceTeamId: currentTeamId,
+          targetTeamId: targetTeamIdForRel,
+          relationshipType: relType,
+          description: relDescription.trim() || undefined,
+          createdBy: currentUser.username
+        })
+      });
+      if (!res.ok) {
+        const body = await res.json();
+        throw new Error(body.error || 'Failed to define relationship');
+      }
+      setShowDefineRelModal(false);
+      setTargetTeamIdForRel('');
+      setRelType('PARENT_UNIT');
+      setRelDescription('');
+      await loadTeamRelationships();
+      await loadOrgHierarchy();
+    } catch (err: any) {
+      setRelError(err.message || 'Error defining relationship');
+    } finally {
+      setIsSubmittingRel(false);
+    }
+  };
+
+  // Handler for deleting a relationship
+  const handleDeleteRelationship = async (relId: string) => {
+    if (!confirm('Are you sure you want to remove this team relationship?')) return;
+    try {
+      const res = await fetch(`/api/teams/relationships/${encodeURIComponent(relId)}`, {
+        method: 'DELETE'
+      });
+      if (res.ok) {
+        await loadTeamRelationships();
+        await loadOrgHierarchy();
+      } else {
+        const body = await res.json();
+        alert(`Failed to delete relationship: ${body.error || 'Unknown error'}`);
+      }
+    } catch (err: any) {
+      alert(`Error deleting relationship: ${err.message}`);
+    }
+  };
+
+  // Fetch Team Governance Data
+  const loadGovernanceData = React.useCallback(async () => {
+    try {
+      const [resPending, resKpis, resGrants, resAi] = await Promise.all([
+        fetch(`/api/resolutions/pending?teamId=${currentTeamId || 'team-cards'}`).then(r => r.json()),
+        fetch(`/api/teams/kpis?teamId=${currentTeamId || 'team-cards'}`).then(r => r.json()),
+        fetch(`/api/teams/grants?teamId=${currentTeamId || 'team-cards'}`).then(r => r.json()),
+        fetch('/api/teams/ai-objectives').then(r => r.json())
+      ]);
+
+      if (Array.isArray(resPending)) setPendingResolutions(resPending);
+      if (resKpis && resKpis.inflow) setTeamKpis(resKpis);
+      if (Array.isArray(resGrants)) setVisibilityGrants(resGrants);
+      if (Array.isArray(resAi)) setAiObjectives(resAi);
+    } catch (err: any) {
+      console.warn('Failed to load team governance data:', err);
+    }
+  }, [currentTeamId]);
+
+  React.useEffect(() => {
+    loadGovernanceData();
+  }, [loadGovernanceData]);
+
+  // Handler for reviewing a Maker-Checker proposal (Checker Approval/Rejection)
+  const handleReviewProposal = async (requestId: string, action: 'APPROVE' | 'REJECT') => {
+    try {
+      const res = await fetch('/api/resolutions/review', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          requestId,
+          checkerId: currentUser.id,
+          checkerName: currentUser.username,
+          checkerTeamId: currentTeamId || 'team-cards',
+          action,
+          rejectionReason: reviewReason[requestId] || (action === 'REJECT' ? 'Rejected by supervisor' : undefined)
+        })
+      });
+
+      const body = await res.json();
+      if (!res.ok) {
+        alert(`Review failed: ${body.error || 'Action failed'}`);
+        return;
+      }
+
+      alert(`Proposal ${action === 'APPROVE' ? 'Approved & Committed' : 'Rejected & Returned to Maker'}!`);
+      loadGovernanceData();
+    } catch (err: any) {
+      alert(`Error reviewing proposal: ${err.message}`);
+    }
+  };
+
+  // Handler for creating a new visibility grant
+  const handleCreateGrant = async (targetTeamId: string, accessLevel: 'FULL' | 'PARTIAL_KPI') => {
+    try {
+      const res = await fetch('/api/teams/grants', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          grantorTeamId: currentTeamId || 'team-cards',
+          granteeTeamId: targetTeamId,
+          accessLevel,
+          grantedBy: currentUser.username
+        })
+      });
+      if (res.ok) {
+        loadGovernanceData();
+      }
+    } catch (err: any) {
+      console.warn('Failed to grant visibility:', err);
+    }
+  };
+
 
   // Handler for sending a chat message
   const handleChatSubmit = (e: React.FormEvent) => {
@@ -283,48 +486,48 @@ export default function TeamWorkspace({
   // ----------------------------------------------------
   if (!selectedTeamId || !currentTeam) {
     return (
-      <div className="space-y-6" id="team-workspace-directory">
+      <div className="space-y-3.5" id="team-workspace-directory">
         {/* Top Banner */}
-        <div className="bg-gradient-to-r from-blue-900 via-slate-900 to-indigo-950 text-white rounded-2xl p-6 shadow-sm border border-slate-800">
-          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
-            <div className="space-y-1.5">
+        <div className="bg-[#0F172B] text-white rounded-xl p-3 sm:p-3.5 shadow-sm border border-slate-800">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+            <div className="space-y-1">
               <div className="flex items-center space-x-2">
-                <span className="px-2.5 py-0.5 bg-blue-500/20 text-blue-300 border border-blue-400/30 text-[10px] rounded-full font-mono font-bold uppercase tracking-wider">
+                <span className="px-2 py-0.5 bg-blue-500/20 text-blue-300 border border-blue-400/30 text-[10px] rounded-full font-mono font-bold uppercase tracking-wider">
                   Team Directory
                 </span>
                 <span className="text-slate-400 text-xs font-mono">
                   Logged in as <strong className="text-white">@{currentUser.username}</strong> ({currentUser.role})
                 </span>
               </div>
-              <h1 className="text-xl font-bold tracking-tight text-white flex items-center space-x-2">
-                <Users className="text-blue-400" size={24} />
+              <h1 className="text-base font-bold tracking-tight text-white flex items-center space-x-2">
+                <Users className="text-blue-400" size={18} />
                 <span>My Teams & Workspaces</span>
               </h1>
-              <p className="text-xs text-slate-300 max-w-2xl leading-relaxed">
+              <p className="text-[11px] text-slate-300 max-w-2xl leading-relaxed">
                 Select a team below to open its workspace. Permanent Unit Teams are managed by unit leaders, while Working Teams can be created by anyone for specific task forces.
               </p>
             </div>
 
             <button
               onClick={() => setShowCreateTeamModal(true)}
-              className="px-4 py-2.5 bg-blue-600 hover:bg-blue-500 text-white font-mono font-bold text-xs rounded-xl flex items-center space-x-2 transition-all shadow-sm cursor-pointer border border-blue-400/30 shrink-0"
+              className="px-3.5 py-1.5 bg-[#155DFC] hover:bg-[#155DFC]/90 text-white font-mono font-bold text-xs rounded-lg flex items-center space-x-1.5 transition-all shadow-xs cursor-pointer border border-[#155DFC]/30 shrink-0 self-start md:self-auto"
               id="create-team-directory-btn"
             >
-              <Plus size={16} />
+              <Plus size={14} />
               <span>Create Team</span>
             </button>
           </div>
         </div>
 
         {/* Filter Bar & Directory List */}
-        <div className="space-y-4">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white p-3 border border-slate-200/90 rounded-2xl shadow-2xs">
-            <div className="flex items-center space-x-1 bg-slate-100/90 p-1 rounded-xl">
+        <div className="space-y-3">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 bg-white p-2 border border-slate-200/90 rounded-xl shadow-2xs">
+            <div className="flex items-center space-x-1 bg-slate-100/90 p-0.5 rounded-lg">
               <button
                 onClick={() => setDirectoryFilter('all')}
-                className={`px-3 py-1.5 rounded-lg text-xs font-mono font-bold transition-all cursor-pointer ${
+                className={`px-2.5 py-1 rounded-md text-xs font-mono font-bold transition-all cursor-pointer ${
                   directoryFilter === 'all'
-                    ? 'bg-white text-slate-900 shadow-xs'
+                    ? 'bg-[#155DFC] text-white shadow-xs'
                     : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
@@ -332,142 +535,368 @@ export default function TeamWorkspace({
               </button>
               <button
                 onClick={() => setDirectoryFilter('permanent')}
-                className={`px-3 py-1.5 rounded-lg text-xs font-mono font-bold transition-all flex items-center space-x-1.5 cursor-pointer ${
+                className={`px-2.5 py-1 rounded-md text-xs font-mono font-bold transition-all flex items-center space-x-1 cursor-pointer ${
                   directoryFilter === 'permanent'
-                    ? 'bg-purple-700 text-white shadow-xs'
+                    ? 'bg-[#155DFC] text-white shadow-xs'
                     : 'text-slate-600 hover:text-purple-700'
                 }`}
               >
-                <ShieldCheck size={13} />
+                <ShieldCheck size={12} />
                 <span>Permanent Units ({permanentTeams.length})</span>
               </button>
               <button
                 onClick={() => setDirectoryFilter('working')}
-                className={`px-3 py-1.5 rounded-lg text-xs font-mono font-bold transition-all flex items-center space-x-1.5 cursor-pointer ${
+                className={`px-2.5 py-1 rounded-md text-xs font-mono font-bold transition-all flex items-center space-x-1 cursor-pointer ${
                   directoryFilter === 'working'
-                    ? 'bg-emerald-700 text-white shadow-xs'
+                    ? 'bg-[#155DFC] text-white shadow-xs'
                     : 'text-slate-600 hover:text-emerald-700'
                 }`}
               >
-                <Briefcase size={13} />
+                <Briefcase size={12} />
                 <span>Working Teams ({workingTeams.length})</span>
               </button>
             </div>
 
-            <p className="text-[11px] font-mono text-slate-500 px-1">
-              Showing <strong className="text-slate-800">{displayedTeams.length}</strong> team{displayedTeams.length !== 1 ? 's' : ''}
-            </p>
+            <div className="flex items-center space-x-2">
+              <div className="flex items-center space-x-1 bg-slate-100/90 p-0.5 rounded-lg">
+                <button
+                  onClick={() => setDirectoryViewMode('cards')}
+                  className={`px-2.5 py-1 rounded-md text-xs font-mono font-bold transition-all flex items-center space-x-1 cursor-pointer ${
+                    directoryViewMode === 'cards'
+                      ? 'bg-[#155DFC] text-white shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                  id="dir-view-cards-btn"
+                >
+                  <Users size={12} />
+                  <span>Cards Grid</span>
+                </button>
+                <button
+                  onClick={() => setDirectoryViewMode('hierarchy')}
+                  className={`px-2.5 py-1 rounded-md text-xs font-mono font-bold transition-all flex items-center space-x-1 cursor-pointer ${
+                    directoryViewMode === 'hierarchy'
+                      ? 'bg-[#155DFC] text-white shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                  id="dir-view-hierarchy-btn"
+                >
+                  <Network size={12} />
+                  <span>Org Structure Tree</span>
+                </button>
+              </div>
+
+              <p className="text-[11px] font-mono text-slate-500 px-1 hidden md:block">
+                Showing <strong className="text-slate-800">{displayedTeams.length}</strong> team{displayedTeams.length !== 1 ? 's' : ''}
+              </p>
+            </div>
           </div>
 
-          {displayedTeams.length === 0 ? (
-            <div className="bg-white border border-slate-200/80 rounded-2xl p-12 text-center space-y-4 shadow-sm">
-              <div className="w-12 h-12 bg-blue-50 text-blue-600 rounded-full flex items-center justify-center mx-auto">
-                <Users size={24} />
+          {directoryViewMode === 'hierarchy' ? (
+            <div className="space-y-4">
+              {/* Hierarchy Summary Banner */}
+              <div className="bg-[#0F172B] border border-slate-800 rounded-2xl p-4 text-white font-mono text-xs shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-3">
+                <div className="flex items-center space-x-3">
+                  <div className="p-2.5 bg-[#155DFC]/20 text-blue-400 border border-[#155DFC]/30 rounded-xl">
+                    <Network size={20} />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-bold text-white uppercase tracking-wider">
+                      Organizational Structure & Team Graph
+                    </h3>
+                    <p className="text-[11px] text-slate-300 font-sans mt-0.5">
+                      Hierarchical mapping of Permanent Unit Teams, child sub-units, functional squads, and inter-team operational dependencies.
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center space-x-2 text-[11px]">
+                  <div className="px-3 py-1.5 bg-slate-800/80 border border-slate-700/80 rounded-lg flex items-center space-x-1.5">
+                    <ShieldCheck size={13} className="text-purple-400" />
+                    <span>{permanentTeams.length} Permanent Units</span>
+                  </div>
+                  <div className="px-3 py-1.5 bg-slate-800/80 border border-slate-700/80 rounded-lg flex items-center space-x-1.5">
+                    <Briefcase size={13} className="text-emerald-400" />
+                    <span>{workingTeams.length} Working Squads</span>
+                  </div>
+                  <div className="px-3 py-1.5 bg-slate-800/80 border border-slate-700/80 rounded-lg flex items-center space-x-1.5">
+                    <GitFork size={13} className="text-blue-400" />
+                    <span>{orgHierarchyData?.totalRelationships || 0} Relationships</span>
+                  </div>
+                </div>
               </div>
-              <div className="space-y-1">
-                <h3 className="text-sm font-bold text-slate-800">No Teams Found in this Filter</h3>
-                <p className="text-xs text-slate-500 max-w-md mx-auto">
-                  {directoryFilter === 'permanent'
-                    ? 'No Permanent Unit Teams created yet by Managers.'
-                    : directoryFilter === 'working'
-                    ? 'No Working Teams created for specific project purposes.'
-                    : 'Create a team to start collaborating.'}
-                </p>
-              </div>
-              <button
-                onClick={() => setShowCreateTeamModal(true)}
-                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs rounded-xl inline-flex items-center space-x-2 transition-colors cursor-pointer"
-              >
-                <Plus size={14} />
-                <span>Create Team</span>
-              </button>
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-              {displayedTeams.map(team => {
-                const memberCount = (team.memberIds ? team.memberIds.length : 0) + 1;
-                const teamTaskCount = tasks.filter(t => t.teamId === team.id).length;
-                const teamInsightCount = insights.filter(i => i.teamId === team.id).length;
-                const teamMsgCount = messages.filter(m => m.teamId === team.id).length;
 
-                const isManager = team.managerId === currentUser.id;
-                const isMember = team.memberIds?.includes(currentUser.id);
-                const isPermanent = (team.teamType || 'working') === 'permanent';
+              {/* Hierarchy Tree Content */}
+              {isLoadingHierarchy ? (
+                <div className="p-12 text-center text-slate-500 font-mono text-xs bg-white rounded-2xl border border-slate-200">
+                  Loading organizational hierarchy...
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {/* Root Permanent Units */}
+                  {orgHierarchyData?.rootUnits && orgHierarchyData.rootUnits.length > 0 ? (
+                    <div className="space-y-4">
+                      {orgHierarchyData.rootUnits.map((rootTeam: any) => (
+                        <div
+                          key={rootTeam.id}
+                          className="bg-white border border-slate-200/90 rounded-2xl p-5 shadow-xs space-y-4 transition-all hover:border-blue-300"
+                        >
+                          {/* Unit Header */}
+                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-3">
+                            <div className="flex items-center space-x-3">
+                              <div className="w-10 h-10 rounded-xl bg-purple-100 border border-purple-200 text-purple-700 flex items-center justify-center font-bold">
+                                <ShieldCheck size={20} />
+                              </div>
+                              <div>
+                                <div className="flex items-center space-x-2">
+                                  <h4 className="text-sm font-bold text-slate-900 font-mono">{rootTeam.name}</h4>
+                                  <span className="text-[9px] bg-purple-100 text-purple-800 border border-purple-200 font-bold px-2 py-0.5 rounded-full font-mono">
+                                    Parent Unit / Department
+                                  </span>
+                                </div>
+                                <p className="text-[11px] text-slate-500 font-mono">
+                                  Lead: @{rootTeam.managerName} • {rootTeam.memberIds?.length || 0} members
+                                </p>
+                              </div>
+                            </div>
 
-                return (
-                  <div
-                    key={team.id}
-                    onClick={() => setSelectedTeamId(team.id)}
-                    className="bg-white border border-slate-200/90 hover:border-blue-500/80 rounded-2xl p-5 shadow-2xs hover:shadow-md transition-all cursor-pointer flex flex-col justify-between group space-y-4"
-                  >
-                    <div className="space-y-3">
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="space-y-1">
-                          <h3 className="text-base font-bold text-slate-900 group-hover:text-blue-600 transition-colors">
-                            {team.name}
-                          </h3>
-                          <p className="text-[11px] font-mono text-slate-500">
-                            Lead/Manager: <strong className="text-slate-700">@{team.managerName || 'manager'}</strong>
-                          </p>
-                        </div>
+                            <button
+                              onClick={() => setSelectedTeamId(rootTeam.id)}
+                              className="px-3 py-1.5 bg-[#155DFC] hover:bg-[#155DFC]/90 text-white font-mono font-bold text-xs rounded-lg flex items-center space-x-1.5 transition-all shadow-xs cursor-pointer self-start sm:self-auto"
+                            >
+                              <span>Open Workspace</span>
+                              <ChevronRight size={14} />
+                            </button>
+                          </div>
 
-                        <div className="flex flex-col items-end gap-1 shrink-0">
-                          {isPermanent ? (
-                            <span className="text-[9px] bg-purple-100 text-purple-800 border border-purple-200 font-bold px-2 py-0.5 rounded-full font-mono flex items-center space-x-1">
-                              <ShieldCheck size={10} />
-                              <span>Permanent Unit</span>
-                            </span>
-                          ) : (
-                            <span className="text-[9px] bg-emerald-100 text-emerald-800 border border-emerald-200 font-bold px-2 py-0.5 rounded-full font-mono flex items-center space-x-1">
-                              <Briefcase size={10} />
-                              <span>Working Team</span>
-                            </span>
+                          {rootTeam.description && (
+                            <p className="text-xs text-slate-600 font-sans">{rootTeam.description}</p>
                           )}
 
-                          {isManager ? (
-                            <span className="text-[9px] bg-amber-100 text-amber-800 border border-amber-300 font-bold px-2 py-0.5 rounded-full font-mono">
-                              Lead/Manager
-                            </span>
-                          ) : isMember ? (
-                            <span className="text-[9px] bg-blue-100 text-blue-800 border border-blue-200 font-bold px-2 py-0.5 rounded-full font-mono">
-                              Member
-                            </span>
-                          ) : null}
+                          {/* Sub-Units Under this Unit */}
+                          {rootTeam.subUnits && rootTeam.subUnits.length > 0 && (
+                            <div className="space-y-2 pl-4 border-l-2 border-purple-200">
+                              <span className="text-[10px] uppercase font-bold text-purple-700 font-mono flex items-center space-x-1">
+                                <GitFork size={12} />
+                                <span>Child Sub-Units ({rootTeam.subUnits.length})</span>
+                              </span>
+                              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2.5">
+                                {rootTeam.subUnits.map((sub: any) => (
+                                  <div
+                                    key={sub.id}
+                                    onClick={() => setSelectedTeamId(sub.team.id)}
+                                    className="p-3 bg-purple-50/50 border border-purple-100 rounded-xl hover:border-purple-300 transition-all cursor-pointer group"
+                                  >
+                                    <div className="flex items-start justify-between">
+                                      <div>
+                                        <div className="font-bold text-xs text-slate-900 group-hover:text-purple-700 font-mono">
+                                          {sub.team.name}
+                                        </div>
+                                        <span className="text-[10px] text-slate-500 font-mono">
+                                          Lead: @{sub.team.managerName}
+                                        </span>
+                                      </div>
+                                      <span className="text-[9px] bg-purple-200/60 text-purple-800 px-1.5 py-0.5 rounded font-mono font-bold">
+                                        Sub-Unit
+                                      </span>
+                                    </div>
+                                    {sub.description && (
+                                      <p className="text-[10px] text-slate-600 font-sans mt-1.5 line-clamp-1">
+                                        {sub.description}
+                                      </p>
+                                    )}
+                                  </div>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Escalation, Downstream, and Peers for this unit */}
+                          {(rootTeam.escalationTargets?.length > 0 || rootTeam.downstream?.length > 0 || rootTeam.peers?.length > 0) && (
+                            <div className="flex flex-wrap gap-3 pt-2 text-[11px] font-mono text-slate-600 border-t border-slate-100">
+                              {rootTeam.escalationTargets?.length > 0 && (
+                                <div className="flex items-center space-x-1 bg-amber-50 border border-amber-200 text-amber-900 px-2 py-1 rounded-md">
+                                  <AlertCircle size={12} className="text-amber-600" />
+                                  <span>Escalates to: {rootTeam.escalationTargets.map((e: any) => e.team.name).join(', ')}</span>
+                                </div>
+                              )}
+                              {rootTeam.downstream?.length > 0 && (
+                                <div className="flex items-center space-x-1 bg-teal-50 border border-teal-200 text-teal-900 px-2 py-1 rounded-md">
+                                  <ArrowDownLeft size={12} className="text-teal-600" />
+                                  <span>Downstream: {rootTeam.downstream.map((d: any) => d.team.name).join(', ')}</span>
+                                </div>
+                              )}
+                              {rootTeam.peers?.length > 0 && (
+                                <div className="flex items-center space-x-1 bg-blue-50 border border-blue-200 text-blue-900 px-2 py-1 rounded-md">
+                                  <Share2 size={12} className="text-blue-600" />
+                                  <span>Peers: {rootTeam.peers.map((p: any) => p.team.name).join(', ')}</span>
+                                </div>
+                              )}
+                            </div>
+                          )}
                         </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className="bg-white border border-slate-200 rounded-2xl p-8 text-center text-slate-500 font-mono text-xs">
+                      No permanent parent units configured yet. Permanent units provide structure to the hierarchy.
+                    </div>
+                  )}
+
+                  {/* Working Teams Section */}
+                  {orgHierarchyData?.workingTeams && orgHierarchyData.workingTeams.length > 0 && (
+                    <div className="bg-slate-50/70 border border-slate-200/80 rounded-2xl p-5 space-y-3 font-mono">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center space-x-2 text-emerald-800 font-bold text-xs uppercase tracking-wider">
+                          <Briefcase size={15} />
+                          <span>Functional & Working Project Squads ({orgHierarchyData.workingTeams.length})</span>
+                        </div>
+                        <span className="text-[10px] text-slate-500">
+                          Cross-functional teams linked to operational goals
+                        </span>
                       </div>
 
-                      <p className="text-xs text-slate-600 line-clamp-2 leading-relaxed min-h-[2.5rem]">
-                        {team.description || 'No description provided for this team.'}
-                      </p>
-
-                      <div className="grid grid-cols-2 gap-2 pt-2 text-[11px] font-mono border-t border-slate-100">
-                        <div className="flex items-center space-x-1.5 text-slate-600">
-                          <Users size={13} className="text-blue-500" />
-                          <span>{memberCount} Members</span>
-                        </div>
-                        <div className="flex items-center space-x-1.5 text-slate-600">
-                          <MessageSquare size={13} className="text-indigo-500" />
-                          <span>{teamMsgCount} Discussions</span>
-                        </div>
-                        <div className="flex items-center space-x-1.5 text-slate-600">
-                          <CheckSquare size={13} className="text-emerald-500" />
-                          <span>{teamTaskCount} Tasks</span>
-                        </div>
-                        <div className="flex items-center space-x-1.5 text-slate-600">
-                          <Lightbulb size={13} className="text-amber-500" />
-                          <span>{teamInsightCount} Insights</span>
-                        </div>
+                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                        {orgHierarchyData.workingTeams.map((wTeam: any) => (
+                          <div
+                            key={wTeam.id}
+                            onClick={() => setSelectedTeamId(wTeam.id)}
+                            className="p-3.5 bg-white border border-slate-200 rounded-xl hover:border-emerald-400 hover:shadow-xs transition-all cursor-pointer group"
+                          >
+                            <div className="flex items-start justify-between">
+                              <div className="font-bold text-xs text-slate-900 group-hover:text-emerald-700">
+                                {wTeam.name}
+                              </div>
+                              <span className="text-[9px] bg-emerald-100 text-emerald-800 border border-emerald-200 px-1.5 py-0.5 rounded font-bold">
+                                Working Squad
+                              </span>
+                            </div>
+                            <p className="text-[11px] text-slate-500 mt-1 font-sans line-clamp-2">
+                              {wTeam.description || 'No description'}
+                            </p>
+                            <div className="mt-2 pt-2 border-t border-slate-100 flex items-center justify-between text-[10px] text-slate-500">
+                              <span>Lead: @{wTeam.managerName}</span>
+                              <span className="text-blue-600 font-bold group-hover:translate-x-0.5 transition-transform flex items-center">
+                                Open <ChevronRight size={12} />
+                              </span>
+                            </div>
+                          </div>
+                        ))}
                       </div>
                     </div>
-
-                    <div className="pt-2 flex items-center justify-between border-t border-slate-100 text-xs font-mono font-bold text-blue-600 group-hover:text-blue-700">
-                      <span>Open Team Workspace</span>
-                      <ChevronRight size={16} className="group-hover:translate-x-1 transition-transform" />
-                    </div>
-                  </div>
-                );
-              })}
+                  )}
+                </div>
+              )}
             </div>
+          ) : (
+            displayedTeams.length === 0 ? (
+              <div className="bg-white border border-slate-200/80 rounded-2xl p-12 text-center space-y-4 shadow-sm">
+                <div className="w-12 h-12 bg-blue-50 text-blue-600 rounded-full flex items-center justify-center mx-auto">
+                  <Users size={24} />
+                </div>
+                <div className="space-y-1">
+                  <h3 className="text-sm font-bold text-slate-800">No Teams Found in this Filter</h3>
+                  <p className="text-xs text-slate-500 max-w-md mx-auto">
+                    {directoryFilter === 'permanent'
+                      ? 'No Permanent Unit Teams created yet by Managers.'
+                      : directoryFilter === 'working'
+                      ? 'No Working Teams created for specific project purposes.'
+                      : 'Create a team to start collaborating.'}
+                  </p>
+                </div>
+                <button
+                  onClick={() => setShowCreateTeamModal(true)}
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold text-xs rounded-xl inline-flex items-center space-x-2 transition-colors cursor-pointer"
+                >
+                  <Plus size={14} />
+                  <span>Create Team</span>
+                </button>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5">
+                {displayedTeams.map(team => {
+                  const isPermanent = (team.teamType || 'working') === 'permanent';
+                  const isManager = team.managerId === currentUser.id;
+                  const isMember = (team.memberIds || []).includes(currentUser.id);
+                  const memberCount = (team.memberIds || []).length + (team.managerId ? 1 : 0);
+                  const teamTaskCount = tasks.filter(t => t.teamId === team.id).length;
+                  const teamInsightCount = insights.filter(i => i.teamId === team.id).length;
+                  const teamMsgCount = messages.filter(m => m.teamId === team.id).length;
+
+                  return (
+                    <div
+                      key={team.id}
+                      onClick={() => setSelectedTeamId(team.id)}
+                      className="bg-white border border-slate-200/80 hover:border-blue-400/80 rounded-2xl p-4 transition-all hover:shadow-md cursor-pointer flex flex-col justify-between space-y-3 group"
+                    >
+                      <div className="space-y-2">
+                        <div className="flex items-start justify-between gap-2">
+                          <div>
+                            <h3 className="text-sm font-bold text-slate-900 group-hover:text-blue-600 font-mono transition-colors">
+                              {team.name}
+                            </h3>
+                            <span className="text-[10px] text-slate-500 font-mono block">
+                              Lead: @{team.managerName}
+                            </span>
+                          </div>
+
+                          <div className="flex flex-col items-end gap-1 shrink-0">
+                            {isPermanent ? (
+                              <span className="text-[9px] bg-purple-100 text-purple-800 border border-purple-200 font-bold px-2 py-0.5 rounded-full font-mono flex items-center space-x-1">
+                                <ShieldCheck size={10} />
+                                <span>Permanent Unit</span>
+                              </span>
+                            ) : (
+                              <span className="text-[9px] bg-emerald-100 text-emerald-800 border border-emerald-200 font-bold px-2 py-0.5 rounded-full font-mono flex items-center space-x-1">
+                                <Briefcase size={10} />
+                                <span>Working Team</span>
+                              </span>
+                            )}
+
+                            {isManager ? (
+                              <span className="text-[9px] bg-amber-100 text-amber-800 border border-amber-300 font-bold px-2 py-0.5 rounded-full font-mono">
+                                Lead/Manager
+                              </span>
+                            ) : isMember ? (
+                              <span className="text-[9px] bg-blue-100 text-blue-800 border border-blue-200 font-bold px-2 py-0.5 rounded-full font-mono">
+                                Member
+                              </span>
+                            ) : null}
+                          </div>
+                        </div>
+
+                        <p className="text-xs text-slate-600 line-clamp-2 leading-relaxed min-h-[2.5rem]">
+                          {team.description || 'No description provided for this team.'}
+                        </p>
+
+                        <div className="grid grid-cols-2 gap-2 pt-2 text-[11px] font-mono border-t border-slate-100">
+                          <div className="flex items-center space-x-1.5 text-slate-600">
+                            <Users size={13} className="text-blue-500" />
+                            <span>{memberCount} Members</span>
+                          </div>
+                          <div className="flex items-center space-x-1.5 text-slate-600">
+                            <MessageSquare size={13} className="text-indigo-500" />
+                            <span>{teamMsgCount} Discussions</span>
+                          </div>
+                          <div className="flex items-center space-x-1.5 text-slate-600">
+                            <CheckSquare size={13} className="text-emerald-500" />
+                            <span>{teamTaskCount} Tasks</span>
+                          </div>
+                          <div className="flex items-center space-x-1.5 text-slate-600">
+                            <Lightbulb size={13} className="text-amber-500" />
+                            <span>{teamInsightCount} Insights</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      <div className="pt-2 flex items-center justify-between border-t border-slate-100 text-xs font-mono font-bold text-blue-600 group-hover:text-blue-700">
+                        <span>Open Team Workspace</span>
+                        <ChevronRight size={16} className="group-hover:translate-x-1 transition-transform" />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )
           )}
         </div>
 
@@ -628,34 +1057,34 @@ export default function TeamWorkspace({
   // 2. SPECIFIC TEAM SELECTED WORKSPACE
   // ----------------------------------------------------
   return (
-    <div className="space-y-4" id="team-workspace-container">
+    <div className="space-y-3" id="team-workspace-container">
       
       {/* Top Action Bar: Back to All Teams & Create Team Aligned Horizontally */}
       <div className="flex items-center justify-between gap-3 font-mono">
         <button
           onClick={() => setSelectedTeamId(null)}
-          className="inline-flex items-center space-x-2 px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white rounded-xl text-xs font-bold transition-all cursor-pointer border border-slate-700/80 shadow-xs"
+          className="inline-flex items-center space-x-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white rounded-lg text-xs font-bold transition-all cursor-pointer border border-slate-700/80 shadow-xs"
           id="back-to-all-teams-btn"
         >
-          <ArrowLeft size={14} />
+          <ArrowLeft size={13} />
           <span>Back to All Teams</span>
         </button>
 
         <button
           onClick={() => setShowCreateTeamModal(true)}
-          className="inline-flex items-center space-x-2 px-3.5 py-2 bg-blue-600 hover:bg-blue-500 text-white font-bold text-xs rounded-xl transition-all shadow-xs cursor-pointer border border-blue-400/30"
+          className="inline-flex items-center space-x-1.5 px-3 py-1.5 bg-[#155DFC] hover:bg-[#155DFC]/90 text-white font-bold text-xs rounded-lg transition-all shadow-xs cursor-pointer border border-[#155DFC]/30"
           id="create-my-own-team-btn"
         >
-          <Plus size={15} />
+          <Plus size={14} />
           <span>Create Team</span>
         </button>
       </div>
 
       {/* Team Header Banner */}
-      <div className="bg-gradient-to-r from-blue-900 via-slate-900 to-indigo-950 text-white rounded-2xl p-6 shadow-sm border border-slate-800">
-        <div className="space-y-1.5">
+      <div className="bg-[#0F172B] text-white rounded-xl p-3 sm:p-3.5 shadow-sm border border-slate-800">
+        <div className="space-y-1">
           <div className="flex items-center space-x-2">
-            <span className="px-2.5 py-0.5 bg-blue-500/20 text-blue-300 border border-blue-400/30 text-[10px] rounded-full font-mono font-bold uppercase tracking-wider">
+            <span className="px-2 py-0.5 bg-blue-500/20 text-blue-300 border border-blue-400/30 text-[10px] rounded-full font-mono font-bold uppercase tracking-wider">
               Team Collaboration Core
             </span>
             <span className="text-slate-400 text-xs font-mono">
@@ -663,110 +1092,171 @@ export default function TeamWorkspace({
             </span>
           </div>
           <div className="flex items-center space-x-2 flex-wrap gap-y-1">
-            <h1 className="text-xl font-bold tracking-tight text-white flex items-center space-x-2">
-              <Users className="text-blue-400" size={24} />
+            <h1 className="text-base font-bold tracking-tight text-white flex items-center space-x-2">
+              <Users className="text-blue-400" size={18} />
               <span>{currentTeam.name}</span>
             </h1>
             {(currentTeam.teamType || 'working') === 'permanent' ? (
-              <span className="text-[10px] bg-purple-500/20 text-purple-300 border border-purple-400/40 font-bold px-2.5 py-0.5 rounded-full font-mono flex items-center space-x-1">
+              <span className="text-[10px] bg-purple-500/20 text-purple-300 border border-purple-400/40 font-bold px-2 py-0.5 rounded-full font-mono flex items-center space-x-1">
                 <ShieldCheck size={11} />
                 <span>Permanent Unit Team</span>
               </span>
             ) : (
-              <span className="text-[10px] bg-emerald-500/20 text-emerald-300 border border-emerald-400/40 font-bold px-2.5 py-0.5 rounded-full font-mono flex items-center space-x-1">
+              <span className="text-[10px] bg-emerald-500/20 text-emerald-300 border border-emerald-400/40 font-bold px-2 py-0.5 rounded-full font-mono flex items-center space-x-1">
                 <Briefcase size={11} />
                 <span>Working Team</span>
               </span>
             )}
           </div>
-          <p className="text-xs text-slate-300 max-w-2xl leading-relaxed">
+          <p className="text-[11px] text-slate-300 max-w-2xl leading-relaxed">
             {currentTeam.description || 'Collaborate with team members, share operational tasks, communicate in real time, and share database query insights.'}
           </p>
         </div>
 
         {/* Navigation Sub-Tabs */}
-        <div className="flex flex-wrap items-center gap-2 pt-6 mt-2 border-t border-slate-800 text-xs font-mono">
+        <div className="flex flex-wrap items-center gap-1.5 pt-2.5 mt-2 border-t border-slate-800/80 text-xs font-mono">
           <button
             onClick={() => setActiveTab('members')}
-            className={`px-4 py-2 rounded-xl flex items-center space-x-2 transition-all cursor-pointer ${
+            className={`px-2.5 py-1.5 rounded-lg flex items-center space-x-1.5 transition-all cursor-pointer ${
               activeTab === 'members'
-                ? 'bg-blue-600 text-white font-bold shadow-sm'
+                ? 'bg-[#155DFC] text-white font-bold shadow-xs'
                 : 'bg-slate-800/60 hover:bg-slate-800 text-slate-300'
             }`}
           >
-            <Users size={15} />
+            <Users size={14} />
             <span>Team Members</span>
-            <span className="ml-1 text-[10px] bg-blue-900/60 text-blue-200 px-2 py-0.5 rounded-full">
+            <span className="ml-1 text-[10px] bg-[#0F172B]/60 text-white px-1.5 py-0.2 rounded-full font-mono">
               {currentTeamMemberIds.length}
             </span>
           </button>
 
           <button
             onClick={() => setActiveTab('discussion')}
-            className={`px-4 py-2 rounded-xl flex items-center space-x-2 transition-all cursor-pointer ${
+            className={`px-2.5 py-1.5 rounded-lg flex items-center space-x-1.5 transition-all cursor-pointer ${
               activeTab === 'discussion'
-                ? 'bg-blue-600 text-white font-bold shadow-sm'
+                ? 'bg-[#155DFC] text-white font-bold shadow-xs'
                 : 'bg-slate-800/60 hover:bg-slate-800 text-slate-300'
             }`}
           >
-            <MessageSquare size={15} />
+            <MessageSquare size={14} />
             <span>Team Discussion</span>
-            <span className="ml-1 text-[10px] bg-blue-900/60 text-blue-200 px-2 py-0.5 rounded-full">
+            <span className="ml-1 text-[10px] bg-[#0F172B]/60 text-white px-1.5 py-0.2 rounded-full font-mono">
               {teamMessages.length}
             </span>
           </button>
 
           <button
             onClick={() => setActiveTab('tasks')}
-            className={`px-4 py-2 rounded-xl flex items-center space-x-2 transition-all cursor-pointer ${
+            className={`px-2.5 py-1.5 rounded-lg flex items-center space-x-1.5 transition-all cursor-pointer ${
               activeTab === 'tasks'
-                ? 'bg-blue-600 text-white font-bold shadow-sm'
+                ? 'bg-[#155DFC] text-white font-bold shadow-xs'
                 : 'bg-slate-800/60 hover:bg-slate-800 text-slate-300'
             }`}
           >
-            <CheckSquare size={15} />
+            <CheckSquare size={14} />
             <span>Shared Tasks</span>
-            <span className="ml-1 text-[10px] bg-blue-900/60 text-blue-200 px-2 py-0.5 rounded-full">
+            <span className="ml-1 text-[10px] bg-[#0F172B]/60 text-white px-1.5 py-0.2 rounded-full font-mono">
               {teamTasks.length}
             </span>
           </button>
 
           <button
             onClick={() => setActiveTab('timeline')}
-            className={`px-4 py-2 rounded-xl flex items-center space-x-2 transition-all cursor-pointer ${
+            className={`px-2.5 py-1.5 rounded-lg flex items-center space-x-1.5 transition-all cursor-pointer ${
               activeTab === 'timeline'
-                ? 'bg-blue-600 text-white font-bold shadow-sm'
+                ? 'bg-[#155DFC] text-white font-bold shadow-xs'
                 : 'bg-slate-800/60 hover:bg-slate-800 text-slate-300'
             }`}
           >
-            <Calendar size={15} />
+            <Calendar size={14} />
             <span>Timeline & Roadmap</span>
           </button>
 
           <button
             onClick={() => setActiveTab('dashboard')}
-            className={`px-4 py-2 rounded-xl flex items-center space-x-2 transition-all cursor-pointer ${
+            className={`px-2.5 py-1.5 rounded-lg flex items-center space-x-1.5 transition-all cursor-pointer ${
               activeTab === 'dashboard'
-                ? 'bg-amber-600 text-white font-bold shadow-sm'
+                ? 'bg-[#155DFC] text-white font-bold shadow-xs'
                 : 'bg-slate-800/60 hover:bg-slate-800 text-slate-300'
             }`}
           >
-            <BarChart2 size={15} className="text-amber-300" />
+            <BarChart2 size={14} />
             <span>Lead Follow-Up Dashboard</span>
           </button>
 
           <button
             onClick={() => setActiveTab('insights')}
-            className={`px-4 py-2 rounded-xl flex items-center space-x-2 transition-all cursor-pointer ${
+            className={`px-2.5 py-1.5 rounded-lg flex items-center space-x-1.5 transition-all cursor-pointer ${
               activeTab === 'insights'
-                ? 'bg-blue-600 text-white font-bold shadow-sm'
+                ? 'bg-[#155DFC] text-white font-bold shadow-xs'
                 : 'bg-slate-800/60 hover:bg-slate-800 text-slate-300'
             }`}
           >
-            <Lightbulb size={15} />
+            <Lightbulb size={14} />
             <span>Shared Insights</span>
-            <span className="ml-1 text-[10px] bg-blue-900/60 text-blue-200 px-2 py-0.5 rounded-full">
+            <span className="ml-1 text-[10px] bg-[#0F172B]/60 text-white px-1.5 py-0.2 rounded-full font-mono">
               {teamInsights.length}
+            </span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('approvals')}
+            className={`px-2.5 py-1.5 rounded-lg flex items-center space-x-1.5 transition-all cursor-pointer ${
+              activeTab === 'approvals'
+                ? 'bg-[#155DFC] text-white font-bold shadow-xs'
+                : 'bg-slate-800/60 hover:bg-slate-800 text-slate-300'
+            }`}
+          >
+            <ShieldCheck size={14} />
+            <span>Maker-Checker Approvals</span>
+            <span className="ml-1 text-[10px] bg-[#0F172B]/60 text-white px-1.5 py-0.2 rounded-full font-mono">
+              {pendingResolutions.length}
+            </span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('grants')}
+            className={`px-2.5 py-1.5 rounded-lg flex items-center space-x-1.5 transition-all cursor-pointer ${
+              activeTab === 'grants'
+                ? 'bg-[#155DFC] text-white font-bold shadow-xs'
+                : 'bg-slate-800/60 hover:bg-slate-800 text-slate-300'
+            }`}
+          >
+            <Users size={14} />
+            <span>Cross-Team Visibility</span>
+            <span className="ml-1 text-[10px] bg-[#0F172B]/60 text-white px-1.5 py-0.2 rounded-full font-mono">
+              {visibilityGrants.length}
+            </span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('ai-strategy')}
+            className={`px-2.5 py-1.5 rounded-lg flex items-center space-x-1.5 transition-all cursor-pointer ${
+              activeTab === 'ai-strategy'
+                ? 'bg-[#155DFC] text-white font-bold shadow-xs'
+                : 'bg-slate-800/60 hover:bg-slate-800 text-slate-300'
+            }`}
+          >
+            <Sparkles size={14} />
+            <span>AI Strategic Objectives</span>
+            <span className="ml-1 text-[10px] bg-[#0F172B]/60 text-white px-1.5 py-0.2 rounded-full font-mono">
+              {aiObjectives.length}
+            </span>
+          </button>
+
+          <button
+            onClick={() => setActiveTab('relationships')}
+            className={`px-2.5 py-1.5 rounded-lg flex items-center space-x-1.5 transition-all cursor-pointer ${
+              activeTab === 'relationships'
+                ? 'bg-[#155DFC] text-white font-bold shadow-xs'
+                : 'bg-slate-800/60 hover:bg-slate-800 text-slate-300'
+            }`}
+            id="tab-team-relationships-btn"
+          >
+            <Network size={14} />
+            <span>Org Structure & Relationships</span>
+            <span className="ml-1 text-[10px] bg-[#0F172B]/60 text-white px-1.5 py-0.2 rounded-full font-mono">
+              {teamRelationships.length}
             </span>
           </button>
         </div>
@@ -1646,6 +2136,484 @@ export default function TeamWorkspace({
         </div>
       )}
 
+      {/* TAB 7: MAKER-CHECKER DUAL AUTHORIZATION APPROVALS QUEUE */}
+      {activeTab === 'approvals' && (
+        <div className="space-y-5 font-mono text-xs">
+          <div className="bg-purple-950 border border-purple-900 rounded-2xl p-5 text-white space-y-2 shadow-sm">
+            <div className="flex items-center space-x-3">
+              <div className="p-2.5 bg-purple-500/20 text-purple-400 border border-purple-500/30 rounded-xl">
+                <ShieldCheck size={22} />
+              </div>
+              <div>
+                <div className="flex items-center space-x-2">
+                  <h3 className="text-sm font-bold tracking-tight text-white uppercase">
+                    Maker-Checker Resolution Review Queue
+                  </h3>
+                  <span className="text-[9px] bg-purple-500/20 text-purple-300 border border-purple-400/40 px-2 py-0.5 rounded-full font-bold">
+                    Four-Eyes Principle
+                  </span>
+                </div>
+                <p className="text-[11px] text-purple-200 font-sans mt-0.5">
+                  Supervisor approval queue for flagged transaction discrepancy resolutions. Dual authorization prevents self-approval.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-white border border-slate-200/80 rounded-2xl p-6 shadow-sm space-y-4">
+            <h4 className="font-bold text-slate-800 uppercase tracking-wider text-xs flex items-center gap-2">
+              <ShieldCheck className="text-purple-600" size={16} />
+              <span>Pending Review Proposals ({pendingResolutions.length})</span>
+            </h4>
+
+            {pendingResolutions.length === 0 ? (
+              <div className="p-10 text-center bg-slate-50 border border-slate-200 rounded-xl space-y-2">
+                <ShieldCheck size={36} className="mx-auto text-slate-300" />
+                <h5 className="font-bold text-slate-700">No pending approval requests</h5>
+                <p className="text-[11px] text-slate-500">All resolution proposals have been reviewed and processed.</p>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {pendingResolutions.map((proposal) => {
+                  const isSelfMaker = proposal.makerId === currentUser.id;
+                  return (
+                    <div key={proposal.id} className="p-4 bg-slate-50 border border-purple-200 rounded-xl space-y-3">
+                      <div className="flex items-center justify-between border-b border-slate-200 pb-2">
+                        <div className="flex items-center space-x-2">
+                          <span className="px-2 py-0.5 bg-purple-100 text-purple-800 font-bold rounded text-[10px]">
+                            {proposal.proposedAction}
+                          </span>
+                          <span className="text-slate-800 font-bold">Task: {proposal.taskId}</span>
+                          <span className="text-slate-500 text-[10px]">Txn: {proposal.transactionId}</span>
+                        </div>
+                        <span className="text-slate-400 text-[10px]">
+                          Submitted: {new Date(proposal.createdAt).toLocaleString()}
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-slate-700">
+                        <div>
+                          <span className="text-[10px] text-slate-500 uppercase font-bold block">Maker Analyst</span>
+                          <span className="font-bold text-slate-900">@{proposal.makerName}</span>
+                        </div>
+                        <div>
+                          <span className="text-[10px] text-slate-500 uppercase font-bold block">Proposed Status</span>
+                          <span className="font-bold text-emerald-700">{proposal.proposedStatus}</span>
+                        </div>
+                      </div>
+
+                      <div className="bg-white p-3 rounded-lg border border-slate-200 text-slate-800">
+                        <span className="text-[10px] text-slate-400 font-bold uppercase block mb-1">Justification Note</span>
+                        <p className="text-xs font-sans whitespace-pre-wrap">{proposal.justificationNote}</p>
+                      </div>
+
+                      {/* Anti-Self-Approval Enforcement Warning */}
+                      {isSelfMaker ? (
+                        <div className="p-2.5 bg-amber-50 border border-amber-200 rounded-lg text-amber-900 text-[11px] flex items-center gap-2">
+                          <AlertCircle size={14} className="text-amber-600 shrink-0" />
+                          <span>Anti-Self-Approval Enforcement: You are the Maker of this proposal and cannot approve your own submission.</span>
+                        </div>
+                      ) : (
+                        <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 pt-2 border-t border-slate-200">
+                          <input
+                            type="text"
+                            placeholder="Optional feedback / rejection reason..."
+                            value={reviewReason[proposal.id] || ''}
+                            onChange={(e) => setReviewReason(prev => ({ ...prev, [proposal.id]: e.target.value }))}
+                            className="flex-1 px-3 py-1.5 bg-white border border-slate-300 rounded-lg text-xs"
+                          />
+                          <div className="flex items-center space-x-2 shrink-0">
+                            <button
+                              onClick={() => handleReviewProposal(proposal.id, 'REJECT')}
+                              className="px-3 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-800 border border-rose-300 rounded-lg font-bold transition cursor-pointer"
+                            >
+                              Reject Proposal
+                            </button>
+                            <button
+                              onClick={() => handleReviewProposal(proposal.id, 'APPROVE')}
+                              className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-bold transition shadow-2xs cursor-pointer flex items-center space-x-1"
+                            >
+                              <CheckCircle2 size={13} />
+                              <span>Approve & Commit</span>
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* TAB 8: CROSS-TEAM VISIBILITY GRANTS */}
+      {activeTab === 'grants' && (
+        <div className="space-y-5 font-mono text-xs">
+          <div className="bg-indigo-950 border border-indigo-900 rounded-2xl p-5 text-white space-y-2 shadow-sm">
+            <div className="flex items-center space-x-3">
+              <div className="p-2.5 bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 rounded-xl">
+                <Users size={22} />
+              </div>
+              <div>
+                <h3 className="text-sm font-bold tracking-tight text-white uppercase">
+                  Cross-Team Visibility & KPI Sharing
+                </h3>
+                <p className="text-[11px] text-indigo-200 font-sans mt-0.5">
+                  Manage partial (KPI-only) or full dashboard access grants shared with other department teams.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-white border border-slate-200/80 rounded-2xl p-6 shadow-sm space-y-4">
+            <div className="flex justify-between items-center border-b border-slate-100 pb-3">
+              <h4 className="font-bold text-slate-800 uppercase tracking-wider text-xs">Active Access Grants</h4>
+              <button
+                onClick={() => {
+                  const target = prompt('Enter Team ID to grant access (e.g. team-audit, team-cbs):');
+                  if (target) handleCreateGrant(target, 'PARTIAL_KPI');
+                }}
+                className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg transition cursor-pointer"
+              >
+                + Grant Visibility to Team
+              </button>
+            </div>
+
+            {visibilityGrants.length === 0 ? (
+              <div className="p-8 text-center bg-slate-50 border border-slate-200 rounded-xl text-slate-500">
+                No cross-team dashboard visibility grants configured yet.
+              </div>
+            ) : (
+              <div className="divide-y divide-slate-100">
+                {visibilityGrants.map(grant => (
+                  <div key={grant.id} className="py-3 flex items-center justify-between text-slate-800">
+                    <div>
+                      <div className="flex items-center space-x-2">
+                        <span className="font-bold">Grantor: {grant.grantorTeamId}</span>
+                        <span>→</span>
+                        <span className="font-bold text-indigo-700">Grantee: {grant.granteeTeamId}</span>
+                      </div>
+                      <span className="text-[10px] text-slate-500 block">Granted by @{grant.grantedBy} on {new Date(grant.createdAt).toLocaleDateString()}</span>
+                    </div>
+                    <span className="px-2.5 py-1 bg-indigo-100 text-indigo-800 font-bold rounded text-[10px]">
+                      {grant.accessLevel}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* TAB 9: AI STRATEGIC OBJECTIVES */}
+      {activeTab === 'ai-strategy' && (
+        <div className="space-y-5 font-mono text-xs">
+          <div className="bg-emerald-950 border border-emerald-900 rounded-2xl p-5 text-white space-y-2 shadow-sm">
+            <div className="flex items-center space-x-3">
+              <div className="p-2.5 bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 rounded-xl">
+                <Sparkles size={22} />
+              </div>
+              <div>
+                <h3 className="text-sm font-bold tracking-tight text-white uppercase">
+                  AI Strategic Alignment Scaffolding
+                </h3>
+                <p className="text-[11px] text-emerald-200 font-sans mt-0.5">
+                  Monitors organizational strategy document objectives against live team task resolution velocity.
+                </p>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {aiObjectives.map(obj => (
+              <div key={obj.id} className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm space-y-3">
+                <div className="flex justify-between items-start">
+                  <h4 className="font-bold text-slate-900 text-xs">{obj.title}</h4>
+                  <span className="px-2 py-0.5 bg-emerald-100 text-emerald-800 font-bold rounded text-[10px]">
+                    {obj.targetMetric}
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-600 font-sans">{obj.description}</p>
+                <div className="space-y-1">
+                  <div className="flex justify-between text-[10px] text-slate-500 font-bold">
+                    <span>Progress</span>
+                    <span>{obj.currentValue} / {obj.targetValue}</span>
+                  </div>
+                  <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden">
+                    <div
+                      className="bg-emerald-600 h-full rounded-full"
+                      style={{ width: `${Math.min(100, (obj.currentValue / Math.max(1, obj.targetValue)) * 100)}%` }}
+                    />
+                  </div>
+                </div>
+                <div className="flex items-center space-x-1.5 flex-wrap pt-1">
+                  {obj.linkedHashtags?.map((tag: string, idx: number) => (
+                    <span key={idx} className="bg-slate-100 text-slate-700 px-2 py-0.5 rounded text-[9px] font-bold">
+                      #{tag}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* TAB 10: ORG STRUCTURE & TEAM RELATIONSHIPS */}
+      {activeTab === 'relationships' && (
+        <div className="space-y-4" id="team-relationships-panel">
+          {/* Header Card */}
+          <div className="bg-[#0F172B] border border-slate-800 rounded-2xl p-4 text-white font-mono text-xs shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-3">
+            <div className="flex items-center space-x-3">
+              <div className="p-2.5 bg-[#155DFC]/20 text-blue-400 border border-[#155DFC]/30 rounded-xl">
+                <Network size={20} />
+              </div>
+              <div className="space-y-0.5">
+                <div className="flex items-center space-x-2">
+                  <h3 className="text-sm font-bold text-white uppercase tracking-wider">
+                    {currentTeam?.name} — Org Structure & Inter-Team Relationships
+                  </h3>
+                  {(currentTeam?.teamType || 'working') === 'permanent' ? (
+                    <span className="text-[9px] bg-purple-500/20 text-purple-300 border border-purple-400/40 font-bold px-2 py-0.5 rounded-full font-mono flex items-center space-x-1">
+                      <ShieldCheck size={10} />
+                      <span>Permanent Unit</span>
+                    </span>
+                  ) : (
+                    <span className="text-[9px] bg-emerald-500/20 text-emerald-300 border border-emerald-400/40 font-bold px-2 py-0.5 rounded-full font-mono flex items-center space-x-1">
+                      <Briefcase size={10} />
+                      <span>Working Team</span>
+                    </span>
+                  )}
+                </div>
+                <p className="text-[11px] text-slate-300 font-sans">
+                  {(currentTeam?.teamType || 'working') === 'permanent'
+                    ? 'Permanent teams represent core organizational departments. Define hierarchical reporting, subordinate units, escalation targets, and operational data dependencies.'
+                    : 'Working teams represent project-based squads. Define which department you report into, lateral peers, upstream data sources, and settlement consumers.'}
+                </p>
+              </div>
+            </div>
+
+            <button
+              onClick={() => {
+                setTargetTeamIdForRel('');
+                setRelType('PARENT_UNIT');
+                setRelDescription('');
+                setRelError(null);
+                setShowDefineRelModal(true);
+              }}
+              className="px-3.5 py-1.5 bg-[#155DFC] hover:bg-[#155DFC]/90 text-white font-mono font-bold text-xs rounded-lg flex items-center space-x-1.5 transition-all shadow-xs cursor-pointer border border-[#155DFC]/30 shrink-0 self-start md:self-auto"
+              id="define-relationship-btn"
+            >
+              <Plus size={14} />
+              <span>Define Relationship</span>
+            </button>
+          </div>
+
+          {/* Quick Stats Banner */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 font-mono text-xs">
+            {/* Hierarchy Links */}
+            <div className="bg-white border border-slate-200/90 rounded-xl p-3 shadow-2xs space-y-1">
+              <div className="flex items-center justify-between text-slate-500 text-[10px] font-bold uppercase">
+                <span>Hierarchy Links</span>
+                <GitFork size={13} className="text-purple-600" />
+              </div>
+              <div className="text-lg font-bold text-slate-900">
+                {teamRelationships.filter(r => r.relationshipType === 'PARENT_UNIT' || r.relationshipType === 'SUB_UNIT').length}
+              </div>
+              <p className="text-[10px] text-slate-400">Parent & Sub-Units</p>
+            </div>
+
+            {/* Escalations & Audits */}
+            <div className="bg-white border border-slate-200/90 rounded-xl p-3 shadow-2xs space-y-1">
+              <div className="flex items-center justify-between text-slate-500 text-[10px] font-bold uppercase">
+                <span>Escalation / Audit</span>
+                <AlertCircle size={13} className="text-amber-600" />
+              </div>
+              <div className="text-lg font-bold text-slate-900">
+                {teamRelationships.filter(r => r.relationshipType === 'ESCALATION_TARGET' || r.relationshipType === 'AUDIT_COMPLIANCE_REVIEWER').length}
+              </div>
+              <p className="text-[10px] text-slate-400">Disputes & Oversight</p>
+            </div>
+
+            {/* Pipeline Dataflow */}
+            <div className="bg-white border border-slate-200/90 rounded-xl p-3 shadow-2xs space-y-1">
+              <div className="flex items-center justify-between text-slate-500 text-[10px] font-bold uppercase">
+                <span>Data Pipelines</span>
+                <Layers size={13} className="text-teal-600" />
+              </div>
+              <div className="text-lg font-bold text-slate-900">
+                {teamRelationships.filter(r => r.relationshipType === 'UPSTREAM_PROVIDER' || r.relationshipType === 'DOWNSTREAM_CONSUMER').length}
+              </div>
+              <p className="text-[10px] text-slate-400">Upstream / Downstream</p>
+            </div>
+
+            {/* Peer Collaborators */}
+            <div className="bg-white border border-slate-200/90 rounded-xl p-3 shadow-2xs space-y-1">
+              <div className="flex items-center justify-between text-slate-500 text-[10px] font-bold uppercase">
+                <span>Peer Units</span>
+                <Share2 size={13} className="text-blue-600" />
+              </div>
+              <div className="text-lg font-bold text-slate-900">
+                {teamRelationships.filter(r => r.relationshipType === 'PEER_COLLABORATOR').length}
+              </div>
+              <p className="text-[10px] text-slate-400">Lateral Collaborators</p>
+            </div>
+          </div>
+
+          {/* Relationship List */}
+          {isLoadingRelationships ? (
+            <div className="p-12 text-center text-slate-500 font-mono text-xs bg-white rounded-2xl border border-slate-200">
+              Loading team relationships...
+            </div>
+          ) : teamRelationships.length === 0 ? (
+            <div className="bg-white border border-slate-200 rounded-2xl p-10 text-center space-y-3 shadow-sm font-mono">
+              <div className="w-12 h-12 bg-blue-50 text-[#155DFC] rounded-full flex items-center justify-center mx-auto">
+                <Network size={22} />
+              </div>
+              <div className="space-y-1">
+                <h4 className="text-sm font-bold text-slate-800">No Inter-Team Relationships Defined Yet</h4>
+                <p className="text-xs text-slate-500 max-w-md mx-auto font-sans">
+                  Define your team's parent department, subordinate units, escalation targets, or pipeline dataflow links to integrate into the organizational structure.
+                </p>
+              </div>
+              <button
+                onClick={() => {
+                  setTargetTeamIdForRel('');
+                  setRelType('PARENT_UNIT');
+                  setRelDescription('');
+                  setRelError(null);
+                  setShowDefineRelModal(true);
+                }}
+                className="px-4 py-2 bg-[#155DFC] hover:bg-[#155DFC]/90 text-white font-bold text-xs rounded-xl inline-flex items-center space-x-2 transition-all cursor-pointer shadow-xs"
+              >
+                <Plus size={14} />
+                <span>Define First Relationship</span>
+              </button>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+              {teamRelationships.map(rel => {
+                const isSource = rel.sourceTeamId === currentTeamId;
+                const otherTeamId = isSource ? rel.targetTeamId : rel.sourceTeamId;
+                const otherTeamName = isSource ? (rel.targetTeamName || 'Unknown Team') : (rel.sourceTeamName || 'Unknown Team');
+                const otherTeamType = isSource ? rel.targetTeamType : rel.sourceTeamType;
+                const otherTeam = teams.find(t => t.id === otherTeamId);
+
+                // Badge styling & icon per relationship type
+                let typeBadgeBg = 'bg-blue-100 text-blue-800 border-blue-200';
+                let typeLabel = 'Peer Collaborator';
+                let typeIcon = <Share2 size={13} className="text-blue-600" />;
+
+                if (rel.relationshipType === 'PARENT_UNIT') {
+                  typeBadgeBg = 'bg-purple-100 text-purple-900 border-purple-300';
+                  typeLabel = isSource ? 'Parent Department / Unit' : 'Subordinate Child Unit';
+                  typeIcon = <ShieldCheck size={13} className="text-purple-600" />;
+                } else if (rel.relationshipType === 'SUB_UNIT') {
+                  typeBadgeBg = 'bg-indigo-100 text-indigo-900 border-indigo-300';
+                  typeLabel = isSource ? 'Subordinate Sub-Unit' : 'Parent Department';
+                  typeIcon = <GitFork size={13} className="text-indigo-600" />;
+                } else if (rel.relationshipType === 'ESCALATION_TARGET') {
+                  typeBadgeBg = 'bg-amber-100 text-amber-900 border-amber-300';
+                  typeLabel = isSource ? 'Escalation Target' : 'Escalation Source';
+                  typeIcon = <AlertCircle size={13} className="text-amber-600" />;
+                } else if (rel.relationshipType === 'AUDIT_COMPLIANCE_REVIEWER') {
+                  typeBadgeBg = 'bg-violet-100 text-violet-900 border-violet-300';
+                  typeLabel = isSource ? 'Audit & Compliance Reviewer' : 'Audited Unit';
+                  typeIcon = <ShieldCheck size={13} className="text-violet-600" />;
+                } else if (rel.relationshipType === 'UPSTREAM_PROVIDER') {
+                  typeBadgeBg = 'bg-cyan-100 text-cyan-900 border-cyan-300';
+                  typeLabel = isSource ? 'Upstream Batch Provider' : 'Downstream Consumer';
+                  typeIcon = <ArrowUpRight size={13} className="text-cyan-600" />;
+                } else if (rel.relationshipType === 'DOWNSTREAM_CONSUMER') {
+                  typeBadgeBg = 'bg-teal-100 text-teal-900 border-teal-300';
+                  typeLabel = isSource ? 'Downstream Settlement Consumer' : 'Upstream Provider';
+                  typeIcon = <ArrowDownLeft size={13} className="text-teal-600" />;
+                }
+
+                return (
+                  <div
+                    key={rel.id}
+                    className="bg-white border border-slate-200/90 hover:border-blue-300 rounded-2xl p-4 shadow-2xs hover:shadow-xs transition-all space-y-3 flex flex-col justify-between"
+                  >
+                    <div className="space-y-2.5">
+                      {/* Top Row: Type Badge & Direction */}
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex items-center space-x-1.5 flex-wrap gap-y-1">
+                          <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border font-mono flex items-center space-x-1 ${typeBadgeBg}`}>
+                            {typeIcon}
+                            <span>{typeLabel}</span>
+                          </span>
+                          <span className="text-[9px] font-mono text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded">
+                            {isSource ? 'Outgoing Link' : 'Incoming Link'}
+                          </span>
+                        </div>
+
+                        {/* Delete Button */}
+                        <button
+                          onClick={() => handleDeleteRelationship(rel.id)}
+                          className="text-slate-400 hover:text-rose-600 p-1 rounded-md hover:bg-rose-50 transition-colors cursor-pointer"
+                          title="Remove relationship"
+                        >
+                          <Trash2 size={14} />
+                        </button>
+                      </div>
+
+                      {/* Connected Team Info */}
+                      <div className="flex items-center justify-between gap-2">
+                        <div>
+                          <button
+                            onClick={() => setSelectedTeamId(otherTeamId)}
+                            className="font-bold text-sm text-slate-900 hover:text-[#155DFC] font-mono transition-colors flex items-center space-x-1 text-left"
+                          >
+                            <span>{otherTeamName}</span>
+                            <ChevronRight size={14} className="text-slate-400" />
+                          </button>
+                          <span className="text-[10px] text-slate-500 font-mono block">
+                            {otherTeam ? `Lead: @${otherTeam.managerName} • ${otherTeam.memberIds?.length || 0} members` : 'Connected Team'}
+                          </span>
+                        </div>
+
+                        {(otherTeamType || otherTeam?.teamType || 'working') === 'permanent' ? (
+                          <span className="text-[9px] bg-purple-100 text-purple-800 border border-purple-200 font-bold px-2 py-0.5 rounded-full font-mono flex items-center space-x-1 shrink-0">
+                            <ShieldCheck size={10} />
+                            <span>Permanent Unit</span>
+                          </span>
+                        ) : (
+                          <span className="text-[9px] bg-emerald-100 text-emerald-800 border border-emerald-200 font-bold px-2 py-0.5 rounded-full font-mono flex items-center space-x-1 shrink-0">
+                            <Briefcase size={10} />
+                            <span>Working Team</span>
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Description */}
+                      {rel.description ? (
+                        <p className="text-xs text-slate-600 font-sans leading-relaxed bg-slate-50 p-2.5 rounded-lg border border-slate-100">
+                          {rel.description}
+                        </p>
+                      ) : (
+                        <p className="text-[11px] text-slate-400 italic font-sans">
+                          No specific SLA or context notes provided.
+                        </p>
+                      )}
+                    </div>
+
+                    {/* Footer / Meta */}
+                    <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-[10px] font-mono text-slate-400">
+                      <span>By @{rel.createdBy || 'system'}</span>
+                      <span>{new Date(rel.createdAt).toLocaleDateString()}</span>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* MODAL: ADD TASK */}
       {showAddTaskModal && (
         <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4 z-50">
@@ -1984,6 +2952,176 @@ export default function TeamWorkspace({
                   className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-bold rounded-lg"
                 >
                   Create Team
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: DEFINE RELATIONSHIP */}
+      {showDefineRelModal && (
+        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-xl max-w-lg w-full p-6 space-y-4 font-mono text-xs animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex justify-between items-center border-b border-slate-100 pb-3">
+              <div className="flex items-center space-x-2">
+                <Network size={18} className="text-[#155DFC]" />
+                <div>
+                  <h3 className="text-sm font-bold text-slate-900">Define Inter-Team Relationship</h3>
+                  <p className="text-[10px] text-slate-500">
+                    Connecting <strong className="text-slate-800">{currentTeam?.name}</strong> to another operational unit.
+                  </p>
+                </div>
+              </div>
+              <button onClick={() => setShowDefineRelModal(false)} className="text-slate-400 hover:text-slate-600">
+                <X size={16} />
+              </button>
+            </div>
+
+            {relError && (
+              <div className="bg-rose-50 border border-rose-200 text-rose-800 px-3 py-2 rounded-lg text-[11px] flex items-center space-x-2">
+                <AlertCircle size={14} className="shrink-0 text-rose-600" />
+                <span>{relError}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleDefineRelationshipSubmit} className="space-y-4">
+              {/* Target Team Selector */}
+              <div>
+                <label className="block text-[10px] font-bold text-slate-700 uppercase mb-1">
+                  Target Team *
+                </label>
+                <select
+                  required
+                  value={targetTeamIdForRel}
+                  onChange={e => setTargetTeamIdForRel(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-slate-800 focus:outline-none focus:ring-1 focus:ring-blue-500 font-mono text-xs"
+                >
+                  <option value="">-- Select Target Team --</option>
+                  {teams
+                    .filter(t => t.id !== currentTeamId)
+                    .map(t => {
+                      const isPerm = (t.teamType || 'working') === 'permanent';
+                      return (
+                        <option key={t.id} value={t.id}>
+                          {t.name} [{isPerm ? 'Permanent Unit' : 'Working Squad'}] (Lead: @{t.managerName})
+                        </option>
+                      );
+                    })}
+                </select>
+              </div>
+
+              {/* Relationship Type Selector */}
+              <div>
+                <label className="block text-[10px] font-bold text-slate-700 uppercase mb-1.5">
+                  Relationship Type *
+                </label>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-56 overflow-y-auto pr-1">
+                  {[
+                    {
+                      type: 'PARENT_UNIT',
+                      label: 'Parent Department',
+                      desc: 'Target is our parent division / department unit in the organizational hierarchy.',
+                      icon: ShieldCheck,
+                      color: 'text-purple-700'
+                    },
+                    {
+                      type: 'SUB_UNIT',
+                      label: 'Child Sub-Unit',
+                      desc: 'Target is a subordinate operational unit operating under this team.',
+                      icon: GitFork,
+                      color: 'text-indigo-700'
+                    },
+                    {
+                      type: 'ESCALATION_TARGET',
+                      label: 'Escalation Target',
+                      desc: 'Target team handles escalated disputes, transaction exceptions & variances.',
+                      icon: AlertCircle,
+                      color: 'text-amber-700'
+                    },
+                    {
+                      type: 'PEER_COLLABORATOR',
+                      label: 'Peer Collaborator',
+                      desc: 'Lateral operational partner for dual-control maker-checker & daily reconciliation.',
+                      icon: Share2,
+                      color: 'text-blue-700'
+                    },
+                    {
+                      type: 'UPSTREAM_PROVIDER',
+                      label: 'Upstream Batch Provider',
+                      desc: 'Target team produces or imports raw transaction batches consumed by this team.',
+                      icon: ArrowUpRight,
+                      color: 'text-cyan-700'
+                    },
+                    {
+                      type: 'DOWNSTREAM_CONSUMER',
+                      label: 'Downstream Consumer',
+                      desc: 'Target team consumes our validated settlement feeds & reconciliation sign-offs.',
+                      icon: ArrowDownLeft,
+                      color: 'text-teal-700'
+                    },
+                    {
+                      type: 'AUDIT_COMPLIANCE_REVIEWER',
+                      label: 'Compliance Reviewer',
+                      desc: 'Target team performs independent regulatory audit and compliance verification.',
+                      icon: ShieldCheck,
+                      color: 'text-violet-700'
+                    }
+                  ].map(opt => {
+                    const isSelected = relType === opt.type;
+                    const IconComp = opt.icon;
+                    return (
+                      <div
+                        key={opt.type}
+                        onClick={() => setRelType(opt.type as TeamRelationshipType)}
+                        className={`p-2.5 rounded-xl border cursor-pointer transition-all ${
+                          isSelected
+                            ? 'bg-blue-50/90 border-[#155DFC] ring-1 ring-[#155DFC]'
+                            : 'bg-slate-50/80 border-slate-200 hover:bg-slate-100'
+                        }`}
+                      >
+                        <div className="flex items-center space-x-1.5 font-bold text-xs mb-0.5">
+                          <IconComp size={13} className={opt.color} />
+                          <span className={isSelected ? 'text-[#155DFC]' : 'text-slate-800'}>{opt.label}</span>
+                        </div>
+                        <p className="text-[10px] text-slate-500 font-sans leading-tight">
+                          {opt.desc}
+                        </p>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {/* Description / Notes */}
+              <div>
+                <label className="block text-[10px] font-bold text-slate-700 uppercase mb-1">
+                  Operational Context / SLA Notes (Optional)
+                </label>
+                <textarea
+                  rows={2}
+                  placeholder="e.g. Daily settlement batches handed over by 18:00 UTC; escalations reviewed within 4 hours..."
+                  value={relDescription}
+                  onChange={e => setRelDescription(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-300 rounded-lg px-3 py-2 text-slate-800 focus:outline-none focus:ring-1 focus:ring-blue-500 font-sans"
+                />
+              </div>
+
+              {/* Action Buttons */}
+              <div className="flex justify-end space-x-2 pt-2 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setShowDefineRelModal(false)}
+                  className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-medium rounded-lg cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={!targetTeamIdForRel || isSubmittingRel}
+                  className="px-4 py-2 bg-[#155DFC] hover:bg-[#155DFC]/90 disabled:opacity-50 text-white font-bold rounded-lg transition-all shadow-xs cursor-pointer"
+                >
+                  {isSubmittingRel ? 'Saving...' : 'Save Relationship'}
                 </button>
               </div>
             </form>

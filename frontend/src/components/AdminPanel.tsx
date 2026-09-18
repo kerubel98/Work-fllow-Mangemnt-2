@@ -87,48 +87,48 @@ export default function AdminPanel({
   const pendingApprovalsCount = queryApprovals.filter(q => q.status === 'pending').length + dbAccessRequests.filter(r => r.status === 'pending').length;
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-3.5">
       {/* Top Main Navigation Tabs */}
-      <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-1.5 flex items-center gap-1.5 overflow-x-auto">
+      <div className="bg-[#0F172B] rounded-xl border border-slate-800 shadow-xs p-1 flex items-center gap-1 overflow-x-auto">
         <button
           type="button"
           onClick={() => setActiveTab('analytics')}
-          className={`px-4 py-2.5 rounded-lg text-xs font-bold flex items-center gap-2 transition whitespace-nowrap ${
+          className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition whitespace-nowrap ${
             currentTab === 'analytics'
-              ? 'bg-blue-600 text-white shadow-sm'
-              : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50'
+              ? 'bg-[#155DFC] text-white shadow-xs'
+              : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
           }`}
         >
-          <BarChart2 className="w-4 h-4" />
+          <BarChart2 className="w-3.5 h-3.5" />
           <span>System Analytics & Health</span>
         </button>
 
         <button
           type="button"
           onClick={() => setActiveTab('user_admin')}
-          className={`px-4 py-2.5 rounded-lg text-xs font-bold flex items-center gap-2 transition whitespace-nowrap ${
+          className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition whitespace-nowrap ${
             currentTab === 'user_admin'
-              ? 'bg-blue-600 text-white shadow-sm'
-              : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50'
+              ? 'bg-[#155DFC] text-white shadow-xs'
+              : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
           }`}
         >
-          <Users className="w-4 h-4" />
+          <Users className="w-3.5 h-3.5" />
           <span>User Access & Permissions</span>
         </button>
 
         <button
           type="button"
           onClick={() => setActiveTab('systems')}
-          className={`px-4 py-2.5 rounded-lg text-xs font-bold flex items-center gap-2 transition whitespace-nowrap relative ${
+          className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition whitespace-nowrap relative ${
             currentTab === 'systems'
-              ? 'bg-blue-600 text-white shadow-sm'
-              : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50'
+              ? 'bg-[#155DFC] text-white shadow-xs'
+              : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
           }`}
         >
-          <Server className="w-4 h-4" />
+          <Server className="w-3.5 h-3.5" />
           <span>Systems & Plugins</span>
           {pendingApprovalsCount > 0 && (
-            <span className="px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-amber-500 text-white">
+            <span className="px-1.5 py-0.2 rounded-full text-[10px] font-bold bg-amber-500 text-white">
               {pendingApprovalsCount}
             </span>
           )}

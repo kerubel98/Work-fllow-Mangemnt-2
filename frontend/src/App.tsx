@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, Suspense, lazy } from 'react';
 import { 
   User, Issue, HashtagPreset, Plugin, DatabaseConnection, 
   Transaction, ChatMessage, EnvironmentSystem, QueryApprovalRequest, 
@@ -17,20 +17,29 @@ import {
 import { api } from './api/client';
 import TitleBar from './components/TitleBar';
 import LoginScreen from './components/LoginScreen';
-import DbQueryTool from './components/DbQueryTool';
-import AdminPanel from './components/AdminPanel';
-import UserAdminPanel from './components/UserAdminPanel';
-import IssueCreator from './components/IssueCreator';
-import IssueDetailView from './components/IssueDetailView';
-import ManagerialDashboard from './components/ManagerialDashboard';
-import TeamWorkspace from './components/TeamWorkspace';
-import PersonalChat from './components/PersonalChat';
 import SideNav from './components/SideNav';
-import GlobalTransactionSettings from './components/GlobalTransactionSettings';
-import WorkspaceSettings from './components/WorkspaceSettings';
-import SystemSettings from './components/settings/SystemSettings';
 import ErrorBoundary from './components/ErrorBoundary';
 import MessageModal from './components/common/MessageModal';
+
+// Code-split dynamic route panels
+const IssueDetailView = lazy(() => import('./components/IssueDetailView'));
+const TeamWorkspace = lazy(() => import('./components/TeamWorkspace'));
+const PersonalChat = lazy(() => import('./components/PersonalChat'));
+const DbQueryTool = lazy(() => import('./components/DbQueryTool'));
+const IssueCreator = lazy(() => import('./components/IssueCreator'));
+const ManagerialDashboard = lazy(() => import('./components/ManagerialDashboard'));
+const AdminPanel = lazy(() => import('./components/AdminPanel'));
+const WorkspaceSettings = lazy(() => import('./components/WorkspaceSettings'));
+const SystemSettings = lazy(() => import('./components/settings/SystemSettings'));
+
+function PanelLoadingSkeleton() {
+  return (
+    <div className="w-full h-96 flex flex-col items-center justify-center gap-3 p-8 bg-white/50 rounded-2xl border border-slate-200/80 animate-pulse">
+      <div className="w-9 h-9 border-3 border-purple-600 border-t-transparent rounded-full animate-spin" />
+      <span className="text-xs font-semibold text-slate-500 tracking-wide">Loading workspace view...</span>
+    </div>
+  );
+}
 
 
 export default function App() {
@@ -1077,60 +1086,65 @@ export default function App() {
           />
 
           {/* Main Context Dynamic Panel Router */}
-          <main className="flex-grow p-4 lg:p-6 overflow-y-auto max-h-[calc(100vh-3rem)]">
-            
+          <main className="flex-grow p-2 lg:p-3 overflow-y-auto max-h-[calc(100vh-2.25rem)]">
+            <Suspense fallback={<PanelLoadingSkeleton />}>
             {(activeNavigation === 'workspace' || activeNavigation === 'my_tasks' || activeNavigation === 'hashtags' || activeNavigation === 'open_case' || activeNavigation === 'create_case') && (
-              <IssueDetailView 
-                issues={issues} 
-                hashtags={hashtags} 
-                currentUser={effectiveUser || currentUser} 
-                systems={systems}
-                users={users}
-                databases={databases}
-                transactions={transactions}
-                queryApprovals={queryApprovals}
-                onSubmitQueryApproval={handleSubmitQueryApproval}
-                onUpdateIssue={handleUpdateIssue} 
-                onDeleteIssue={handleDeleteIssue}
-                onCreateIssue={handleCreateIssue}
-                onCreateHashtagPreset={handleCreateHashtagPreset} 
-                onSendChatMessage={handleSendChatMessage} 
-                onChangeTab={setActiveNavigation}
-                initialSelectedIssueId={deepLinkIssueId}
-                activeMode={
-                  activeNavigation === 'my_tasks'
-                    ? 'my_tasks'
-                    : activeNavigation === 'hashtags'
-                    ? 'hashtags'
-                    : (activeNavigation === 'open_case' || activeNavigation === 'create_case')
-                    ? 'open_case'
-                    : 'workspace'
-                }
-              />
+              <ErrorBoundary fallbackTitle="Workspace Display Error" fallbackMessage="An error occurred while loading the workspace. You can retry rendering or reset settings.">
+                <IssueDetailView 
+                  issues={issues} 
+                  hashtags={hashtags} 
+                  currentUser={effectiveUser || currentUser} 
+                  systems={systems}
+                  users={users}
+                  teams={teams}
+                  databases={databases}
+                  transactions={transactions}
+                  queryApprovals={queryApprovals}
+                  onSubmitQueryApproval={handleSubmitQueryApproval}
+                  onUpdateIssue={handleUpdateIssue} 
+                  onDeleteIssue={handleDeleteIssue}
+                  onCreateIssue={handleCreateIssue}
+                  onCreateHashtagPreset={handleCreateHashtagPreset} 
+                  onSendChatMessage={handleSendChatMessage} 
+                  onChangeTab={setActiveNavigation}
+                  initialSelectedIssueId={deepLinkIssueId}
+                  activeMode={
+                    activeNavigation === 'my_tasks'
+                      ? 'my_tasks'
+                      : activeNavigation === 'hashtags'
+                      ? 'hashtags'
+                      : (activeNavigation === 'open_case' || activeNavigation === 'create_case')
+                      ? 'open_case'
+                      : 'workspace'
+                  }
+                />
+              </ErrorBoundary>
             )}
 
             {activeNavigation === 'team_workspace' && (
-              <TeamWorkspace 
-                currentUser={effectiveUser || currentUser}
-                users={users}
-                teams={teams}
-                tasks={teamTasks}
-                insights={teamInsights}
-                messages={teamMessages}
-                onCreateTeam={handleCreateTeam}
-                onUpdateTeam={handleUpdateTeam}
-                onAddTask={handleAddTeamTask}
-                onUpdateTaskStatus={handleUpdateTeamTaskStatus}
-                onDeleteTask={handleDeleteTeamTask}
-                onAddInsight={handleAddTeamInsight}
-                onDeleteInsight={handleDeleteTeamInsight}
-                onSendMessage={handleSendTeamMessage}
-                openCreateModalSignal={createTeamSignal}
-                initialSelectedTeamId={deepLinkTeamId}
-                initialActiveTab={deepLinkTeamTab}
-                initialSelectedTaskId={deepLinkTaskId}
-                onOpenPersonalChat={handleOpenPersonalChat}
-              />
+              <ErrorBoundary fallbackTitle="Team Workspace Error">
+                <TeamWorkspace 
+                  currentUser={effectiveUser || currentUser}
+                  users={users}
+                  teams={teams}
+                  tasks={teamTasks}
+                  insights={teamInsights}
+                  messages={teamMessages}
+                  onCreateTeam={handleCreateTeam}
+                  onUpdateTeam={handleUpdateTeam}
+                  onAddTask={handleAddTeamTask}
+                  onUpdateTaskStatus={handleUpdateTeamTaskStatus}
+                  onDeleteTask={handleDeleteTeamTask}
+                  onAddInsight={handleAddTeamInsight}
+                  onDeleteInsight={handleDeleteTeamInsight}
+                  onSendMessage={handleSendTeamMessage}
+                  openCreateModalSignal={createTeamSignal}
+                  initialSelectedTeamId={deepLinkTeamId}
+                  initialActiveTab={deepLinkTeamTab}
+                  initialSelectedTaskId={deepLinkTaskId}
+                  onOpenPersonalChat={handleOpenPersonalChat}
+                />
+              </ErrorBoundary>
             )}
 
             {activeNavigation === 'direct_chat' && (
@@ -1283,7 +1297,7 @@ export default function App() {
                 />
               </ErrorBoundary>
             )}
-
+            </Suspense>
           </main>
 
         </div>

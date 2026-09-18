@@ -368,17 +368,17 @@ export default function DbQueryTool({
   };
 
   return (
-    <div className="bg-white border border-slate-200/80 rounded-2xl p-6 space-y-6 shadow-sm" id="db-query-tool">
+    <div className="bg-white border border-slate-200/80 rounded-2xl p-3.5 sm:p-4 space-y-3.5 shadow-sm" id="db-query-tool">
       
       {/* Tool Header */}
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-slate-200 pb-4 gap-3">
-        <div className="flex items-center space-x-3">
-          <div className="p-2.5 bg-blue-50 text-blue-600 rounded-xl border border-blue-100">
-            <Database size={22} />
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-slate-200 pb-2.5 gap-2.5">
+        <div className="flex items-center space-x-2.5">
+          <div className="p-2 bg-blue-50 text-[#155DFC] rounded-xl border border-blue-100">
+            <Database size={18} />
           </div>
           <div>
-            <h3 className="text-base font-bold text-slate-900">SQL Sandbox & Multi-Database Explorer</h3>
-            <p className="text-xs text-slate-500">Query live physical databases with automatic PostgreSQL UNLOGGED mirror syncing.</p>
+            <h3 className="text-sm font-bold text-slate-900">SQL Sandbox & Multi-Database Explorer</h3>
+            <p className="text-[11px] text-slate-500">Query live physical databases with automatic PostgreSQL UNLOGGED mirror syncing.</p>
           </div>
         </div>
 
@@ -387,7 +387,7 @@ export default function DbQueryTool({
           {isAdmin && (
             <button
               onClick={() => setShowAddDbModal(true)}
-              className="px-3.5 py-2 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg text-xs flex items-center space-x-1.5 transition-all cursor-pointer shadow-sm"
+              className="px-3 py-1.5 bg-[#155DFC] hover:bg-[#155DFC]/90 text-white font-semibold rounded-lg text-xs flex items-center space-x-1.5 transition-all cursor-pointer shadow-xs"
               id="btn-create-connection"
             >
               <Plus size={14} />
@@ -399,7 +399,7 @@ export default function DbQueryTool({
           {!isAdmin && onRequestDbAccess && (
             <button
               onClick={() => setShowRequestAccessModal(true)}
-              className="px-3.5 py-2 bg-blue-50 hover:bg-blue-100/80 text-blue-700 border border-blue-200 rounded-lg text-xs font-semibold flex items-center space-x-1.5 transition-all cursor-pointer"
+              className="px-3 py-1.5 bg-blue-50 hover:bg-blue-100/80 text-[#155DFC] border border-blue-200 rounded-lg text-xs font-semibold flex items-center space-x-1.5 transition-all cursor-pointer"
             >
               <Key size={13} />
               <span>Request DB Access</span>
@@ -409,15 +409,15 @@ export default function DbQueryTool({
       </div>
 
       {accessMsg && (
-        <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg text-xs text-blue-800 flex items-center gap-2 font-medium">
-          <CheckCircle2 size={16} className="text-blue-600" />
+        <div className="p-2.5 bg-blue-50 border border-blue-200 rounded-lg text-xs text-blue-800 flex items-center gap-2 font-medium">
+          <CheckCircle2 size={15} className="text-[#155DFC]" />
           <span>{accessMsg}</span>
         </div>
       )}
 
       {/* Connection Selector Tabs */}
-      <div className="flex flex-wrap items-center gap-2 bg-slate-50 p-3 rounded-xl border border-slate-200">
-        <span className="text-[10px] font-bold text-slate-500 uppercase font-mono mr-1">ACTIVE DATABASES:</span>
+      <div className="flex flex-wrap items-center gap-1.5 bg-[#0F172B] p-1.5 rounded-xl border border-slate-800">
+        <span className="text-[10px] font-bold text-slate-400 uppercase font-mono mr-1">ACTIVE DATABASES:</span>
         {databases.map(db => {
           const isAllowed = isAdmin || userAllowedDbs.includes(db.id);
           return (
@@ -430,10 +430,10 @@ export default function DbQueryTool({
                 setQueryLog([]); 
                 setMirroredTable(null);
               }}
-              className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-all flex items-center space-x-2 border cursor-pointer ${
+              className={`px-2.5 py-1.5 rounded-lg text-xs font-medium transition-all flex items-center space-x-1.5 border cursor-pointer ${
                 selectedDb === db.id
-                  ? 'bg-blue-600 text-white border-blue-600 shadow-sm font-bold'
-                  : 'bg-white text-slate-700 border-slate-200 hover:bg-blue-50/60 hover:text-blue-700'
+                  ? 'bg-[#155DFC] text-white border-[#155DFC] shadow-xs font-bold'
+                  : 'bg-slate-800/80 text-slate-300 border-slate-700 hover:bg-slate-700 hover:text-white'
               }`}
               id={`tab-db-${db.id}`}
             >

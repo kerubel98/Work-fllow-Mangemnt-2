@@ -114,8 +114,25 @@ export const api = {
   deleteUser: (id: string) =>
     fetchApi<{ success: boolean }>(`/auth/users/${id}`, { method: 'DELETE' }),
 
+  updateWorkspaceSharing: (userId: string, enabled: boolean) =>
+    fetchApi<any>(`/auth/users/${userId}/workspace-sharing`, {
+      method: 'PUT',
+      body: JSON.stringify({ enabled })
+    }),
+
   // ================= Issues =================
-  getIssues: () => fetchApi<any[]>('/issues'),
+  getIssues: (userId?: string, scope?: 'personal' | 'team' | 'all') => {
+    const params = new URLSearchParams();
+    if (userId) params.append('userId', userId);
+    if (scope) params.append('scope', scope);
+    const qs = params.toString();
+    return fetchApi<any[]>(`/issues${qs ? `?${qs}` : ''}`);
+  },
+  updateIssueVisibility: (id: string, visibility: 'TEAM_PUBLIC' | 'PERSONAL_PRIVATE') =>
+    fetchApi<any>(`/issues/${id}/visibility`, {
+      method: 'PATCH',
+      body: JSON.stringify({ visibility })
+    }),
   getIssue: (id: string) => fetchApi<any>(`/issues/${id}`),
   createIssue: (issueData: any) =>
     fetchApi<any>('/issues', {
@@ -129,13 +146,51 @@ export const api = {
     }),
   deleteIssue: (id: string) =>
     fetchApi<{ success: boolean }>(`/issues/${id}`, { method: 'DELETE' }),
-  postIssueChat: (issueId: string, message: { senderId: string; senderName: string; senderRole: string; text: string }) =>
+  postIssueChat: (issueId: string, message: {
+    senderId: string;
+    senderName: string;
+    senderRole: string;
+    text?: string;
+    mentions?: any[];
+    attachedSummary?: any;
+    solutionProposal?: any;
+    issueContext?: any;
+  }) =>
     fetchApi<any>(`/issues/${issueId}/chat`, {
       method: 'POST',
       body: JSON.stringify(message)
     }),
-  executeResolutionScript: (issueId: string) =>
-    fetchApi<any>(`/issues/${issueId}/execute-script`, { method: 'POST' }),
+  acceptChatSolution: (issueId: string, messageId: string, acceptedBy: string, acceptedByName?: string) =>
+    fetchApi<any>(`/issues/${issueId}/chat/accept-solution`, {
+      method: 'POST',
+      body: JSON.stringify({ messageId, acceptedBy, acceptedByName })
+    }),
+  revertTaskData: (issueId: string, transactionId?: string, userId?: string) =>
+    fetchApi<any>(`/issues/${issueId}/revert`, {
+      method: 'POST',
+      body: JSON.stringify({ transactionId, userId })
+    }),
+  getTaskReversions: (issueId: string) =>
+    fetchApi<{ taskId: string; count: number; snapshots: any[] }>(`/issues/${issueId}/reversions`),
+  getAuditDossier: (issueId: string) =>
+    fetchApi<any>(`/issues/${issueId}/audit-dossier`),
+  updateHashtagKpis: (tag: string, kpis: any[]) =>
+    fetchApi<any>(`/hashtags/${encodeURIComponent(tag)}/kpis`, {
+      method: 'PUT',
+      body: JSON.stringify({ kpis })
+    }),
+  createHashtagFromIssue: (issueId: string, data: { tag?: string; description?: string; workflowId?: string; workflowName?: string; author?: string }) =>
+    fetchApi<any>(`/hashtags/create-from-issue/${issueId}`, {
+      method: 'POST',
+      body: JSON.stringify(data)
+    }),
+  getHashtagAnalytics: () =>
+    fetchApi<{ hashtagAnalytics: any[]; issuesAwaitingSolution: any[]; totalTrackedTags: number }>('/hashtags/analytics'),
+  executeResolutionScript: (issueId: string, executedBy?: string) =>
+    fetchApi<any>(`/issues/${issueId}/execute-script`, {
+      method: 'POST',
+      body: JSON.stringify({ executedBy })
+    }),
 
   ingestTaskDataset: (issueId: string, data: { rows: any[]; headers?: string[]; fileMapping?: Record<string, string> }) =>
     fetchApi<any>(`/issues/${issueId}/dataset`, {
@@ -299,9 +354,29 @@ export const api = {
       filesProcessed?: string[];
       executionTimeMs: number;
       message: string;
+      skippedMismatches?: any[];
     }>('/db/ftp-staging/stage-file', {
       method: 'POST',
       body: JSON.stringify(data)
+    }),
+  runScheduledFtpStaging: (options: { targetType?: string; connectionId?: string; forceAll?: boolean }) =>
+    fetchApi<{
+      success: boolean;
+      executedCount: number;
+      totalStaged: number;
+      totalSkippedMismatches: number;
+      results: any[];
+      executionTimeMs: number;
+    }>('/db/ftp-staging/run-scheduled', {
+      method: 'POST',
+      body: JSON.stringify(options)
+    }),
+  getUnconfiguredFtpFolders: (connectionId?: string) =>
+    fetchApi<any[]>(connectionId ? `/db/ftp-staging/unconfigured-folders?connectionId=${connectionId}` : '/db/ftp-staging/unconfigured-folders'),
+  resolveUnconfiguredFtpFolder: (folderPath: string, connectionId: string) =>
+    fetchApi<{ success: boolean }>('/db/ftp-staging/resolve-unconfigured-folder', {
+      method: 'POST',
+      body: JSON.stringify({ folderPath, connectionId })
     }),
   getSystems: () => fetchApi<any[]>('/systems'),
   createSystem: (sysData: any) =>

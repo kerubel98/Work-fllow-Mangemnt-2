@@ -866,6 +866,7 @@ export function executeWorkflowForTransaction(transactionRecord, workflow) {
         transactionRecord.rowId ||
         primaryParamVal ||
         `TXN-${Date.now()}`);
+    let currentWorkingRecord = { ...transactionRecord };
     const auditTrail = [];
     let previousResult = null;
     let previousAction = null;
@@ -929,12 +930,24 @@ export function executeWorkflowForTransaction(transactionRecord, workflow) {
                 });
                 continue;
             }
-            // Evaluate condition
-            const evalResult = evaluateRuleCondition(transactionRecord, rule, stage);
+            // Evaluate condition against active working record
+            const evalResult = evaluateRuleCondition(currentWorkingRecord, rule, stage);
             const action = resolveRuleAction(evalResult.status, rule);
             const durationMs = Date.now() - startTime;
             if (evalResult.status === 'ERROR') {
                 hasTechnicalError = true;
+            }
+            // Forward enriched mirror record downstream on PASS, keep original record on FAIL
+            if (evalResult.status === 'PASS') {
+                const targetRec = currentWorkingRecord._target_record ?? currentWorkingRecord.canonical_data?._target_record ?? currentWorkingRecord._mirrorData ?? currentWorkingRecord._externalData;
+                if (targetRec && typeof targetRec === 'object') {
+                    currentWorkingRecord = {
+                        ...currentWorkingRecord,
+                        ...targetRec,
+                        _inputData: currentWorkingRecord._inputData || transactionRecord,
+                        _mirrorData: targetRec
+                    };
+                }
             }
             auditTrail.push({
                 transactionId,

@@ -169,6 +169,26 @@ authRouter.put('/users/:id/role', async (req, res) => {
     }
 });
 /**
+ * PUT /api/auth/users/:id/workspace-sharing
+ * Toggles whether the user shares their workspace with their permanent team.
+ */
+authRouter.put('/users/:id/workspace-sharing', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { enabled } = req.body;
+        if (typeof enabled !== 'boolean') {
+            return res.status(400).json({ error: 'enabled boolean is required.' });
+        }
+        const updated = await repo.updateUserWorkspaceSharing(id, enabled);
+        if (!updated)
+            return res.status(404).json({ error: 'User not found.' });
+        return res.json({ message: 'Workspace sharing updated successfully.', user: updated });
+    }
+    catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+});
+/**
  * DELETE /api/auth/users/:id (Admin only)
  */
 authRouter.delete('/users/:id', async (req, res) => {

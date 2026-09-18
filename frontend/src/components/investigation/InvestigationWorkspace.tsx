@@ -4,7 +4,7 @@
  */
 
 import React from 'react';
-import { Issue, User, DatabaseConnection, EnvironmentSystem, HashtagPreset, QueryApprovalRequest } from '../../types';
+import { Issue, User, DatabaseConnection, EnvironmentSystem, HashtagPreset, QueryApprovalRequest, Team } from '../../types';
 import ValidationOrchestratorWorkspace from './ValidationOrchestratorWorkspace';
 
 interface InvestigationWorkspaceProps {
@@ -16,6 +16,7 @@ interface InvestigationWorkspaceProps {
   databases: DatabaseConnection[];
   systems: EnvironmentSystem[];
   hashtags: HashtagPreset[];
+  teams?: Team[];
   onUpdateIssue: (issueId: string, updates: Partial<Issue>) => void;
   onDeleteIssue?: (issueId: string) => void;
   onSendChatMessage: (issueId: string, text: string) => void;

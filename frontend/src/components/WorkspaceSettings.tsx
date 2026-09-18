@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState } from 'react';
+import React, { useState, Suspense, lazy } from 'react';
 import { User, DatabaseConnection } from '../types';
 import { 
   Settings, Sliders, Bell, Clock, 
@@ -12,10 +12,20 @@ import {
   ArrowLeft, CheckCircle2, AlertTriangle, ShieldCheck,
   Boxes, GitFork
 } from 'lucide-react';
-import DatabaseColumnConfigurationStudio from './settings/DatabaseColumnConfiguration';
-import { ValidationBoxManager } from './settings/ValidationBoxManager';
-import { WorkflowStudioFlowchart } from './settings/WorkflowStudioFlowchart';
 import ErrorBoundary from './ErrorBoundary';
+
+const DatabaseColumnConfigurationStudio = lazy(() => import('./settings/DatabaseColumnConfiguration'));
+const ValidationBoxManager = lazy(() => import('./settings/ValidationBoxManager').then(m => ({ default: m.ValidationBoxManager })));
+const WorkflowStudioFlowchart = lazy(() => import('./settings/WorkflowStudioFlowchart').then(m => ({ default: m.WorkflowStudioFlowchart })));
+
+function StudioLoadingFallback() {
+  return (
+    <div className="w-full h-80 flex flex-col items-center justify-center gap-3 p-8 bg-white rounded-xl border border-slate-200">
+      <div className="w-8 h-8 border-3 border-purple-600 border-t-transparent rounded-full animate-spin" />
+      <span className="text-xs font-semibold text-slate-500">Loading Studio Canvas...</span>
+    </div>
+  );
+}
 
 export interface WorkspaceConfig {
   workspaceName: string;
@@ -114,9 +124,9 @@ export default function WorkspaceSettings({
   ] as const;
 
   return (
-    <div className={`space-y-4 ${activeTab === 'database_validation' || activeTab === 'validation_box' || activeTab === 'workflow_studio' ? 'w-full' : 'max-w-7xl mx-auto'}`}>
+    <div className={`space-y-3 ${activeTab === 'database_validation' || activeTab === 'validation_box' || activeTab === 'workflow_studio' ? 'w-full' : 'max-w-7xl mx-auto'}`}>
       {/* 1. Sleek Compact Header Bar */}
-      <div className="bg-slate-900 border border-slate-800 rounded-xl px-4 py-3 text-white shadow-xs flex flex-wrap items-center justify-between gap-3">
+      <div className="bg-[#0F172B] border border-slate-800 rounded-xl px-3.5 py-2 text-white shadow-xs flex flex-wrap items-center justify-between gap-2.5">
         <div className="flex items-center gap-2.5">
           {onNavigateToWorkspace && (
             <button
@@ -149,7 +159,7 @@ export default function WorkspaceSettings({
           <button
             type="button"
             onClick={handleSave}
-            className="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 transition shadow-xs cursor-pointer"
+            className="px-3 py-1.5 bg-[#155DFC] hover:bg-[#155DFC]/90 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 transition shadow-xs cursor-pointer"
           >
             <Save className="w-3.5 h-3.5" />
             <span>Save Changes</span>
@@ -159,14 +169,14 @@ export default function WorkspaceSettings({
 
       {/* Save Success Banner */}
       {saveBanner && (
-        <div className="p-3 bg-emerald-50 border border-emerald-200 text-emerald-900 rounded-xl flex items-center gap-2 text-xs font-semibold shadow-2xs animate-fadeIn">
+        <div className="p-2.5 bg-emerald-50 border border-emerald-200 text-emerald-900 rounded-xl flex items-center gap-2 text-xs font-semibold shadow-2xs animate-fadeIn">
           <CheckCircle2 className="w-4 h-4 text-emerald-600 flex-shrink-0" />
           <span>Workspace preferences have been saved and applied.</span>
         </div>
       )}
 
       {/* 2. Modern Segmented Tab Bar (Full Width) */}
-      <div className="flex items-center gap-1 p-1 bg-slate-100 border border-slate-200 rounded-xl overflow-x-auto">
+      <div className="flex items-center gap-1 p-1 bg-[#0F172B] border border-slate-800 rounded-xl overflow-x-auto">
         {tabs.map((tab) => {
           const Icon = tab.icon;
           const isActive = activeTab === tab.id;
@@ -175,13 +185,13 @@ export default function WorkspaceSettings({
               key={tab.id}
               type="button"
               onClick={() => setActiveTab(tab.id as any)}
-              className={`flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-xs font-semibold transition whitespace-nowrap cursor-pointer ${
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition whitespace-nowrap cursor-pointer ${
                 isActive
-                  ? 'bg-white text-slate-900 shadow-xs font-bold border border-slate-200/80'
-                  : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/60'
+                  ? 'bg-[#155DFC] text-white shadow-xs font-bold'
+                  : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
               }`}
             >
-              <Icon className={`w-3.5 h-3.5 ${isActive ? 'text-blue-600' : 'text-slate-400'}`} />
+              <Icon className={`w-3.5 h-3.5 ${isActive ? 'text-white' : 'text-slate-400'}`} />
               <span>{tab.label}</span>
             </button>
           );
@@ -189,6 +199,7 @@ export default function WorkspaceSettings({
       </div>
 
       {/* 3. Settings Content Pane */}
+      <Suspense fallback={<StudioLoadingFallback />}>
       {activeTab === 'database_validation' ? (
         <ErrorBoundary fallbackTitle="Column Configuration Error" fallbackMessage="Could not render Database Column Configuration Studio. You can retry or refresh.">
           <DatabaseColumnConfigurationStudio
@@ -508,6 +519,7 @@ export default function WorkspaceSettings({
           )}
         </div>
       )}
+      </Suspense>
     </div>
   );
 }

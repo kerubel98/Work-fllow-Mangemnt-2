@@ -285,32 +285,32 @@ export default function WorkspaceTable({
   };
 
   return (
-    <div className="space-y-6 font-sans">
+    <div className="space-y-3.5 font-sans">
       {/* Top Banner */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 p-6 bg-gradient-to-r from-slate-950 via-slate-900 to-indigo-950 rounded-2xl text-white shadow-lg border border-slate-800">
-        <div className="space-y-1.5">
-          <div className="flex items-center space-x-2.5">
-            <div className="p-2 bg-blue-500/20 rounded-xl text-blue-400 border border-blue-500/30">
-              <Table size={20} />
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 p-3 sm:p-3.5 bg-[#0F172B] rounded-xl text-white shadow-sm border border-slate-800">
+        <div className="space-y-1">
+          <div className="flex items-center space-x-2">
+            <div className="p-1.5 bg-blue-500/20 rounded-lg text-blue-400 border border-blue-500/30">
+              <Table size={16} />
             </div>
-            <h2 className="text-lg font-bold tracking-tight">Centralized Uploaded Data Master Table</h2>
-            <span className="text-[11px] bg-blue-500/25 text-blue-300 border border-blue-400/40 px-2.5 py-0.5 rounded-full font-mono font-bold">
+            <h2 className="text-sm font-bold tracking-tight">Centralized Uploaded Data Master Table</h2>
+            <span className="text-[10px] bg-[#155DFC]/20 text-blue-300 border border-[#155DFC]/30 px-2 py-0.5 rounded-full font-mono font-bold">
               {records.length} Transactions Collected
             </span>
           </div>
-          <p className="text-xs text-slate-300 max-w-3xl leading-relaxed">
+          <p className="text-[11px] text-slate-300 max-w-3xl leading-relaxed">
             Central repository capturing all uploaded transaction batches upon task creation, transformed into the <strong>Global Standard Schema</strong> columns with source file names, uploaders, and assigned category tags.
           </p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2.5">
+        <div className="flex flex-wrap items-center gap-2 shrink-0">
           {onNavigateToWorkspace && (
             <button
               type="button"
               onClick={onNavigateToWorkspace}
-              className="flex items-center space-x-1.5 px-3 py-2 bg-white/10 hover:bg-white/20 text-white rounded-xl text-xs font-medium transition-colors cursor-pointer border border-white/10"
+              className="flex items-center space-x-1.5 px-2.5 py-1.5 bg-white/10 hover:bg-white/20 text-white rounded-lg text-xs font-medium transition-colors cursor-pointer border border-white/10"
             >
-              <ArrowLeft size={14} />
+              <ArrowLeft size={13} />
               <span>Back to Workspace</span>
             </button>
           )}
@@ -318,9 +318,9 @@ export default function WorkspaceTable({
             type="button"
             onClick={fetchRecords}
             disabled={isLoading}
-            className="flex items-center space-x-1.5 px-3.5 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-bold shadow-sm transition-all cursor-pointer"
+            className="flex items-center space-x-1.5 px-3 py-1.5 bg-[#155DFC] hover:bg-[#155DFC]/90 text-white rounded-lg text-xs font-bold shadow-xs transition-all cursor-pointer"
           >
-            <RefreshCw size={13} className={isLoading ? 'animate-spin' : ''} />
+            <RefreshCw size={12} className={isLoading ? 'animate-spin' : ''} />
             <span>Refresh Table</span>
           </button>
         </div>

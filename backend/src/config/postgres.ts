@@ -38,6 +38,23 @@ export async function connectPostgres(): Promise<{ success: boolean; message: st
     const p = getPostgresPool();
     const client = await p.connect();
     const res = await client.query('SELECT NOW() as current_time, current_database() as db_name;');
+    
+    // Auto-migrate schema DDL tables
+    try {
+      const fs = await import('fs');
+      const path = await import('path');
+      const migrationsDir = path.resolve(process.cwd(), 'backend/src/database/migrations');
+      if (fs.existsSync(migrationsDir)) {
+        const files = fs.readdirSync(migrationsDir).filter(f => f.endsWith('.sql')).sort();
+        for (const file of files) {
+          const sql = fs.readFileSync(path.join(migrationsDir, file), 'utf-8');
+          await client.query(sql);
+        }
+      }
+    } catch (migErr: any) {
+      console.warn(`[PostgresInit] Schema DDL migration warning: ${migErr.message}`);
+    }
+
     client.release();
 
     isPostgresConnected = true;

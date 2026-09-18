@@ -37,7 +37,7 @@ import {
   UploadAuditLog, WorkspaceTableRecord, DatabaseValidationWorkflow,
   QueryExtraction, InvestigationTask, InvestigationBatch, InvestigationTransaction,
   CentralTransactionRecord, ValidationBox, FtpFileStagingConfig, GlobalStandardDirectoryRecord, TaskWorkflowExecution,
-  DatabaseColumnConfiguration
+  DatabaseColumnConfiguration, TeamRelationship, TeamRelationshipType
 } from '../types.js';
 
 export const repo = {
@@ -100,6 +100,18 @@ export const repo = {
     return updated;
   },
 
+  async updateUserWorkspaceSharing(userId: string, enabled: boolean): Promise<User | null> {
+    if (isPostgresConnected) {
+      return await postgresRepo.updateUserWorkspaceSharing(userId, enabled);
+    }
+    const user = store.users.find(u => u.id === userId);
+    if (user) {
+      user.shareWorkspaceWithTeam = enabled;
+      return user;
+    }
+    return null;
+  },
+
   async deleteUser(id: string): Promise<boolean> {
     if (isPostgresConnected) {
       await postgresRepo.deleteUser(id);
@@ -115,12 +127,16 @@ export const repo = {
   },
 
   // ================= ISSUES =================
-  async getIssues(): Promise<Issue[]> {
+  async getIssues(userId?: string, scope?: 'personal' | 'team' | 'all'): Promise<Issue[]> {
     if (isPostgresConnected) {
-      return await postgresRepo.getIssues();
+      return await postgresRepo.getIssues(userId, scope);
     }
     if (isMongoConnected) {
       return await IssueModel.find().sort({ createdAt: -1 }).lean() as Issue[];
+    }
+    if (!userId || scope === 'all') return store.issues;
+    if (scope === 'personal') {
+      return store.issues.filter(i => i.creatorId === userId || i.assignedTechUserId === userId);
     }
     return store.issues;
   },
@@ -160,6 +176,19 @@ export const repo = {
     }
     return updated;
   },
+
+  async updateIssueVisibility(id: string, visibility: 'TEAM_PUBLIC' | 'PERSONAL_PRIVATE'): Promise<Issue | null> {
+    if (isPostgresConnected) {
+      return await postgresRepo.updateIssueVisibility(id, visibility);
+    }
+    const issue = store.issues.find(i => i.id === id);
+    if (issue) {
+      issue.visibility = visibility;
+      return issue;
+    }
+    return null;
+  },
+
 
   async deleteIssue(id: string): Promise<boolean> {
     if (isPostgresConnected) {
@@ -388,6 +417,9 @@ export const repo = {
 
   // ================= TEAMS & TEAM COLLABORATION =================
   async getTeams(): Promise<Team[]> {
+    if (isPostgresConnected) {
+      return await postgresRepo.getTeams();
+    }
     if (isMongoConnected) {
       return await TeamModel.find().lean() as Team[];
     }
@@ -395,6 +427,9 @@ export const repo = {
   },
 
   async createTeam(team: Team): Promise<Team> {
+    if (isPostgresConnected) {
+      return await postgresRepo.createTeam(team);
+    }
     if (isMongoConnected) {
       await TeamModel.create(team);
     }
@@ -403,6 +438,9 @@ export const repo = {
   },
 
   async updateTeam(id: string, updates: Partial<Team>): Promise<Team | null> {
+    if (isPostgresConnected) {
+      return await postgresRepo.updateTeam(id, updates);
+    }
     let updated: Team | null = null;
     if (isMongoConnected) {
       updated = await TeamModel.findOneAndUpdate({ id }, updates, { new: true }).lean() as Team | null;
@@ -416,12 +454,52 @@ export const repo = {
   },
 
   async deleteTeam(id: string): Promise<boolean> {
+    if (isPostgresConnected) {
+      return await postgresRepo.deleteTeam(id);
+    }
     if (isMongoConnected) {
       await TeamModel.deleteOne({ id });
     }
     const idx = store.teams.findIndex(t => t.id === id);
     if (idx !== -1) {
       store.teams.splice(idx, 1);
+      return true;
+    }
+    return false;
+  },
+
+  async getTeamRelationships(teamId?: string): Promise<TeamRelationship[]> {
+    if (isPostgresConnected) {
+      return await postgresRepo.getTeamRelationships(teamId);
+    }
+    if (teamId) {
+      return store.teamRelationships.filter(r => r.sourceTeamId === teamId || r.targetTeamId === teamId);
+    }
+    return store.teamRelationships;
+  },
+
+  async createTeamRelationship(rel: TeamRelationship): Promise<TeamRelationship> {
+    if (isPostgresConnected) {
+      return await postgresRepo.createTeamRelationship(rel);
+    }
+    const idx = store.teamRelationships.findIndex(
+      r => r.sourceTeamId === rel.sourceTeamId && r.targetTeamId === rel.targetTeamId && r.relationshipType === rel.relationshipType
+    );
+    if (idx !== -1) {
+      store.teamRelationships[idx] = rel;
+    } else {
+      store.teamRelationships.push(rel);
+    }
+    return rel;
+  },
+
+  async deleteTeamRelationship(id: string): Promise<boolean> {
+    if (isPostgresConnected) {
+      return await postgresRepo.deleteTeamRelationship(id);
+    }
+    const idx = store.teamRelationships.findIndex(r => r.id === id);
+    if (idx !== -1) {
+      store.teamRelationships.splice(idx, 1);
       return true;
     }
     return false;
@@ -660,6 +738,9 @@ export const repo = {
 
   // ================= HASHTAGS & PLUGINS =================
   async getHashtags(): Promise<HashtagPreset[]> {
+    if (isPostgresConnected) {
+      return await postgresRepo.getHashtags();
+    }
     if (isMongoConnected) {
       return await HashtagPresetModel.find().lean() as HashtagPreset[];
     }
@@ -667,11 +748,28 @@ export const repo = {
   },
 
   async createHashtag(tag: HashtagPreset): Promise<HashtagPreset> {
+    if (isPostgresConnected) {
+      await postgresRepo.createHashtag(tag);
+    }
     if (isMongoConnected) {
       await HashtagPresetModel.create(tag);
     }
-    store.hashtags.push(tag);
+    const idx = store.hashtags.findIndex(h => h.tag === tag.tag);
+    if (idx >= 0) store.hashtags[idx] = tag;
+    else store.hashtags.push(tag);
     return tag;
+  },
+
+  async updateHashtagKpis(tag: string, kpis: any[]): Promise<HashtagPreset | null> {
+    if (isPostgresConnected) {
+      return await postgresRepo.updateHashtagKpis(tag, kpis);
+    }
+    const found = store.hashtags.find(h => h.tag === tag);
+    if (found) {
+      found.kpis = kpis;
+      return found;
+    }
+    return null;
   },
 
   async getPlugins(): Promise<Plugin[]> {
@@ -923,8 +1021,8 @@ export const repo = {
   },
 
   // ================= VALIDATION WORKFLOWS & STAGES =================
-  async getWorkflows(): Promise<DatabaseValidationWorkflow[]> {
-    return await postgresRepo.getValidationWorkflows();
+  async getWorkflows(teamId?: string): Promise<DatabaseValidationWorkflow[]> {
+    return await postgresRepo.getValidationWorkflows(teamId);
   },
 
   async getWorkflowById(id: string): Promise<DatabaseValidationWorkflow | null> {
@@ -1208,9 +1306,9 @@ export const repo = {
   },
 
   // ================= STANDALONE VALIDATION BOXES =================
-  async getValidationBoxes(): Promise<ValidationBox[]> {
+  async getValidationBoxes(teamId?: string): Promise<ValidationBox[]> {
     if (isPostgresConnected) {
-      return await postgresRepo.getValidationBoxes();
+      return await postgresRepo.getValidationBoxes(teamId);
     }
     return store.validationBoxes;
   },
@@ -1302,6 +1400,25 @@ export const repo = {
       return true;
     }
     return false;
+  },
+
+  async getUnconfiguredFolders(connectionId?: string) {
+    if (isPostgresConnected) {
+      return await postgresRepo.getUnconfiguredFolders(connectionId);
+    }
+    return [];
+  },
+
+  async recordUnconfiguredFolder(folder: { id: string; ftpConnectionId: string; folderPath: string; fileCount: number; sampleFileNames: string[] }) {
+    if (isPostgresConnected) {
+      await postgresRepo.recordUnconfiguredFolder(folder);
+    }
+  },
+
+  async resolveUnconfiguredFolder(folderPath: string, ftpConnectionId: string) {
+    if (isPostgresConnected) {
+      await postgresRepo.resolveUnconfiguredFolder(folderPath, ftpConnectionId);
+    }
   },
 
   // ================= GLOBAL STANDARD DIRECTORY =================

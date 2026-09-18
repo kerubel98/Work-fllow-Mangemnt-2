@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { DatabaseConnection, FtpFileStagingConfig, FtpFieldMapping } from '../../types';
+import { DatabaseConnection, FtpFileStagingConfig, FtpFieldMapping, FolderStructureException, FtpStagingScheduleConfig, FtpSkippedMismatch } from '../../types';
 import { api } from '../../api/client';
 import { globalMappingService } from '../../services/globalMappingService';
 import { 
@@ -7,7 +7,8 @@ import {
   Settings2, Plus, Trash2, Edit3, ArrowRight, Eye, Layers, ShieldCheck, 
   Save, X, Database, Table, HelpCircle, FileText, Check, Filter,
   FolderTree, Search, Sparkles, CheckSquare, Square, Info,
-  Folder, FolderOpen, ChevronRight, ChevronDown, FileCode, Calendar, CheckCheck
+  Folder, FolderOpen, ChevronRight, ChevronDown, FileCode, Calendar, CheckCheck,
+  AlertTriangle, Clock, Zap
 } from 'lucide-react';
 
 interface FtpFileStagingSettingsProps {
@@ -140,6 +141,36 @@ export default function FtpFileStagingSettings({
   const [xmlRecordElement, setXmlRecordElement] = useState('');
   const [fieldMappings, setFieldMappings] = useState<FtpFieldMapping[]>([]);
 
+  // Root Directory & Exception Overrides
+  const [rootDirectoryPath, setRootDirectoryPath] = useState('/');
+  const [folderExceptions, setFolderExceptions] = useState<FolderStructureException[]>([]);
+  const [mismatchHandling, setMismatchHandling] = useState<'SKIP_AND_NOTIFY' | 'ABORT'>('SKIP_AND_NOTIFY');
+
+  // Scheduled Parsing Configuration
+  const [scheduleEnabled, setScheduleEnabled] = useState(false);
+  const [scheduleFrequency, setScheduleFrequency] = useState<'EVERY_15_MIN' | 'HOURLY' | 'DAILY' | 'MANUAL'>('HOURLY');
+  const [scheduleTargetType, setScheduleTargetType] = useState<'ALL' | 'CSV' | 'EXCEL' | 'XML' | 'TXT'>('ALL');
+  const [scheduleDailyTime, setScheduleDailyTime] = useState('02:00');
+  const [runningScheduled, setRunningScheduled] = useState(false);
+
+  // Unconfigured Remote Folders Audit
+  const [unconfiguredFolders, setUnconfiguredFolders] = useState<any[]>([]);
+  const [loadingUnconfigured, setLoadingUnconfigured] = useState(false);
+
+  // Exception Form State
+  const [isAddingException, setIsAddingException] = useState(false);
+  const [newExcPattern, setNewExcPattern] = useState('');
+  const [newExcFormat, setNewExcFormat] = useState<any>('CSV');
+  const [newExcDelimiter, setNewExcDelimiter] = useState(';');
+  const [newExcHasHeader, setNewExcHasHeader] = useState(true);
+  const [newExcHeaderRowIndex, setNewExcHeaderRowIndex] = useState(1);
+  const [newExcDataStartRow, setNewExcDataStartRow] = useState(2);
+  const [newExcExcelSheet, setNewExcExcelSheet] = useState('');
+  const [newExcDescription, setNewExcDescription] = useState('');
+
+  // Skipped Mismatches inspection modal
+  const [viewingMismatchesConfig, setViewingMismatchesConfig] = useState<FtpFileStagingConfig | null>(null);
+
   // File structure inspection state
   const [structureInspection, setStructureInspection] = useState<any | null>(null);
   const [inspectionError, setInspectionError] = useState<string | null>(null);
@@ -155,6 +186,16 @@ export default function FtpFileStagingSettings({
   const standardFields = useMemo(() => {
     return globalMappingService.getStandardFields();
   }, []);
+
+  // Fetch unconfigured folders discovered on server
+  const fetchUnconfiguredFolders = () => {
+    if (!selectedDbId) return;
+    setLoadingUnconfigured(true);
+    api.getUnconfiguredFtpFolders(selectedDbId)
+      .then(res => setUnconfiguredFolders(Array.isArray(res) ? res : []))
+      .catch(err => console.warn('Could not load unconfigured folders:', err))
+      .finally(() => setLoadingUnconfigured(false));
+  };
 
   // Auto-discover folder tree and fetch configs when selected FTP server changes
   useEffect(() => {
@@ -176,11 +217,15 @@ export default function FtpFileStagingSettings({
       .catch(() => {})
       .finally(() => setLoadingFiles(false));
 
+    // Audit unconfigured folders
+    fetchUnconfiguredFolders();
+
     // Automatically discover directory tree & files across folders
     setLoadingRecursive(true);
     api.discoverFtpFilesRecursive(selectedDbId)
       .then(res => {
         setRecursiveFiles(res || []);
+        fetchUnconfiguredFolders();
       })
       .catch(err => {
         console.warn('Could not discover recursive FTP files:', err);
@@ -384,13 +429,21 @@ export default function FtpFileStagingSettings({
     if (recursiveFiles[0]) {
       const analyzed = analyzeFolderPath(recursiveFiles[0].fullPath, recursiveFiles[0].name);
       setSourceDirectoryPath(analyzed.permanentBasePath);
+      setRootDirectoryPath(analyzed.permanentBasePath);
       setTargetFileName(analyzed.recommendedPattern);
       setFolderTraversalMode(analyzed.dynamicPathPattern ? 'RECURSIVE_SCAN' : 'SINGLE_FILE');
     } else {
       setSourceDirectoryPath('/');
+      setRootDirectoryPath('/');
       setTargetFileName(sampleFile || '*.csv');
       setFolderTraversalMode('SINGLE_FILE');
     }
+    setFolderExceptions([]);
+    setMismatchHandling('SKIP_AND_NOTIFY');
+    setScheduleEnabled(false);
+    setScheduleFrequency('HOURLY');
+    setScheduleTargetType('ALL');
+    setScheduleDailyTime('02:00');
     setFileFormat('CSV');
     setCustomDelimiter(',');
     setHasHeader(true);
@@ -436,6 +489,13 @@ export default function FtpFileStagingSettings({
     setExcelSheetName(cfg.excelSheetName || '');
     setFolderTraversalMode(cfg.folderTraversalMode || 'SINGLE_FILE');
     setSourceDirectoryPath(cfg.sourceDirectoryPath || '/');
+    setRootDirectoryPath(cfg.rootDirectoryPath || cfg.sourceDirectoryPath || '/');
+    setFolderExceptions(cfg.folderExceptions || []);
+    setMismatchHandling(cfg.mismatchHandling || 'SKIP_AND_NOTIFY');
+    setScheduleEnabled(cfg.scheduleConfig?.enabled ?? false);
+    setScheduleFrequency(cfg.scheduleConfig?.frequency || 'HOURLY');
+    setScheduleTargetType(cfg.scheduleConfig?.targetType || 'ALL');
+    setScheduleDailyTime(cfg.scheduleConfig?.scheduledTime || '02:00');
     setSelectedImportantColumns(cfg.selectedImportantColumns || []);
     setXmlRootElement(cfg.xmlRootElement || '');
     setXmlRecordElement(cfg.xmlRecordElement || '');
@@ -445,6 +505,86 @@ export default function FtpFileStagingSettings({
     setActiveMessage(null);
 
     handleInspectStructure(cfg.sampleFileName || cfg.fileNamePattern);
+  };
+
+  // Add Folder Structure Exception
+  const handleAddException = () => {
+    if (!newExcPattern.trim()) {
+      setActiveMessage({ type: 'error', text: 'Folder pattern is required for a subfolder exception override.' });
+      return;
+    }
+    const newExc: FolderStructureException = {
+      id: `exc-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+      folderPattern: newExcPattern.trim(),
+      description: newExcDescription.trim() || undefined,
+      fileFormat: newExcFormat,
+      customDelimiter: newExcDelimiter,
+      hasHeader: newExcHasHeader,
+      headerRowIndex: Number(newExcHeaderRowIndex),
+      dataStartRow: Number(newExcDataStartRow),
+      excelSheetName: newExcExcelSheet.trim() || undefined
+    };
+    setFolderExceptions(prev => [...prev, newExc]);
+    setIsAddingException(false);
+    setNewExcPattern('');
+    setNewExcDescription('');
+    setNewExcFormat('CSV');
+    setNewExcDelimiter(';');
+  };
+
+  const handleDeleteException = (id: string) => {
+    setFolderExceptions(prev => prev.filter(e => e.id !== id));
+  };
+
+  // Resolve discovered unconfigured folder
+  const handleResolveUnconfiguredFolder = async (folderPath: string) => {
+    try {
+      await api.resolveUnconfiguredFtpFolder(folderPath, selectedDbId);
+      setUnconfiguredFolders(prev => prev.filter(f => f.folderPath !== folderPath));
+      setActiveMessage({ type: 'info', text: `Marked directory '${folderPath}' as resolved.` });
+    } catch (err: any) {
+      setActiveMessage({ type: 'error', text: `Failed to resolve folder: ${err.message}` });
+    }
+  };
+
+  // Quick configure staging root from discovered folder
+  const handleConfigureUnconfiguredFolder = (folder: any) => {
+    handleOpenCreateModal();
+    setRootDirectoryPath(folder.folderPath);
+    setSourceDirectoryPath(folder.folderPath);
+    const cleanName = folder.folderPath.replace(/^\//, '').replace(/\//g, ' ').toUpperCase() || 'ROOT';
+    setConfigName(`${cleanName} Staging Feed`);
+    if (folder.sampleFileNames && folder.sampleFileNames.length > 0) {
+      const sample = folder.sampleFileNames[0];
+      setSampleFileName(sample);
+      handleInspectStructure(`${folder.folderPath}/${sample}`);
+    }
+  };
+
+  // Trigger Scheduled Parsing on demand (type-based or ALL)
+  const handleTriggerScheduledStaging = async (targetType: string = 'ALL') => {
+    setRunningScheduled(true);
+    setActiveMessage(null);
+    try {
+      const res = await api.runScheduledFtpStaging({
+        connectionId: selectedDbId,
+        targetType,
+        forceAll: true
+      });
+      if (res.success) {
+        setActiveMessage({
+          type: 'success',
+          text: `Scheduled staging completed in ${res.executionTimeMs}ms! Executed ${res.executedCount} feeds, staged ${res.totalStaged} records, skipped ${res.totalSkippedMismatches} mismatches.`
+        });
+        // Refresh configs list to reflect staged metrics
+        const updated = await api.getFtpStagingConfigs(selectedDbId);
+        setStagingConfigs(Array.isArray(updated) ? updated : []);
+      }
+    } catch (err: any) {
+      setActiveMessage({ type: 'error', text: `Scheduled execution failed: ${err.message}` });
+    } finally {
+      setRunningScheduled(false);
+    }
   };
 
   // Test Parse & Preview
@@ -471,7 +611,16 @@ export default function FtpFileStagingSettings({
       dateFormat,
       excelSheetName,
       folderTraversalMode,
-      sourceDirectoryPath,
+      sourceDirectoryPath: rootDirectoryPath || sourceDirectoryPath || '/',
+      rootDirectoryPath: rootDirectoryPath || sourceDirectoryPath || '/',
+      folderExceptions,
+      mismatchHandling,
+      scheduleConfig: {
+        enabled: scheduleEnabled,
+        frequency: scheduleFrequency,
+        targetType: scheduleTargetType,
+        scheduledTime: scheduleDailyTime
+      },
       selectedImportantColumns,
       xmlRootElement,
       xmlRecordElement,
@@ -479,22 +628,17 @@ export default function FtpFileStagingSettings({
     };
 
     try {
-      const res = await api.testFtpPreviewParse(selectedDbId, configPayload);
-      setPreviewResult(res);
+      const preview = await api.testFtpPreviewParse(selectedDbId, configPayload);
+      setPreviewResult(preview);
 
-      // If important columns are empty, default to all detected headers
-      if (selectedImportantColumns.length === 0 && res.headersDetected && res.headersDetected.length > 0) {
-        setSelectedImportantColumns(res.headersDetected);
-      }
-
-      // If field mappings are empty, auto-populate from detected headers
-      if ((!fieldMappings || fieldMappings.length === 0) && res.headersDetected && res.headersDetected.length > 0) {
-        const autoMapped: FtpFieldMapping[] = res.headersDetected.map(hdr => {
+      // Auto-populate column mappings if currently empty
+      if (preview.headersDetected && fieldMappings.length === 0) {
+        const autoMapped: FtpFieldMapping[] = preview.headersDetected.map((hdr: string) => {
           const cleanHdr = hdr.toLowerCase().replace(/[^a-z0-9_]/g, '_');
-          const matched = standardFields.find(sf => 
-            sf.key.toLowerCase() === cleanHdr ||
-            sf.key.toLowerCase().includes(cleanHdr) ||
-            cleanHdr.includes(sf.key.toLowerCase())
+          const matched = standardFields.find(f => 
+            f.key.toLowerCase() === cleanHdr ||
+            f.key.toLowerCase().includes(cleanHdr) ||
+            cleanHdr.includes(f.key.toLowerCase())
           );
           return {
             sourceColumn: hdr,
@@ -562,7 +706,17 @@ export default function FtpFileStagingSettings({
       dateFormat,
       excelSheetName,
       folderTraversalMode,
-      sourceDirectoryPath,
+      sourceDirectoryPath: rootDirectoryPath || sourceDirectoryPath || '/',
+      rootDirectoryPath: rootDirectoryPath || sourceDirectoryPath || '/',
+      folderExceptions,
+      mismatchHandling,
+      scheduleConfig: {
+        enabled: scheduleEnabled,
+        frequency: scheduleFrequency,
+        targetType: scheduleTargetType,
+        scheduledTime: scheduleDailyTime
+      },
+      unconfiguredFolderAction: 'NOTIFY_ADMIN',
       selectedImportantColumns,
       xmlRootElement,
       xmlRecordElement,
@@ -604,9 +758,13 @@ export default function FtpFileStagingSettings({
     try {
       const res = await api.stageFtpFile({ configId: cfg.id, connectionId: selectedDbId });
       if (res.success) {
+        let msg = res.message || `Successfully staged ${res.stagedCount} records into prepared table ${res.stagingTableName}. Ready for lookup workflows!`;
+        if (res.skippedMismatches && res.skippedMismatches.length > 0) {
+          msg += ` (${res.skippedMismatches.length} incompatible files skipped with in-app notification).`;
+        }
         setActiveMessage({
-          type: 'success',
-          text: res.message || `Successfully staged ${res.stagedCount} records into prepared table ${res.stagingTableName}. Ready for lookup workflows!`
+          type: res.skippedMismatches && res.skippedMismatches.length > 0 ? 'info' : 'success',
+          text: msg
         });
         // Update local status
         setStagingConfigs(prev => prev.map(c => c.id === cfg.id ? {
@@ -614,7 +772,8 @@ export default function FtpFileStagingSettings({
           lastStagedStatus: 'STAGED_READY',
           lastStagedCount: res.stagedCount,
           lastStagedAt: new Date().toISOString(),
-          stagingTableName: res.stagingTableName
+          stagingTableName: res.stagingTableName,
+          lastSkippedMismatches: res.skippedMismatches || []
         } : c));
       }
     } catch (err: any) {
@@ -972,16 +1131,79 @@ export default function FtpFileStagingSettings({
       {/* Active Staging Configurations Cards */}
       {ftpServers.length > 0 && (
         <div className="space-y-4">
-          <div className="flex items-center justify-between">
+          {/* Unconfigured Remote Folders Alert Banner */}
+          {unconfiguredFolders.length > 0 && (
+            <div className="bg-amber-500/10 border border-amber-500/30 rounded-2xl p-4.5 flex flex-col md:flex-row md:items-center justify-between gap-4 text-amber-900 shadow-xs animate-in fade-in-50">
+              <div className="flex items-start gap-3.5">
+                <div className="p-2.5 bg-amber-500/20 text-amber-700 rounded-xl shrink-0 mt-0.5">
+                  <AlertTriangle className="w-5 h-5" />
+                </div>
+                <div>
+                  <h4 className="text-xs font-bold text-amber-950 flex items-center gap-2">
+                    <span>Unconfigured Remote Folders Discovered ({unconfiguredFolders.length})</span>
+                    <span className="text-[10px] bg-amber-200 text-amber-900 px-2 py-0.5 rounded-full font-mono font-semibold">
+                      Admin Notification Dispatched
+                    </span>
+                  </h4>
+                  <p className="text-[11px] text-amber-800/90 mt-1">
+                    Remote folder inspection identified files in directories not governed by any Root Staging Feed. Click to quickly configure a consolidated Root Staging Feed:
+                  </p>
+                  <div className="flex flex-wrap gap-2 mt-2.5">
+                    {unconfiguredFolders.map(u => (
+                      <div key={u.folderPath} className="inline-flex items-center gap-2 bg-white border border-amber-300 px-2.5 py-1 rounded-lg text-xs font-mono text-slate-800 shadow-2xs">
+                        <FolderOpen className="w-3.5 h-3.5 text-amber-600" />
+                        <span className="font-bold">{u.folderPath}</span>
+                        <span className="text-[10px] text-slate-500 font-sans">({u.fileCount} file{u.fileCount !== 1 ? 's' : ''})</span>
+                        <button
+                          type="button"
+                          onClick={() => handleConfigureUnconfiguredFolder(u)}
+                          className="px-2 py-0.5 bg-purple-100 hover:bg-purple-200 text-purple-800 rounded font-bold text-[10px] cursor-pointer transition"
+                          title="Configure Root Staging Feed for this directory"
+                        >
+                          + Configure Root
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleResolveUnconfiguredFolder(u.folderPath)}
+                          className="text-slate-400 hover:text-rose-600 cursor-pointer p-0.5"
+                          title="Mark Resolved"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wider font-mono flex items-center gap-2">
               <Layers className="w-4 h-4 text-purple-600" />
               <span>Configured File Staging &amp; Prepared Tables ({stagingConfigs.length})</span>
             </h3>
 
-            <div className="flex items-center gap-2 text-xs text-slate-500">
-              <span>Server Host: <strong className="text-slate-700">{selectedDb?.host}:{selectedDb?.port}</strong></span>
-              <span>•</span>
-              <span>Discovered Files: <strong className="text-slate-700">{availableFiles.length}</strong></span>
+            <div className="flex items-center gap-2.5">
+              <button
+                type="button"
+                onClick={() => handleTriggerScheduledStaging('ALL')}
+                disabled={runningScheduled || stagingConfigs.length === 0}
+                className="px-3 py-1.5 bg-slate-900 hover:bg-slate-800 text-purple-200 hover:text-white rounded-xl text-xs font-bold transition shadow-xs cursor-pointer inline-flex items-center gap-1.5 border border-purple-800/40 disabled:opacity-50"
+                title="Run scheduled ingestion event across all active feeds"
+              >
+                <Zap className={`w-3.5 h-3.5 text-amber-400 ${runningScheduled ? 'animate-pulse' : ''}`} />
+                <span>{runningScheduled ? 'Executing Schedule...' : '⚡ Run Scheduled Ingestion'}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleOpenCreateModal}
+                className="px-3.5 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded-xl text-xs font-bold transition shadow-xs cursor-pointer inline-flex items-center gap-1.5"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>Configure Staging Feed</span>
+              </button>
             </div>
           </div>
 
@@ -1063,9 +1285,9 @@ export default function FtpFileStagingSettings({
                       {/* Path & Pattern Architecture Badges */}
                       <div className="my-2 p-2 bg-slate-50 rounded-lg border border-slate-100 font-mono text-[11px] text-slate-600 space-y-1">
                         <div className="flex justify-between items-center">
-                          <span className="text-slate-400 text-[10px] uppercase font-bold">Base Path:</span>
-                          <span className="px-1.5 py-0.5 rounded bg-white border border-slate-200 text-slate-800 font-semibold truncate max-w-[170px]" title={cfg.sourceDirectoryPath || '/'}>
-                            {cfg.sourceDirectoryPath || '/'}
+                          <span className="text-slate-400 text-[10px] uppercase font-bold">Root Folder:</span>
+                          <span className="px-1.5 py-0.5 rounded bg-white border border-slate-200 text-slate-800 font-semibold truncate max-w-[170px]" title={cfg.rootDirectoryPath || cfg.sourceDirectoryPath || '/'}>
+                            {cfg.rootDirectoryPath || cfg.sourceDirectoryPath || '/'}
                           </span>
                         </div>
                         <div className="flex justify-between items-center">
@@ -1074,6 +1296,25 @@ export default function FtpFileStagingSettings({
                             {cfg.fileNamePattern}
                           </span>
                         </div>
+                        {cfg.folderExceptions && cfg.folderExceptions.length > 0 && (
+                          <div className="flex justify-between items-center text-indigo-700">
+                            <span className="text-[10px] uppercase font-bold">Subfolder Exceptions:</span>
+                            <span className="px-1.5 py-0.5 rounded bg-indigo-50 border border-indigo-200 text-indigo-800 font-bold text-[10px]">
+                              {cfg.folderExceptions.length} override{cfg.folderExceptions.length !== 1 ? 's' : ''}
+                            </span>
+                          </div>
+                        )}
+                        {cfg.scheduleConfig?.enabled && (
+                          <div className="flex justify-between items-center text-emerald-700">
+                            <span className="text-[10px] uppercase font-bold flex items-center gap-1">
+                              <Calendar className="w-2.5 h-2.5" />
+                              Schedule:
+                            </span>
+                            <span className="px-1.5 py-0.5 rounded bg-emerald-50 border border-emerald-200 text-emerald-800 font-bold text-[10px]">
+                              {cfg.scheduleConfig.frequency} ({cfg.scheduleConfig.targetType || 'ALL'})
+                            </span>
+                          </div>
+                        )}
                         {cfg.sampleFileName && (
                           <div className="flex justify-between items-center">
                             <span className="text-slate-400 text-[10px] uppercase font-bold">Sample File:</span>
@@ -1098,6 +1339,21 @@ export default function FtpFileStagingSettings({
                             {cfg.selectedImportantColumns?.length || cfg.fieldMappings?.length || 0} fields
                           </span>
                         </div>
+                        {cfg.lastSkippedMismatches && cfg.lastSkippedMismatches.length > 0 && (
+                          <div className="flex justify-between items-center pt-1 border-t border-amber-200/60 text-amber-800">
+                            <span className="text-[10px] uppercase font-bold flex items-center gap-1">
+                              <AlertTriangle className="w-2.5 h-2.5 text-amber-600" />
+                              Skipped Mismatches:
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => setViewingMismatchesConfig(cfg)}
+                              className="px-1.5 py-0.5 rounded bg-amber-100/70 border border-amber-300 text-amber-900 font-bold text-[10px] hover:bg-amber-200 cursor-pointer underline"
+                            >
+                              {cfg.lastSkippedMismatches.length} file{cfg.lastSkippedMismatches.length !== 1 ? 's' : ''}
+                            </button>
+                          </div>
+                        )}
                       </div>
 
                       {/* Prepared Table Badge */}
@@ -1214,42 +1470,53 @@ export default function FtpFileStagingSettings({
                 </div>
               </div>
 
-              {/* Path Architecture: Permanent Base Path vs. Dynamic / Changing Path */}
-              <div className="p-3.5 bg-slate-900 text-white rounded-xl border border-purple-800/40 space-y-3 shadow-sm">
+              {/* Path Architecture: Consolidated Root Folder & Subfolder Inheritance */}
+              <div className="p-4 bg-slate-900 text-white rounded-xl border border-purple-800/40 space-y-3.5 shadow-sm">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
-                    <span className="p-1 rounded-md bg-purple-500/20 text-purple-300">
-                      <FolderTree className="w-3.5 h-3.5" />
+                    <span className="p-1.5 rounded-lg bg-purple-500/20 text-purple-300">
+                      <FolderTree className="w-4 h-4" />
                     </span>
-                    <span className="text-xs font-bold text-white uppercase tracking-wider font-mono">
-                      Path Architecture: Permanent Base vs. Dynamic Rotating Paths
-                    </span>
+                    <div>
+                      <span className="text-xs font-bold text-white uppercase tracking-wider font-mono">
+                        Consolidated Root Folder &amp; Subfolder Inheritance
+                      </span>
+                      <p className="text-[10px] text-purple-300/90 font-sans mt-0.5">
+                        Configure once for a root directory. All child folders automatically inherit this format and stage into one consolidated mirror table.
+                      </p>
+                    </div>
                   </div>
-                  <span className="text-[10px] font-mono text-purple-300">
-                    Same schema applies across all rotating date/batch subfolders
+                  <span className="text-[10px] font-mono bg-purple-900/60 border border-purple-500/40 text-purple-200 px-2 py-0.5 rounded-full">
+                    Single Mirror Table
                   </span>
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  {/* Permanent Base Path */}
+                  {/* Root Folder Path */}
                   <div className="space-y-1">
                     <div className="flex items-center justify-between">
                       <label className="block text-[11px] font-bold text-purple-200">
-                        Permanent Base Path (Fixed Root/Folder)
+                        Root Directory Path (Consolidated Scope)
                       </label>
-                      <span className="text-[10px] text-slate-400 font-mono">Unchanging Base Dir</span>
+                      <span className="text-[10px] text-slate-400 font-mono">Inherited by all subfolders</span>
                     </div>
                     <div className="flex gap-1.5">
                       <input
                         type="text"
-                        value={sourceDirectoryPath}
-                        onChange={e => setSourceDirectoryPath(e.target.value)}
-                        placeholder="e.g. / or /clearing/ (Fixed Root)"
+                        value={rootDirectoryPath}
+                        onChange={e => {
+                          setRootDirectoryPath(e.target.value);
+                          setSourceDirectoryPath(e.target.value);
+                        }}
+                        placeholder="e.g. / or /incoming/ (Root Directory)"
                         className="flex-1 text-xs p-2 bg-slate-800 border border-purple-500/30 rounded-lg font-mono text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-purple-400"
                       />
                       <button
                         type="button"
-                        onClick={() => setSourceDirectoryPath('/')}
+                        onClick={() => {
+                          setRootDirectoryPath('/');
+                          setSourceDirectoryPath('/');
+                        }}
                         className="px-2 py-1 bg-slate-800 hover:bg-slate-700 border border-purple-500/30 text-purple-300 rounded-lg text-[10px] font-mono cursor-pointer"
                         title="Set to server root directory"
                       >
@@ -1257,15 +1524,15 @@ export default function FtpFileStagingSettings({
                       </button>
                     </div>
                     <p className="text-[10px] text-slate-400 leading-tight">
-                      Fixed remote directory on the FTP server where incoming files or daily batch folders arrive.
+                      All subfolders under this root directory are automatically scanned and consolidated into a single mirror table tagged with <code className="text-purple-300">_source_folder</code> and <code className="text-purple-300">_source_file</code>.
                     </p>
                   </div>
 
-                  {/* Dynamic / Changing Path Pattern */}
+                  {/* Dynamic Path / File Pattern */}
                   <div className="space-y-1">
                     <div className="flex items-center justify-between">
                       <label className="block text-[11px] font-bold text-purple-200">
-                        Dynamic / Changing Path Pattern
+                        File Matching Pattern
                       </label>
                       <span className="text-[10px] text-emerald-400 font-mono">Wildcard / Subfolder Mask</span>
                     </div>
@@ -1277,7 +1544,7 @@ export default function FtpFileStagingSettings({
                           setTargetFileName(e.target.value);
                           handleInspectStructure(sampleFileName || e.target.value);
                         }}
-                        placeholder="e.g. */*.csv or settlement_*.xlsx or {date}/*.csv"
+                        placeholder="e.g. */*.csv or *.csv or **/*.xlsx"
                         required
                         className="flex-1 text-xs p-2 bg-slate-800 border border-purple-500/30 rounded-lg font-mono text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-purple-400"
                       />
@@ -1293,25 +1560,25 @@ export default function FtpFileStagingSettings({
                           className="text-xs p-1.5 bg-slate-800 border border-purple-500/30 rounded-lg font-mono text-purple-200 cursor-pointer"
                         >
                           <option value="">Pattern...</option>
-                          <option value="*/*.csv">*/*.csv (All Subfolders)</option>
-                          <option value="*.csv">*.csv (Root CSVs)</option>
-                          <option value="*.xlsx">*.xlsx (Spreadsheets)</option>
-                          <option value="*.xml">*.xml (XML Feeds)</option>
+                          <option value="*/*.csv">*/*.csv (All Child Subfolders)</option>
+                          <option value="*.csv">*.csv (Root Files Only)</option>
+                          <option value="**/*.xlsx">**/*.xlsx (Nested Spreadsheets)</option>
+                          <option value="**/*.xml">**/*.xml (Nested XML Feeds)</option>
                         </select>
                       )}
                     </div>
                     <p className="text-[10px] text-slate-400 leading-tight">
-                      Variable folder or filename pattern. Files may change folders daily, but retain the identical format and schema.
+                      Pattern to identify target files across the folder hierarchy.
                     </p>
                   </div>
                 </div>
 
-                {/* Combined Ingestion Scope & Live Match Indicator */}
+                {/* Scope & Match Status */}
                 <div className="pt-2 border-t border-purple-800/30 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                   <div className="flex items-center gap-2 text-xs font-mono">
-                    <span className="text-slate-400">Effective Ingestion Scope:</span>
+                    <span className="text-slate-400">Effective Root Scope:</span>
                     <span className="px-2 py-0.5 rounded bg-purple-950 text-purple-200 border border-purple-500/40 font-bold">
-                      {sourceDirectoryPath ? (sourceDirectoryPath.endsWith('/') ? sourceDirectoryPath : sourceDirectoryPath + '/') : '/'}{targetFileName}
+                      {rootDirectoryPath ? (rootDirectoryPath.endsWith('/') ? rootDirectoryPath : rootDirectoryPath + '/') : '/'}{targetFileName}
                     </span>
                   </div>
 
@@ -1321,16 +1588,16 @@ export default function FtpFileStagingSettings({
                         ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30' 
                         : 'bg-amber-500/20 text-amber-300 border border-amber-500/30'
                     }`}>
-                      {matchingFilesInScope.length} file{matchingFilesInScope.length !== 1 ? 's' : ''} currently matching on server
+                      {matchingFilesInScope.length} file{matchingFilesInScope.length !== 1 ? 's' : ''} currently discovered on server
                     </span>
                   </div>
                 </div>
 
                 {/* Matching Files Chips */}
                 {matchingFilesInScope.length > 0 && (
-                  <div className="p-2 bg-slate-950/70 rounded-lg border border-purple-900/40 text-[11px] font-mono space-y-1">
+                  <div className="p-2.5 bg-slate-950/70 rounded-lg border border-purple-900/40 text-[11px] font-mono space-y-1.5">
                     <span className="text-[10px] uppercase font-bold text-slate-400 block">
-                      Matching Files on Server (Click any file to use as configuration sample):
+                      Sample Files Discovered (Click any file to load as configuration sample):
                     </span>
                     <div className="flex flex-wrap gap-1.5 max-h-20 overflow-y-auto">
                       {matchingFilesInScope.map(mf => (
@@ -1356,6 +1623,325 @@ export default function FtpFileStagingSettings({
                     </div>
                   </div>
                 )}
+              </div>
+
+              {/* Subfolder Structure Exceptions Section */}
+              <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <div className="p-1.5 bg-indigo-50 text-indigo-700 rounded-lg border border-indigo-200">
+                      <FolderTree className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <h4 className="text-xs font-bold text-slate-900 flex items-center gap-2">
+                        <span>Subfolder Structure Exceptions (Overrides)</span>
+                        <span className="text-[10px] bg-indigo-100 text-indigo-800 px-2 py-0.2 rounded-full font-mono font-semibold">
+                          {folderExceptions.length} configured
+                        </span>
+                      </h4>
+                      <p className="text-[11px] text-slate-500">
+                        If specific subfolders have different delimiters, formats, or header rows, specify them here. They stage into the same mirror table without creating redundant feeds.
+                      </p>
+                    </div>
+                  </div>
+
+                  {!isAddingException && (
+                    <button
+                      type="button"
+                      onClick={() => setIsAddingException(true)}
+                      className="px-3 py-1 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg text-xs font-bold transition flex items-center gap-1 cursor-pointer shadow-2xs"
+                    >
+                      <Plus className="w-3 h-3" />
+                      <span>Add Exception Override</span>
+                    </button>
+                  )}
+                </div>
+
+                {/* Inline Exception Creator */}
+                {isAddingException && (
+                  <div className="p-3.5 bg-white rounded-xl border-2 border-indigo-300 space-y-3 animate-in fade-in-50">
+                    <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+                      <h5 className="text-xs font-bold text-indigo-950 flex items-center gap-1.5">
+                        <Plus className="w-3.5 h-3.5 text-indigo-600" />
+                        <span>New Subfolder Structure Exception</span>
+                      </h5>
+                      <button
+                        type="button"
+                        onClick={() => setIsAddingException(false)}
+                        className="text-slate-400 hover:text-slate-600 p-1 cursor-pointer"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-700 mb-1">Subfolder Pattern</label>
+                        <input
+                          type="text"
+                          value={newExcPattern}
+                          onChange={e => setNewExcPattern(e.target.value)}
+                          placeholder="e.g. /legacy/** or *special*"
+                          className="w-full text-xs p-1.5 bg-slate-50 border border-slate-300 rounded font-mono"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-700 mb-1">Override Format</label>
+                        <select
+                          value={newExcFormat}
+                          onChange={e => setNewExcFormat(e.target.value as any)}
+                          className="w-full text-xs p-1.5 bg-slate-50 border border-slate-300 rounded font-semibold"
+                        >
+                          <option value="CSV">CSV</option>
+                          <option value="TSV">TSV (Tab-Delimited)</option>
+                          <option value="SEMICOLON">Semicolon-Delimited (;)</option>
+                          <option value="PIPE">Pipe-Delimited (|)</option>
+                          <option value="EXCEL">EXCEL (.xlsx / .xls)</option>
+                          <option value="XML">XML</option>
+                          <option value="TXT">Plain Text / Fixed</option>
+                        </select>
+                      </div>
+
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-700 mb-1">Custom Delimiter</label>
+                        <input
+                          type="text"
+                          value={newExcDelimiter}
+                          onChange={e => setNewExcDelimiter(e.target.value)}
+                          placeholder="e.g. ; or | or \t"
+                          className="w-full text-xs p-1.5 bg-slate-50 border border-slate-300 rounded font-mono text-center"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-700 mb-1">Header Row Index</label>
+                        <input
+                          type="number"
+                          min={1}
+                          value={newExcHeaderRowIndex}
+                          onChange={e => setNewExcHeaderRowIndex(Number(e.target.value))}
+                          className="w-full text-xs p-1.5 bg-slate-50 border border-slate-300 rounded"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-700 mb-1">Data Start Row</label>
+                        <input
+                          type="number"
+                          min={1}
+                          value={newExcDataStartRow}
+                          onChange={e => setNewExcDataStartRow(Number(e.target.value))}
+                          className="w-full text-xs p-1.5 bg-slate-50 border border-slate-300 rounded"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-[11px] font-bold text-slate-700 mb-1">Excel Sheet (Optional)</label>
+                        <input
+                          type="text"
+                          value={newExcExcelSheet}
+                          onChange={e => setNewExcExcelSheet(e.target.value)}
+                          placeholder="Sheet Name"
+                          className="w-full text-xs p-1.5 bg-slate-50 border border-slate-300 rounded font-mono"
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-[11px] font-bold text-slate-700 mb-1">Description / Note</label>
+                      <input
+                        type="text"
+                        value={newExcDescription}
+                        onChange={e => setNewExcDescription(e.target.value)}
+                        placeholder="e.g. Legacy vendor clearing files use semicolon and 2 header rows"
+                        className="w-full text-xs p-1.5 bg-slate-50 border border-slate-300 rounded"
+                      />
+                    </div>
+
+                    <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
+                      <button
+                        type="button"
+                        onClick={() => setIsAddingException(false)}
+                        className="px-3 py-1 text-xs text-slate-600 hover:bg-slate-100 rounded cursor-pointer"
+                      >
+                        Cancel
+                      </button>
+                      <button
+                        type="button"
+                        onClick={handleAddException}
+                        className="px-4 py-1 bg-indigo-600 hover:bg-indigo-700 text-white rounded text-xs font-bold cursor-pointer transition shadow-2xs"
+                      >
+                        Save Exception
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Exceptions List */}
+                {folderExceptions.length > 0 ? (
+                  <div className="divide-y divide-slate-200 border border-slate-200 rounded-xl bg-white overflow-hidden text-xs">
+                    {folderExceptions.map(exc => (
+                      <div key={exc.id} className="p-3 flex items-center justify-between gap-2 hover:bg-slate-50">
+                        <div className="space-y-0.5 min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="font-mono font-bold text-slate-900 bg-indigo-50 border border-indigo-200 px-2 py-0.5 rounded text-[11px]">
+                              {exc.folderPattern}
+                            </span>
+                            <span className="font-mono text-slate-500 font-semibold text-[10px]">
+                              Format: {exc.fileFormat || 'Default'} {exc.customDelimiter ? `(Delimiter: ${exc.customDelimiter})` : ''}
+                            </span>
+                            <span className="text-[10px] text-slate-400 font-mono">
+                              Header Row: {exc.headerRowIndex || 1} • Data Start: {exc.dataStartRow || 2}
+                            </span>
+                          </div>
+                          {exc.description && (
+                            <p className="text-[11px] text-slate-500 italic truncate">{exc.description}</p>
+                          )}
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteException(exc.id)}
+                          className="p-1 text-slate-400 hover:text-rose-600 rounded cursor-pointer"
+                          title="Remove Exception"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  !isAddingException && (
+                    <p className="text-[11px] text-slate-400 p-2.5 bg-white rounded-lg border border-slate-200 text-center">
+                      No subfolder exceptions defined. All child folders and files will inherit the standard schema.
+                    </p>
+                  )
+                )}
+              </div>
+
+              {/* Fault-Tolerant Mismatch Handling & Automated Scheduling Grid */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {/* Fault-Tolerant Mismatch Handling */}
+                <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200 space-y-2">
+                  <div className="flex items-center gap-2">
+                    <div className="p-1.5 bg-emerald-50 text-emerald-700 rounded-lg border border-emerald-200">
+                      <ShieldCheck className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <h4 className="text-xs font-bold text-slate-900">Fault-Tolerant Structure Mismatch Handling</h4>
+                      <p className="text-[10px] text-slate-500">When an incompatible or corrupt file occurs during ingestion:</p>
+                    </div>
+                  </div>
+
+                  <div className="space-y-1.5 pt-1">
+                    <label className={`flex items-start gap-2.5 p-2 rounded-lg border text-xs cursor-pointer transition ${
+                      mismatchHandling === 'SKIP_AND_NOTIFY' ? 'bg-emerald-50/70 border-emerald-300 text-emerald-950 font-bold' : 'bg-white border-slate-200 text-slate-700'
+                    }`}>
+                      <input
+                        type="radio"
+                        name="mismatchHandling"
+                        checked={mismatchHandling === 'SKIP_AND_NOTIFY'}
+                        onChange={() => setMismatchHandling('SKIP_AND_NOTIFY')}
+                        className="mt-0.5 text-emerald-600 focus:ring-emerald-500"
+                      />
+                      <div>
+                        <span>Skip File &amp; Notify User (Recommended)</span>
+                        <p className="text-[10px] font-normal text-slate-500 mt-0.5">
+                          Incompatible files are gracefully bypassed, an in-app notification is sent, and remaining files continue processing.
+                        </p>
+                      </div>
+                    </label>
+
+                    <label className={`flex items-start gap-2.5 p-2 rounded-lg border text-xs cursor-pointer transition ${
+                      mismatchHandling === 'ABORT' ? 'bg-rose-50/70 border-rose-300 text-rose-950 font-bold' : 'bg-white border-slate-200 text-slate-700'
+                    }`}>
+                      <input
+                        type="radio"
+                        name="mismatchHandling"
+                        checked={mismatchHandling === 'ABORT'}
+                        onChange={() => setMismatchHandling('ABORT')}
+                        className="mt-0.5 text-rose-600 focus:ring-rose-500"
+                      />
+                      <div>
+                        <span>Abort Batch on Mismatch</span>
+                        <p className="text-[10px] font-normal text-slate-500 mt-0.5">
+                          Stop ingestion immediately and fail the job upon encountering any incompatible file structure.
+                        </p>
+                      </div>
+                    </label>
+                  </div>
+                </div>
+
+                {/* Automated Parsing Scheduling */}
+                <div className="p-3.5 bg-slate-50 rounded-xl border border-slate-200 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <div className="p-1.5 bg-purple-50 text-purple-700 rounded-lg border border-purple-200">
+                        <Clock className="w-4 h-4" />
+                      </div>
+                      <div>
+                        <h4 className="text-xs font-bold text-slate-900">Scheduled Parsing Event</h4>
+                        <p className="text-[10px] text-slate-500">Automate periodic parsing and ingestion:</p>
+                      </div>
+                    </div>
+
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={scheduleEnabled}
+                        onChange={e => setScheduleEnabled(e.target.checked)}
+                        className="sr-only peer"
+                      />
+                      <div className="w-8 h-4.5 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-3.5 after:w-3.5 after:transition-all peer-checked:bg-purple-600"></div>
+                    </label>
+                  </div>
+
+                  <div className={`space-y-2 pt-1 transition-opacity ${scheduleEnabled ? 'opacity-100' : 'opacity-40 pointer-events-none'}`}>
+                    <div className="grid grid-cols-2 gap-2">
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">Frequency</label>
+                        <select
+                          value={scheduleFrequency}
+                          onChange={e => setScheduleFrequency(e.target.value as any)}
+                          className="w-full text-xs p-1.5 bg-white border border-slate-300 rounded font-semibold text-slate-800"
+                        >
+                          <option value="EVERY_15_MIN">Every 15 Minutes</option>
+                          <option value="HOURLY">Hourly</option>
+                          <option value="DAILY">Daily at Scheduled Time</option>
+                          <option value="MANUAL">Manual Only</option>
+                        </select>
+                      </div>
+
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">Target File Type</label>
+                        <select
+                          value={scheduleTargetType}
+                          onChange={e => setScheduleTargetType(e.target.value as any)}
+                          className="w-full text-xs p-1.5 bg-white border border-slate-300 rounded font-semibold text-slate-800"
+                        >
+                          <option value="ALL">All File Types</option>
+                          <option value="CSV">CSV Only</option>
+                          <option value="EXCEL">EXCEL Only</option>
+                          <option value="XML">XML Feeds Only</option>
+                          <option value="TXT">TXT / Fixed Width Only</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    {scheduleFrequency === 'DAILY' && (
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">Scheduled Time (HH:MM)</label>
+                        <input
+                          type="time"
+                          value={scheduleDailyTime}
+                          onChange={e => setScheduleDailyTime(e.target.value)}
+                          className="w-full text-xs p-1.5 bg-white border border-slate-300 rounded font-mono"
+                        />
+                      </div>
+                    )}
+                  </div>
+                </div>
               </div>
 
               {/* Representative Sample File for Configuration */}
@@ -1983,6 +2569,74 @@ export default function FtpFileStagingSettings({
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Skipped Mismatches Inspection Modal */}
+      {viewingMismatchesConfig && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-2xs z-50 flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-white rounded-2xl max-w-2xl w-full p-6 shadow-2xl border border-slate-100 space-y-4 animate-in zoom-in-95">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-amber-50 text-amber-700 rounded-xl border border-amber-200">
+                  <AlertTriangle className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-slate-900 text-sm">
+                    Skipped Incompatible Files (Fault-Tolerant Log)
+                  </h3>
+                  <p className="text-xs text-slate-500 font-mono">
+                    Feed: {viewingMismatchesConfig.name} • {viewingMismatchesConfig.lastSkippedMismatches?.length || 0} files skipped
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setViewingMismatchesConfig(null)}
+                className="p-1 text-slate-400 hover:text-slate-600 rounded-lg cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="space-y-2">
+              <p className="text-xs text-slate-600">
+                The following files encountered structure or format mismatches and were gracefully bypassed without interrupting the consolidated staging batch:
+              </p>
+
+              <div className="border border-slate-200 rounded-xl overflow-hidden max-h-72 overflow-y-auto">
+                <table className="w-full text-left text-xs">
+                  <thead className="bg-slate-50 border-b border-slate-200 font-semibold text-slate-600 text-[11px]">
+                    <tr>
+                      <th className="p-2.5">File Name</th>
+                      <th className="p-2.5">Subfolder</th>
+                      <th className="p-2.5">Mismatch Reason</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100 font-mono text-[11px]">
+                    {viewingMismatchesConfig.lastSkippedMismatches?.map((sm, i) => (
+                      <tr key={i} className="hover:bg-amber-50/40">
+                        <td className="p-2.5 font-bold text-slate-900">{sm.fileName}</td>
+                        <td className="p-2.5 text-slate-500">{sm.folder || '/'}</td>
+                        <td className="p-2.5 text-rose-700 font-sans">{sm.reason}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div className="flex justify-end pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setViewingMismatchesConfig(null)}
+                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-semibold cursor-pointer"
+              >
+                Close
+              </button>
+            </div>
           </div>
         </div>
       )}

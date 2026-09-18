@@ -6,7 +6,8 @@ import {
   GlobalTransactionSchemaConfig, WorkspaceTableRecord, DatabaseValidationWorkflow,
   QueryExtraction, InvestigationTask, InvestigationBatch, InvestigationTransaction,
   CentralTransactionRecord, ValidationBox, GlobalStandardDirectoryRecord, TaskWorkflowExecution, FtpFileStagingConfig, TransactionTemplate, UploadedTransactionRecord, UploadAuditLog,
-  DatabaseColumnConfiguration
+  DatabaseColumnConfiguration, TeamRelationship, TeamRelationshipType,
+  WorkspaceSettingProposal, SettingProposalType, SettingProposalStatus
 } from '../types.js';
 
 function parseJson(val: any, fallback: any = null) {
@@ -33,6 +34,36 @@ function safeJsonStringify(obj: any, fallback: string = '[]'): string {
   }
 }
 
+let ftpSchemaInitialized = false;
+async function ensureFtpStagingSchema(): Promise<void> {
+  if (ftpSchemaInitialized) return;
+  try {
+    const pool = getPostgresPool();
+    await pool.query(`
+      ALTER TABLE ftp_file_staging_configs ADD COLUMN IF NOT EXISTS root_directory_path VARCHAR(255);
+      ALTER TABLE ftp_file_staging_configs ADD COLUMN IF NOT EXISTS folder_exceptions JSONB DEFAULT '[]'::jsonb;
+      ALTER TABLE ftp_file_staging_configs ADD COLUMN IF NOT EXISTS mismatch_handling VARCHAR(32) DEFAULT 'SKIP_AND_NOTIFY';
+      ALTER TABLE ftp_file_staging_configs ADD COLUMN IF NOT EXISTS schedule_config JSONB DEFAULT '{}'::jsonb;
+      ALTER TABLE ftp_file_staging_configs ADD COLUMN IF NOT EXISTS unconfigured_folder_action VARCHAR(32) DEFAULT 'NOTIFY_ADMIN';
+      ALTER TABLE ftp_file_staging_configs ADD COLUMN IF NOT EXISTS last_skipped_mismatches JSONB DEFAULT '[]'::jsonb;
+
+      CREATE TABLE IF NOT EXISTS ftp_unconfigured_folders_audit (
+        id VARCHAR(64) PRIMARY KEY,
+        ftp_connection_id VARCHAR(64) NOT NULL,
+        folder_path TEXT NOT NULL,
+        file_count INT DEFAULT 0,
+        sample_file_names JSONB DEFAULT '[]'::jsonb,
+        discovered_at TIMESTAMPTZ DEFAULT NOW(),
+        status VARCHAR(32) DEFAULT 'PENDING_REVIEW'
+      );
+      CREATE INDEX IF NOT EXISTS idx_ftp_unconf_conn ON ftp_unconfigured_folders_audit(ftp_connection_id, folder_path);
+    `);
+    ftpSchemaInitialized = true;
+  } catch (err: any) {
+    console.warn('[postgresRepo] ensureFtpStagingSchema warning:', err.message);
+  }
+}
+
 export const postgresRepo = {
   // ================= USERS =================
   async getUsers(): Promise<User[]> {
@@ -47,51 +78,47 @@ export const postgresRepo = {
       canExecuteSelect: r.can_execute_select,
       canExecuteUpdate: r.can_execute_update,
       allowedDbIds: parseJson(r.allowed_db_ids, []),
+      permanentTeamId: r.permanent_team_id || undefined,
+      shareWorkspaceWithTeam: r.share_workspace_with_team ?? true,
       createdAt: r.created_at?.toISOString() || new Date().toISOString()
     }));
+  },
+
+  mapUserRow(r: any): User {
+    return {
+      id: r.id,
+      username: r.username,
+      email: r.email,
+      role: r.role,
+      isApproved: r.is_approved,
+      canExecuteSelect: r.can_execute_select,
+      canExecuteUpdate: r.can_execute_update,
+      allowedDbIds: parseJson(r.allowed_db_ids, []),
+      permanentTeamId: r.permanent_team_id || undefined,
+      shareWorkspaceWithTeam: r.share_workspace_with_team ?? true,
+      createdAt: r.created_at?.toISOString() || new Date().toISOString()
+    };
   },
 
   async getUserById(id: string): Promise<User | null> {
     const pool = getPostgresPool();
     const { rows } = await pool.query('SELECT * FROM users WHERE id = $1 LIMIT 1;', [id]);
     if (!rows.length) return null;
-    const r = rows[0];
-    return {
-      id: r.id,
-      username: r.username,
-      email: r.email,
-      role: r.role,
-      isApproved: r.is_approved,
-      canExecuteSelect: r.can_execute_select,
-      canExecuteUpdate: r.can_execute_update,
-      allowedDbIds: parseJson(r.allowed_db_ids, []),
-      createdAt: r.created_at?.toISOString() || new Date().toISOString()
-    };
+    return this.mapUserRow(rows[0]);
   },
 
   async getUserByUsername(username: string): Promise<User | null> {
     const pool = getPostgresPool();
     const { rows } = await pool.query('SELECT * FROM users WHERE LOWER(username) = LOWER($1) LIMIT 1;', [username]);
     if (!rows.length) return null;
-    const r = rows[0];
-    return {
-      id: r.id,
-      username: r.username,
-      email: r.email,
-      role: r.role,
-      isApproved: r.is_approved,
-      canExecuteSelect: r.can_execute_select,
-      canExecuteUpdate: r.can_execute_update,
-      allowedDbIds: parseJson(r.allowed_db_ids, []),
-      createdAt: r.created_at?.toISOString() || new Date().toISOString()
-    };
+    return this.mapUserRow(rows[0]);
   },
 
   async createUser(userData: User): Promise<User> {
     const pool = getPostgresPool();
     await pool.query(
-      `INSERT INTO users (id, username, email, role, is_approved, can_execute_select, can_execute_update, allowed_db_ids, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      `INSERT INTO users (id, username, email, role, is_approved, can_execute_select, can_execute_update, allowed_db_ids, permanent_team_id, share_workspace_with_team, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
        ON CONFLICT (id) DO UPDATE SET
          username = EXCLUDED.username,
          email = EXCLUDED.email,
@@ -99,7 +126,9 @@ export const postgresRepo = {
          is_approved = EXCLUDED.is_approved,
          can_execute_select = EXCLUDED.can_execute_select,
          can_execute_update = EXCLUDED.can_execute_update,
-         allowed_db_ids = EXCLUDED.allowed_db_ids;`,
+         allowed_db_ids = EXCLUDED.allowed_db_ids,
+         permanent_team_id = EXCLUDED.permanent_team_id,
+         share_workspace_with_team = EXCLUDED.share_workspace_with_team;`,
       [
         userData.id,
         userData.username,
@@ -109,10 +138,22 @@ export const postgresRepo = {
         userData.canExecuteSelect ?? true,
         userData.canExecuteUpdate ?? false,
         JSON.stringify(userData.allowedDbIds || []),
+        userData.permanentTeamId || null,
+        userData.shareWorkspaceWithTeam ?? true,
         userData.createdAt || new Date()
       ]
     );
     return userData;
+  },
+
+  async updateUserWorkspaceSharing(userId: string, enabled: boolean): Promise<User | null> {
+    const pool = getPostgresPool();
+    const { rows } = await pool.query(
+      'UPDATE users SET share_workspace_with_team = $1 WHERE id = $2 RETURNING *;',
+      [enabled, userId]
+    );
+    if (!rows.length) return null;
+    return this.mapUserRow(rows[0]);
   },
 
   async updateUser(id: string, updates: Partial<User>): Promise<User | null> {
@@ -129,16 +170,82 @@ export const postgresRepo = {
     return (res.rowCount ?? 0) > 0;
   },
 
+
   // ================= ISSUES =================
-  async getIssues(): Promise<Issue[]> {
+  async getIssues(userId?: string, scope?: 'personal' | 'team' | 'all'): Promise<Issue[]> {
     const pool = getPostgresPool();
-    const { rows } = await pool.query('SELECT * FROM issues ORDER BY created_at DESC;');
+    if (!userId) {
+      const { rows } = await pool.query('SELECT * FROM issues ORDER BY created_at DESC;');
+      return rows.map(r => this.mapIssueRow(r));
+    }
+
+    // Check if user is admin
+    const userRes = await pool.query('SELECT role FROM users WHERE id = $1;', [userId]);
+    const isAdmin = userRes.rows[0]?.role === 'admin';
+
+    if (isAdmin && (!scope || scope === 'all')) {
+      const { rows } = await pool.query('SELECT * FROM issues ORDER BY created_at DESC;');
+      return rows.map(r => this.mapIssueRow(r));
+    }
+
+    if (scope === 'personal') {
+      const { rows } = await pool.query(
+        'SELECT * FROM issues WHERE creator_id = $1 OR assigned_tech_user_id = $1 ORDER BY created_at DESC;',
+        [userId]
+      );
+      return rows.map(r => this.mapIssueRow(r));
+    }
+
+    if (scope === 'team') {
+      const sql = `
+        SELECT i.* FROM issues i
+        WHERE i.team_id IS NOT NULL
+          AND (i.visibility = 'TEAM_PUBLIC' OR i.visibility IS NULL)
+          AND i.team_id IN (
+            SELECT id FROM teams 
+            WHERE team_type = 'permanent' 
+              AND (manager_id = $1 OR member_ids @> to_jsonb($1::text))
+          )
+          AND (
+            i.creator_id = $1 
+            OR i.creator_id IN (
+              SELECT id FROM users 
+              WHERE share_workspace_with_team IS NULL OR share_workspace_with_team = true
+            )
+          )
+        ORDER BY i.created_at DESC;
+      `;
+      const { rows } = await pool.query(sql, [userId]);
+      return rows.map(r => this.mapIssueRow(r));
+    }
+
+    // Default 'all': User's own tasks + tasks shared with permanent team members
+    const sql = `
+      SELECT DISTINCT i.* FROM issues i
+      WHERE i.creator_id = $1 
+         OR i.assigned_tech_user_id = $1
+         OR (
+           (i.visibility = 'TEAM_PUBLIC' OR i.visibility IS NULL)
+           AND i.team_id IS NOT NULL
+           AND i.team_id IN (
+             SELECT id FROM teams 
+             WHERE team_type = 'permanent' 
+               AND (manager_id = $1 OR member_ids @> to_jsonb($1::text))
+           )
+           AND i.creator_id IN (
+             SELECT id FROM users 
+             WHERE share_workspace_with_team IS NULL OR share_workspace_with_team = true
+           )
+         )
+      ORDER BY i.created_at DESC;
+    `;
+    const { rows } = await pool.query(sql, [userId]);
     return rows.map(r => this.mapIssueRow(r));
   },
 
   async getIssueById(id: string): Promise<Issue | null> {
     const pool = getPostgresPool();
-    const { rows } = await pool.query('SELECT * FROM issues WHERE id = $1 LIMIT 1;', [id]);
+    const { rows } = await pool.query('SELECT * FROM issues WHERE id = $1 OR LOWER(id) = LOWER($1) LIMIT 1;', [id]);
     if (!rows.length) return null;
     return this.mapIssueRow(rows[0]);
   },
@@ -153,7 +260,8 @@ export const postgresRepo = {
         solution_executed, solution_executed_at, linked_hashtag, chat, assigned_tech_user_id,
         assigned_tech_user_name, investigation_system_id, investigation_environment,
         investigation_table, validation_status, validation_errors, query_results, moved_to_testing,
-        row_labels, added_label_column_name, custom_filters
+        row_labels, added_label_column_name, custom_filters, team_id, visibility,
+        process_type, workflow_id, accepted_script_proposal_id, initial_snapshot
       ) VALUES (
         $1, $2, $3, $4, $5, $6, $7, $8, $9,
         $10, $11, $12, $13, $14,
@@ -161,7 +269,8 @@ export const postgresRepo = {
         $20, $21, $22, $23, $24,
         $25, $26, $27,
         $28, $29, $30, $31, $32,
-        $33, $34, $35
+        $33, $34, $35, $36, $37,
+        $38, $39, $40, $41
       ) ON CONFLICT (id) DO UPDATE SET
         title = EXCLUDED.title,
         description = EXCLUDED.description,
@@ -193,7 +302,13 @@ export const postgresRepo = {
         moved_to_testing = EXCLUDED.moved_to_testing,
         row_labels = EXCLUDED.row_labels,
         added_label_column_name = EXCLUDED.added_label_column_name,
-        custom_filters = EXCLUDED.custom_filters;`,
+        custom_filters = EXCLUDED.custom_filters,
+        team_id = EXCLUDED.team_id,
+        visibility = EXCLUDED.visibility,
+        process_type = EXCLUDED.process_type,
+        workflow_id = EXCLUDED.workflow_id,
+        accepted_script_proposal_id = EXCLUDED.accepted_script_proposal_id,
+        initial_snapshot = EXCLUDED.initial_snapshot;`,
       [
         issue.id,
         issue.title,
@@ -229,17 +344,23 @@ export const postgresRepo = {
         issue.movedToTesting ?? false,
         JSON.stringify(issue.rowLabels || {}),
         issue.addedLabelColumnName || null,
-        JSON.stringify(issue.customFilters || [])
+        JSON.stringify(issue.customFilters || []),
+        issue.teamId || null,
+        issue.visibility || 'TEAM_PUBLIC',
+        issue.processType || 'INTERNAL_STAGED_FIX',
+        issue.workflowId || null,
+        issue.acceptedScriptProposalId || null,
+        issue.initialSnapshot ? JSON.stringify(issue.initialSnapshot) : null
       ]
     );
 
     // If mapped data was passed and no transactions exist yet for this task, store it into task_dataset_transactions
-      if (issue.firstLevelMappedData && issue.firstLevelMappedData.length > 0) {
-        const countRes = await pool.query('SELECT COUNT(*)::int as cnt FROM task_dataset_transactions WHERE task_id = $1;', [issue.id]);
-        if ((countRes.rows[0]?.cnt || 0) === 0) {
-          await this.createTaskDatasetTransactions(issue.id, issue.firstLevelMappedData);
-        }
+    if (issue.firstLevelMappedData && issue.firstLevelMappedData.length > 0) {
+      const countRes = await pool.query('SELECT COUNT(*)::int as cnt FROM task_dataset_transactions WHERE task_id = $1;', [issue.id]);
+      if ((countRes.rows[0]?.cnt || 0) === 0) {
+        await this.createTaskDatasetTransactions(issue.id, issue.firstLevelMappedData);
       }
+    }
 
     return issue;
   },
@@ -252,9 +373,19 @@ export const postgresRepo = {
     return merged;
   },
 
+  async updateIssueVisibility(id: string, visibility: 'TEAM_PUBLIC' | 'PERSONAL_PRIVATE'): Promise<Issue | null> {
+    const pool = getPostgresPool();
+    const { rows } = await pool.query(
+      'UPDATE issues SET visibility = $1 WHERE id = $2 OR LOWER(id) = LOWER($2) RETURNING *;',
+      [visibility, id]
+    );
+    if (!rows.length) return null;
+    return this.mapIssueRow(rows[0]);
+  },
+
   async deleteIssue(id: string): Promise<boolean> {
     const pool = getPostgresPool();
-    const res = await pool.query('DELETE FROM issues WHERE id = $1;', [id]);
+    const res = await pool.query('DELETE FROM issues WHERE id = $1 OR LOWER(id) = LOWER($1);', [id]);
     return (res.rowCount ?? 0) > 0;
   },
 
@@ -300,9 +431,16 @@ export const postgresRepo = {
       movedToTesting: r.moved_to_testing,
       rowLabels: parseJson(r.row_labels, {}),
       addedLabelColumnName: r.added_label_column_name || undefined,
-      customFilters: parseJson(r.custom_filters, [])
+      customFilters: parseJson(r.custom_filters, []),
+      teamId: r.team_id || undefined,
+      visibility: r.visibility || 'TEAM_PUBLIC',
+      processType: r.process_type || 'INTERNAL_STAGED_FIX',
+      workflowId: r.workflow_id || undefined,
+      acceptedScriptProposalId: r.accepted_script_proposal_id || undefined,
+      initialSnapshot: parseJson(r.initial_snapshot, undefined)
     };
   },
+
 
   // ================= TASK DATASET TRANSACTIONS (100k+ SCALABILITY) =================
   async createTaskDatasetTransactions(taskId: string, rows: Record<string, any>[]): Promise<number> {
@@ -783,6 +921,67 @@ export const postgresRepo = {
     return (res.rowCount ?? 0) > 0;
   },
 
+  // ================= TEAM RELATIONSHIPS =================
+  async getTeamRelationships(teamId?: string): Promise<TeamRelationship[]> {
+    const pool = getPostgresPool();
+    let query = `
+      SELECT tr.*, 
+             st.name as source_team_name, st.team_type as source_team_type,
+             tt.name as target_team_name, tt.team_type as target_team_type
+      FROM team_relationships tr
+      JOIN teams st ON st.id = tr.source_team_id
+      JOIN teams tt ON tt.id = tr.target_team_id
+    `;
+    const params: any[] = [];
+    if (teamId) {
+      query += ` WHERE tr.source_team_id = $1 OR tr.target_team_id = $1`;
+      params.push(teamId);
+    }
+    query += ` ORDER BY tr.created_at DESC;`;
+
+    const { rows } = await pool.query(query, params);
+    return rows.map(r => ({
+      id: r.id,
+      sourceTeamId: r.source_team_id,
+      targetTeamId: r.target_team_id,
+      relationshipType: r.relationship_type as TeamRelationshipType,
+      description: r.description || undefined,
+      createdBy: r.created_by || undefined,
+      createdAt: r.created_at?.toISOString() || new Date().toISOString(),
+      sourceTeamName: r.source_team_name,
+      targetTeamName: r.target_team_name,
+      sourceTeamType: r.source_team_type,
+      targetTeamType: r.target_team_type
+    }));
+  },
+
+  async createTeamRelationship(rel: TeamRelationship): Promise<TeamRelationship> {
+    const pool = getPostgresPool();
+    await pool.query(
+      `INSERT INTO team_relationships (id, source_team_id, target_team_id, relationship_type, description, created_by, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       ON CONFLICT (source_team_id, target_team_id, relationship_type) DO UPDATE SET
+         description = EXCLUDED.description,
+         created_at = EXCLUDED.created_at;`,
+      [
+        rel.id,
+        rel.sourceTeamId,
+        rel.targetTeamId,
+        rel.relationshipType,
+        rel.description || null,
+        rel.createdBy || null,
+        rel.createdAt || new Date()
+      ]
+    );
+    return rel;
+  },
+
+  async deleteTeamRelationship(id: string): Promise<boolean> {
+    const pool = getPostgresPool();
+    const res = await pool.query('DELETE FROM team_relationships WHERE id = $1;', [id]);
+    return (res.rowCount ?? 0) > 0;
+  },
+
   // ================= WORKFLOWS & EXTRACTIONS =================
   async getWorkflows(): Promise<DatabaseValidationWorkflow[]> {
     return await this.getValidationWorkflows();
@@ -800,9 +999,16 @@ export const postgresRepo = {
     return await this.deleteValidationWorkflow(id);
   },
 
-  async getValidationWorkflows(): Promise<DatabaseValidationWorkflow[]> {
+  async getValidationWorkflows(teamId?: string): Promise<DatabaseValidationWorkflow[]> {
     const pool = getPostgresPool();
-    const { rows } = await pool.query('SELECT * FROM database_validation_workflows ORDER BY name ASC;');
+    let sql = 'SELECT * FROM database_validation_workflows';
+    const params: any[] = [];
+    if (teamId) {
+      sql += ' WHERE team_id = $1 OR is_public = true OR team_id IS NULL';
+      params.push(teamId);
+    }
+    sql += ' ORDER BY name ASC;';
+    const { rows } = await pool.query(sql, params);
     return rows.map(r => ({
       id: r.id,
       name: r.name,
@@ -819,7 +1025,10 @@ export const postgresRepo = {
       updatedAt: r.updated_at?.toISOString(),
       isSystemDefault: r.is_system_default,
       version: r.version,
-      messageAggregations: parseJson(r.message_aggregations, [])
+      messageAggregations: parseJson(r.message_aggregations, []),
+      teamId: r.team_id,
+      isPublic: r.is_public ?? true,
+      visibility: r.visibility || 'team'
     }));
   },
 
@@ -844,15 +1053,22 @@ export const postgresRepo = {
       updatedAt: r.updated_at?.toISOString(),
       isSystemDefault: r.is_system_default,
       version: r.version,
-      messageAggregations: parseJson(r.message_aggregations, [])
+      messageAggregations: parseJson(r.message_aggregations, []),
+      teamId: r.team_id,
+      isPublic: r.is_public ?? true,
+      visibility: r.visibility || 'team'
     };
   },
 
   async createValidationWorkflow(wf: DatabaseValidationWorkflow): Promise<DatabaseValidationWorkflow> {
     const pool = getPostgresPool();
     await pool.query(
-      `INSERT INTO database_validation_workflows (id, name, description, target_db_id, target_table, category, stages, steps, global_success_message, global_failure_message, created_by, created_at, updated_at, is_system_default, version, message_aggregations)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+      `INSERT INTO database_validation_workflows (
+        id, name, description, target_db_id, target_table, category, stages, steps, 
+        global_success_message, global_failure_message, created_by, created_at, updated_at, 
+        is_system_default, version, message_aggregations, team_id, is_public, visibility
+      )
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
        ON CONFLICT (id) DO UPDATE SET
          name = EXCLUDED.name,
          description = EXCLUDED.description,
@@ -866,7 +1082,10 @@ export const postgresRepo = {
          updated_at = NOW(),
          is_system_default = EXCLUDED.is_system_default,
          version = EXCLUDED.version,
-         message_aggregations = EXCLUDED.message_aggregations;`,
+         message_aggregations = EXCLUDED.message_aggregations,
+         team_id = EXCLUDED.team_id,
+         is_public = EXCLUDED.is_public,
+         visibility = EXCLUDED.visibility;`,
       [
         wf.id,
         wf.name,
@@ -883,7 +1102,10 @@ export const postgresRepo = {
         new Date(),
         wf.isSystemDefault ?? false,
         wf.version || '1.0.0',
-        safeJsonStringify(wf.messageAggregations, '[]')
+        safeJsonStringify(wf.messageAggregations, '[]'),
+        wf.teamId || null,
+        wf.isPublic !== undefined ? wf.isPublic : true,
+        wf.visibility || 'team'
       ]
     );
     return wf;
@@ -1453,9 +1675,16 @@ export const postgresRepo = {
   },
 
   // ================= STANDALONE VALIDATION BOXES =================
-  async getValidationBoxes(): Promise<ValidationBox[]> {
+  async getValidationBoxes(teamId?: string): Promise<ValidationBox[]> {
     const pool = getPostgresPool();
-    const { rows } = await pool.query('SELECT * FROM validation_boxes ORDER BY created_at DESC;');
+    let sql = 'SELECT * FROM validation_boxes';
+    const params: any[] = [];
+    if (teamId) {
+      sql += ' WHERE team_id = $1 OR is_public = true OR team_id IS NULL';
+      params.push(teamId);
+    }
+    sql += ' ORDER BY created_at DESC;';
+    const { rows } = await pool.query(sql, params);
     return rows.map(r => ({
       id: r.id,
       name: r.name,
@@ -1469,7 +1698,10 @@ export const postgresRepo = {
       checkStep: parseJson(r.check_step, {}),
       columnConfigurationIds: parseJson(r.column_configuration_ids, []),
       createdAt: r.created_at?.toISOString(),
-      updatedAt: r.updated_at?.toISOString()
+      updatedAt: r.updated_at?.toISOString(),
+      teamId: r.team_id,
+      isPublic: r.is_public ?? true,
+      visibility: r.visibility || 'team'
     }));
   },
 
@@ -1491,7 +1723,10 @@ export const postgresRepo = {
       checkStep: parseJson(r.check_step, {}),
       columnConfigurationIds: parseJson(r.column_configuration_ids, []),
       createdAt: r.created_at?.toISOString(),
-      updatedAt: r.updated_at?.toISOString()
+      updatedAt: r.updated_at?.toISOString(),
+      teamId: r.team_id,
+      isPublic: r.is_public ?? true,
+      visibility: r.visibility || 'team'
     };
   },
 
@@ -1501,8 +1736,9 @@ export const postgresRepo = {
     await pool.query(
       `INSERT INTO validation_boxes (
         id, name, description, box_type, category, target_db_id, target_table,
-        mirror_table_name, search_parameters, check_step, column_configuration_ids, created_at, updated_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+        mirror_table_name, search_parameters, check_step, column_configuration_ids, 
+        created_at, updated_at, team_id, is_public, visibility
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
       ON CONFLICT (id) DO UPDATE SET
         name = EXCLUDED.name,
         description = EXCLUDED.description,
@@ -1514,7 +1750,10 @@ export const postgresRepo = {
         search_parameters = EXCLUDED.search_parameters,
         check_step = EXCLUDED.check_step,
         column_configuration_ids = EXCLUDED.column_configuration_ids,
-        updated_at = NOW();`,
+        updated_at = NOW(),
+        team_id = EXCLUDED.team_id,
+        is_public = EXCLUDED.is_public,
+        visibility = EXCLUDED.visibility;`,
       [
         box.id,
         box.name,
@@ -1528,7 +1767,10 @@ export const postgresRepo = {
         JSON.stringify(box.checkStep || {}),
         JSON.stringify(colConfigIds),
         box.createdAt ? new Date(box.createdAt) : new Date(),
-        new Date()
+        new Date(),
+        box.teamId || null,
+        box.isPublic !== undefined ? box.isPublic : true,
+        box.visibility || 'team'
       ]
     );
     return box;
@@ -1853,7 +2095,11 @@ export const postgresRepo = {
   },
 
   // ================= FTP FILE STAGING CONFIGS =================
+  async ensureFtpStagingSchema(): Promise<void> {
+    await ensureFtpStagingSchema();
+  },
   async getFtpStagingConfigs(): Promise<FtpFileStagingConfig[]> {
+    await ensureFtpStagingSchema();
     const pool = getPostgresPool();
     const { rows } = await pool.query('SELECT * FROM ftp_file_staging_configs ORDER BY created_at DESC;');
     return rows.map(r => ({
@@ -1876,6 +2122,12 @@ export const postgresRepo = {
       excelSheetName: r.excel_sheet_name,
       folderTraversalMode: r.folder_traversal_mode || 'SINGLE_FILE',
       sourceDirectoryPath: r.source_directory_path,
+      rootDirectoryPath: r.root_directory_path || undefined,
+      folderExceptions: parseJson(r.folder_exceptions, []),
+      mismatchHandling: r.mismatch_handling || 'SKIP_AND_NOTIFY',
+      scheduleConfig: parseJson(r.schedule_config, { enabled: false, frequency: 'HOURLY', targetType: 'ALL' }),
+      unconfiguredFolderAction: r.unconfigured_folder_action || 'NOTIFY_ADMIN',
+      lastSkippedMismatches: parseJson(r.last_skipped_mismatches, []),
       selectedImportantColumns: parseJson(r.selected_important_columns, []),
       xmlRootElement: r.xml_root_element,
       xmlRecordElement: r.xml_record_element,
@@ -1891,6 +2143,7 @@ export const postgresRepo = {
   },
 
   async getFtpStagingConfigById(id: string): Promise<FtpFileStagingConfig | null> {
+    await ensureFtpStagingSchema();
     const pool = getPostgresPool();
     const { rows } = await pool.query('SELECT * FROM ftp_file_staging_configs WHERE id = $1 LIMIT 1;', [id]);
     if (!rows.length) return null;
@@ -1915,6 +2168,12 @@ export const postgresRepo = {
       excelSheetName: r.excel_sheet_name,
       folderTraversalMode: r.folder_traversal_mode || 'SINGLE_FILE',
       sourceDirectoryPath: r.source_directory_path,
+      rootDirectoryPath: r.root_directory_path || undefined,
+      folderExceptions: parseJson(r.folder_exceptions, []),
+      mismatchHandling: r.mismatch_handling || 'SKIP_AND_NOTIFY',
+      scheduleConfig: parseJson(r.schedule_config, { enabled: false, frequency: 'HOURLY', targetType: 'ALL' }),
+      unconfiguredFolderAction: r.unconfigured_folder_action || 'NOTIFY_ADMIN',
+      lastSkippedMismatches: parseJson(r.last_skipped_mismatches, []),
       selectedImportantColumns: parseJson(r.selected_important_columns, []),
       xmlRootElement: r.xml_root_element,
       xmlRecordElement: r.xml_record_element,
@@ -1930,6 +2189,7 @@ export const postgresRepo = {
   },
 
   async createFtpStagingConfig(config: FtpFileStagingConfig): Promise<FtpFileStagingConfig> {
+    await ensureFtpStagingSchema();
     const pool = getPostgresPool();
     await pool.query(
       `INSERT INTO ftp_file_staging_configs (
@@ -1939,10 +2199,15 @@ export const postgresRepo = {
         last_staged_status, last_staged_count, last_error_message,
         excel_sheet_name, header_row_count, handle_merged_cells, merged_header_separator,
         folder_traversal_mode, source_directory_path, selected_important_columns,
-        xml_root_element, xml_record_element, updated_at
+        xml_root_element, xml_record_element,
+        root_directory_path, folder_exceptions, mismatch_handling,
+        schedule_config, unconfigured_folder_action, last_skipped_mismatches,
+        updated_at
       ) VALUES (
         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19,
-        $20, $21, $22, $23, $24, $25, $26, $27, $28, NOW()
+        $20, $21, $22, $23, $24, $25, $26, $27, $28,
+        $29, $30, $31, $32, $33, $34,
+        NOW()
       )
       ON CONFLICT (id) DO UPDATE SET
         name = EXCLUDED.name,
@@ -1972,6 +2237,12 @@ export const postgresRepo = {
         selected_important_columns = EXCLUDED.selected_important_columns,
         xml_root_element = EXCLUDED.xml_root_element,
         xml_record_element = EXCLUDED.xml_record_element,
+        root_directory_path = EXCLUDED.root_directory_path,
+        folder_exceptions = EXCLUDED.folder_exceptions,
+        mismatch_handling = EXCLUDED.mismatch_handling,
+        schedule_config = EXCLUDED.schedule_config,
+        unconfigured_folder_action = EXCLUDED.unconfigured_folder_action,
+        last_skipped_mismatches = EXCLUDED.last_skipped_mismatches,
         updated_at = NOW();`,
       [
         config.id,
@@ -2001,7 +2272,13 @@ export const postgresRepo = {
         config.sourceDirectoryPath || null,
         JSON.stringify(config.selectedImportantColumns || []),
         config.xmlRootElement || null,
-        config.xmlRecordElement || null
+        config.xmlRecordElement || null,
+        config.rootDirectoryPath || null,
+        JSON.stringify(config.folderExceptions || []),
+        config.mismatchHandling || 'SKIP_AND_NOTIFY',
+        JSON.stringify(config.scheduleConfig || {}),
+        config.unconfiguredFolderAction || 'NOTIFY_ADMIN',
+        JSON.stringify(config.lastSkippedMismatches || [])
       ]
     );
     return (await this.getFtpStagingConfigById(config.id)) || config;
@@ -2015,9 +2292,54 @@ export const postgresRepo = {
   },
 
   async deleteFtpStagingConfig(id: string): Promise<boolean> {
+    await ensureFtpStagingSchema();
     const pool = getPostgresPool();
     const res = await pool.query('DELETE FROM ftp_file_staging_configs WHERE id = $1;', [id]);
     return (res.rowCount ?? 0) > 0;
+  },
+
+  async getUnconfiguredFolders(connectionId?: string): Promise<{ id: string; ftpConnectionId: string; folderPath: string; fileCount: number; sampleFileNames: string[]; discoveredAt: string; status: string }[]> {
+    await ensureFtpStagingSchema();
+    const pool = getPostgresPool();
+    let query = `SELECT * FROM ftp_unconfigured_folders_audit WHERE status = 'PENDING_REVIEW' ORDER BY discovered_at DESC;`;
+    const params: any[] = [];
+    if (connectionId) {
+      query = `SELECT * FROM ftp_unconfigured_folders_audit WHERE ftp_connection_id = $1 AND status = 'PENDING_REVIEW' ORDER BY discovered_at DESC;`;
+      params.push(connectionId);
+    }
+    const { rows } = await pool.query(query, params);
+    return rows.map((r: any) => ({
+      id: r.id,
+      ftpConnectionId: r.ftp_connection_id,
+      folderPath: r.folder_path,
+      fileCount: r.file_count,
+      sampleFileNames: parseJson(r.sample_file_names, []),
+      discoveredAt: r.discovered_at ? new Date(r.discovered_at).toISOString() : new Date().toISOString(),
+      status: r.status
+    }));
+  },
+
+  async recordUnconfiguredFolder(folder: { id: string; ftpConnectionId: string; folderPath: string; fileCount: number; sampleFileNames: string[] }): Promise<void> {
+    await ensureFtpStagingSchema();
+    const pool = getPostgresPool();
+    await pool.query(`
+      INSERT INTO ftp_unconfigured_folders_audit (id, ftp_connection_id, folder_path, file_count, sample_file_names, discovered_at, status)
+      VALUES ($1, $2, $3, $4, $5, NOW(), 'PENDING_REVIEW')
+      ON CONFLICT (id) DO UPDATE SET
+        file_count = EXCLUDED.file_count,
+        sample_file_names = EXCLUDED.sample_file_names,
+        discovered_at = NOW();
+    `, [folder.id, folder.ftpConnectionId, folder.folderPath, folder.fileCount, JSON.stringify(folder.sampleFileNames || [])]);
+  },
+
+  async resolveUnconfiguredFolder(folderPath: string, ftpConnectionId: string): Promise<void> {
+    await ensureFtpStagingSchema();
+    const pool = getPostgresPool();
+    await pool.query(`
+      UPDATE ftp_unconfigured_folders_audit
+      SET status = 'RESOLVED'
+      WHERE ftp_connection_id = $1 AND (folder_path = $2 OR folder_path LIKE $3);
+    `, [ftpConnectionId, folderPath, `${folderPath}%`]);
   },
 
   // ================= ORGANIZATIONS =================
@@ -2069,26 +2391,68 @@ export const postgresRepo = {
       author: r.author,
       createdAt: r.created_at?.toISOString() || new Date().toISOString(),
       fileTemplateData: parseJson(r.file_template_data, []),
-      criteriaRules: parseJson(r.criteria_rules, [])
+      criteriaRules: parseJson(r.criteria_rules, []),
+      workflowId: r.workflow_id || undefined,
+      workflowName: r.workflow_name || undefined,
+      processType: r.process_type || 'INTERNAL_STAGED_FIX',
+      kpis: parseJson(r.kpis, [])
     }));
   },
 
   async createHashtag(tag: HashtagPreset): Promise<HashtagPreset> {
     const pool = getPostgresPool();
     await pool.query(
-      `INSERT INTO hashtag_presets (id, tag, description, criteria, expected_file_structure, solution_template, author, created_at, file_template_data, criteria_rules)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-       ON CONFLICT (id) DO UPDATE SET tag = EXCLUDED.tag, description = EXCLUDED.description, criteria = EXCLUDED.criteria;`,
+      `INSERT INTO hashtag_presets 
+       (id, tag, description, criteria, expected_file_structure, solution_template, author, created_at, file_template_data, criteria_rules, workflow_id, workflow_name, process_type, kpis)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+       ON CONFLICT (id) DO UPDATE SET 
+         tag = EXCLUDED.tag, 
+         description = EXCLUDED.description, 
+         criteria = EXCLUDED.criteria,
+         solution_template = EXCLUDED.solution_template,
+         workflow_id = EXCLUDED.workflow_id,
+         workflow_name = EXCLUDED.workflow_name,
+         process_type = EXCLUDED.process_type,
+         kpis = EXCLUDED.kpis;`,
       [
         tag.tag, tag.tag, tag.description, tag.criteria,
         JSON.stringify(tag.expectedFileStructure || []),
         tag.solutionTemplate, tag.author,
         tag.createdAt || new Date(),
         JSON.stringify(tag.fileTemplateData || []),
-        JSON.stringify(tag.criteriaRules || [])
+        JSON.stringify(tag.criteriaRules || []),
+        tag.workflowId || null,
+        tag.workflowName || null,
+        tag.processType || 'INTERNAL_STAGED_FIX',
+        JSON.stringify(tag.kpis || [])
       ]
     );
     return tag;
+  },
+
+  async updateHashtagKpis(tag: string, kpis: any[]): Promise<HashtagPreset | null> {
+    const pool = getPostgresPool();
+    const { rows } = await pool.query(
+      'UPDATE hashtag_presets SET kpis = $1 WHERE tag = $2 OR id = $2 RETURNING *;',
+      [JSON.stringify(kpis), tag]
+    );
+    if (!rows.length) return null;
+    const r = rows[0];
+    return {
+      tag: r.tag,
+      description: r.description,
+      criteria: r.criteria,
+      expectedFileStructure: parseJson(r.expected_file_structure, []),
+      solutionTemplate: r.solution_template,
+      author: r.author,
+      createdAt: r.created_at?.toISOString() || new Date().toISOString(),
+      fileTemplateData: parseJson(r.file_template_data, []),
+      criteriaRules: parseJson(r.criteria_rules, []),
+      workflowId: r.workflow_id || undefined,
+      workflowName: r.workflow_name || undefined,
+      processType: r.process_type || 'INTERNAL_STAGED_FIX',
+      kpis: parseJson(r.kpis, [])
+    };
   },
 
   // ================= PLUGINS =================
@@ -2148,7 +2512,7 @@ export const postgresRepo = {
   async getTeamTasks(teamId?: string): Promise<TeamTask[]> {
     const pool = getPostgresPool();
     const { rows } = teamId
-      ? await pool.query('SELECT * FROM team_tasks WHERE team_id = $1 ORDER BY created_at DESC;', [teamId])
+      ? await pool.query('SELECT * FROM team_tasks WHERE team_id = $1 OR escalated_to_team_id = $1 ORDER BY created_at DESC;', [teamId])
       : await pool.query('SELECT * FROM team_tasks ORDER BY created_at DESC;');
     return rows.map((r: any) => ({
       id: r.id, teamId: r.team_id, title: r.title, description: r.description,
@@ -2158,15 +2522,24 @@ export const postgresRepo = {
       createdAt: r.created_at?.toISOString() || new Date().toISOString(),
       dueDate: r.due_date?.toISOString() || undefined,
       startDate: r.start_date?.toISOString() || undefined,
-      milestone: r.milestone || undefined
+      milestone: r.milestone || undefined,
+      isPublic: r.is_public ?? true,
+      visibility: r.visibility || 'team',
+      escalatedToTeamId: r.escalated_to_team_id || undefined,
+      escalationReason: r.escalation_reason || undefined,
+      escalatedAt: r.escalated_at?.toISOString() || undefined
     }));
   },
 
   async createTeamTask(task: TeamTask): Promise<TeamTask> {
     const pool = getPostgresPool();
     await pool.query(
-      `INSERT INTO team_tasks (id, team_id, title, description, assignee_id, assignee_name, creator_id, creator_name, status, priority, created_at, due_date, start_date, milestone)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+      `INSERT INTO team_tasks (
+        id, team_id, title, description, assignee_id, assignee_name, creator_id, creator_name, 
+        status, priority, created_at, due_date, start_date, milestone, is_public, visibility, 
+        escalated_to_team_id, escalation_reason, escalated_at
+      )
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
        ON CONFLICT (id) DO NOTHING;`,
       [
         task.id, task.teamId, task.title, task.description,
@@ -2175,7 +2548,12 @@ export const postgresRepo = {
         task.createdAt || new Date(),
         task.dueDate ? new Date(task.dueDate) : null,
         task.startDate ? new Date(task.startDate) : null,
-        task.milestone || null
+        task.milestone || null,
+        task.isPublic !== undefined ? task.isPublic : true,
+        task.visibility || 'team',
+        task.escalatedToTeamId || null,
+        task.escalationReason || null,
+        task.escalatedAt ? new Date(task.escalatedAt) : null
       ]
     );
     return task;
@@ -2190,15 +2568,32 @@ export const postgresRepo = {
       id: r.id, teamId: r.team_id, title: r.title, description: r.description,
       assigneeId: r.assignee_id, assigneeName: r.assignee_name, creatorId: r.creator_id, creatorName: r.creator_name,
       status: r.status, priority: r.priority, createdAt: r.created_at?.toISOString() || new Date().toISOString(),
+      isPublic: r.is_public ?? true,
+      visibility: r.visibility || 'team',
+      escalatedToTeamId: r.escalated_to_team_id || undefined,
+      escalationReason: r.escalation_reason || undefined,
+      escalatedAt: r.escalated_at?.toISOString() || undefined,
       ...updates
     };
     await pool.query(
-      `UPDATE team_tasks SET title=$1, description=$2, assignee_id=$3, assignee_name=$4, status=$5, priority=$6, due_date=$7, start_date=$8, milestone=$9 WHERE id=$10;`,
-      [merged.title, merged.description, merged.assigneeId, merged.assigneeName,
-       merged.status, merged.priority,
-       merged.dueDate ? new Date(merged.dueDate) : null,
-       merged.startDate ? new Date(merged.startDate) : null,
-       merged.milestone || null, id]
+      `UPDATE team_tasks SET 
+        title=$1, description=$2, assignee_id=$3, assignee_name=$4, status=$5, priority=$6, 
+        due_date=$7, start_date=$8, milestone=$9, is_public=$10, visibility=$11, 
+        escalated_to_team_id=$12, escalation_reason=$13, escalated_at=$14 
+       WHERE id=$15;`,
+      [
+        merged.title, merged.description, merged.assigneeId, merged.assigneeName,
+        merged.status, merged.priority,
+        merged.dueDate ? new Date(merged.dueDate) : null,
+        merged.startDate ? new Date(merged.startDate) : null,
+        merged.milestone || null,
+        merged.isPublic !== undefined ? merged.isPublic : true,
+        merged.visibility || 'team',
+        merged.escalatedToTeamId || null,
+        merged.escalationReason || null,
+        merged.escalatedAt ? new Date(merged.escalatedAt) : null,
+        id
+      ]
     );
     return merged;
   },
@@ -2820,6 +3215,253 @@ export const postgresRepo = {
       console.warn('[postgresRepo] deleteColumnConfiguration error:', err.message);
       return false;
     }
+  },
+
+  // ================= WORKSPACE SETTING PROPOSALS (MAKER-CHECKER & ESCALATION) =================
+  async getWorkspaceSettingProposals(
+    teamId?: string,
+    status?: string,
+    escalatedTeamId?: string
+  ): Promise<WorkspaceSettingProposal[]> {
+    const pool = getPostgresPool();
+    let sql = `
+      SELECT p.*, 
+             t.name as team_name, 
+             et.name as escalated_team_name
+      FROM workspace_setting_proposals p
+      LEFT JOIN teams t ON p.team_id = t.id
+      LEFT JOIN teams et ON p.escalated_team_id = et.id
+      WHERE 1=1
+    `;
+    const params: any[] = [];
+
+    if (teamId) {
+      params.push(teamId);
+      sql += ` AND (p.team_id = $${params.length} OR p.escalated_team_id = $${params.length})`;
+    }
+
+    if (escalatedTeamId) {
+      params.push(escalatedTeamId);
+      sql += ` AND p.escalated_team_id = $${params.length}`;
+    }
+
+    if (status) {
+      params.push(status);
+      sql += ` AND p.status = $${params.length}`;
+    }
+
+    sql += ` ORDER BY p.created_at DESC;`;
+
+    const { rows } = await pool.query(sql, params);
+    return rows.map((r: any) => ({
+      id: r.id,
+      settingType: r.setting_type,
+      settingKey: r.setting_key,
+      title: r.title,
+      proposedChanges: parseJson(r.proposed_changes, {}),
+      currentSnapshot: parseJson(r.current_snapshot, undefined),
+      justification: r.justification,
+      makerId: r.maker_id,
+      makerName: r.maker_name,
+      teamId: r.team_id,
+      teamName: r.team_name || undefined,
+      status: r.status,
+      checkerId: r.checker_id || undefined,
+      checkerName: r.checker_name || undefined,
+      checkerFeedback: r.checker_feedback || undefined,
+      escalatedTeamId: r.escalated_team_id || undefined,
+      escalatedTeamName: r.escalated_team_name || undefined,
+      escalationReason: r.escalation_reason || undefined,
+      escalatedById: r.escalated_by_id || undefined,
+      escalatedByName: r.escalated_by_name || undefined,
+      escalatedAt: r.escalated_at?.toISOString() || undefined,
+      appliedAt: r.applied_at?.toISOString() || undefined,
+      createdAt: r.created_at?.toISOString() || new Date().toISOString(),
+      updatedAt: r.updated_at?.toISOString() || new Date().toISOString()
+    }));
+  },
+
+  async getWorkspaceSettingProposalById(id: string): Promise<WorkspaceSettingProposal | null> {
+    const pool = getPostgresPool();
+    const sql = `
+      SELECT p.*, 
+             t.name as team_name, 
+             et.name as escalated_team_name
+      FROM workspace_setting_proposals p
+      LEFT JOIN teams t ON p.team_id = t.id
+      LEFT JOIN teams et ON p.escalated_team_id = et.id
+      WHERE p.id = $1 LIMIT 1;
+    `;
+    const { rows } = await pool.query(sql, [id]);
+    if (!rows.length) return null;
+    const r = rows[0];
+    return {
+      id: r.id,
+      settingType: r.setting_type,
+      settingKey: r.setting_key,
+      title: r.title,
+      proposedChanges: parseJson(r.proposed_changes, {}),
+      currentSnapshot: parseJson(r.current_snapshot, undefined),
+      justification: r.justification,
+      makerId: r.maker_id,
+      makerName: r.maker_name,
+      teamId: r.team_id,
+      teamName: r.team_name || undefined,
+      status: r.status,
+      checkerId: r.checker_id || undefined,
+      checkerName: r.checker_name || undefined,
+      checkerFeedback: r.checker_feedback || undefined,
+      escalatedTeamId: r.escalated_team_id || undefined,
+      escalatedTeamName: r.escalated_team_name || undefined,
+      escalationReason: r.escalation_reason || undefined,
+      escalatedById: r.escalated_by_id || undefined,
+      escalatedByName: r.escalated_by_name || undefined,
+      escalatedAt: r.escalated_at?.toISOString() || undefined,
+      appliedAt: r.applied_at?.toISOString() || undefined,
+      createdAt: r.created_at?.toISOString() || new Date().toISOString(),
+      updatedAt: r.updated_at?.toISOString() || new Date().toISOString()
+    };
+  },
+
+  async createWorkspaceSettingProposal(proposal: WorkspaceSettingProposal): Promise<WorkspaceSettingProposal> {
+    const pool = getPostgresPool();
+    const sql = `
+      INSERT INTO workspace_setting_proposals (
+        id, setting_type, setting_key, title, proposed_changes, current_snapshot,
+        justification, maker_id, maker_name, team_id, status, created_at, updated_at
+      )
+      VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7, $8, $9, $10, $11, $12, $13)
+      RETURNING *;
+    `;
+    await pool.query(sql, [
+      proposal.id,
+      proposal.settingType,
+      proposal.settingKey,
+      proposal.title,
+      JSON.stringify(proposal.proposedChanges || {}),
+      proposal.currentSnapshot ? JSON.stringify(proposal.currentSnapshot) : null,
+      proposal.justification,
+      proposal.makerId,
+      proposal.makerName,
+      proposal.teamId,
+      proposal.status || 'PENDING_TEAM_APPROVAL',
+      proposal.createdAt ? new Date(proposal.createdAt) : new Date(),
+      new Date()
+    ]);
+    return proposal;
+  },
+
+  async reviewWorkspaceSettingProposal(
+    id: string,
+    checkerId: string,
+    checkerName: string,
+    action: 'APPROVE' | 'REJECT',
+    feedback?: string
+  ): Promise<WorkspaceSettingProposal> {
+    const pool = getPostgresPool();
+    const proposal = await this.getWorkspaceSettingProposalById(id);
+    if (!proposal) {
+      throw new Error(`Setting proposal '${id}' not found.`);
+    }
+
+    // Anti-Self-Approval Enforcement (Four-Eyes Principle)
+    if (proposal.makerId === checkerId) {
+      throw new Error(`Anti-Self-Approval Enforcement: Maker '${proposal.makerName}' cannot approve their own setting proposal.`);
+    }
+
+    const isApprove = action === 'APPROVE';
+    const newStatus: SettingProposalStatus = isApprove ? 'APPROVED' : 'REJECTED';
+    const now = new Date();
+
+    await pool.query(
+      `UPDATE workspace_setting_proposals
+       SET status = $1,
+           checker_id = $2,
+           checker_name = $3,
+           checker_feedback = $4,
+           applied_at = $5,
+           updated_at = NOW()
+       WHERE id = $6;`,
+      [newStatus, checkerId, checkerName, feedback || null, isApprove ? now : null, id]
+    );
+
+    const updated = await this.getWorkspaceSettingProposalById(id);
+    if (isApprove && updated) {
+      await this.applySettingProposalChanges(updated);
+    }
+
+    return updated!;
+  },
+
+  async escalateWorkspaceSettingProposal(
+    id: string,
+    targetTeamId: string,
+    reason: string,
+    escalatedById: string,
+    escalatedByName: string
+  ): Promise<WorkspaceSettingProposal> {
+    const pool = getPostgresPool();
+    const proposal = await this.getWorkspaceSettingProposalById(id);
+    if (!proposal) {
+      throw new Error(`Setting proposal '${id}' not found.`);
+    }
+
+    // Validate that targetTeamId is in the team's escalation matrix
+    const matrixRes = await pool.query(
+      `SELECT * FROM team_relationships 
+       WHERE source_team_id = $1 
+         AND target_team_id = $2 
+         AND relationship_type IN ('ESCALATION_TARGET', 'PARENT_UNIT');`,
+      [proposal.teamId, targetTeamId]
+    );
+
+    if (matrixRes.rows.length === 0) {
+      throw new Error(
+        `Escalation Matrix Violation: Team '${targetTeamId}' is not an authorized ESCALATION_TARGET or PARENT_UNIT for team '${proposal.teamId}'.`
+      );
+    }
+
+    await pool.query(
+      `UPDATE workspace_setting_proposals
+       SET status = 'ESCALATED_TO_TARGET_TEAM',
+           escalated_team_id = $1,
+           escalation_reason = $2,
+           escalated_by_id = $3,
+           escalated_by_name = $4,
+           escalated_at = NOW(),
+           updated_at = NOW()
+       WHERE id = $5;`,
+      [targetTeamId, reason, escalatedById, escalatedByName, id]
+    );
+
+    const updated = await this.getWorkspaceSettingProposalById(id);
+    return updated!;
+  },
+
+  async applySettingProposalChanges(proposal: WorkspaceSettingProposal): Promise<void> {
+    try {
+      const changes = proposal.proposedChanges;
+      if (proposal.settingType === 'TABLE_MAPPING') {
+        if (changes.dbId && changes.tableName) {
+          await this.saveTableMapping(changes.dbId, changes.tableName, changes);
+        }
+      } else if (proposal.settingType === 'COLUMN_CONFIG') {
+        if (changes.id) {
+          await this.saveDatabaseColumnConfiguration(changes);
+        }
+      } else if (proposal.settingType === 'VALIDATION_BOX') {
+        if (changes.id) {
+          await this.createValidationBox(changes as ValidationBox);
+        }
+      } else if (proposal.settingType === 'WORKFLOW') {
+        if (changes.id) {
+          await this.createValidationWorkflow(changes as DatabaseValidationWorkflow);
+        }
+      }
+    } catch (err: any) {
+      console.warn(`[postgresRepo] Error applying setting proposal changes: ${err.message}`);
+    }
   }
 
 };
+

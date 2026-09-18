@@ -140,8 +140,10 @@ export const investigationOrchestratorService = {
                 console.warn('[WorkflowEngine] Lookup table check warning:', lookupErr.message);
             }
         }
-        // When re-running, evict singleton in-memory cache to guarantee fresh re-execution
-        if (forceRerun) {
+        // In-memory verdict caching is bypassed for live reconciliation pipelines
+        // to prevent serving obsolete verdicts on asynchronously settled CBS states
+        const shouldForceFresh = forceRerun !== false && sourceType !== 'STATIC_DICTIONARY_LOOKUP';
+        if (shouldForceFresh) {
             const keys = records.flatMap((r, idx) => getRecordCandidateKeys(r, idx));
             workflowEngineSingleton.evictCache(workflowId, keys);
         }
@@ -412,36 +414,68 @@ export const investigationOrchestratorService = {
                     ? `${primaryKeyField}::text`
                     : (hasPayloadCol ? `COALESCE(payload->>'${primaryKeyField}', _mirror_id::text)` : `_mirror_id::text`);
                 const partitionQuery = `
-          SELECT ${keyExpr} as tx_key, _validation_status, _validation_details 
+          SELECT ${keyExpr} as tx_key, _validation_status, _validation_action, _validation_details 
           FROM ${mirrorTable} 
           WHERE _batch_id = $1
         `;
                 const partitionRes = await queryPg(partitionQuery, [jobId]);
+                const forwardKeys = [];
                 const passKeys = [];
                 const failKeys = [];
                 partitionRes.rows.forEach((r) => {
-                    if (r._validation_status === 'PASS') {
+                    const isPass = r._validation_status === 'PASS';
+                    const action = r._validation_action || (isPass ? 'CONTINUE' : 'STOP');
+                    if (isPass) {
                         passKeys.push(String(r.tx_key));
                     }
                     else {
                         failKeys.push(String(r.tx_key));
                     }
+                    // Invariant 1: Advance on PASS, or on non-blocking failures configured to CONTINUE or REPORT
+                    const canAdvance = isPass || (r._validation_status === 'FAIL' && (action === 'CONTINUE' || action === 'REPORT'));
+                    if (canAdvance) {
+                        forwardKeys.push(String(r.tx_key));
+                    }
                 });
-                console.log(`[WorkflowEngine] Stage '${stage.name}' completed: ${passKeys.length} passed, ${failKeys.length} failed.`);
+                console.log(`[WorkflowEngine] Stage '${stage.name}' completed: ${passKeys.length} passed, ${failKeys.length} failed, ${forwardKeys.length} forwarded downstream.`);
                 eventService.broadcastEvent('workflow:stage_completed', {
                     jobId,
                     stageId: stage.id,
                     stageName: stage.name,
                     passedCount: passKeys.length,
                     failedCount: failKeys.length,
+                    forwardedCount: forwardKeys.length,
                     mirrorTable
                 });
-                // 8. Event-Driven Chaining: Route passed subset to next stage
-                currentActiveKeys = passKeys;
+                // 8. Event-Driven Chaining: Route forward subset to next stage
+                currentActiveKeys = forwardKeys;
                 currentActiveRecords = currentActiveRecords.filter((r, idx) => {
                     const rKeys = getRecordCandidateKeys(r, idx);
-                    return rKeys.some(k => passKeys.includes(k));
+                    return rKeys.some(k => forwardKeys.includes(k));
                 });
+                // Tainted State Tracking: if a record failed with action REPORT, tag as diagnostic-only so downstream arithmetic is bypassed
+                currentActiveRecords.forEach((r, idx) => {
+                    const rKeys = getRecordCandidateKeys(r, idx);
+                    const matchedRow = partitionRes.rows.find((pr) => rKeys.includes(String(pr.tx_key)));
+                    if (matchedRow && matchedRow._validation_status === 'FAIL' && matchedRow._validation_action === 'REPORT') {
+                        r._isDiagnosticOnly = true;
+                        r._diagnosticTaintReason = matchedRow._validation_details?.message || 'Upstream stage validation failed';
+                    }
+                });
+                // Heartbeat pulse: record progress in task_batch_heartbeats
+                try {
+                    await queryPg(`
+            INSERT INTO task_batch_heartbeats (task_id, batch_id, worker_pid, last_chunk_index, total_chunks, last_heartbeat_at)
+            VALUES ($1, $2, $3, $4, $5, NOW())
+            ON CONFLICT (task_id, batch_id)
+            DO UPDATE SET
+              last_chunk_index = EXCLUDED.last_chunk_index,
+              last_heartbeat_at = NOW();
+          `, [sourceId || workflowId, jobId, process.pid, stageIdx + 1, stages.length]);
+                }
+                catch (hbErr) {
+                    // Non-blocking telemetry
+                }
                 previousMirrorTable = mirrorTable;
                 // Collect final outcomes
                 const processedKeysInStage = new Set();
@@ -455,7 +489,9 @@ export const investigationOrchestratorService = {
                     if (origIdx >= 0)
                         seenProcessedRecIndices.add(origIdx);
                     const verdict = r._validation_status === 'PASS' ? 'PASS' : 'FAIL';
-                    if (stageIdx === stages.length - 1 || r._validation_status !== 'PASS') {
+                    const action = r._validation_action || (verdict === 'PASS' ? 'CONTINUE' : 'STOP');
+                    const isHalted = verdict === 'FAIL' && action !== 'CONTINUE' && action !== 'REPORT';
+                    if (stageIdx === stages.length - 1 || isHalted) {
                         let targetRec = null;
                         if (externalResult?.correlatedRecords) {
                             const keysToCheck = orig ? getRecordCandidateKeys(orig, origIdx) : [String(r.tx_key)];
@@ -469,7 +505,9 @@ export const investigationOrchestratorService = {
                         finalEvaluatedRecords.push({
                             ...(orig || {}),
                             _validation_status: r._validation_status,
+                            _validation_action: r._validation_action,
                             _validation_details: r._validation_details,
+                            _isDiagnosticOnly: orig?._isDiagnosticOnly || false,
                             _target_record: targetRec || null,
                             _target_db: targetDb?.name || stage.targetDbId || 'Target DB',
                             _target_table: stage.targetDataSource || workflow.targetTable || 'transactions',
@@ -479,8 +517,10 @@ export const investigationOrchestratorService = {
                             totalPassed++;
                         else
                             totalFailed++;
-                        // Cache result in singleton
-                        workflowEngineSingleton.cacheResult(workflowId, String(r.tx_key), verdict, r._validation_status, r._validation_details);
+                        // Cache result in singleton only if not a fresh live reconciliation run
+                        if (!shouldForceFresh) {
+                            workflowEngineSingleton.cacheResult(workflowId, String(r.tx_key), verdict, r._validation_status, r._validation_details);
+                        }
                     }
                 });
                 // Any record in currentActiveRecords that was not found in external query/mirror must be flagged as FAIL

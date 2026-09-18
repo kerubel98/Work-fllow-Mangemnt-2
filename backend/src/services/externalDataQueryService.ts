@@ -55,47 +55,51 @@ export function getRowValueCaseInsensitive(row?: Record<string, any>, colName?: 
  * ALL keyMappings are used: the primary key is the first required mapping (batched via WHERE IN),
  * and every additional mapping is added as an AND condition using values from the input records.
  */
+function quoteIdentifier(col: string, dialect: string = 'PostgreSQL'): string {
+  const clean = col.replace(/[`"]/g, '');
+  return dialect === 'MySQL' ? `\`${clean}\`` : `"${clean}"`;
+}
+
 export function buildQueryFromExtraction(
   extraction: QueryExtraction,
   chunk: QueryChunkPlan,
-  tableName?: string,
-  dialect: 'PostgreSQL' | 'MySQL' | 'Generic' = 'Generic',
-  inputRecords?: Record<string, any>[]
+  targetTable: string = extraction.targetDataSource || 'target_data',
+  dialect: 'PostgreSQL' | 'MySQL' | 'Generic' = 'PostgreSQL',
+  inMemoryRecords?: Record<string, any>[]
 ): { sql: string; parameters: any[] } {
-  const targetTable = tableName || extraction.targetDataSource || 'target_data';
+  const parameters: any[] = [];
+  let pIndex = 1;
 
-  // Resolve select columns: only the ones in selectedColumns (Minimal Projection)
+  const nextPlaceholder = (val: any) => {
+    parameters.push(val);
+    return dialect === 'PostgreSQL' ? `$${pIndex++}` : '?';
+  };
+
+  // Determine which columns to project (defaults to * if none specified)
   const columns = extraction.selectedColumns && extraction.selectedColumns.length > 0
-    ? extraction.selectedColumns.map((c: QueryColumn) => c.alias ? `${c.sourceColumn} AS ${c.alias}` : c.sourceColumn).join(', ')
+    ? extraction.selectedColumns.map((c: QueryColumn) => quoteIdentifier(c.sourceColumn, dialect)).join(', ')
     : '*';
 
-  // All keyMappings from the extraction — these are what the user configured
   const allMappings = extraction.keyMappings && extraction.keyMappings.length > 0
     ? extraction.keyMappings
     : [{ inputField: 'transaction_id', sourceField: 'transaction_id', required: true }];
 
-  const parameters: any[] = [];
-  const nextPlaceholder = (val: any) => {
-    parameters.push(val);
-    return dialect === 'PostgreSQL' ? `$${parameters.length}` : '?';
-  };
-
-  // Extract distinct composite records from inputRecords if provided
+  // Extract composite candidate tuples from incoming inMemoryRecords
   const compositeTuples: Record<string, any>[] = [];
-  if (inputRecords && inputRecords.length > 0) {
+  if (inMemoryRecords && inMemoryRecords.length > 0) {
     const seen = new Set<string>();
-    for (const rec of inputRecords) {
+    for (const rec of inMemoryRecords) {
       const tupleObj: Record<string, any> = {};
-      let hasAnyVal = false;
+      let hasAnyMappedField = false;
       for (const m of allMappings) {
-        const val = getRowValueCaseInsensitive(rec, m.inputField);
-        if (val !== undefined && val !== null && String(val).trim() !== '') {
-          tupleObj[m.sourceField] = typeof val === 'string' ? val.trim() : String(val).trim();
-          hasAnyVal = true;
+        const v = getRowValueCaseInsensitive(rec, m.inputField);
+        if (v !== undefined && v !== null && String(v).trim() !== '') {
+          tupleObj[m.sourceField] = v;
+          hasAnyMappedField = true;
         }
       }
-      if (hasAnyVal) {
-        const signature = allMappings.map(m => `${m.sourceField}=${tupleObj[m.sourceField] ?? ''}`).join('|');
+      if (hasAnyMappedField) {
+        const signature = allMappings.map(m => String(tupleObj[m.sourceField] ?? '').trim().toLowerCase()).join(':::');
         if (!seen.has(signature)) {
           seen.add(signature);
           compositeTuples.push(tupleObj);
@@ -107,29 +111,40 @@ export function buildQueryFromExtraction(
   let whereClause = '';
 
   // CASE 1: Multiple configured parameters (e.g. terminal_id, reqamt, fe_utrnno)
-  // Matches records on their exact composite tuples so no Cartesian cross-matching occurs across transactions.
+  // Matches records on their exact composite tuples. Uses ANSI SQL vector IN ((v1, v2), ...) syntax for PG/MySQL.
   if (allMappings.length > 1 && compositeTuples.length > 0) {
     if (compositeTuples.length === 1) {
-      // Single record: WHERE terminal_id = ? AND reqamt = ? AND fe_utrnno = ?
+      // Single record: WHERE "terminal_id" = ? AND "reqamt" = ? AND "fe_utrnno" = ?
       const single = compositeTuples[0];
       const andClauses = allMappings
         .filter(m => single[m.sourceField] !== undefined)
-        .map(m => `${m.sourceField} = ${nextPlaceholder(single[m.sourceField])}`);
+        .map(m => `${quoteIdentifier(m.sourceField, dialect)} = ${nextPlaceholder(single[m.sourceField])}`);
       whereClause = andClauses.length > 0 ? andClauses.join(' AND ') : '1=1';
+    } else if (dialect === 'PostgreSQL' || dialect === 'MySQL') {
+      // Vector IN compilation: WHERE ("col1", "col2", "col3") IN (($1, $2, $3), ($4, $5, $6), ...)
+      const compositeCols = allMappings.map(m => m.sourceField);
+      const safeCols = compositeCols.map(c => quoteIdentifier(c, dialect));
+      const tuplePlaceholders = compositeTuples.map(t => {
+        const placeholders = compositeCols.map(col => nextPlaceholder(t[col] ?? null));
+        return `(${placeholders.join(', ')})`;
+      });
+      whereClause = `(${safeCols.join(', ')}) IN (${tuplePlaceholders.join(', ')})`;
     } else {
-      // Batch of multiple records: WHERE (terminal_id = ? AND reqamt = ? AND fe_utrnno = ?) OR (terminal_id = ? AND ...)
+      // Fallback for Generic dialects: WHERE ("col1" = ? AND "col2" = ?) OR ("col1" = ? AND "col2" = ?)
       const rowClauses = compositeTuples.map(t => {
         const conditions = allMappings
           .filter(m => t[m.sourceField] !== undefined)
-          .map(m => `${m.sourceField} = ${nextPlaceholder(t[m.sourceField])}`);
+          .map(m => `${quoteIdentifier(m.sourceField, dialect)} = ${nextPlaceholder(t[m.sourceField])}`);
         return conditions.length > 0 ? `(${conditions.join(' AND ')})` : '(1=1)';
       });
       whereClause = rowClauses.join(' OR ');
     }
   } else {
+
     // CASE 2: Single parameter configured (or fallback when compositeTuples is empty)
     const primaryMapping = allMappings.find(m => m.required !== false) || allMappings[0];
     const primaryTargetCol = primaryMapping.sourceField;
+    const safePrimaryTargetCol = quoteIdentifier(primaryTargetCol, dialect);
 
     const primaryValsFromRecords = compositeTuples
       .map(t => t[primaryTargetCol])
@@ -144,10 +159,10 @@ export function buildQueryFromExtraction(
       : cleanTransactionIds;
 
     if (effectivePrimaryIds.length === 1) {
-      whereClause = `${primaryTargetCol} = ${nextPlaceholder(effectivePrimaryIds[0])}`;
+      whereClause = `${safePrimaryTargetCol} = ${nextPlaceholder(effectivePrimaryIds[0])}`;
     } else if (effectivePrimaryIds.length > 1) {
       const inPlaceholders = effectivePrimaryIds.map(id => nextPlaceholder(id)).join(', ');
-      whereClause = `${primaryTargetCol} IN (${inPlaceholders})`;
+      whereClause = `${safePrimaryTargetCol} IN (${inPlaceholders})`;
     } else {
       whereClause = '1=1';
     }
@@ -159,18 +174,19 @@ export function buildQueryFromExtraction(
   if (extraction.filters && extraction.filters.length > 0) {
     for (const f of extraction.filters) {
       const cleanVal = typeof f.value === 'string' ? f.value.trim() : f.value;
+      const safeField = quoteIdentifier(f.field, dialect);
       if (f.operator === 'EQ') {
         const pIdx = parameters.length + 1;
-        sql += dialect === 'PostgreSQL' ? ` AND ${f.field} = $${pIdx}` : ` AND ${f.field} = ?`;
+        sql += dialect === 'PostgreSQL' ? ` AND ${safeField} = $${pIdx}` : ` AND ${safeField} = ?`;
         parameters.push(cleanVal);
       } else if (f.operator === 'NE') {
         const pIdx = parameters.length + 1;
-        sql += dialect === 'PostgreSQL' ? ` AND ${f.field} != $${pIdx}` : ` AND ${f.field} != ?`;
+        sql += dialect === 'PostgreSQL' ? ` AND ${safeField} != $${pIdx}` : ` AND ${safeField} != ?`;
         parameters.push(cleanVal);
       } else if (f.operator === 'IS_NULL') {
-        sql += ` AND ${f.field} IS NULL`;
+        sql += ` AND ${safeField} IS NULL`;
       } else if (f.operator === 'IS_NOT_NULL') {
-        sql += ` AND ${f.field} IS NOT NULL`;
+        sql += ` AND ${safeField} IS NOT NULL`;
       }
     }
   }
@@ -193,22 +209,45 @@ export function resolveGroupedRows(
   for (const [key, rows] of Object.entries(groupedRows)) {
     if (!rows || rows.length === 0) continue;
 
+    const hasDuplicates = rows.length > 1;
+
     if (policy === 'STRICT_SINGLE') {
-      resolved[key] = rows[0];
+      resolved[key] = hasDuplicates
+        ? {
+            ...rows[0],
+            _discrepancyFlag: 'DUPLICATE_EXTERNAL_MATCH',
+            _matchCount: rows.length,
+            _rawRows: rows
+          }
+        : rows[0];
     } else if (policy === 'EARLIEST') {
       const sorted = [...rows].sort((a, b) => {
         const valA = sortColumn ? a[sortColumn] : (a.created_at || a.timestamp || a.id);
         const valB = sortColumn ? b[sortColumn] : (b.created_at || b.timestamp || b.id);
         return String(valA ?? '').localeCompare(String(valB ?? ''));
       });
-      resolved[key] = sorted[0];
+      resolved[key] = hasDuplicates
+        ? {
+            ...sorted[0],
+            _discrepancyFlag: 'DUPLICATE_EXTERNAL_MATCH',
+            _matchCount: rows.length,
+            _rawRows: rows
+          }
+        : sorted[0];
     } else if (policy === 'LATEST') {
       const sorted = [...rows].sort((a, b) => {
         const valA = sortColumn ? a[sortColumn] : (a.created_at || a.timestamp || a.id);
         const valB = sortColumn ? b[sortColumn] : (b.created_at || b.timestamp || b.id);
         return String(valB ?? '').localeCompare(String(valA ?? ''));
       });
-      resolved[key] = sorted[0];
+      resolved[key] = hasDuplicates
+        ? {
+            ...sorted[0],
+            _discrepancyFlag: 'DUPLICATE_EXTERNAL_MATCH',
+            _matchCount: rows.length,
+            _rawRows: rows
+          }
+        : sorted[0];
     } else if (policy === 'AGGREGATE_SUM') {
       const baseRow = { ...rows[0] };
       const sumCols = aggregateSumColumns || ['amount', 'amt', 'fee', 'balance'];
@@ -306,14 +345,18 @@ export async function executeExternalChunkQuery(
   }
 
   try {
-    // Extract all keyMappings (what the user configured in the validation box)
+    // Extract keyMappings with support for DB / Box configuration override key field
+    const overrideKeyField = (options.mappingConfig as any)?.reconciliationKeyField || (extraction as any).reconciliationKeyField;
     const allMappings = extraction.keyMappings && extraction.keyMappings.length > 0
       ? extraction.keyMappings
       : [{ inputField: 'transaction_id', sourceField: 'transaction_id', required: true }];
-    const primaryMapping = allMappings.find(m => m.required !== false) || allMappings[0];
+    const primaryMapping = overrideKeyField 
+      ? (allMappings.find(m => m.sourceField === overrideKeyField || m.inputField === overrideKeyField) || { inputField: overrideKeyField, sourceField: overrideKeyField, required: true })
+      : (allMappings.find(m => m.required !== false) || allMappings[0]);
     const inputKeyField = primaryMapping.inputField;
     const sourceKeyField = primaryMapping.sourceField;
     const groupedRows: Record<string, any[]> = {};
+
 
     // 1. Attempt live query if a DB connection is provided or retrievable
     let targetDb = options.connection;
@@ -326,12 +369,29 @@ export async function executeExternalChunkQuery(
       const { executeLiveQueryOnDb } = await import('./dbConnectionManager.js');
       const dialect = targetDb.type === 'PostgreSQL' ? 'PostgreSQL' : (targetDb.type === 'MySQL' ? 'MySQL' : 'Generic');
       const targetTable = options.mappingConfig?.targetTable || extraction.targetDataSource;
-      const { sql, parameters } = buildQueryFromExtraction(extraction, chunk, targetTable, dialect, inMemoryRecords);
 
-      console.log(`📡 Dispatching batch query (${chunk.transactionIds.length} keys) to [${targetDb.name}]: ${sql.slice(0, 120)}...`);
-      const liveResult = await executeLiveQueryOnDb(targetDb, sql, parameters);
+      // Dynamic sub-chunking safeguard: cap query parameters below 30,000 (well below UINT16_MAX 65,535)
+      const fieldCount = Math.max(1, allMappings.length);
+      const maxKeysPerChunk = Math.min(1000, Math.floor(30000 / fieldCount));
 
-      for (const row of liveResult.rows) {
+      let allRows: any[] = [];
+      if (chunk.transactionIds.length > maxKeysPerChunk) {
+        for (let i = 0; i < chunk.transactionIds.length; i += maxKeysPerChunk) {
+          const subTxIds = chunk.transactionIds.slice(i, i + maxKeysPerChunk);
+          const subChunk = { ...chunk, transactionIds: subTxIds };
+          const subInMemory = inMemoryRecords ? inMemoryRecords.slice(i, i + maxKeysPerChunk) : inMemoryRecords;
+          const { sql, parameters } = buildQueryFromExtraction(extraction, subChunk, targetTable, dialect, subInMemory);
+          const subRes = await executeLiveQueryOnDb(targetDb, sql, parameters);
+          if (subRes.rows) allRows.push(...subRes.rows);
+        }
+      } else {
+        const { sql, parameters } = buildQueryFromExtraction(extraction, chunk, targetTable, dialect, inMemoryRecords);
+        console.log(`📡 Dispatching batch query (${chunk.transactionIds.length} keys) to [${targetDb.name}]: ${sql.slice(0, 120)}...`);
+        const liveResult = await executeLiveQueryOnDb(targetDb, sql, parameters);
+        allRows = liveResult.rows || [];
+      }
+
+      for (const row of allRows) {
         // Correlate the returned external row back to an input record by matching ALL mapped parameters
         const matchingInputRecord = (inMemoryRecords || []).find(inputRec => {
           return allMappings.every(m => {
@@ -400,7 +460,12 @@ export async function executeExternalChunkQuery(
     );
 
     for (const rawRow of records) {
-      // Correlate the row back to an input record by matching ALL mapped parameters
+      const primaryVal = String(getRowValueCaseInsensitive(rawRow, sourceKeyField) ?? getRowValueCaseInsensitive(rawRow, inputKeyField) ?? '');
+      if (chunk.transactionIds && chunk.transactionIds.length > 0) {
+        const matchesChunk = chunk.transactionIds.some(tid => String(tid).trim().toLowerCase() === primaryVal.trim().toLowerCase());
+        if (!matchesChunk) continue;
+      }
+
       const matchingInputRecord = (inMemoryRecords || []).find(inputRec => {
         return allMappings.every(m => {
           const inputVal = getRowValueCaseInsensitive(inputRec, m.inputField);
@@ -411,15 +476,6 @@ export async function executeExternalChunkQuery(
           return String(inputVal).trim().toLowerCase() === String(targetVal).trim().toLowerCase();
         });
       });
-
-      if (!matchingInputRecord) {
-        // Fallback: Check if rawRow directly matches chunk.transactionIds
-        const primaryVal = String(getRowValueCaseInsensitive(rawRow, sourceKeyField) ?? getRowValueCaseInsensitive(rawRow, inputKeyField) ?? '');
-        if (!chunk.transactionIds.includes(primaryVal) && !chunk.transactionIds.some(tid => primaryVal.includes(tid))) {
-          const inputPrimaryVals = (inMemoryRecords || []).map(ir => String(getRowValueCaseInsensitive(ir, inputKeyField) ?? ''));
-          if (!inputPrimaryVals.includes(primaryVal)) continue;
-        }
-      }
 
       // Filter row to only requested columns if selectedColumns is specified
       const filteredRow: Record<string, any> = {};

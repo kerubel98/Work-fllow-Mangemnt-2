@@ -5,9 +5,11 @@ import { eventService } from '../services/events.js';
 
 export const issuesRouter = Router();
 
-issuesRouter.get('/', async (_req: Request, res: Response) => {
+issuesRouter.get('/', async (req: Request, res: Response) => {
   try {
-    const issues = await repo.getIssues();
+    const userId = req.query.userId as string | undefined;
+    const scope = (req.query.scope as 'personal' | 'team' | 'all') || 'all';
+    const issues = await repo.getIssues(userId, scope);
     return res.json(issues);
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
@@ -19,6 +21,33 @@ issuesRouter.post('/', async (req: Request, res: Response) => {
     const issueData: Partial<Issue> = req.body;
     if (!issueData.title || !issueData.creatorId) {
       return res.status(400).json({ error: 'Title and creatorId are required' });
+    }
+
+    // Resolve team membership for default visibility
+    let effectiveTeamId = issueData.teamId;
+    let effectiveVisibility = issueData.visibility;
+
+    if (!effectiveTeamId && issueData.creatorId) {
+      const creator = await repo.getUserById(issueData.creatorId);
+      if (creator) {
+        if (creator.permanentTeamId) {
+          effectiveTeamId = creator.permanentTeamId;
+        } else {
+          const teams = await repo.getTeams();
+          const permTeam = teams.find(
+            t => t.teamType === 'permanent' && (t.managerId === creator.id || (t.memberIds && t.memberIds.includes(creator.id)))
+          );
+          if (permTeam) {
+            effectiveTeamId = permTeam.id;
+          }
+        }
+      }
+    }
+
+    if (!effectiveVisibility) {
+      // By default, tasks created by an operator in a permanent team are visible (TEAM_PUBLIC) to team members.
+      // If the operator has no permanent team, default is PERSONAL_PRIVATE.
+      effectiveVisibility = effectiveTeamId ? 'TEAM_PUBLIC' : 'PERSONAL_PRIVATE';
     }
 
     // Auto-mapping and Data Type Transformation Pipeline during Task Creation
@@ -72,6 +101,8 @@ issuesRouter.post('/', async (req: Request, res: Response) => {
       linkedHashtag: issueData.linkedHashtag,
       assignedTechUserId: issueData.assignedTechUserId,
       assignedTechUserName: issueData.assignedTechUserName,
+      teamId: effectiveTeamId,
+      visibility: effectiveVisibility,
       chat: []
     };
 
@@ -100,6 +131,22 @@ issuesRouter.post('/', async (req: Request, res: Response) => {
     }
 
     return res.status(201).json(saved);
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// PATCH /api/issues/:id/visibility - Toggle between TEAM_PUBLIC and PERSONAL_PRIVATE
+issuesRouter.patch('/:id/visibility', async (req: Request, res: Response) => {
+  try {
+    const { visibility } = req.body;
+    if (visibility !== 'TEAM_PUBLIC' && visibility !== 'PERSONAL_PRIVATE') {
+      return res.status(400).json({ error: 'Visibility must be TEAM_PUBLIC or PERSONAL_PRIVATE' });
+    }
+    const updated = await repo.updateIssueVisibility(req.params.id, visibility);
+    if (!updated) return res.status(404).json({ error: 'Issue not found' });
+    eventService.broadcastEvent('issue:updated', updated);
+    return res.json(updated);
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
   }
@@ -200,18 +247,63 @@ issuesRouter.delete('/:id', async (req: Request, res: Response) => {
 
 issuesRouter.post('/:id/chat', async (req: Request, res: Response) => {
   try {
-    const { senderId, senderName, senderRole, text } = req.body;
-    if (!senderId || !text) {
-      return res.status(400).json({ error: 'senderId and text are required' });
+    const { senderId, senderName, senderRole, text, mentions, attachedSummary, solutionProposal, issueContext } = req.body;
+    if (!senderId || (!text && !attachedSummary && !solutionProposal)) {
+      return res.status(400).json({ error: 'senderId and content (text, summary, or proposal) are required' });
     }
     const newMessage: ChatMessage = {
       id: `msg-${Date.now()}`,
       senderId,
       senderName: senderName || 'User',
       senderRole: senderRole || 'operational',
-      text,
-      timestamp: new Date().toISOString()
+      text: text || '',
+      timestamp: new Date().toISOString(),
+      mentions: Array.isArray(mentions) ? mentions : undefined,
+      attachedSummary: attachedSummary || undefined,
+      solutionProposal: solutionProposal ? {
+        id: `prop-${Date.now()}`,
+        script: solutionProposal.script,
+        processType: solutionProposal.processType || 'INTERNAL_STAGED_FIX',
+        proposedBy: senderId,
+        proposedByName: senderName || 'User',
+        proposedAt: new Date().toISOString(),
+        accepted: false
+      } : undefined
     };
+
+    let existing = await repo.getIssueById(req.params.id);
+    if (!existing) {
+      // Auto-register missing or mock issue from issueContext or in-memory store
+      const { store } = await import('../store/dataStore.js');
+      const memoryIssue = store.issues.find(i => i.id === req.params.id || i.id.toLowerCase() === req.params.id.toLowerCase());
+
+      const title = issueContext?.title || memoryIssue?.title || `Operational Task ${req.params.id}`;
+      const description = issueContext?.description || memoryIssue?.description || 'Auto-registered task from investigation session.';
+      const creatorId = issueContext?.creatorId || memoryIssue?.creatorId || senderId;
+      const creatorName = issueContext?.creatorName || memoryIssue?.creatorName || senderName || 'User';
+
+      existing = await repo.createIssue({
+        id: req.params.id,
+        title,
+        description,
+        status: issueContext?.status || memoryIssue?.status || 'Investigating',
+        priority: issueContext?.priority || memoryIssue?.priority || 'Medium',
+        creatorId,
+        creatorName,
+        createdAt: issueContext?.createdAt || memoryIssue?.createdAt || new Date().toISOString(),
+        linkedHashtag: issueContext?.linkedHashtag || memoryIssue?.linkedHashtag,
+        type: issueContext?.type || memoryIssue?.type || 'single',
+        transactionId: issueContext?.transactionId || memoryIssue?.transactionId,
+        uploadedFileName: issueContext?.uploadedFileName || memoryIssue?.uploadedFileName,
+        uploadedFileHeaders: issueContext?.uploadedFileHeaders || memoryIssue?.uploadedFileHeaders,
+        fileMapping: issueContext?.fileMapping || memoryIssue?.fileMapping,
+        firstLevelMappedData: issueContext?.firstLevelMappedData || memoryIssue?.firstLevelMappedData,
+        chat: [newMessage]
+      });
+
+      eventService.broadcastEvent('issue_chat:new', { issueId: req.params.id, message: newMessage });
+      return res.json(existing);
+    }
 
     const updated = await repo.addIssueChat(req.params.id, newMessage);
     if (!updated) return res.status(404).json({ error: 'Issue not found' });
@@ -225,10 +317,119 @@ issuesRouter.post('/:id/chat', async (req: Request, res: Response) => {
   }
 });
 
+// POST /api/issues/:id/chat/accept-solution - Peer consensus acceptance of proposed solution
+issuesRouter.post('/:id/chat/accept-solution', async (req: Request, res: Response) => {
+  try {
+    const { messageId, acceptedBy, acceptedByName } = req.body;
+    if (!messageId || !acceptedBy) {
+      return res.status(400).json({ error: 'messageId and acceptedBy are required' });
+    }
+    const issue = await repo.getIssueById(req.params.id);
+    if (!issue) return res.status(404).json({ error: 'Issue not found' });
+
+    let acceptedProposal: any = null;
+    const updatedChat = (issue.chat || []).map(msg => {
+      if (msg.id === messageId && msg.solutionProposal) {
+        msg.solutionProposal.accepted = true;
+        msg.solutionProposal.acceptedBy = acceptedBy;
+        msg.solutionProposal.acceptedByName = acceptedByName || 'Team Member';
+        msg.solutionProposal.acceptedAt = new Date().toISOString();
+        acceptedProposal = msg.solutionProposal;
+      }
+      return msg;
+    });
+
+    if (!acceptedProposal) {
+      return res.status(404).json({ error: 'Solution proposal not found in chat messages.' });
+    }
+
+    const updates: Partial<Issue> = {
+      chat: updatedChat,
+      solutionScript: acceptedProposal.script,
+      processType: acceptedProposal.processType,
+      acceptedScriptProposalId: messageId
+    };
+
+    // If classified as CAUTIOUS_PROCESS, capture an automatic pre-change snapshot
+    if (acceptedProposal.processType === 'CAUTIOUS_PROCESS') {
+      try {
+        const { reversionService } = await import('../services/reversionService.js');
+        await reversionService.createSnapshot(
+          issue.id,
+          'CAUTIOUS_PROCESS',
+          acceptedBy,
+          `Snapshot on cautious solution acceptance (${acceptedProposal.id})`
+        );
+      } catch (snapErr: any) {
+        console.warn(`[AcceptSolution] Snapshot warning for ${issue.id}:`, snapErr.message);
+      }
+    }
+
+    const updated = await repo.updateIssue(issue.id, updates);
+    eventService.broadcastEvent('issue:updated', updated);
+    eventService.broadcastEvent('issue_chat:solution_accepted', {
+      issueId: issue.id,
+      messageId,
+      proposal: acceptedProposal
+    });
+
+    return res.json({
+      success: true,
+      message: 'Solution script successfully accepted and linked to task.',
+      issue: updated
+    });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/issues/:id/revert - Granular rollback (batch task_id or single transaction_id)
+issuesRouter.post('/:id/revert', async (req: Request, res: Response) => {
+  try {
+    const { transactionId, userId } = req.body;
+    const { reversionService } = await import('../services/reversionService.js');
+    const operatorId = userId || 'system_operator';
+
+    if (transactionId) {
+      const result = await reversionService.revertTransaction(req.params.id, transactionId, operatorId);
+      return res.json(result);
+    } else {
+      const result = await reversionService.revertTask(req.params.id, operatorId);
+      return res.json(result);
+    }
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/issues/:id/reversions - History of pre-change snapshots and rollbacks
+issuesRouter.get('/:id/reversions', async (req: Request, res: Response) => {
+  try {
+    const { reversionService } = await import('../services/reversionService.js');
+    const snapshots = await reversionService.getReversionHistory(req.params.id);
+    return res.json({ taskId: req.params.id, count: snapshots.length, snapshots });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 issuesRouter.post('/:id/execute-script', async (req: Request, res: Response) => {
   try {
     const issue = await repo.getIssueById(req.params.id);
     if (!issue) return res.status(404).json({ error: 'Issue not found' });
+
+    // Pre-change snapshot prior to script execution
+    try {
+      const { reversionService } = await import('../services/reversionService.js');
+      await reversionService.createSnapshot(
+        issue.id,
+        issue.processType || 'INTERNAL_STAGED_FIX',
+        req.body.executedBy || issue.creatorId,
+        'Auto-snapshot before script execution'
+      );
+    } catch (snapErr: any) {
+      console.warn(`[ExecuteScript] Snapshot creation warning:`, snapErr.message);
+    }
 
     const updated = await repo.updateIssue(req.params.id, {
       status: 'Resolved',
@@ -243,6 +444,56 @@ issuesRouter.post('/:id/execute-script', async (req: Request, res: Response) => 
       message: `Resolution script successfully executed for issue ${req.params.id}.`,
       issue: updated
     });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/issues/:id/audit-dossier - Unified immutable case package
+issuesRouter.get('/:id/audit-dossier', async (req: Request, res: Response) => {
+  try {
+    const issue = await repo.getIssueById(req.params.id);
+    if (!issue) return res.status(404).json({ error: 'Issue not found' });
+
+    const { reversionService } = await import('../services/reversionService.js');
+    const [reversions, currentDatasetRes, taskExecutions] = await Promise.all([
+      reversionService.getReversionHistory(issue.id).catch(() => []),
+      repo.getTaskDatasetTransactions(issue.id, 1, 200).catch(() => ({ rows: [] })),
+      (repo as any).getTaskWorkflowExecutions ? (repo as any).getTaskWorkflowExecutions(issue.id).catch(() => ({ executions: [] })) : Promise.resolve({ executions: [] })
+    ]);
+
+    // Construct unified dossier
+    const dossier = {
+      taskId: issue.id,
+      taskTitle: issue.title,
+      taskStatus: issue.status,
+      priority: issue.priority,
+      creator: { id: issue.creatorId, name: issue.creatorName },
+      assignedTech: { id: issue.assignedTechUserId, name: issue.assignedTechUserName },
+      teamId: issue.teamId,
+      visibility: issue.visibility || 'TEAM_PUBLIC',
+      linkedHashtag: issue.linkedHashtag,
+      createdAt: issue.createdAt,
+      solutionScript: issue.solutionScript,
+      processType: issue.processType || 'INTERNAL_STAGED_FIX',
+      solutionExecuted: issue.solutionExecuted,
+      solutionExecutedAt: issue.solutionExecutedAt,
+      chatHistory: issue.chat || [],
+      investigationSummary: {
+        systemId: issue.investigationSystemId,
+        environment: issue.investigationEnvironment,
+        table: issue.investigationTable,
+        validationStatus: issue.validationStatus,
+        validationErrors: issue.validationErrors
+      },
+      validationExecutions: (taskExecutions as any).executions || [],
+      initialTransactionsSnapshot: reversions.length > 0 ? (reversions[reversions.length - 1].beforeState || []) : (issue.firstLevelMappedData || []),
+      currentTransactionsSnapshot: currentDatasetRes.rows || [],
+      reversionHistory: reversions,
+      generatedAt: new Date().toISOString()
+    };
+
+    return res.json(dossier);
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
   }

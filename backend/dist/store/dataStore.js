@@ -241,6 +241,16 @@ export const INITIAL_SYSTEMS = [
 ];
 export const INITIAL_TEAMS = [
     {
+        id: 'team-parent-ops',
+        name: 'Core Operations & Settlement Division',
+        description: 'Parent corporate division managing international clearing, settlement ledgers, and institutional reconciliation.',
+        teamType: 'permanent',
+        managerId: 'usr-4',
+        managerName: 'manager_alex',
+        memberIds: ['usr-1', 'usr-3', 'usr-4'],
+        createdAt: '2026-04-15T08:00:00Z'
+    },
+    {
         id: 'team-1',
         name: 'Core Payments Reconciliation Squad',
         description: 'Specialized unit resolving high-volume transaction authorization discrepancies.',
@@ -249,6 +259,102 @@ export const INITIAL_TEAMS = [
         managerName: 'manager_alex',
         memberIds: ['usr-1', 'usr-2', 'usr-3', 'usr-4'],
         createdAt: '2026-05-01T10:00:00Z'
+    },
+    {
+        id: 'team-cards',
+        name: 'Card Disputes & Chargebacks Unit',
+        description: 'Dedicated team investigating cardholder disputes, chargebacks, and gateway settlement variances.',
+        teamType: 'permanent',
+        managerId: 'usr-4',
+        managerName: 'manager_alex',
+        memberIds: ['usr-1', 'usr-2'],
+        createdAt: '2026-05-10T10:00:00Z'
+    },
+    {
+        id: 'team-audit',
+        name: 'Regulatory Audit & Compliance Squad',
+        description: 'Oversight unit ensuring financial settlement logs adhere to banking compliance and double-entry rules.',
+        teamType: 'permanent',
+        managerId: 'usr-4',
+        managerName: 'manager_alex',
+        memberIds: ['usr-1', 'usr-3'],
+        createdAt: '2026-05-12T10:00:00Z'
+    },
+    {
+        id: 'team-clearing-working',
+        name: 'Cross-Border Clearing Project Squad',
+        description: 'Working squad implementing ISO20022 automated feed ingestion and multi-currency netting.',
+        teamType: 'working',
+        managerId: 'usr-2',
+        managerName: 'kirubel_ops',
+        memberIds: ['usr-2', 'usr-5'],
+        createdAt: '2026-06-01T10:00:00Z'
+    },
+    {
+        id: 'team-fraud-working',
+        name: 'High-Frequency Fraud Triage Squad',
+        description: 'Operational task force monitoring anomalous transaction velocity and duplicate batch postings.',
+        teamType: 'working',
+        managerId: 'usr-3',
+        managerName: 'tech_sarah',
+        memberIds: ['usr-1', 'usr-3', 'usr-6'],
+        createdAt: '2026-06-15T10:00:00Z'
+    }
+];
+export const INITIAL_TEAM_RELATIONSHIPS = [
+    {
+        id: 'rel-seed-1',
+        sourceTeamId: 'team-1',
+        targetTeamId: 'team-parent-ops',
+        relationshipType: 'PARENT_UNIT',
+        description: 'Subordinate reconciliation squad reporting to Core Operations Division.',
+        createdBy: 'system',
+        createdAt: '2026-05-01T10:00:00Z'
+    },
+    {
+        id: 'rel-seed-2',
+        sourceTeamId: 'team-cards',
+        targetTeamId: 'team-parent-ops',
+        relationshipType: 'PARENT_UNIT',
+        description: 'Card disputes unit reporting to Core Operations Division.',
+        createdBy: 'system',
+        createdAt: '2026-05-10T10:00:00Z'
+    },
+    {
+        id: 'rel-seed-3',
+        sourceTeamId: 'team-cards',
+        targetTeamId: 'team-1',
+        relationshipType: 'ESCALATION_TARGET',
+        description: 'Unresolved gateway discrepancies escalated to Core Payments Squad for SQL rollback review.',
+        createdBy: 'system',
+        createdAt: '2026-05-15T10:00:00Z'
+    },
+    {
+        id: 'rel-seed-4',
+        sourceTeamId: 'team-audit',
+        targetTeamId: 'team-1',
+        relationshipType: 'AUDIT_COMPLIANCE_REVIEWER',
+        description: 'Continuous oversight and sample auditing of dual-control maker-checker overrides.',
+        createdBy: 'system',
+        createdAt: '2026-05-20T10:00:00Z'
+    },
+    {
+        id: 'rel-seed-5',
+        sourceTeamId: 'team-clearing-working',
+        targetTeamId: 'team-1',
+        relationshipType: 'UPSTREAM_PROVIDER',
+        description: 'Clearing squad produces validated currency batches consumed by Core Payments for reconciliation.',
+        createdBy: 'system',
+        createdAt: '2026-06-01T10:00:00Z'
+    },
+    {
+        id: 'rel-seed-6',
+        sourceTeamId: 'team-fraud-working',
+        targetTeamId: 'team-cards',
+        relationshipType: 'PEER_COLLABORATOR',
+        description: 'Lateral collaboration for card fraud investigations and duplicate reversal proposals.',
+        createdBy: 'system',
+        createdAt: '2026-06-15T10:00:00Z'
     }
 ];
 export const INITIAL_ORGANIZATIONS = [
@@ -799,5 +905,6 @@ export class DataStore {
     centralTransactions = [];
     validationBoxes = [];
     columnConfigurations = [];
+    teamRelationships = [];
 }
 export const store = new DataStore();

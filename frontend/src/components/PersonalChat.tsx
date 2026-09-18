@@ -117,22 +117,22 @@ export default function PersonalChat({
   });
 
   return (
-    <div className="h-[calc(100vh-5rem)] flex flex-col space-y-4" id="personal-chat-workspace">
+    <div className="h-[calc(100vh-3.5rem)] flex flex-col space-y-2.5" id="personal-chat-workspace">
       
       {/* Header Banner */}
-      <div className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-2xs flex flex-col md:flex-row md:items-center justify-between gap-3 shrink-0">
-        <div className="flex items-center space-x-3">
-          <div className="p-2.5 bg-blue-50 border border-blue-100 rounded-xl text-blue-600">
-            <MessageSquare size={20} />
+      <div className="bg-[#0F172B] border border-slate-800 rounded-xl p-2.5 sm:p-3 text-white shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-2.5 shrink-0">
+        <div className="flex items-center space-x-2.5">
+          <div className="p-2 bg-blue-500/20 text-blue-400 border border-blue-500/30 rounded-lg">
+            <MessageSquare size={16} />
           </div>
           <div>
             <div className="flex items-center space-x-2">
-              <h1 className="text-base font-bold text-slate-900 tracking-tight">Direct Messages</h1>
-              <span className="text-[10px] font-mono bg-blue-100 text-blue-800 px-2 py-0.5 rounded-full font-semibold">
+              <h1 className="text-sm font-bold text-white tracking-tight">Direct Messages</h1>
+              <span className="text-[10px] font-mono bg-[#155DFC]/20 text-blue-300 border border-[#155DFC]/30 px-2 py-0.5 rounded-full font-semibold">
                 1-on-1 Personal Chat
               </span>
             </div>
-            <p className="text-xs text-slate-500 font-mono">
+            <p className="text-[11px] text-slate-300 font-mono">
               Secure internal team messaging for direct operational & technical coordination
             </p>
           </div>
@@ -141,9 +141,9 @@ export default function PersonalChat({
         {onNavigateToTeamWorkspace && (
           <button
             onClick={onNavigateToTeamWorkspace}
-            className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-lg font-mono flex items-center space-x-1.5 transition-colors cursor-pointer shrink-0"
+            className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white border border-slate-700 text-xs font-semibold rounded-lg font-mono flex items-center space-x-1.5 transition-colors cursor-pointer shrink-0"
           >
-            <Users size={14} />
+            <Users size={13} />
             <span>Open Team Workspace</span>
           </button>
         )}
@@ -156,7 +156,7 @@ export default function PersonalChat({
         <div className="w-full lg:w-80 border-r border-slate-200 bg-slate-50/50 flex flex-col shrink-0">
           
           {/* Search & Filter Header */}
-          <div className="p-3 border-b border-slate-200 bg-white space-y-2">
+          <div className="p-2.5 border-b border-slate-200 bg-white space-y-1.5">
             <div className="relative">
               <Search size={14} className="absolute left-3 top-2.5 text-slate-400" />
               <input
@@ -164,7 +164,7 @@ export default function PersonalChat({
                 placeholder="Search colleagues..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                className="w-full pl-8 pr-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono"
+                className="w-full pl-8 pr-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs focus:outline-none focus:border-[#155DFC] font-mono"
               />
             </div>
 
@@ -173,7 +173,7 @@ export default function PersonalChat({
               <button
                 onClick={() => setRoleFilter('ALL')}
                 className={`px-2 py-0.5 rounded transition-colors cursor-pointer ${
-                  roleFilter === 'ALL' ? 'bg-slate-900 text-white font-bold' : 'text-slate-600 hover:bg-slate-200'
+                  roleFilter === 'ALL' ? 'bg-[#155DFC] text-white font-bold' : 'text-slate-600 hover:bg-slate-200'
                 }`}
               >
                 All
@@ -181,7 +181,7 @@ export default function PersonalChat({
               <button
                 onClick={() => setRoleFilter('operational')}
                 className={`px-2 py-0.5 rounded transition-colors cursor-pointer ${
-                  roleFilter === 'operational' ? 'bg-emerald-600 text-white font-bold' : 'text-slate-600 hover:bg-slate-200'
+                  roleFilter === 'operational' ? 'bg-[#155DFC] text-white font-bold' : 'text-slate-600 hover:bg-slate-200'
                 }`}
               >
                 Ops
@@ -362,12 +362,40 @@ export default function PersonalChat({
                           <span>{new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
                         </div>
 
-                        <div className={`p-3 rounded-2xl max-w-lg text-xs leading-relaxed shadow-2xs ${
+                        <div className={`p-3 rounded-2xl max-w-lg text-xs leading-relaxed shadow-2xs group relative ${
                           isSelf
                             ? 'bg-blue-600 text-white rounded-tr-none'
                             : 'bg-white border border-slate-200 text-slate-800 rounded-tl-none'
                         }`}>
                           <p className="whitespace-pre-wrap">{msg.content}</p>
+                          <div className="mt-1.5 pt-1 border-t border-slate-200/30 flex items-center justify-between opacity-80 group-hover:opacity-100 transition-opacity">
+                            <button
+                              onClick={async () => {
+                                try {
+                                  await fetch('/api/resolutions/propose-from-chat', {
+                                    method: 'POST',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({
+                                      chatMessageId: msg.id,
+                                      messageContent: msg.content,
+                                      taskId: 'TASK-CHAT-01',
+                                      transactionId: `TXN-CHAT-${Date.now()}`,
+                                      teamId: 'team-cards',
+                                      makerId: currentUser.id,
+                                      makerName: currentUser.username
+                                    })
+                                  });
+                                  alert('Message submitted as Maker Proposal to Team Lead!');
+                                } catch (err: any) {
+                                  alert(`Submission error: ${err.message}`);
+                                }
+                              }}
+                              className="text-[9px] font-mono flex items-center space-x-1 hover:underline cursor-pointer"
+                            >
+                              <ShieldCheck size={10} />
+                              <span>Submit as Maker Proposal</span>
+                            </button>
+                          </div>
                         </div>
                       </div>
                     );

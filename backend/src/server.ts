@@ -21,7 +21,10 @@ import { eventsRouter } from './routes/events.js';
 import { workflowsRouter } from './routes/workflows.js';
 import { investigationsRouter } from './routes/investigations.js';
 import { validationBoxesRouter } from './routes/validationBoxes.js';
+import resolutionsRouter from './routes/resolutions.js';
+import { workspaceSettingsProposalsRouter } from './routes/workspaceSettingsProposals.js';
 import { mirrorTableManager } from './services/mirrorTableManager.js';
+import { ftpFileStagingService } from './services/ftpFileStagingService.js';
 
 // dotenv/config auto-loads
 
@@ -51,6 +54,8 @@ app.use('/api/teams', teamsRouter);
 app.use('/api/workflows', workflowsRouter);
 app.use('/api/investigations', investigationsRouter);
 app.use('/api/validation-boxes', validationBoxesRouter);
+app.use('/api/resolutions', resolutionsRouter);
+app.use('/api/settings/proposals', workspaceSettingsProposalsRouter);
 app.use('/api', eventsRouter);
 app.use('/api', collaborationRouter);
 app.use('/api', miscRouter);
@@ -89,6 +94,33 @@ async function startServer() {
   await mirrorTableManager.provisionAllConnectedDbMirrors().catch(err => {
     console.warn('[ServerBoot] Error auto-provisioning mirror tables on boot:', err.message);
   });
+  await ftpFileStagingService.ensureFtpTablesArePermanent().catch(err => {
+    console.warn('[ServerBoot] Error verifying permanent FTP mirror tables:', err.message);
+  });
+
+  // Precision Orphaned Task Sweeper: Fails in-flight jobs only if heartbeat expired (> 3 mins)
+  if (isPostgresConnected) {
+    try {
+      const { queryPg } = await import('./config/postgres.js');
+      const sweepRes = await queryPg(`
+        UPDATE issues i
+        SET status = 'Failed',
+            notes = COALESCE(notes, '') || ' [Orphaned in-flight job swept on application restart: heartbeat expired]'
+        WHERE i.status = 'In Progress'
+          AND NOT EXISTS (
+            SELECT 1 FROM task_batch_heartbeats h
+            WHERE h.task_id = i.id 
+              AND h.last_heartbeat_at > NOW() - INTERVAL '3 minutes'
+          )
+        RETURNING id;
+      `);
+      if (sweepRes.rowCount && sweepRes.rowCount > 0) {
+        console.log(`[ServerBoot] Precision Sweeper: Safely marked ${sweepRes.rowCount} orphaned task(s) as Failed.`);
+      }
+    } catch (sweepErr: any) {
+      console.warn('[ServerBoot] Precision sweeper check warning:', sweepErr.message);
+    }
+  }
   // Only attempt MongoDB connection if explicitly configured in environment
   if (process.env.MONGODB_URI) {
     await connectDB();

@@ -14,19 +14,19 @@ interface TitleBarProps {
 }
 
 export default function TitleBar({ currentUser, onLogout, onlineCount }: TitleBarProps) {
-  // Determine badge color for the role
+  // Determine badge color for the role in dark theme
   const getRoleBadgeClass = (role: string) => {
     switch (role) {
       case 'admin':
-        return 'bg-red-50 text-red-700 border-red-200';
+        return 'bg-red-500/20 text-red-300 border-red-500/40';
       case 'technical':
-        return 'bg-blue-50 text-blue-700 border-blue-200';
+        return 'bg-[#155DFC]/20 text-blue-300 border-[#155DFC]/40';
       case 'operational':
-        return 'bg-emerald-50 text-emerald-700 border-emerald-200';
+        return 'bg-emerald-500/20 text-emerald-300 border-emerald-500/40';
       case 'managerial':
-        return 'bg-amber-50 text-amber-700 border-amber-200';
+        return 'bg-amber-500/20 text-amber-300 border-amber-500/40';
       default:
-        return 'bg-slate-50 text-slate-700 border-slate-200';
+        return 'bg-slate-800 text-slate-300 border-slate-700';
     }
   };
 
@@ -41,70 +41,70 @@ export default function TitleBar({ currentUser, onLogout, onlineCount }: TitleBa
   };
 
   return (
-    <div className="h-12 bg-white border-b border-slate-200 flex items-center justify-between px-4 select-none shadow-sm" id="electron-title-bar">
+    <div className="h-9 bg-[#0F172B] border-b border-slate-800 flex items-center justify-between px-3 select-none text-xs text-slate-200 shadow-xs z-30" id="electron-title-bar">
       {/* OS Mac-style Traffic Light Buttons */}
       <div className="flex items-center space-x-2 w-1/4">
-        <div className="flex space-x-1.5 mr-4">
-          <div className="w-3 h-3 rounded-full bg-rose-400 hover:bg-rose-500 transition-colors cursor-pointer flex items-center justify-center text-[8px] text-rose-950 font-bold group">
+        <div className="flex space-x-1.5 mr-3">
+          <div className="w-2.5 h-2.5 rounded-full bg-rose-500/90 hover:bg-rose-600 transition-colors cursor-pointer flex items-center justify-center text-[7px] text-rose-950 font-bold group">
             <span className="opacity-0 group-hover:opacity-100">×</span>
           </div>
-          <div className="w-3 h-3 rounded-full bg-amber-400 hover:bg-amber-500 transition-colors cursor-pointer flex items-center justify-center text-[8px] text-amber-950 font-bold group">
+          <div className="w-2.5 h-2.5 rounded-full bg-amber-500/90 hover:bg-amber-600 transition-colors cursor-pointer flex items-center justify-center text-[7px] text-amber-950 font-bold group">
             <span className="opacity-0 group-hover:opacity-100">-</span>
           </div>
-          <div className="w-3 h-3 rounded-full bg-emerald-400 hover:bg-emerald-500 transition-colors cursor-pointer flex items-center justify-center text-[8px] text-emerald-950 font-bold group">
+          <div className="w-2.5 h-2.5 rounded-full bg-emerald-500/90 hover:bg-emerald-600 transition-colors cursor-pointer flex items-center justify-center text-[7px] text-emerald-950 font-bold group">
             <span className="opacity-0 group-hover:opacity-100">+</span>
           </div>
         </div>
         
         {/* Electron status badge */}
-        <div className="hidden md:flex items-center space-x-2 text-xs text-blue-700 font-mono bg-blue-50/80 px-2.5 py-0.5 rounded-md border border-blue-100">
-          <Terminal size={12} className="text-blue-600" />
+        <div className="hidden md:flex items-center space-x-1.5 text-[11px] text-slate-300 font-mono bg-slate-800/80 px-2 py-0.5 rounded border border-slate-700/70">
+          <Terminal size={11} className="text-[#155DFC]" />
           <span>app-shell v1.4.0</span>
         </div>
       </div>
 
       {/* Main Title Center */}
-      <div className="text-sm font-medium text-slate-800 flex items-center justify-center space-x-2 w-2/4">
-        <Database size={15} className="text-blue-600" />
-        <span className="font-semibold tracking-tight text-blue-950">IssueTrace</span>
-        <span className="text-slate-300">|</span>
-        <span className="text-xs text-blue-800 font-mono bg-blue-50 px-2.5 py-0.5 rounded-md border border-blue-100">Desktop Operations Terminal</span>
+      <div className="text-xs font-medium text-slate-200 flex items-center justify-center space-x-2 w-2/4">
+        <Database size={13} className="text-[#155DFC]" />
+        <span className="font-semibold tracking-tight text-white">IssueTrace</span>
+        <span className="text-slate-600">|</span>
+        <span className="text-[11px] text-slate-300 font-mono bg-slate-800/80 px-2 py-0.5 rounded border border-slate-700/70">Desktop Operations Terminal</span>
       </div>
 
       {/* User Session & Status on the Right */}
-      <div className="flex items-center justify-end space-x-3 w-1/4 text-xs">
+      <div className="flex items-center justify-end space-x-2 w-1/4 text-xs">
         {currentUser ? (
-          <div className="flex items-center space-x-3 bg-slate-50 px-2.5 py-1 rounded-lg border border-slate-200">
+          <div className="flex items-center space-x-2.5 bg-slate-800/80 px-2 py-0.5 rounded border border-slate-700/70">
             {/* DB Connection Status Indicator */}
             <div className="flex items-center space-x-1.5 mr-1" title={`${onlineCount} connected databases`}>
               <span className="relative flex h-2 w-2">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-600"></span>
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#155DFC] opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2 w-2 bg-[#155DFC]"></span>
               </span>
-              <span className="text-[10px] text-blue-700 font-mono hidden lg:inline font-medium">{onlineCount} DBs Online</span>
+              <span className="text-[10px] text-slate-300 font-mono hidden lg:inline font-medium">{onlineCount} DBs Online</span>
             </div>
 
             {/* Profile Info */}
-            <div className="flex flex-col text-right">
-              <span className="text-slate-900 font-medium">{currentUser.username}</span>
-              <span className={`text-[9px] uppercase tracking-wider font-mono border px-1.5 rounded-sm mt-0.5 ${getRoleBadgeClass(currentUser.role)}`}>
-                {getRoleLabel(currentUser.role)}
+            <div className="flex items-center gap-1.5">
+              <span className="text-slate-200 font-medium text-xs">{currentUser.username}</span>
+              <span className={`text-[8.5px] uppercase tracking-wider font-mono border px-1 py-0.2 rounded-xs ${getRoleBadgeClass(currentUser.role)}`}>
+                {currentUser.role}
               </span>
             </div>
 
             {/* Logout Button */}
             <button
               onClick={onLogout}
-              className="p-1.5 text-slate-500 hover:text-blue-600 hover:bg-blue-50 rounded transition-colors"
+              className="p-1 text-slate-400 hover:text-white hover:bg-slate-700/60 rounded transition-colors cursor-pointer"
               title="Logout session"
               id="btn-logout"
             >
-              <LogOut size={14} />
+              <LogOut size={12} />
             </button>
           </div>
         ) : (
-          <div className="flex items-center space-x-1 text-slate-600 bg-slate-50 px-2.5 py-1 rounded border border-slate-200">
-            <Shield size={12} className="text-amber-500" />
+          <div className="flex items-center space-x-1 text-slate-400 bg-slate-800/80 px-2 py-0.5 rounded border border-slate-700/70 text-[11px]">
+            <Shield size={11} className="text-amber-400" />
             <span>Secure Handshake Pending</span>
           </div>
         )}

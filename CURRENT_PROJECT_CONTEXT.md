@@ -47,7 +47,7 @@ This report reconstructs the **real, current application architecture** of the *
 Historical documentation (`SYSTEM_ARCHITECTURE.md`, earlier meeting transcripts, and obsolete inspection notes from early September 2026) describes a system centered around MongoDB, client-side `localStorage` rule persistence, unbatched mock fallbacks, and generic external database abstractions.
 
 **The actual repository has fundamentally changed:**
-1. **Primary Persistence**: The active operational datastore is **PostgreSQL** (`operational_workflow_db`), driven by a 22-table schema (`backend/src/database/migrations/001_initial_schema.sql`), with connection pooling, migrations, and set-based SQL joins.
+1. **Primary Persistence**: The active operational datastore is **PostgreSQL** (`operational_workflow_db`), driven by a 27-table schema across migrations `backend/src/database/migrations/*.sql`, with connection pooling, migrations, and set-based SQL joins.
 2. **Investigation & Rule Execution**: The application features a dynamic **Rule-to-SQL compiler** (`backend/src/services/ruleSqlCompiler.ts`), auto-provisioned **UNLOGGED mirror tables** in PostgreSQL (`backend/src/services/mirrorTableManager.ts`), in-flight execution deduplication (`backend/src/services/workflowEngineSingleton.ts`), pre-flight database liveness circuit breakers (`backend/src/services/dbLivenessService.ts`), and set-based relational reconciliation.
 3. **Workflow Studio Flowchart**: The frontend features a visual vertical flowchart builder (`frontend/src/components/settings/WorkflowStudioFlowchart.tsx`) that links **Search Blocks** (rectangles) to **Condition Check Blocks** (rhombuses) into a Directed Acyclic Graph (DAG) pipeline with persistent backend synchronization.
 4. **Data Isolation**: Large task datasets are separated from issue metadata and stored in an indexed standalone relational table (`task_dataset_transactions`), supporting streaming pagination without memory bloat.
@@ -88,7 +88,7 @@ The repository is structured as an npm multi-workspace repository:
 └──────────────┬───────────────┘ ┌──────────────────────────────┐
                │                 │ Primary PostgreSQL Database  │
                ├─────────────────► (operational_workflow_db)    │
-               │                 │ - 22 Relational Tables       │
+               │                 │ - 26 Relational Tables       │
                │                 │ - UNLOGGED Mirror Tables     │
                │                 └──────────────────────────────┘
                │
@@ -176,6 +176,23 @@ Based on `backend/src/types.ts`, `backend/src/database/migrations/001_initial_sc
 - **Key Fields**:
   - `database_table_mappings`: `id` (`{dbId}::{tableName}`), `db_id`, `table_name`, `columns` (JSONB array of mapped columns).
   - `global_standard_directory`: `id`, `field_name`, `display_name`, `data_type`, `is_required`, `default_mapping`.
+
+### 4.10 `ResolutionApprovalRequest` (Maker-Checker Dual Authorization)
+- **Purpose**: Enforces the Four-Eyes principle for manual transaction adjustments (`FORCE_MATCH`, `WRITE_OFF`, `MANUAL_REVERSAL`).
+- **Model / Storage**: Table `resolution_approval_requests` (`001_initial_schema.sql`).
+- **Key Fields**: `id` (`res-req-{uuid}`), `issue_id`, `transaction_id`, `resolution_type`, `maker_id`, `maker_name`, `justification`, `checker_id`, `checker_notes`, `status` (`PENDING`, `APPROVED`, `REJECTED`), `input_data_snapshot` (JSONB), `mirror_data_snapshot` (JSONB), `applied_at`.
+
+### 4.11 `TeamDashboardVisibilityGrant` & `CrossFunctionalProjectGroup`
+- **Purpose**: Governs cross-department visibility delegation and strategic cross-functional project groups.
+- **Model / Storage**: Tables `team_dashboard_visibility_grants` and `cross_functional_project_groups`.
+- **Key Fields**:
+  - `team_dashboard_visibility_grants`: `id`, `grantor_team_id`, `grantee_team_id`, `visibility_scope` (`FULL`, `PARTIAL_KPI`), `granted_by`.
+  - `cross_functional_project_groups`: `id`, `group_name`, `lead_user_id`, `participating_team_ids` (JSONB), `strategic_objective_id`.
+
+### 4.12 `AiStrategicObjective` (Organizational Goal Scaffolding)
+- **Purpose**: Connects strategic departmental targets, executive KPIs, and task forces to operational `#hashtags`.
+- **Model / Storage**: Table `ai_strategic_objectives`.
+- **Key Fields**: `id`, `objective_code`, `title`, `target_metric`, `current_metric`, `linked_hashtags` (JSONB), `assigned_team_ids` (JSONB), `status`.
 
 ---
 
@@ -364,7 +381,8 @@ type: 'PostgreSQL' | 'Oracle' | 'MySQL' | 'MongoDB';
 | Capability | Current Repository Implementation |
 | :--- | :--- |
 | **Query Granularity** | **BATCHED CHUNKS**. Queries are never executed per-transaction if multiple transactions exist. Chunks of 50–100 transaction IDs are consolidated into single SQL statements. |
-| **Parameter Binding** | Consolidated into parameterized `WHERE primaryKey IN ($1, $2, ...)` (PostgreSQL) or `WHERE primaryKey IN (?, ?, ...)` (MySQL). |
+| **Parameter Binding & Bound** | Consolidated into parameterized `WHERE primaryKey IN ($1, $2, ...)` or composite tuple `WHERE (c1, c2) IN ((v1, v2), ...)`. **Dynamic Parameter Bounding**: Capped at 30,000 parameters (well below PostgreSQL $\text{UINT16\_MAX} = 65,535$); wider tuples are sub-chunked and sequentially merged. |
+| **Identifier Quoting** | **ANSI QUOTED**. All column identifiers are safely escaped (`"col"` for PostgreSQL, `` `col` `` for MySQL) to prevent SQL keyword collisions (e.g. `order`, `group`). |
 | **Column Projection** | **MINIMAL PROJECTION**. If `QueryExtraction.selectedColumns` contains specific columns, the query compiles to `SELECT col1 AS a1, col2 ...`. Only falls back to `SELECT *` if no columns are specified. |
 | **Streaming / Pagination** | Query results are returned in memory as array sets by the database driver. Large task dataset viewing in the frontend is paginated via `GET /api/issues/:id/transactions?page=1&limit=50`. |
 | **Mirroring & Persistence** | **YES**. External query chunks are mirrored into PostgreSQL: written to `investigation_external_mirror` and dedicated typed UNLOGGED tables (`mirror_{db}_{table}`). |
@@ -374,7 +392,7 @@ type: 'PostgreSQL' | 'Oracle' | 'MySQL' | 'MongoDB';
 ## 12. Database Persistence & Storage Usage
 
 ### 12.1 PostgreSQL Collections / Tables (Primary)
-Managed via `backend/src/database/migrations/001_initial_schema.sql`:
+Managed via `backend/src/database/migrations/*.sql`:
 
 | Table Name | Primary Purpose | Key Indexes |
 | :--- | :--- | :--- |
@@ -406,6 +424,12 @@ Managed via `backend/src/database/migrations/001_initial_schema.sql`:
 | `investigation_transactions` | Per-transaction results & audit trail | `(task_id, final_result, final_action)`, `(task_id, investigation_status)` |
 | `investigation_external_mirror` | Partitioned external payloads | `(investigation_id, data_source_id, record_key)`, `retrieved_at` |
 | `mirror_{db}_{table}` | Dedicated UNLOGGED tables for fast SQL | `_batch_id`, `(_rule_block_id, _validation_status)` |
+| `resolution_approval_requests` | Maker-Checker dual authorization proposals | `(task_id, status)`, `maker_id`, `checker_id` |
+| `transaction_reversion_snapshots` | Pre-change rollback states for cautious processes | `(task_id, snapshot_type)`, `created_at` |
+| `cross_functional_project_groups` | Cross-department task forces linked to hashtags | `id` (PK) |
+| `team_dashboard_visibility_grants` | Cross-team KPI sharing grants | `(grantor_team_id, grantee_team_id)` |
+| `ai_strategic_objectives` | Organizational high-level objectives | `id` (PK) |
+| `task_batch_heartbeats` | Granular sub-chunk worker progress pulses | `(task_id, batch_id)`, `last_heartbeat_at` |
 
 ### 12.2 MongoDB (Legacy / Commented Out)
 - Driver: `mongoose` 8.9.5.
@@ -494,7 +518,7 @@ backend/src/
 │   └── seed.ts           # Legacy Mongo seed populator
 ├── database/
 │   └── migrations/
-│       └── 001_initial_schema.sql  # 22 relational PostgreSQL DDL tables
+│       └── 001_initial_schema.sql  # 26 relational PostgreSQL DDL tables
 ├── models/               # Mongoose schema definitions (legacy/fallback)
 ├── routes/               # Express Router controllers (REST APIs)
 │   ├── auth.ts           # Authentication & RBAC user management
@@ -504,7 +528,9 @@ backend/src/
 │   ├── investigations.ts # Investigation planning & orchestrator execution
 │   ├── validationBoxes.ts# Reusable ValidationBox blocks
 │   ├── transactionSettings.ts # Directory, Table Mappings, Schema config
-│   ├── teams.ts          # Team management & task tracking
+│   ├── teams.ts          # Team management, In/Out KPIs, and visibility grants
+│   ├── resolutions.ts    # Maker-Checker dual authorization & review queues
+│   ├── misc.ts           # Universal hashtag resolution & asset indexing
 │   ├── ai.ts             # Google Gemini GenAI SQL assistant
 │   └── events.ts         # SSE real-time event broadcasting
 ├── services/             # Core Domain Business Logic
@@ -512,6 +538,8 @@ backend/src/
 │   ├── ruleSqlCompiler.ts                 # Dynamic Rule-to-SQL compiler
 │   ├── mirrorTableManager.ts              # UNLOGGED PostgreSQL mirror tables
 │   ├── reconciliationService.ts           # Set-based relational reconciliation
+│   ├── makerCheckerService.ts             # 4-Eyes dual control & anti-self-approval
+│   ├── hashtagService.ts                  # Universal hashtag asset resolver
 │   ├── workflowEngineSingleton.ts         # Deduplication & in-flight locking
 │   ├── dbConnectionManager.ts             # Live MySQL, Postgres, Mongo runner
 │   ├── dbLivenessService.ts               # Pre-flight liveness & circuit breakers
@@ -603,6 +631,22 @@ backend/src/
 * `POST /table-mappings`: Upsert table mapping.
 * `GET /table-mappings/validate/:dbId/:tableName`: Validate physical table against directory.
 
+### Resolution Governance & Maker-Checker (`/api/resolutions`)
+* `POST /propose`: Submit Maker resolution proposal (`FORCE_MATCH`, `WRITE_OFF`, `MANUAL_REVERSAL`) with justification & evidence snapshot.
+* `POST /review`: Checker approval or rejection. Enforces anti-self-approval (`makerId !== checkerId`).
+* `GET /pending`: List pending resolution proposals awaiting supervisor review.
+* `POST /propose-from-chat`: Convert a team chat discussion into a formal Maker proposal with attribution.
+
+### Universal Hashtags (`/api/hashtags`)
+* `GET /resolve/:tag`: Resolve and aggregate all platform assets linked by `#hashtag` (workflows, templates, DB connections, tasks, chat messages).
+
+### Teams, Dashboards & Governance (`/api/teams`)
+* `GET /`: List departments and teams.
+* `GET /:id/dashboard`: Fetch Inflow/Outflow KPIs, 4-Eyes clearance rate, and SLA compliance metrics.
+* `POST /:id/visibility-grants`: Grant cross-team dashboard visibility (`FULL` vs `PARTIAL_KPI`).
+* `GET /:id/visibility-grants`: List active visibility grants.
+* `GET /strategic-objectives`: List organizational strategic goals and linked `#hashtags`.
+
 ---
 
 ## 19. Security Architecture & Governance
@@ -610,7 +654,9 @@ backend/src/
 * **Authentication**: Simulated JWT token stored in browser `localStorage`, passed in `Authorization: Bearer <token>` headers. Decoded in `backend/src/middleware/auth.ts`.
 * **RBAC Privileges**: Users possess role (`admin`, `tech`, `manager`, `operational`) and explicit execution flags (`can_execute_select`, `can_execute_update`, `allowed_db_ids`).
 * **Query Restrictions & Approval**: Direct DML (`UPDATE`, `DELETE`, `INSERT`, `DROP`) requires prior approval via `query_approval_requests` unless user has administrative bypass.
-* **Audit Logging**: Every query executed via `POST /api/db/query/execute` is written to `connection_usage_logs` with timestamp, user ID, DB ID, and query text.
+* **Maker-Checker Dual Control**: Manual transaction resolution requires distinct Maker and Checker identities (`makerId !== checkerId`). Operators cannot approve their own submissions (HTTP 403).
+* **Audit Logging & Snapshots**: Every query executed via `POST /api/db/query/execute` is written to `connection_usage_logs`. Every resolution proposal snapshots input and mirror state into `resolution_approval_requests`.
+* **Cross-Team Access Grants**: Departmental visibility delegation is mediated via `team_dashboard_visibility_grants` without altering base data tenancy.
 * **Credential Handling**: Stored in `database_connections`. Passwords are encrypted/masked in transit.
 
 ---
@@ -620,9 +666,10 @@ backend/src/
 ### Implemented High-Performance Patterns:
 1. **UNLOGGED Mirror Tables**: Mirror tables in PostgreSQL are created as `UNLOGGED`, bypassing Write-Ahead Logging (WAL) for 3x–5x higher write throughput.
 2. **Set-Based Batch Updates**: Rule evaluations are compiled into a single `UPDATE mirror SET ... WHERE _batch_id = $1` statement, evaluating thousands of rows in milliseconds.
-3. **Partitioned Ingestion**: Spreadsheets with 50,000+ rows are inserted into `task_dataset_transactions` in 500-row parameterized batches.
-4. **Thin-Client Pagination**: Grid views fetch 50 rows at a time using SQL `LIMIT 50 OFFSET 0`.
-5. **In-Flight Lock Deduplication**: Duplicate parallel requests for identical transactions join existing promises via `workflowEngineSingleton.ts`.
+3. **Tuple-Based External Matching**: Multi-column key extraction uses batched tuple SQL (`WHERE (col1, col2, ...) IN ((v1, v2), ...)`), drastically reducing query overhead over composite keys.
+4. **Partitioned Ingestion**: Spreadsheets with 50,000+ rows are inserted into `task_dataset_transactions` in 500-row parameterized batches.
+5. **Thin-Client Pagination**: Grid views fetch 50 rows at a time using SQL `LIMIT 50 OFFSET 0`.
+6. **In-Flight Lock Deduplication**: Duplicate parallel requests for identical transactions join existing promises via `workflowEngineSingleton.ts`.
 
 ### Current Bottlenecks & Failure Risks:
 1. **Large Excel Ingestion in Browser**: Parsing multi-megabyte Excel files in `IssueCreator.tsx` runs on the main browser thread via SheetJS (`xlsx`), which can freeze low-end client machines.
@@ -724,12 +771,16 @@ backend/src/
 ┌─────────────────────────────────────────────────────────────────────────────────────┐
 │                             PRIMARY POSTGRESQL DATABASE                             │
 │  ┌─────────────────────────────────────────┐  ┌──────────────────────────────────┐  │
-│  │ 22 Core Relational Tables               │  │ Dedicated UNLOGGED Mirror Tables │  │
+│  │ 26 Core Relational Tables               │  │ Dedicated UNLOGGED Mirror Tables │  │
 │  │ - issues & task_dataset_transactions    │  │ - mirror_db_transactions         │  │
 │  │ - database_validation_workflows         │  │ - Indexed by _batch_id, status   │  │
 │  │ - validation_boxes                      │  │ - Blazing-fast set updates       │  │
 │  │ - global_standard_directory             │  │ - Dropped/cleaned on completion  │  │
-│  └─────────────────────────────────────────┘  └──────────────────────────────────┘  │
+│  │ - resolution_approval_requests          │  └──────────────────────────────────┘  │
+│  │ - team_dashboard_visibility_grants      │                                        │
+│  │ - cross_functional_project_groups       │                                        │
+│  │ - ai_strategic_objectives               │                                        │
+│  └─────────────────────────────────────────┘                                        │
 └─────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -739,18 +790,16 @@ backend/src/
 
 * **Application Purpose**: Payment reconciliation and operational incident triage platform designed to investigate transaction discrepancies across external banking databases.
 * **Current Architecture**: Node.js/Express backend with React 19 frontend; primary datastore is PostgreSQL; external targets queried via live drivers into UNLOGGED PostgreSQL mirror tables.
-* **Current Data Model**: Decoupled relational entities: `issues`, `task_dataset_transactions`, `database_validation_workflows`, `validation_boxes`, `query_extractions`, `investigation_tasks`, `investigation_batches`, `investigation_transactions`, `global_standard_directory`, and `database_table_mappings`.
+* **Current Data Model**: Decoupled relational entities across 26 tables: `issues`, `task_dataset_transactions`, `database_validation_workflows`, `validation_boxes`, `query_extractions`, `investigation_tasks`, `investigation_batches`, `investigation_transactions`, `global_standard_directory`, `database_table_mappings`, `resolution_approval_requests`, `team_dashboard_visibility_grants`, `cross_functional_project_groups`, and `ai_strategic_objectives`.
 * **Current Investigation Flow**: Batched chunk queries execute against external databases, persist into transient PostgreSQL mirror tables, and evaluate using set-based SQL `CASE WHEN` compilation.
 * **Current Rule Flow**: Flowchart DAG connects Search Rectangles and Decision Rhombuses; rules compile directly into native PostgreSQL predicates.
+* **Current Operational Governance**: Maker-Checker Dual Authorization (`makerId !== checkerId`) for manual financial adjustments (`FORCE_MATCH`, `WRITE_OFF`, `MANUAL_REVERSAL`), locking in `PENDING_CHECKER_REVIEW`.
+* **Current Enterprise Traceability**: Universal `#hashtags` bind workflow DAGs, FTP staging templates, DB table configs, tickets, and team chat messages for end-to-end attribution.
 * **Current External Integrations**: MySQL and PostgreSQL are fully operational via live drivers. MongoDB has diagnostic status endpoints. Oracle is not implemented.
 * **Current Persistence**: PostgreSQL handles all operational data. Browser `localStorage` is used only for authentication JWT tokens.
-* **Current Lifecycle**: 4 independent dimensions: Case Status, Financial Status, Investigation Status, and Rule Execution Verdict.
-* **Current Performance**: Fast set-based joins, UNLOGGED mirror tables, 500-row batch ingestion, thin-client pagination.
-* **Current Limitations**: No official test runner configured (scripts run via `tsx`), frontend lacks component tests, Oracle database driver is missing.
-* **Current Technical Debt**: Duplication of `investigationEngine.ts` across frontend/backend, coexistence of legacy Mongoose models, coexistence of legacy 3-block UI with Workflow Studio Flowchart.
-* **Important Existing Decisions**: PostgreSQL is the single source of truth; transaction arrays are decoupled into `task_dataset_transactions`; mirror tables are UNLOGGED.
-* **Changed Decisions**: Replaced MongoDB with PostgreSQL; replaced `localStorage` workflows with database persistence; replaced per-transaction queries with chunked batch queries.
-* **Unknowns**: Production credential management strategy for remote external banking databases.
+* **Current Lifecycle**: 4 independent dimensions: Case Status, Financial Status, Investigation Status (including `PENDING_CHECKER_REVIEW`), and Rule Execution Verdict.
+* **Current Performance**: Fast set-based joins, UNLOGGED mirror tables, 500-row batch ingestion, tuple-based multi-column matching (`WHERE (k1, k2) IN ((v1, v2), ...)`), thin-client pagination.
+* **Important Existing Decisions**: PostgreSQL is the single source of truth; transaction arrays are decoupled into `task_dataset_transactions`; mirror tables are UNLOGGED; dual control prevents self-approval.
 
 ---
 

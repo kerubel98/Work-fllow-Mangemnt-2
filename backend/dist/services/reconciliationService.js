@@ -84,6 +84,17 @@ export const reconciliationService = {
             const passAction = actionConfig?.onPassAction || 'CONTINUE';
             const failAction = actionConfig?.onFailAction || 'STOP';
             const updateSql = `
+        WITH unique_task_source AS (
+          SELECT DISTINCT ON (t.task_id, t.row_number)
+            t.id,
+            t.task_id,
+            t.row_number,
+            t.canonical_data,
+            t.raw_data
+          FROM task_dataset_transactions t
+          WHERE t.task_id = $1
+          ORDER BY t.task_id, t.row_number, t.id ASC
+        )
         UPDATE investigation_transactions it
         SET 
           final_result = CASE 
@@ -107,7 +118,7 @@ export const reconciliationService = {
             ELSE 'rose'
           END,
           updated_at = NOW()
-        FROM task_dataset_transactions t
+        FROM unique_task_source t
         LEFT JOIN investigation_external_mirror m 
           ON m.investigation_id = $1 
          AND m.data_source_id = $2 

@@ -5,7 +5,7 @@
 
 import React, { useState, useEffect } from 'react';
 import * as XLSX from 'xlsx';
-import { Issue, IssuePriority, HashtagPreset, Transaction, EnvironmentSystem, User, CriteriaRule } from '../types';
+import { Issue, IssuePriority, HashtagPreset, Transaction, EnvironmentSystem, User, CriteriaRule, Team } from '../types';
 import { 
   FileText, Database, Layers, ArrowUpRight, HelpCircle, Check, AlertCircle, 
   RefreshCw, Download, UserCheck, ShieldCheck, Play, ArrowLeft, Table,
@@ -20,9 +20,10 @@ import { globalMappingService } from '../services/globalMappingService';
 interface IssueCreatorProps {
   hashtags: HashtagPreset[];
   transactions: Transaction[];
-  currentUser: { id: string; username: string; role: string };
+  currentUser: { id: string; username: string; role: string; permanentTeamId?: string; shareWorkspaceWithTeam?: boolean };
   systems: EnvironmentSystem[];
   users: User[];
+  teams?: Team[];
   onCreateIssue: (newIssue: Omit<Issue, 'id' | 'createdAt' | 'creatorId' | 'creatorName' | 'status'>) => void;
   activeTransactionForLinking?: Transaction | null;
   onClearLinkedTransaction?: () => void;
@@ -35,6 +36,7 @@ export default function IssueCreator({
   currentUser,
   systems,
   users,
+  teams = [],
   onCreateIssue,
   activeTransactionForLinking,
   onClearLinkedTransaction,
@@ -46,6 +48,24 @@ export default function IssueCreator({
   const [type, setType] = useState<'file' | 'single'>('file');
   const [transactionId, setTransactionId] = useState('');
   const [linkedHashtag, setLinkedHashtag] = useState('Untagged');
+
+  // Resolve permanent team of current user
+  const userPermTeam = (teams || []).find(
+    t => t.teamType === 'permanent' && (t.managerId === currentUser.id || (t.memberIds && t.memberIds.includes(currentUser.id)))
+  );
+  const effectivePermanentTeamId = (currentUser as any)?.permanentTeamId || userPermTeam?.id;
+  const isMemberOfPermanentTeam = Boolean(effectivePermanentTeamId);
+
+  // By default, all tasks are public to permanent team members; otherwise personal private
+  const [taskVisibility, setTaskVisibility] = useState<'TEAM_PUBLIC' | 'PERSONAL_PRIVATE'>(() => {
+    return isMemberOfPermanentTeam ? 'TEAM_PUBLIC' : 'PERSONAL_PRIVATE';
+  });
+
+  useEffect(() => {
+    if (isMemberOfPermanentTeam) {
+      setTaskVisibility('TEAM_PUBLIC');
+    }
+  }, [effectivePermanentTeamId]);
 
   // Mapping Selection State (Default: No template selected, map to Global Standard)
   const [selectedMappingId, setSelectedMappingId] = useState<string>('');
@@ -833,7 +853,9 @@ export default function IssueCreator({
       validationStatus,
       validationErrors: validationErrors.length > 0 ? validationErrors : undefined,
       assignedTechUserId: assignedTechUserId || undefined,
-      assignedTechUserName: chosenTech ? chosenTech.username : undefined
+      assignedTechUserName: chosenTech ? chosenTech.username : undefined,
+      teamId: isMemberOfPermanentTeam ? effectivePermanentTeamId : undefined,
+      visibility: taskVisibility
     });
 
     // Reset Form
@@ -955,6 +977,77 @@ export default function IssueCreator({
             </div>
           </div>
 
+        </div>
+
+        {/* Workspace & Team Visibility Control */}
+        <div className="bg-slate-50 border border-slate-200 rounded-xl p-3.5 space-y-2">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center space-x-2">
+              <span className="font-mono text-xs font-bold text-slate-700 uppercase">Task Visibility & Team Access</span>
+              {isMemberOfPermanentTeam ? (
+                <span className="text-[10px] bg-emerald-100 text-emerald-800 font-semibold px-2 py-0.5 rounded">
+                  Permanent Team: {userPermTeam?.name || 'Unit Team'}
+                </span>
+              ) : (
+                <span className="text-[10px] bg-amber-100 text-amber-800 font-semibold px-2 py-0.5 rounded">
+                  Individual Workspace
+                </span>
+              )}
+            </div>
+            <span className="text-[10px] text-slate-500 font-mono">
+              {taskVisibility === 'TEAM_PUBLIC' ? 'Public to Team' : 'Private to You'}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+            <label className={`flex items-start gap-2.5 p-2.5 rounded-lg border cursor-pointer transition-all ${
+              taskVisibility === 'TEAM_PUBLIC'
+                ? 'bg-blue-50/80 border-blue-300 ring-1 ring-blue-300'
+                : 'bg-white border-slate-200 hover:bg-slate-100/60'
+            }`}>
+              <input
+                type="radio"
+                name="taskVisibility"
+                value="TEAM_PUBLIC"
+                checked={taskVisibility === 'TEAM_PUBLIC'}
+                onChange={() => setTaskVisibility('TEAM_PUBLIC')}
+                className="mt-0.5 text-blue-600 focus:ring-blue-500 cursor-pointer"
+              />
+              <div className="text-xs">
+                <div className="font-bold text-slate-800 flex items-center gap-1.5">
+                  <span>👥 Team Public</span>
+                  {isMemberOfPermanentTeam && <span className="text-[10px] font-normal text-blue-600 font-mono">(Default)</span>}
+                </div>
+                <p className="text-[11px] text-slate-500 leading-tight mt-0.5">
+                  Visible to all permanent team members in your shared workspace.
+                </p>
+              </div>
+            </label>
+
+            <label className={`flex items-start gap-2.5 p-2.5 rounded-lg border cursor-pointer transition-all ${
+              taskVisibility === 'PERSONAL_PRIVATE'
+                ? 'bg-amber-50/80 border-amber-300 ring-1 ring-amber-300'
+                : 'bg-white border-slate-200 hover:bg-slate-100/60'
+            }`}>
+              <input
+                type="radio"
+                name="taskVisibility"
+                value="PERSONAL_PRIVATE"
+                checked={taskVisibility === 'PERSONAL_PRIVATE'}
+                onChange={() => setTaskVisibility('PERSONAL_PRIVATE')}
+                className="mt-0.5 text-amber-600 focus:ring-amber-500 cursor-pointer"
+              />
+              <div className="text-xs">
+                <div className="font-bold text-slate-800 flex items-center gap-1.5">
+                  <span>🔒 Personal Private</span>
+                  {!isMemberOfPermanentTeam && <span className="text-[10px] font-normal text-amber-600 font-mono">(Default)</span>}
+                </div>
+                <p className="text-[11px] text-slate-500 leading-tight mt-0.5">
+                  Only visible to you. Hidden from permanent team members even if workspace is shared.
+                </p>
+              </div>
+            </label>
+          </div>
         </div>
 
         {/* Case Description */}
@@ -1211,14 +1304,14 @@ export default function IssueCreator({
                 )}
 
                 {/* WORKSPACE-STYLE DATA VIEW & DATA CLEANING TABLE */}
-                <div className="space-y-4 pt-2">
+                <div className="space-y-3 pt-2">
                   {/* Top Workspace Banner */}
-                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-3.5 p-4 sm:p-5 bg-gradient-to-r from-slate-900 via-slate-800 to-slate-900 rounded-2xl text-white shadow-md">
+                  <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 p-3 sm:p-3.5 bg-[#0F172B] border border-slate-800 rounded-xl text-white shadow-sm">
                     <div className="space-y-1">
                       <div className="flex items-center space-x-2 flex-wrap gap-y-1">
-                        <Table className="text-blue-400" size={18} />
+                        <Table className="text-blue-400" size={16} />
                         <h3 className="text-sm font-bold tracking-tight">Workspace Data View Table</h3>
-                        <span className="text-[10px] bg-blue-500/20 text-blue-300 border border-blue-400/30 px-2.5 py-0.5 rounded-full font-mono font-bold">
+                        <span className="text-[10px] bg-[#155DFC]/20 text-blue-300 border border-[#155DFC]/30 px-2 py-0.5 rounded-full font-mono font-bold">
                           {filePreviewData.length} Row Entries Loaded
                         </span>
                         <span className="text-[10px] bg-emerald-500/20 text-emerald-300 border border-emerald-400/30 px-2 py-0.5 rounded-full font-mono font-semibold">
@@ -1228,20 +1321,20 @@ export default function IssueCreator({
                           {Object.keys(fileMapping).filter(k => fileMapping[k]).length} of {rawHeaders.length} Columns Mapped
                         </span>
                       </div>
-                      <p className="text-xs text-slate-300">
+                      <p className="text-[11px] text-slate-300">
                         Header-integrated mapping and data cleaning controls. Clean cells, transform column data, or assign target schema fields directly in the table header.
                       </p>
                     </div>
 
                     {/* View Mode Toggle Buttons */}
-                    <div className="flex items-center space-x-1.5 bg-slate-800/90 p-1 rounded-xl border border-slate-700/80 shrink-0 self-start md:self-auto">
+                    <div className="flex items-center space-x-1 bg-slate-900/90 p-0.5 rounded-lg border border-slate-700/80 shrink-0 self-start md:self-auto">
                       <button
                         type="button"
                         onClick={() => setDataViewMode('spreadsheet_grid')}
-                        className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                        className={`flex items-center space-x-1.5 px-2.5 py-1 rounded-md text-xs font-semibold transition-all cursor-pointer ${
                           dataViewMode === 'spreadsheet_grid'
-                            ? 'bg-blue-600 text-white shadow-xs'
-                            : 'text-slate-300 hover:text-white hover:bg-slate-700/50'
+                            ? 'bg-[#155DFC] text-white shadow-xs'
+                            : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
                         }`}
                       >
                         <FileSpreadsheet size={13} />
@@ -1251,14 +1344,14 @@ export default function IssueCreator({
                       <button
                         type="button"
                         onClick={() => setDataViewMode('workspace_table')}
-                        className={`flex items-center space-x-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
+                        className={`flex items-center space-x-1.5 px-2.5 py-1 rounded-md text-xs font-semibold transition-all cursor-pointer ${
                           dataViewMode === 'workspace_table'
-                            ? 'bg-blue-600 text-white shadow-xs'
-                            : 'text-slate-300 hover:text-white hover:bg-slate-700/50'
+                            ? 'bg-[#155DFC] text-white shadow-xs'
+                            : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
                         }`}
                       >
-                        <Layers size={13} />
-                        <span>Workspace Format</span>
+                        <Table size={13} />
+                        <span>Classic Table</span>
                       </button>
                     </div>
                   </div>

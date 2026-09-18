@@ -182,6 +182,30 @@ export async function discoverTablesForDb(db) {
  * Introspects table columns from physical database schema.
  */
 export async function getTableColumnsForDb(db, tableName) {
+    // Fast-path: If table is a PostgreSQL UNLOGGED mirror table, introspect local PostgreSQL catalog directly
+    if (tableName.startsWith('mirror_')) {
+        const { queryPg } = await import('../config/postgres.js');
+        try {
+            const res = await queryPg(`SELECT column_name AS name, data_type AS type, is_nullable AS nullable
+         FROM information_schema.columns
+         WHERE table_schema = 'public' AND table_name = $1
+         ORDER BY ordinal_position`, [tableName.toLowerCase()]);
+            if (res.rows && res.rows.length > 0) {
+                const sysCols = new Set(['_staging_id', '_staged_at', '_raw_row_index', 'raw_payload', '_mirror_id', '_batch_id', '_rule_block_id', '_validation_status', '_fetched_at']);
+                return res.rows
+                    .filter((r) => !sysCols.has(r.name))
+                    .map((r) => ({
+                    name: r.name,
+                    type: String(r.type).toUpperCase(),
+                    nullable: r.nullable === 'YES',
+                    isPrimary: r.name === 'id' || r.name === '_staging_id' || r.name === 'transaction_id'
+                }));
+            }
+        }
+        catch (err) {
+            console.warn(`[dbConnectionManager] Mirror table columns introspection failed for ${tableName}:`, err.message);
+        }
+    }
     const config = resolveDbConfig(db);
     if (db.type === 'Oracle') {
         throw new Error('Oracle introspection requires the native oracledb driver, which is currently uninstalled.');
@@ -252,8 +276,49 @@ export async function getTableColumnsForDb(db, tableName) {
         }
     }
     if (db.type === 'FTP' || db.type === 'SFTP') {
-        const { inspectFtpFileColumns } = await import('./ftpConnectionService.js');
-        return await inspectFtpFileColumns(db, tableName);
+        // For FTP/SFTP, inspect local PostgreSQL staged table catalog directly without remote FTP connection
+        const { queryPg } = await import('../config/postgres.js');
+        const { mirrorTableManager } = await import('./mirrorTableManager.js');
+        const { repo } = await import('../store/repository.js');
+        const safeBase = tableName.toLowerCase().replace(/[^a-z0-9_]/g, '_').substring(0, 50);
+        const mirrorCandidates = [
+            tableName,
+            mirrorTableManager.getMirrorTableName(db.name || db.id, tableName),
+            `mirror_ftp_${safeBase}`,
+            `mirror_${safeBase}`
+        ];
+        try {
+            const configs = await repo.getFtpStagingConfigs();
+            const matched = configs.find(c => c.ftpConnectionId === db.id && (c.stagingTableName === tableName || (c.name && tableName.includes(c.name))));
+            if (matched?.stagingTableName && !mirrorCandidates.includes(matched.stagingTableName)) {
+                mirrorCandidates.unshift(matched.stagingTableName);
+            }
+        }
+        catch { }
+        for (const mName of mirrorCandidates) {
+            try {
+                const res = await queryPg(`SELECT column_name AS name, data_type AS type, is_nullable AS nullable
+           FROM information_schema.columns
+           WHERE table_schema = 'public' AND table_name = $1
+           ORDER BY ordinal_position`, [mName.toLowerCase()]);
+                if (res.rows && res.rows.length > 0) {
+                    const sysCols = new Set(['_staging_id', '_staged_at', '_raw_row_index', 'raw_payload', '_mirror_id', '_batch_id', '_rule_block_id', '_validation_status', '_fetched_at']);
+                    return res.rows
+                        .filter((r) => !sysCols.has(r.name))
+                        .map((r) => ({
+                        name: r.name,
+                        type: String(r.type).toUpperCase(),
+                        nullable: r.nullable === 'YES',
+                        isPrimary: r.name === 'id' || r.name === '_staging_id' || r.name === 'transaction_id'
+                    }));
+                }
+            }
+            catch { }
+        }
+        return [
+            { name: 'id', type: 'VARCHAR(255)', nullable: false, isPrimary: true },
+            { name: 'status', type: 'VARCHAR(50)', nullable: true, isPrimary: false }
+        ];
     }
     return [];
 }
@@ -296,12 +361,50 @@ function getExternalMysqlPool(key, config) {
     return pool;
 }
 /**
+ * Evicts and cleanly terminates cached connection pools for an external database when its credentials or endpoints are updated or deleted.
+ */
+export async function evictExternalDbPool(dbId) {
+    for (const [key, pool] of pgPoolCache.entries()) {
+        if (key.startsWith(`${dbId}:`)) {
+            pgPoolCache.delete(key);
+            await pool.end().catch(() => { });
+        }
+    }
+    for (const [key, pool] of mysqlPoolCache.entries()) {
+        if (key.startsWith(`${dbId}:`)) {
+            mysqlPoolCache.delete(key);
+            await pool.end().catch(() => { });
+        }
+    }
+}
+/**
  * Executes a real SQL query on the target database engine using persistent connection pooling.
  * Supports parameterized queries for secure batch lookups.
  */
 export async function executeLiveQueryOnDb(db, query, params) {
-    const config = resolveDbConfig(db);
     const started = Date.now();
+    const trimmed = query.trim();
+    // Fast-path: If query targets a local PostgreSQL UNLOGGED mirror table (mirror_*)
+    const tableMatch = trimmed.match(/\bFROM\s+[`"']?([a-zA-Z0-9_.-]+)[`"']?/i);
+    const targetTable = tableMatch ? (tableMatch[1].split('.').pop() || tableMatch[1]) : trimmed;
+    if (targetTable.startsWith('mirror_')) {
+        const { queryPg } = await import('../config/postgres.js');
+        const cleanQuery = trimmed.toUpperCase().startsWith('SELECT')
+            ? trimmed
+            : `SELECT * FROM "${targetTable}" LIMIT 50`;
+        const res = params && params.length > 0
+            ? await queryPg(cleanQuery, params)
+            : await queryPg(cleanQuery);
+        const executionTimeMs = Date.now() - started;
+        const columns = res.fields?.map(f => f.name) || (res.rows.length > 0 ? Object.keys(res.rows[0]) : []);
+        return {
+            columns,
+            rows: res.rows,
+            rowCount: res.rowCount ?? res.rows.length,
+            executionTimeMs
+        };
+    }
+    const config = resolveDbConfig(db);
     const poolKey = `${db.id}:${config.host}:${config.port}:${config.database}`;
     if (db.type === 'MySQL') {
         const pool = getExternalMysqlPool(poolKey, config);
@@ -450,8 +553,65 @@ export async function executeLiveQueryOnDb(db, query, params) {
         throw new Error(`Unsupported query syntax for MongoDB engine [${db.name}]. Use SQL "SELECT * FROM ${db.availableTables?.[0] || 'collection'} LIMIT 10" or JSON {"collection": "${db.availableTables?.[0] || 'users'}", "limit": 10}`);
     }
     if (db.type === 'FTP' || db.type === 'SFTP') {
-        const { readFtpFileRows } = await import('./ftpConnectionService.js');
-        return await readFtpFileRows(db, query);
+        // Architectural Rule: For FTP/SFTP data sources, all querying in Query Sandbox, Validation Boxes,
+        // and Workflows MUST execute strictly against local PostgreSQL mirror/staged tables.
+        // The remote FTP server is ONLY contacted during scheduled ingestion or explicit manual user fetch ('Stage Now').
+        const { queryPg } = await import('../config/postgres.js');
+        const { mirrorTableManager } = await import('./mirrorTableManager.js');
+        const { repo } = await import('../store/repository.js');
+        // 1. If targetTable starts with mirror_
+        if (targetTable.startsWith('mirror_')) {
+            const cleanQuery = trimmed.toUpperCase().startsWith('SELECT')
+                ? trimmed
+                : `SELECT * FROM "${targetTable}" LIMIT 50`;
+            const res = params && params.length > 0 ? await queryPg(cleanQuery, params) : await queryPg(cleanQuery);
+            return {
+                columns: res.fields?.map(f => f.name) || (res.rows.length > 0 ? Object.keys(res.rows[0]) : []),
+                rows: res.rows,
+                rowCount: res.rowCount ?? res.rows.length,
+                executionTimeMs: Date.now() - started
+            };
+        }
+        // 2. Target is a raw file/feed name (e.g. settlement_reconciliation_feed.csv). Find matching local staged table in PostgreSQL.
+        const safeBase = targetTable.toLowerCase().replace(/[^a-z0-9_]/g, '_').substring(0, 50);
+        const mirrorCandidates = [
+            mirrorTableManager.getMirrorTableName(db.name || db.id, targetTable),
+            `mirror_ftp_${safeBase}`,
+            `mirror_${safeBase}`,
+            targetTable
+        ];
+        try {
+            const configs = await repo.getFtpStagingConfigs();
+            const dbConfigs = configs.filter(c => c.ftpConnectionId === db.id);
+            const matched = dbConfigs.find(c => c.stagingTableName === targetTable ||
+                (c.fileNamePattern && targetTable.includes(c.fileNamePattern.replace(/[*?\\]/g, ''))) ||
+                (c.name && targetTable.includes(c.name)));
+            if (matched?.stagingTableName && !mirrorCandidates.includes(matched.stagingTableName)) {
+                mirrorCandidates.unshift(matched.stagingTableName);
+            }
+        }
+        catch { }
+        for (const mirrorName of mirrorCandidates) {
+            try {
+                const tableCheck = await queryPg(`SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = $1`, [mirrorName.toLowerCase()]);
+                if (tableCheck.rows && tableCheck.rows.length > 0) {
+                    const escapedTarget = targetTable.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+                    const sql = trimmed.toUpperCase().startsWith('SELECT')
+                        ? trimmed.replace(new RegExp(`\\b${escapedTarget}\\b`, 'gi'), `"${mirrorName}"`)
+                        : `SELECT * FROM "${mirrorName}" LIMIT 50`;
+                    const res = params && params.length > 0 ? await queryPg(sql, params) : await queryPg(sql);
+                    return {
+                        columns: res.fields?.map(f => f.name) || (res.rows.length > 0 ? Object.keys(res.rows[0]) : []),
+                        rows: res.rows,
+                        rowCount: res.rowCount ?? res.rows.length,
+                        executionTimeMs: Date.now() - started
+                    };
+                }
+            }
+            catch { }
+        }
+        // If not found in PostgreSQL, inform user to run 'Stage Now' or schedule ingestion
+        throw new Error(`No local staged data found in PostgreSQL for '${targetTable}'. In accordance with system design, FTP connections query strictly from local staged tables. Please run 'Stage Now' or configure a scheduled ingestion event in FTP Staging Settings to import this feed into PostgreSQL.`);
     }
     throw new Error(`Unsupported database engine type: ${db.type}`);
 }

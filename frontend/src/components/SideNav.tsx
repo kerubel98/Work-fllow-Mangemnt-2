@@ -1,9 +1,10 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { User, AppNotification, NotificationType } from '../types';
 import { 
   BarChart3, Settings, Search,
   Layers, ShieldCheck, Users, Bell, CheckSquare, 
-  MessageSquare, AlertCircle, X, CheckCheck, Trash2, ArrowRight, DatabaseZap, Plus, Sliders
+  MessageSquare, AlertCircle, X, CheckCheck, Trash2, ArrowRight, DatabaseZap, Plus, Sliders,
+  PanelLeftClose, PanelLeftOpen
 } from 'lucide-react';
 
 
@@ -62,6 +63,38 @@ export default function SideNav({
 }: SideNavProps) {
   const [showNotificationPanel, setShowNotificationPanel] = useState(false);
   const [activeFilter, setActiveFilter] = useState<'all' | 'unread' | 'chat' | 'task_assigned' | 'team_added' | 'system'>('all');
+
+  // Sidebar toggle state: defaults to ribbon-like compact mode (true)
+  const [isCollapsed, setIsCollapsed] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('it_sidebar_collapsed');
+      return saved !== null ? saved === 'true' : true;
+    } catch {
+      return true;
+    }
+  });
+
+  const toggleCollapsed = () => {
+    setIsCollapsed(prev => {
+      const next = !prev;
+      try {
+        localStorage.setItem('it_sidebar_collapsed', String(next));
+      } catch {}
+      return next;
+    });
+  };
+
+  // Keyboard shortcut: Ctrl+B or Cmd+B to toggle sidebar
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'b') {
+        e.preventDefault();
+        toggleCollapsed();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
 
   const checkAuthorized = (tab: string) => {
     if (isAuthorizedTab) return isAuthorizedTab(tab);
@@ -129,247 +162,476 @@ export default function SideNav({
   };
 
   return (
-    <aside className="min-w-[250px] w-full lg:w-64 bg-white border-r border-slate-200/80 flex flex-col justify-between shadow-sm relative" id="app-sidebar">
-      <div className="p-4 space-y-5">
+    <aside 
+      className={`bg-[#0F172B] border-r border-slate-800 flex flex-col justify-between shadow-sm relative transition-all duration-200 ease-in-out shrink-0 text-slate-300 ${
+        isCollapsed ? 'w-full lg:w-14' : 'min-w-[220px] w-full lg:w-56'
+      }`} 
+      id="app-sidebar"
+    >
+      <div className={`${isCollapsed ? 'p-1.5 space-y-1.5' : 'p-2.5 space-y-2'}`}>
         
-        {/* App Meta Info */}
-        <div className="hidden lg:flex items-center justify-between px-1">
-          <div className="flex items-center space-x-2">
-            <ShieldCheck className="text-blue-600" size={16} />
-            <span className="text-[10px] uppercase font-bold text-blue-900 tracking-wider font-mono">
-              Operational Core v1.4
+        {/* App Meta Info & Toggle Header */}
+        {isCollapsed ? (
+          <div className="hidden lg:flex flex-col items-center justify-center pt-0.5 pb-1 border-b border-slate-800">
+            <button
+              onClick={toggleCollapsed}
+              className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800/80 rounded-lg transition-all cursor-pointer"
+              title="Expand Sidebar (Ctrl+B)"
+              id="btn-sidebar-expand"
+            >
+              <PanelLeftOpen size={16} />
+            </button>
+          </div>
+        ) : (
+          <div className="hidden lg:flex items-center justify-between px-1 pb-1.5 border-b border-slate-800">
+            <div className="flex items-center space-x-1.5">
+              <ShieldCheck className="text-[#155DFC]" size={15} />
+              <span className="text-[9.5px] uppercase font-bold text-slate-300 tracking-wider font-mono">
+                Operational Core
+              </span>
+            </div>
+            <button
+              onClick={toggleCollapsed}
+              className="p-1 text-slate-400 hover:text-white hover:bg-slate-800/80 rounded-md transition-colors cursor-pointer"
+              title="Collapse to Ribbon (Ctrl+B)"
+              id="btn-sidebar-collapse"
+            >
+              <PanelLeftClose size={15} />
+            </button>
+          </div>
+        )}
+
+        {/* Mobile Header */}
+        <div className="flex lg:hidden items-center justify-between px-2 pb-1.5 border-b border-slate-800">
+          <div className="flex items-center space-x-1.5">
+            <ShieldCheck className="text-[#155DFC]" size={15} />
+            <span className="text-[9.5px] uppercase font-bold text-slate-300 tracking-wider font-mono">
+              Operational Core
             </span>
           </div>
+          <button
+            onClick={toggleCollapsed}
+            className="p-1 text-slate-400 hover:text-white hover:bg-slate-800 rounded-md"
+            title={isCollapsed ? "Expand Sidebar" : "Collapse Sidebar"}
+          >
+            {isCollapsed ? <PanelLeftOpen size={15} /> : <PanelLeftClose size={15} />}
+          </button>
         </div>
 
         {/* Sidebar Tabs */}
-        <nav className="space-y-1">
+        <nav className="space-y-0.5">
           
           {/* 0. Notifications */}
-          <button
-            onClick={() => setShowNotificationPanel(!showNotificationPanel)}
-            className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-xs font-semibold tracking-wide transition-all cursor-pointer ${
-              showNotificationPanel
-                ? 'bg-blue-600 text-white shadow-sm font-bold'
-                : unreadCount > 0
-                ? 'text-slate-800 bg-blue-50/70 border border-blue-200/80 hover:bg-blue-100/70'
-                : 'text-slate-600 hover:text-blue-700 hover:bg-blue-50'
-            }`}
-            id="nav-notifications"
-            title="Access chat messages, assigned tasks, and team updates"
-          >
-            <div className="flex items-center space-x-3">
-              <div className="relative flex items-center justify-center">
-                <Bell size={14} className={showNotificationPanel ? 'text-white' : unreadCount > 0 ? 'text-blue-600' : 'text-slate-600'} />
-                {unreadCount > 0 && !showNotificationPanel && (
-                  <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-red-500 animate-pulse" />
-                )}
+          {isCollapsed ? (
+            <button
+              onClick={() => setShowNotificationPanel(!showNotificationPanel)}
+              className={`relative flex items-center justify-center w-9 h-9 mx-auto rounded-lg text-xs font-semibold tracking-wide transition-all cursor-pointer ${
+                showNotificationPanel
+                  ? 'bg-[#155DFC] text-white shadow-xs font-bold'
+                  : unreadCount > 0
+                  ? 'text-white bg-slate-800 border border-[#155DFC]/60 hover:bg-slate-700'
+                  : 'text-slate-400 hover:text-white hover:bg-slate-800/80'
+              }`}
+              id="nav-notifications"
+              title={`Notifications (${unreadCount} unread)`}
+            >
+              <Bell size={16} className={showNotificationPanel ? 'text-white' : unreadCount > 0 ? 'text-[#155DFC]' : 'text-slate-400'} />
+              {unreadCount > 0 && (
+                <span className={`absolute -top-1 -right-1 min-w-[16px] h-[16px] px-0.5 text-[8.5px] font-bold rounded-full font-mono flex items-center justify-center border border-[#0F172B] shadow-xs ${
+                  showNotificationPanel ? 'bg-amber-400 text-slate-900' : 'bg-red-500 text-white'
+                }`}>
+                  {unreadCount > 9 ? '9+' : unreadCount}
+                </span>
+              )}
+            </button>
+          ) : (
+            <button
+              onClick={() => setShowNotificationPanel(!showNotificationPanel)}
+              className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs font-medium tracking-wide transition-all cursor-pointer ${
+                showNotificationPanel
+                  ? 'bg-[#155DFC] text-white shadow-xs font-bold'
+                  : unreadCount > 0
+                  ? 'text-white bg-slate-800/90 border border-[#155DFC]/60 hover:bg-slate-700'
+                  : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
+              }`}
+              id="nav-notifications"
+              title="Access chat messages, assigned tasks, and team updates"
+            >
+              <div className="flex items-center space-x-2.5">
+                <div className="relative flex items-center justify-center">
+                  <Bell size={14} className={showNotificationPanel ? 'text-white' : unreadCount > 0 ? 'text-[#155DFC]' : 'text-slate-400'} />
+                  {unreadCount > 0 && !showNotificationPanel && (
+                    <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
+                  )}
+                </div>
+                <span>Notifications</span>
               </div>
-              <span>Notifications</span>
-            </div>
 
-            {unreadCount > 0 ? (
-              <span className={`px-2 py-0.5 text-[10px] font-bold rounded-full font-mono transition-all ${
-                showNotificationPanel 
-                  ? 'bg-white text-blue-700' 
-                  : 'bg-red-500 text-white shadow-2xs'
-              }`}>
-                {unreadCount}
-              </span>
-            ) : (
-              <span className="text-[10px] text-slate-400 font-mono">0</span>
-            )}
-          </button>
+              {unreadCount > 0 ? (
+                <span className={`px-1.5 py-0.2 text-[9px] font-bold rounded-full font-mono transition-all ${
+                  showNotificationPanel 
+                    ? 'bg-white text-blue-900' 
+                    : 'bg-red-500 text-white shadow-2xs'
+                }`}>
+                  {unreadCount}
+                </span>
+              ) : (
+                <span className="text-[9px] text-slate-500 font-mono">0</span>
+              )}
+            </button>
+          )}
 
           {/* WORKSPACE */}
-          <button
-            onClick={() => {
-              setShowNotificationPanel(false);
-              onSelectNavigation('workspace');
-            }}
-            className={`w-full flex items-center space-x-3 px-3 py-2.5 rounded-lg text-xs font-semibold tracking-wide transition-all ${
-              (activeNavigation === 'workspace' || activeNavigation === 'my_tasks' || activeNavigation === 'open_case' || activeNavigation === 'create_case') && !showNotificationPanel
-                ? 'bg-blue-600 text-white shadow-sm font-bold'
-                : 'text-slate-600 hover:text-blue-700 hover:bg-blue-50'
-            }`}
-            id="nav-workspace"
-          >
-            <DatabaseZap size={14} />
-            <span>Workspace</span>
-          </button>
+          {isCollapsed ? (
+            <button
+              onClick={() => {
+                setShowNotificationPanel(false);
+                onSelectNavigation('workspace');
+              }}
+              className={`flex items-center justify-center w-9 h-9 mx-auto rounded-lg text-xs font-semibold tracking-wide transition-all cursor-pointer ${
+                (activeNavigation === 'workspace' || activeNavigation === 'my_tasks' || activeNavigation === 'open_case' || activeNavigation === 'create_case') && !showNotificationPanel
+                  ? 'bg-[#155DFC] text-white shadow-xs font-bold'
+                  : 'text-slate-400 hover:text-white hover:bg-slate-800/80'
+              }`}
+              id="nav-workspace"
+              title="Workspace & Cases"
+            >
+              <DatabaseZap size={16} />
+            </button>
+          ) : (
+            <button
+              onClick={() => {
+                setShowNotificationPanel(false);
+                onSelectNavigation('workspace');
+              }}
+              className={`w-full flex items-center space-x-2.5 px-2.5 py-1.5 rounded-lg text-xs font-medium tracking-wide transition-all cursor-pointer ${
+                (activeNavigation === 'workspace' || activeNavigation === 'my_tasks' || activeNavigation === 'open_case' || activeNavigation === 'create_case') && !showNotificationPanel
+                  ? 'bg-[#155DFC] text-white shadow-xs font-bold'
+                  : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
+              }`}
+              id="nav-workspace"
+            >
+              <DatabaseZap size={14} />
+              <span>Workspace</span>
+            </button>
+          )}
 
           {/* TEAM & COLLABORATION SECTION */}
           {(checkAuthorized('team_workspace') || checkAuthorized('direct_chat')) && (
-            <div className="space-y-1 pt-2 border-t border-slate-100">
-              <div className="px-3 py-1 flex items-center justify-between text-[10px] font-bold text-slate-400 uppercase tracking-wider font-mono">
-                <span>Team & Chat</span>
-                <Users size={12} className="text-blue-600" />
-              </div>
+            isCollapsed ? (
+              <div className="space-y-1 pt-1 border-t border-slate-800/80 flex flex-col items-center">
+                {checkAuthorized('team_workspace') && (
+                  <button
+                    onClick={() => {
+                      setShowNotificationPanel(false);
+                      onSelectNavigation('team_workspace');
+                    }}
+                    className={`flex items-center justify-center w-9 h-9 mx-auto rounded-lg text-xs font-semibold tracking-wide transition-all cursor-pointer ${
+                      activeNavigation === 'team_workspace' && !showNotificationPanel
+                        ? 'bg-[#155DFC] text-white shadow-xs font-bold'
+                        : 'text-slate-400 hover:text-white hover:bg-slate-800/80'
+                    }`}
+                    id="nav-my-team"
+                    title="My Team"
+                  >
+                    <Users size={16} />
+                  </button>
+                )}
 
-              {/* 1. My Team */}
-              {checkAuthorized('team_workspace') && (
-                <button
-                  onClick={() => {
-                    setShowNotificationPanel(false);
-                    onSelectNavigation('team_workspace');
-                  }}
-                  className={`w-full flex items-center space-x-3 px-3 py-2.5 rounded-lg text-xs font-semibold tracking-wide transition-all ${
-                    activeNavigation === 'team_workspace' && !showNotificationPanel
-                      ? 'bg-blue-600 text-white shadow-sm font-bold'
-                      : 'text-slate-600 hover:text-blue-700 hover:bg-blue-50'
-                  }`}
-                  id="nav-my-team"
-                >
-                  <Users size={14} />
-                  <span>My Team</span>
-                </button>
-              )}
-
-              {/* 2. Personal Chat */}
-              {checkAuthorized('direct_chat') && (
-                <button
-                  onClick={() => {
-                    setShowNotificationPanel(false);
-                    onSelectNavigation('direct_chat');
-                  }}
-                  className={`w-full flex items-center justify-between px-3 py-2.5 rounded-lg text-xs font-semibold tracking-wide transition-all ${
-                    activeNavigation === 'direct_chat' && !showNotificationPanel
-                      ? 'bg-blue-600 text-white shadow-sm font-bold'
-                      : 'text-slate-600 hover:text-blue-700 hover:bg-blue-50'
-                  }`}
-                  id="nav-personal-chat"
-                >
-                  <div className="flex items-center space-x-3">
-                    <MessageSquare size={14} />
-                    <span>Personal Chat</span>
-                  </div>
-                  {unreadDirectMessageCount > 0 && (
-                    <span className={`px-2 py-0.5 text-[10px] font-bold rounded-full font-mono transition-all ${
+                {checkAuthorized('direct_chat') && (
+                  <button
+                    onClick={() => {
+                      setShowNotificationPanel(false);
+                      onSelectNavigation('direct_chat');
+                    }}
+                    className={`relative flex items-center justify-center w-9 h-9 mx-auto rounded-lg text-xs font-semibold tracking-wide transition-all cursor-pointer ${
                       activeNavigation === 'direct_chat' && !showNotificationPanel
-                        ? 'bg-white text-blue-700'
-                        : 'bg-blue-600 text-white shadow-2xs'
-                    }`}>
-                      {unreadDirectMessageCount}
-                    </span>
-                  )}
-                </button>
-              )}
-            </div>
+                        ? 'bg-[#155DFC] text-white shadow-xs font-bold'
+                        : 'text-slate-400 hover:text-white hover:bg-slate-800/80'
+                    }`}
+                    id="nav-personal-chat"
+                    title={`Personal Chat ${unreadDirectMessageCount > 0 ? `(${unreadDirectMessageCount} unread)` : ''}`}
+                  >
+                    <MessageSquare size={16} />
+                    {unreadDirectMessageCount > 0 && (
+                      <span className="absolute -top-1 -right-1 min-w-[16px] h-[16px] px-0.5 bg-[#155DFC] text-white text-[8.5px] font-bold rounded-full flex items-center justify-center font-mono border border-[#0F172B] shadow-xs">
+                        {unreadDirectMessageCount > 9 ? '9+' : unreadDirectMessageCount}
+                      </span>
+                    )}
+                  </button>
+                )}
+              </div>
+            ) : (
+              <div className="space-y-0.5 pt-1.5 border-t border-slate-800/80">
+                <div className="px-2 py-0.5 flex items-center justify-between text-[9px] font-bold text-slate-500 uppercase tracking-wider font-mono">
+                  <span>Team & Chat</span>
+                  <Users size={11} className="text-[#155DFC]" />
+                </div>
+
+                {/* 1. My Team */}
+                {checkAuthorized('team_workspace') && (
+                  <button
+                    onClick={() => {
+                      setShowNotificationPanel(false);
+                      onSelectNavigation('team_workspace');
+                    }}
+                    className={`w-full flex items-center space-x-2.5 px-2.5 py-1.5 rounded-lg text-xs font-medium tracking-wide transition-all cursor-pointer ${
+                      activeNavigation === 'team_workspace' && !showNotificationPanel
+                        ? 'bg-[#155DFC] text-white shadow-xs font-bold'
+                        : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
+                    }`}
+                    id="nav-my-team"
+                  >
+                    <Users size={14} />
+                    <span>My Team</span>
+                  </button>
+                )}
+
+                {/* 2. Personal Chat */}
+                {checkAuthorized('direct_chat') && (
+                  <button
+                    onClick={() => {
+                      setShowNotificationPanel(false);
+                      onSelectNavigation('direct_chat');
+                    }}
+                    className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs font-medium tracking-wide transition-all cursor-pointer ${
+                      activeNavigation === 'direct_chat' && !showNotificationPanel
+                        ? 'bg-[#155DFC] text-white shadow-xs font-bold'
+                        : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
+                    }`}
+                    id="nav-personal-chat"
+                  >
+                    <div className="flex items-center space-x-2.5">
+                      <MessageSquare size={14} />
+                      <span>Personal Chat</span>
+                    </div>
+                    {unreadDirectMessageCount > 0 && (
+                      <span className={`px-1.5 py-0.2 text-[9px] font-bold rounded-full font-mono transition-all ${
+                        activeNavigation === 'direct_chat' && !showNotificationPanel
+                          ? 'bg-white text-blue-900'
+                          : 'bg-[#155DFC] text-white shadow-2xs'
+                      }`}>
+                        {unreadDirectMessageCount}
+                      </span>
+                    )}
+                  </button>
+                )}
+              </div>
+            )
           )}
 
           {/* ANALYTICS SECTION */}
           {checkAuthorized('manager_analytics') && (
-            <div className="space-y-1 pt-2 border-t border-slate-100">
-              <div className="px-3 py-1 flex items-center justify-between text-[10px] font-bold text-slate-400 uppercase tracking-wider font-mono">
-                <span>Dashboard & Analytics</span>
-                <BarChart3 size={12} className="text-blue-600" />
+            isCollapsed ? (
+              <div className="space-y-1 pt-1 border-t border-slate-800/80 flex flex-col items-center">
+                <button
+                  onClick={() => {
+                    setShowNotificationPanel(false);
+                    onSelectNavigation('manager_analytics');
+                  }}
+                  className={`flex items-center justify-center w-9 h-9 mx-auto rounded-lg text-xs font-semibold tracking-wide transition-all cursor-pointer ${
+                    activeNavigation === 'manager_analytics' && !showNotificationPanel
+                      ? 'bg-[#155DFC] text-white shadow-xs font-bold'
+                      : 'text-slate-400 hover:text-white hover:bg-slate-800/80'
+                  }`}
+                  id="nav-analytics"
+                  title="Dashboard & Analytics"
+                >
+                  <BarChart3 size={16} />
+                </button>
               </div>
-              <button
-                onClick={() => {
-                  setShowNotificationPanel(false);
-                  onSelectNavigation('manager_analytics');
-                }}
-                className={`w-full flex items-center space-x-3 px-3 py-2.5 rounded-xl text-xs font-semibold tracking-wide transition-all ${
-                  activeNavigation === 'manager_analytics' && !showNotificationPanel
-                    ? 'bg-blue-600 text-white shadow-sm font-bold'
-                    : 'text-slate-600 hover:text-blue-700 hover:bg-blue-50'
-                }`}
-                id="nav-analytics"
-              >
-                <BarChart3 size={14} />
-                <span>Dashboard</span>
-              </button>
-            </div>
+            ) : (
+              <div className="space-y-0.5 pt-1.5 border-t border-slate-800/80">
+                <div className="px-2 py-0.5 flex items-center justify-between text-[9px] font-bold text-slate-500 uppercase tracking-wider font-mono">
+                  <span>Analytics</span>
+                  <BarChart3 size={11} className="text-[#155DFC]" />
+                </div>
+                <button
+                  onClick={() => {
+                    setShowNotificationPanel(false);
+                    onSelectNavigation('manager_analytics');
+                  }}
+                  className={`w-full flex items-center space-x-2.5 px-2.5 py-1.5 rounded-lg text-xs font-medium tracking-wide transition-all cursor-pointer ${
+                    activeNavigation === 'manager_analytics' && !showNotificationPanel
+                      ? 'bg-[#155DFC] text-white shadow-xs font-bold'
+                      : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
+                  }`}
+                  id="nav-analytics"
+                >
+                  <BarChart3 size={14} />
+                  <span>Dashboard</span>
+                </button>
+              </div>
+            )
           )}
 
           {/* 5. System Administration Section Header & Sub-Items */}
           {(checkAuthorized('admin_panel') || checkAuthorized('user_admin') || checkAuthorized('db_explorer')) && (
-            <div className="space-y-1 pt-2 border-t border-slate-100 mt-2">
-              <div className="px-3 py-1 flex items-center justify-between text-[10px] font-bold text-slate-400 uppercase tracking-wider font-mono">
-                <span>System Administration</span>
-                <Settings size={12} className="text-slate-400" />
+            isCollapsed ? (
+              <div className="space-y-1 pt-1 border-t border-slate-800/80 flex flex-col items-center">
+                {checkAuthorized('admin_panel') && (
+                  <button
+                    onClick={() => {
+                      setShowNotificationPanel(false);
+                      onSelectNavigation('admin_panel', 'analytics');
+                    }}
+                    className={`flex items-center justify-center w-9 h-9 mx-auto rounded-lg text-xs font-semibold tracking-wide transition-all cursor-pointer ${
+                      activeNavigation === 'admin_panel' && activeAdminSubTab === 'analytics' && !showNotificationPanel
+                        ? 'bg-[#155DFC] text-white shadow-xs font-bold'
+                        : 'text-slate-400 hover:text-white hover:bg-slate-800/80'
+                    }`}
+                    id="nav-admin"
+                    title="Admin Hub & Analytics"
+                  >
+                    <Settings size={16} />
+                  </button>
+                )}
+
+                {(checkAuthorized('admin_panel') || checkAuthorized('user_admin')) && (
+                  <button
+                    onClick={() => {
+                      setShowNotificationPanel(false);
+                      onSelectNavigation('admin_panel', 'user_admin');
+                    }}
+                    className={`flex items-center justify-center w-9 h-9 mx-auto rounded-lg text-xs font-medium tracking-wide transition-all cursor-pointer ${
+                      activeNavigation === 'admin_panel' && activeAdminSubTab === 'user_admin' && !showNotificationPanel
+                        ? 'bg-[#155DFC] text-white shadow-xs font-bold'
+                        : 'text-slate-400 hover:text-white hover:bg-slate-800/80'
+                    }`}
+                    id="nav-user-admin"
+                    title="User Administration"
+                  >
+                    <Users size={16} />
+                  </button>
+                )}
+
+                {(currentUser?.role === 'admin' || (currentUser?.role as any) === 'system_admin' || currentUser?.username?.toLowerCase() === 'admin' || (currentUser?.role as string)?.toLowerCase() === 'administrator') && (
+                  <button
+                    onClick={() => {
+                      setShowNotificationPanel(false);
+                      onSelectNavigation('system_settings');
+                    }}
+                    className={`flex items-center justify-center w-9 h-9 mx-auto rounded-lg text-xs font-medium tracking-wide transition-all cursor-pointer ${
+                      activeNavigation === 'system_settings' && !showNotificationPanel
+                        ? 'bg-[#155DFC] text-white shadow-xs font-bold'
+                        : 'text-slate-400 hover:text-white hover:bg-slate-800/80'
+                    }`}
+                    id="nav-system-settings"
+                    title="System Settings"
+                  >
+                    <Sliders size={16} />
+                  </button>
+                )}
               </div>
+            ) : (
+              <div className="space-y-0.5 pt-1.5 border-t border-slate-800/80 mt-1">
+                <div className="px-2 py-0.5 flex items-center justify-between text-[9px] font-bold text-slate-500 uppercase tracking-wider font-mono">
+                  <span>System Admin</span>
+                  <Settings size={11} className="text-slate-500" />
+                </div>
 
-              {/* Main System Administration Hub */}
-              {checkAuthorized('admin_panel') && (
-                <button
-                  onClick={() => {
-                    setShowNotificationPanel(false);
-                    onSelectNavigation('admin_panel', 'analytics');
-                  }}
-                  className={`w-full flex items-center space-x-2.5 px-3 py-2 rounded-xl text-xs font-semibold tracking-wide transition-all ${
-                    activeNavigation === 'admin_panel' && activeAdminSubTab === 'analytics' && !showNotificationPanel
-                      ? 'bg-blue-600 text-white shadow-sm font-bold'
-                      : 'text-slate-700 hover:text-blue-700 hover:bg-blue-50'
-                  }`}
-                  id="nav-admin"
-                >
-                  <Settings size={14} />
-                  <span>Admin Hub & Analytics</span>
-                </button>
-              )}
+                {/* Main System Administration Hub */}
+                {checkAuthorized('admin_panel') && (
+                  <button
+                    onClick={() => {
+                      setShowNotificationPanel(false);
+                      onSelectNavigation('admin_panel', 'analytics');
+                    }}
+                    className={`w-full flex items-center space-x-2.5 px-2.5 py-1.5 rounded-lg text-xs font-medium tracking-wide transition-all cursor-pointer ${
+                      activeNavigation === 'admin_panel' && activeAdminSubTab === 'analytics' && !showNotificationPanel
+                        ? 'bg-[#155DFC] text-white shadow-xs font-bold'
+                        : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
+                    }`}
+                    id="nav-admin"
+                  >
+                    <Settings size={14} />
+                    <span>Admin Hub</span>
+                  </button>
+                )}
 
-              {/* User Administration */}
-              {(checkAuthorized('admin_panel') || checkAuthorized('user_admin')) && (
-                <button
-                  onClick={() => {
-                    setShowNotificationPanel(false);
-                    onSelectNavigation('admin_panel', 'user_admin');
-                  }}
-                  className={`w-full flex items-center space-x-2.5 px-3 py-2 pl-6 rounded-xl text-xs font-medium tracking-wide transition-all ${
-                    activeNavigation === 'admin_panel' && activeAdminSubTab === 'user_admin' && !showNotificationPanel
-                      ? 'bg-blue-600 text-white shadow-sm font-bold'
-                      : 'text-slate-600 hover:text-blue-700 hover:bg-blue-50'
-                  }`}
-                  id="nav-user-admin"
-                >
-                  <Users size={13} />
-                  <span>User Administration</span>
-                </button>
-              )}
+                {/* User Administration */}
+                {(checkAuthorized('admin_panel') || checkAuthorized('user_admin')) && (
+                  <button
+                    onClick={() => {
+                      setShowNotificationPanel(false);
+                      onSelectNavigation('admin_panel', 'user_admin');
+                    }}
+                    className={`w-full flex items-center space-x-2.5 px-2.5 py-1.5 pl-5 rounded-lg text-xs font-medium tracking-wide transition-all cursor-pointer ${
+                      activeNavigation === 'admin_panel' && activeAdminSubTab === 'user_admin' && !showNotificationPanel
+                        ? 'bg-[#155DFC] text-white shadow-xs font-bold'
+                        : 'text-slate-400 hover:text-white hover:bg-slate-800/80'
+                    }`}
+                    id="nav-user-admin"
+                  >
+                    <Users size={13} />
+                    <span>Users</span>
+                  </button>
+                )}
 
-              {/* System Settings (Administrator View Only) */}
-              {(currentUser?.role === 'admin' || (currentUser?.role as any) === 'system_admin' || currentUser?.username?.toLowerCase() === 'admin' || (currentUser?.role as string)?.toLowerCase() === 'administrator') && (
-                <button
-                  onClick={() => {
-                    setShowNotificationPanel(false);
-                    onSelectNavigation('system_settings');
-                  }}
-                  className={`w-full flex items-center space-x-2.5 px-3 py-2 pl-6 rounded-xl text-xs font-medium tracking-wide transition-all ${
-                    activeNavigation === 'system_settings' && !showNotificationPanel
-                      ? 'bg-blue-600 text-white shadow-sm font-bold'
-                      : 'text-slate-600 hover:text-blue-700 hover:bg-blue-50'
-                  }`}
-                  id="nav-system-settings"
-                  title="System Settings: Global Column Dictionary, Database Connections, and Environment Table Mappings"
-                >
-                  <Sliders size={13} />
-                  <span>System Settings</span>
-                </button>
-              )}
-            </div>
+                {/* System Settings (Administrator View Only) */}
+                {(currentUser?.role === 'admin' || (currentUser?.role as any) === 'system_admin' || currentUser?.username?.toLowerCase() === 'admin' || (currentUser?.role as string)?.toLowerCase() === 'administrator') && (
+                  <button
+                    onClick={() => {
+                      setShowNotificationPanel(false);
+                      onSelectNavigation('system_settings');
+                    }}
+                    className={`w-full flex items-center space-x-2.5 px-2.5 py-1.5 pl-5 rounded-lg text-xs font-medium tracking-wide transition-all cursor-pointer ${
+                      activeNavigation === 'system_settings' && !showNotificationPanel
+                        ? 'bg-[#155DFC] text-white shadow-xs font-bold'
+                        : 'text-slate-400 hover:text-white hover:bg-slate-800/80'
+                    }`}
+                    id="nav-system-settings"
+                    title="System Settings: Global Column Dictionary, Database Connections, and Environment Table Mappings"
+                  >
+                    <Sliders size={13} />
+                    <span>Settings</span>
+                  </button>
+                )}
+              </div>
+            )
           )}
 
         </nav>
       </div>
 
-      {/* Quick reference guide about current role capabilities */}
-      <div className="p-4 border-t border-slate-200 text-[10px] space-y-2 bg-blue-50/50 hidden lg:block font-mono text-slate-600">
-        <span className="text-blue-700 font-bold block">ACTIVE COMPLIANCE SCOPE:</span>
-        <p className="leading-relaxed">Authorized to manage cases, team workspaces, database connections, and execute operational workflows.</p>
-      </div>
+      {/* Footer / Scope Card */}
+      {isCollapsed ? (
+        <div className="p-1.5 border-t border-slate-800 hidden lg:flex flex-col items-center justify-center text-slate-500">
+          <button
+            onClick={toggleCollapsed}
+            className="w-9 h-9 flex items-center justify-center text-slate-400 hover:text-white hover:bg-slate-800/80 rounded-lg transition-colors cursor-pointer"
+            title="Expand Sidebar (Ctrl+B)"
+          >
+            <PanelLeftOpen size={16} />
+          </button>
+        </div>
+      ) : (
+        <div className="p-2 border-t border-slate-800 text-[9px] bg-slate-900/40 hidden lg:block font-mono text-slate-400">
+          <div className="flex items-center justify-between">
+            <span className="text-[#155DFC] font-bold block">SCOPE: ACTIVE</span>
+            <button
+              onClick={toggleCollapsed}
+              className="text-slate-400 hover:text-white p-0.5 rounded transition-colors cursor-pointer"
+              title="Collapse to Ribbon (Ctrl+B)"
+            >
+              <PanelLeftClose size={13} />
+            </button>
+          </div>
+          <p className="leading-tight mt-0.5 text-slate-500 truncate">Enterprise Operations</p>
+        </div>
+      )}
 
       {/* Notification Center Popover Drawer Panel */}
       {showNotificationPanel && (
-        <div className="fixed inset-y-0 left-0 sm:left-64 z-50 w-full sm:w-96 bg-white border-r border-slate-200 shadow-2xl flex flex-col justify-between animate-in slide-in-from-left duration-200">
+        <div className={`fixed inset-y-0 left-0 ${isCollapsed ? 'sm:left-14' : 'sm:left-56'} z-50 w-full sm:w-88 bg-white border-r border-slate-200 shadow-2xl flex flex-col justify-between animate-in slide-in-from-left duration-200`}>
           
           {/* Panel Header */}
-          <div className="p-4 border-b border-slate-200 bg-slate-900 text-white flex items-center justify-between">
-            <div className="flex items-center space-x-2.5">
-              <Bell size={18} className="text-blue-400" />
+          <div className="p-3 border-b border-slate-800 bg-[#0F172B] text-white flex items-center justify-between">
+            <div className="flex items-center space-x-2">
+              <Bell size={16} className="text-[#155DFC]" />
               <div>
-                <h3 className="text-sm font-bold tracking-tight">Notifications</h3>
-                <p className="text-[10px] text-slate-400 font-mono">Chat, assigned tasks & team alerts</p>
+                <h3 className="text-xs font-bold tracking-tight">Notifications</h3>
+                <p className="text-[9.5px] text-slate-400 font-mono">Chat & team alerts</p>
               </div>
             </div>
 

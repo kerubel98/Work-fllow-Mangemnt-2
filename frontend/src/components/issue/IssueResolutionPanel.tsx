@@ -31,6 +31,7 @@ export default function IssueResolutionPanel({
   const [isExecuting, setIsExecuting] = useState(false);
   const [testResult, setTestResult] = useState<string | null>(issue.solutionTestResult || null);
   const [approvalSubmitted, setApprovalSubmitted] = useState(false);
+  const [makerProposalSubmitted, setMakerProposalSubmitted] = useState(false);
 
   const handleAiSuggest = async () => {
     setIsAiGenerating(true);
@@ -95,6 +96,32 @@ export default function IssueResolutionPanel({
       issueTitle: issue.title
     });
     setApprovalSubmitted(true);
+  };
+
+  const handleProposeMakerResolution = async () => {
+    try {
+      setIsExecuting(true);
+      await fetch('/api/resolutions/propose', {
+        method: 'POST',
+        headers: { 'Content-Content': 'application/json', 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          taskId: issue.id,
+          transactionId: issue.firstLevelMappedData?.[0]?.transaction_id || `TXN-${issue.id}`,
+          teamId: 'team-cards',
+          makerId: currentUser.id,
+          makerName: currentUser.username,
+          proposedAction: 'FORCE_MATCH',
+          proposedStatus: 'VERIFIED_MATCH',
+          justificationNote: `Maker Proposal: ${scriptText.trim() || 'Manual resolution proposal'}`,
+          evidenceSnapshot: { issueTitle: issue.title, scriptText }
+        })
+      });
+      setMakerProposalSubmitted(true);
+    } catch (err: any) {
+      console.warn('Maker proposal submission failed:', err);
+    } finally {
+      setIsExecuting(false);
+    }
   };
 
   const isTechnical = currentUser.role === 'technical' || currentUser.role === 'admin';
@@ -186,6 +213,23 @@ export default function IssueResolutionPanel({
             <Play className="w-3.5 h-3.5 text-slate-600" />
             <span>{isExecuting ? 'Simulating...' : 'Test in Staging Sandbox'}</span>
           </button>
+
+          {/* Submit Maker Resolution Proposal (Four-Eyes Principle) */}
+          {!makerProposalSubmitted ? (
+            <button
+              type="button"
+              onClick={handleProposeMakerResolution}
+              disabled={!scriptText.trim() || isExecuting}
+              className="text-xs px-3.5 py-2 bg-indigo-50 hover:bg-indigo-100 text-indigo-800 border border-indigo-300 rounded-lg font-semibold flex items-center gap-1.5 transition shadow-sm cursor-pointer"
+            >
+              <ShieldAlert className="w-3.5 h-3.5 text-indigo-600" />
+              <span>Submit Maker Resolution Proposal (4-Eyes)</span>
+            </button>
+          ) : (
+            <span className="text-xs font-medium px-3 py-1.5 rounded-lg bg-indigo-100 text-indigo-800 border border-indigo-200 flex items-center gap-1 font-mono">
+              <Check className="w-3.5 h-3.5 text-indigo-700" /> Pending Checker Approval
+            </span>
+          )}
 
           {/* Request DML Approval if production requires approval */}
           {onSubmitQueryApproval && !approvalSubmitted && (

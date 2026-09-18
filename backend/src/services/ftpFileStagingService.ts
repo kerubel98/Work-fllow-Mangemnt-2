@@ -131,6 +131,26 @@ async function fetchRemoteFileContent(db: DatabaseConnection, filename: string, 
   return buf.toString('utf-8');
 }
 
+/**
+ * Compiles a user-supplied glob pattern into a flexible, fault-tolerant RegExp.
+ * Normalizes slashes, collapses repeated wildcard folders,
+ * and handles common spelling variants (Settlemnt vs Settlement, Unsetted vs Unsettled).
+ */
+export function compilePatternToRegex(rawPattern: string): RegExp {
+  const raw = (rawPattern || '*').trim();
+  let norm = raw
+    .replace(/\\/g, '/')
+    .replace(/(\/\*)+/g, '/*')
+    .toLowerCase()
+    .replace(/settlemnt/gi, 'settlem?e?nt')
+    .replace(/settlement/gi, 'settlem?e?nt')
+    .replace(/unsettled/gi, 'unsett?l?ed')
+    .replace(/unsetted/gi, 'unsett?l?ed');
+
+  const regexStr = '^' + norm.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*') + '$';
+  return new RegExp(regexStr, 'i');
+}
+
 export const ftpFileStagingService = {
   /**
    * Inspects the physical structure of a file on the FTP server:
@@ -150,7 +170,7 @@ export const ftpFileStagingService = {
       try {
         const discovered = await discoverFtpFilesRecursive(db, undefined, 8);
         if (targetPath.includes('*') || targetPath.includes('?')) {
-          const regex = new RegExp('^' + targetPath.replace(/\./g, '\\.').replace(/\*/g, '.*') + '$', 'i');
+          const regex = compilePatternToRegex(targetPath);
           const match = discovered.find(f => regex.test(f.name) || regex.test(f.fullPath));
           if (match) targetPath = match.fullPath;
           else throw new Error(`No remote files match pattern '${targetPath}'. Verify the pattern or check server files.`);
@@ -253,20 +273,16 @@ export const ftpFileStagingService = {
         fileSizeBytes: Buffer.byteLength(text, 'utf-8'),
         xmlRootElement: rootElement,
         xmlCandidateElements: Array.from(new Set(candidateElements)),
-        sampleLines: text.split(/\r?\n/).slice(0, 10),
         suggestedHeaderRow: 1,
         suggestedDataStartRow: 1
       };
     }
 
-    // CSV / TXT / Delimited
-    const content = await fetchRemoteFileContent(db, targetPath);
-    if (!content || !content.trim()) {
-      throw new Error(`Failed to inspect file '${targetPath}': File contains no readable text content.`);
-    }
-    const lines = content.split(/\r?\n/).filter(l => l.length > 0);
+    // Default delimited text inspection (CSV, TSV, PIPE, etc.)
+    const content = await fetchRemoteFileContent(db, targetPath, 1048576);
+    const lines = content.split(/\r?\n/).filter(l => l.trim().length > 0);
     if (lines.length === 0) {
-      throw new Error(`File '${targetPath}' contains no non-empty lines.`);
+      throw new Error(`File '${targetPath}' contains no readable text content.`);
     }
 
     // Delimiter sniffing
@@ -307,10 +323,12 @@ export const ftpFileStagingService = {
   /**
    * Tests and previews parsing of an FTP file across Excel, CSV, XML, or TXT.
    * Handles multi-row headers, merged cells forward-fill, and important columns.
+   * When maxRows is 0, parses ALL active data rows for production staging.
    */
   async testPreviewParse(
     db: DatabaseConnection,
-    config: Partial<FtpFileStagingConfig>
+    config: Partial<FtpFileStagingConfig>,
+    maxRows = 15
   ): Promise<PreviewParseResult> {
     let targetFile = config.sampleFileName || config.fileNamePattern || db.availableTables?.[0];
     if (!targetFile || !targetFile.trim()) {
@@ -323,7 +341,7 @@ export const ftpFileStagingService = {
       try {
         const discovered = await discoverFtpFilesRecursive(db, config.sourceDirectoryPath || undefined, 8);
         if (targetFile.includes('*') || targetFile.includes('?')) {
-          const regex = new RegExp('^' + targetFile.replace(/\./g, '\\.').replace(/\*/g, '.*') + '$', 'i');
+          const regex = compilePatternToRegex(targetFile);
           const match = discovered.find(f => regex.test(f.name) || regex.test(f.fullPath));
           if (match) targetFile = match.fullPath;
           else throw new Error(`Cannot preview parse: No remote files match pattern '${targetFile}'. Please select a sample file or adjust the pattern.`);
@@ -415,7 +433,7 @@ export const ftpFileStagingService = {
 
       const parsedRowsSample: Record<string, any>[] = [];
       const mappedRowsSample: Record<string, any>[] = [];
-      const sampleLimit = Math.min(15, activeDataRows.length);
+      const sampleLimit = maxRows > 0 ? Math.min(maxRows, activeDataRows.length) : activeDataRows.length;
       const mappings = config.fieldMappings || [];
       const importantCols = config.selectedImportantColumns || mappings.filter(m => m.isImportant !== false).map(m => m.sourceColumn);
 
@@ -536,7 +554,7 @@ export const ftpFileStagingService = {
       });
 
       const allHeaders = Array.from(new Set(flattenedRows.flatMap(r => Object.keys(r))));
-      const sampleRows = flattenedRows.slice(0, 15);
+      const sampleRows = maxRows > 0 ? flattenedRows.slice(0, maxRows) : flattenedRows;
       const mappings = config.fieldMappings || [];
       const importantCols = config.selectedImportantColumns || mappings.filter(m => m.isImportant !== false).map(m => m.sourceColumn);
 
@@ -625,7 +643,7 @@ export const ftpFileStagingService = {
 
     const parsedRowsSample: Record<string, any>[] = [];
     const mappedRowsSample: Record<string, any>[] = [];
-    const sampleLimit = Math.min(15, dataLines.length);
+    const sampleLimit = maxRows > 0 ? Math.min(maxRows, dataLines.length) : dataLines.length;
     const mappings = config.fieldMappings || [];
     const importantCols = config.selectedImportantColumns || mappings.filter(m => m.isImportant !== false).map(m => m.sourceColumn);
 
@@ -675,11 +693,164 @@ export const ftpFileStagingService = {
   },
 
   /**
+   * Scans discovered files and detects directories that have no matching Root Staging Configuration or Exception.
+   * Dispatches an administrative notification to alert operators.
+   */
+  async detectAndNotifyUnconfiguredFolders(
+    db: DatabaseConnection,
+    discoveredFiles: FtpFileEntry[]
+  ): Promise<{ folderPath: string; fileCount: number; sampleFiles: string[] }[]> {
+    if (!discoveredFiles || discoveredFiles.length === 0) return [];
+
+    const activeConfigs = (await repo.getFtpStagingConfigs()).filter(c => c.ftpConnectionId === db.id);
+
+    const folderMap = new Map<string, string[]>();
+    for (const file of discoveredFiles) {
+      const folder = (file.relativeFolder || '/').replace(/\\/g, '/');
+      if (!folderMap.has(folder)) {
+        folderMap.set(folder, []);
+      }
+      folderMap.get(folder)!.push(file.name);
+    }
+
+    const unconfigured: { folderPath: string; fileCount: number; sampleFiles: string[] }[] = [];
+
+    for (const [folder, files] of folderMap.entries()) {
+      const isCovered = activeConfigs.some(cfg => {
+        const root = (cfg.rootDirectoryPath || cfg.sourceDirectoryPath || '').replace(/\\/g, '/').toLowerCase();
+        if (!root || root === '/' || root === '') return true; // blanket root covers everything
+        const folderLower = folder.toLowerCase();
+        if (folderLower === root || folderLower.startsWith(root) || root.startsWith(folderLower)) return true;
+        if (Array.isArray(cfg.folderExceptions)) {
+          return cfg.folderExceptions.some(e => folderLower.includes(e.folderPattern.toLowerCase()));
+        }
+        return false;
+      });
+
+      if (!isCovered && files.length > 0) {
+        unconfigured.push({
+          folderPath: folder,
+          fileCount: files.length,
+          sampleFiles: files.slice(0, 5)
+        });
+
+        try {
+          const auditId = `unconf-${db.id}-${folder.replace(/[^a-zA-Z0-9]/g, '_')}`;
+          await repo.recordUnconfiguredFolder({
+            id: auditId,
+            ftpConnectionId: db.id,
+            folderPath: folder,
+            fileCount: files.length,
+            sampleFileNames: files.slice(0, 5)
+          });
+
+          await repo.createNotification({
+            id: `notif-unconf-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+            userId: 'all',
+            type: 'system',
+            title: 'Unconfigured Remote Directory Discovered',
+            message: `Discovered remote directory '${folder}' on [${db.name}] containing ${files.length} files without a configured Staging Root.`,
+            isRead: false,
+            timestamp: new Date().toISOString(),
+            linkTab: 'system_settings'
+          });
+        } catch (e: any) {
+          console.warn('[ftpFileStagingService] Could not notify unconfigured folder:', e.message);
+        }
+      }
+    }
+
+    return unconfigured;
+  },
+
+  /**
+   * Resolves effective configuration for a specific file by checking root config defaults
+   * and evaluating any subfolder structure exceptions.
+   */
+  resolveEffectiveConfigForFile(
+    configOrFile: FtpFileStagingConfig | { name: string; folder?: string },
+    fileNameOrConfig?: string | FtpFileStagingConfig,
+    folderParam?: string
+  ): FtpFileStagingConfig {
+    let config: FtpFileStagingConfig;
+    let fileName: string = '';
+    let relativeFolder: string = '/';
+
+    if (configOrFile && 'ftpConnectionId' in (configOrFile as any)) {
+      config = configOrFile as FtpFileStagingConfig;
+      if (typeof fileNameOrConfig === 'string') {
+        fileName = fileNameOrConfig;
+        relativeFolder = folderParam || '/';
+      } else if (fileNameOrConfig && typeof fileNameOrConfig === 'object' && 'name' in (fileNameOrConfig as any)) {
+        fileName = (fileNameOrConfig as any).name;
+        relativeFolder = (fileNameOrConfig as any).folder || '/';
+      }
+    } else {
+      // Called with (fileItem, config)
+      const fileItem = configOrFile as { name: string; folder?: string };
+      config = fileNameOrConfig as FtpFileStagingConfig;
+      fileName = fileItem.name;
+      relativeFolder = fileItem.folder || '/';
+    }
+
+    if (!config) {
+      return {} as any;
+    }
+
+    if (!Array.isArray(config.folderExceptions) || config.folderExceptions.length === 0) {
+      return { ...config };
+    }
+
+    const normFolder = (relativeFolder || '/').replace(/\\/g, '/').toLowerCase();
+    const cleanFileName = (fileName || '').toLowerCase();
+
+    // Check each exception rule
+    const matchedException = config.folderExceptions.find(exc => {
+      if (!exc.folderPattern) return false;
+      const pat = exc.folderPattern.replace(/\\/g, '/').toLowerCase();
+
+      // Exact match or wildcard pattern match
+      if (pat.includes('*')) {
+        const regexStr = '^' + pat.replace(/[.+^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*') + '$';
+        try {
+          const rx = new RegExp(regexStr, 'i');
+          if (rx.test(normFolder) || rx.test(`${normFolder}/${cleanFileName}`) || rx.test(cleanFileName)) {
+            return true;
+          }
+        } catch {}
+        // Substring fallback
+        const cleanSub = pat.replace(/\*/g, '');
+        return normFolder.includes(cleanSub) || cleanFileName.includes(cleanSub);
+      }
+
+      return normFolder === pat || normFolder.startsWith(pat) || normFolder.includes(pat);
+    });
+
+    if (!matchedException) {
+      return { ...config };
+    }
+
+    // Return combined config with overrides
+    return {
+      ...config,
+      fileFormat: matchedException.fileFormat || config.fileFormat,
+      customDelimiter: matchedException.customDelimiter !== undefined ? matchedException.customDelimiter : config.customDelimiter,
+      hasHeader: matchedException.hasHeader !== undefined ? matchedException.hasHeader : config.hasHeader,
+      headerRowIndex: matchedException.headerRowIndex !== undefined ? matchedException.headerRowIndex : config.headerRowIndex,
+      headerRowCount: matchedException.headerRowCount !== undefined ? matchedException.headerRowCount : config.headerRowCount,
+      dataStartRow: matchedException.dataStartRow !== undefined ? matchedException.dataStartRow : config.dataStartRow,
+      excelSheetName: matchedException.excelSheetName !== undefined ? matchedException.excelSheetName : config.excelSheetName,
+      fieldMappings: matchedException.fieldMappings && matchedException.fieldMappings.length > 0 ? matchedException.fieldMappings : config.fieldMappings
+    };
+  },
+
+  /**
    * Executes full staging of FTP file(s) into a PostgreSQL UNLOGGED mirror table.
    * Supports:
-   * 1. Single file or multi-folder looping traversal.
-   * 2. Projection filtering (only important columns are materialized).
-   * 3. Registering the prepared table into allowed_tables for Workflow Studio Lookups.
+   * 1. Single Root Folder with automatic subfolder inheritance and exception overrides.
+   * 2. Fault-tolerant mismatch handling: skips incompatible files and notifies user.
+   * 3. Projection filtering (only important columns are materialized).
+   * 4. Registering the prepared table into allowed_tables for Workflow Studio Lookups.
    */
   async stageFtpFileForValidation(
     db: DatabaseConnection,
@@ -690,22 +861,31 @@ export const ftpFileStagingService = {
     stagedCount: number;
     filesProcessedCount: number;
     filesProcessed: string[];
+    skippedMismatches: any[];
     executionTimeMs: number;
     message: string;
   }> {
     const started = Date.now();
-    const traversalMode = config.folderTraversalMode || 'SINGLE_FILE';
+    const rawScanDir = config.rootDirectoryPath || config.sourceDirectoryPath || (config as any).root_directory_path || (config as any).source_directory_path;
+    const hasWildcardOrFolder = (config.fileNamePattern || '').includes('*') || (config.fileNamePattern || '').includes('?') || (config.fileNamePattern || '').includes('/');
+    const traversalMode = hasWildcardOrFolder || rawScanDir ? 'RECURSIVE_SCAN' : (config.folderTraversalMode || 'SINGLE_FILE');
+    const scanDir = rawScanDir || (traversalMode === 'RECURSIVE_SCAN' ? '/' : undefined);
 
     // 1. Collect target files to process
     let targetFiles: { fullPath: string; folder: string; name: string }[] = [];
 
     if (traversalMode === 'RECURSIVE_SCAN' || traversalMode === 'DIRECTORY_SCAN') {
-      const recursiveEntries = await discoverFtpFilesRecursive(db, config.sourceDirectoryPath, 8);
-      const pattern = config.fileNamePattern.toLowerCase().replace(/\*/g, '.*');
-      const regex = new RegExp(`^${pattern}$`, 'i');
+      const recursiveEntries = await discoverFtpFilesRecursive(db, scanDir || '/', 8);
+      const regex = compilePatternToRegex(config.fileNamePattern || '*');
 
       targetFiles = recursiveEntries
-        .filter(entry => regex.test(entry.name) || regex.test(entry.fullPath))
+        .filter(entry => {
+          if (!config.fileNamePattern || config.fileNamePattern.trim() === '*' || config.fileNamePattern.trim() === '.*') return true;
+          const entryNorm = entry.fullPath.replace(/\\/g, '/');
+          const nameNorm = entry.name;
+          const folderNorm = entry.relativeFolder.replace(/\\/g, '/');
+          return regex.test(nameNorm) || regex.test(entryNorm) || regex.test(`${folderNorm}/${nameNorm}`);
+        })
         .map(entry => ({
           fullPath: entry.fullPath,
           folder: entry.relativeFolder,
@@ -714,7 +894,7 @@ export const ftpFileStagingService = {
 
       // Error if no pattern matched
       if (targetFiles.length === 0) {
-        throw new Error(`No remote files matched pattern '${config.fileNamePattern}' in directory '${config.sourceDirectoryPath || '/'}' (${recursiveEntries.length} files found on server).`);
+        throw new Error(`No remote files matched pattern '${config.fileNamePattern || '*'}' in directory '${scanDir || '/'}' (${recursiveEntries.length} files found on server).`);
       }
     } else {
       targetFiles = [{
@@ -725,8 +905,8 @@ export const ftpFileStagingService = {
     }
 
     // 2. Determine target mirror table name
-    const sanitizedBase = sanitizeColumnName(config.fileNamePattern.replace(/[^a-zA-Z0-9]/g, '_'), 1);
-    const mirrorTableName = config.stagingTableName || `mirror_ftp_${sanitizedBase}`;
+    const sanitizedBase = sanitizeColumnName((config.name || config.fileNamePattern || 'feed').replace(/[^a-zA-Z0-9]/g, '_'), 1);
+    const mirrorTableName = config.stagingTableName || (sanitizedBase.startsWith('mirror_') ? sanitizedBase : `mirror_ftp_${sanitizedBase}`);
 
     // 3. Resolve columns to stage: Important Columns & Mappings
     const mappings = config.fieldMappings || [];
@@ -766,90 +946,161 @@ export const ftpFileStagingService = {
       );
     }
 
-    // 4. Provision or refresh PostgreSQL UNLOGGED mirror table
+    // 4. Provision or ensure permanent PostgreSQL table for FTP data
     const tableColsSql = columnDefinitions
       .map(c => `"${c.colName}" ${c.dataType}`)
       .join(',\n  ');
 
     await queryPg(`
-      CREATE UNLOGGED TABLE IF NOT EXISTS "${mirrorTableName}" (
-        _staging_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      CREATE TABLE IF NOT EXISTS "${mirrorTableName}" (
+        _mirror_id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+        _staging_id UUID DEFAULT gen_random_uuid(),
+        _batch_id VARCHAR(64),
+        _rule_block_id VARCHAR(64),
+        _validation_status VARCHAR(32) DEFAULT 'PENDING',
+        _validation_action VARCHAR(32) DEFAULT 'CONTINUE',
+        _validation_details JSONB DEFAULT '{}'::jsonb,
+        _mirrored_at TIMESTAMPTZ DEFAULT NOW(),
         _staged_at TIMESTAMPTZ DEFAULT NOW(),
         _source_file TEXT,
         _source_folder TEXT,
         _raw_row_index INT,
         ${tableColsSql},
-        raw_payload JSONB
+        raw_payload JSONB,
+        payload JSONB DEFAULT '{}'::jsonb
       );
     `);
 
-    // Truncate previous records for clean staging
-    await queryPg(`TRUNCATE TABLE "${mirrorTableName}";`);
+    // Ensure the table is permanent and WAL-logged in case it was previously created as UNLOGGED
+    try {
+      await queryPg(`ALTER TABLE "${mirrorTableName}" SET LOGGED;`);
+      await queryPg(`ALTER TABLE "${mirrorTableName}" ADD COLUMN IF NOT EXISTS _batch_id VARCHAR(64);`);
+      await queryPg(`ALTER TABLE "${mirrorTableName}" ADD COLUMN IF NOT EXISTS _rule_block_id VARCHAR(64);`);
+      await queryPg(`ALTER TABLE "${mirrorTableName}" ADD COLUMN IF NOT EXISTS _validation_status VARCHAR(32) DEFAULT 'PENDING';`);
+      await queryPg(`ALTER TABLE "${mirrorTableName}" ADD COLUMN IF NOT EXISTS _validation_action VARCHAR(32) DEFAULT 'CONTINUE';`);
+      await queryPg(`ALTER TABLE "${mirrorTableName}" ADD COLUMN IF NOT EXISTS _validation_details JSONB DEFAULT '{}'::jsonb;`);
+      await queryPg(`ALTER TABLE "${mirrorTableName}" ADD COLUMN IF NOT EXISTS _mirrored_at TIMESTAMPTZ DEFAULT NOW();`);
+      await queryPg(`ALTER TABLE "${mirrorTableName}" ADD COLUMN IF NOT EXISTS payload JSONB DEFAULT '{}'::jsonb;`);
+    } catch {}
+
+    // Only truncate previous records if user explicitly requested REPLACE mode
+    if (config.stagingMode === 'REPLACE') {
+      await queryPg(`TRUNCATE TABLE "${mirrorTableName}";`);
+    }
 
     let totalStaged = 0;
     const processedFilesList: string[] = [];
+    const skippedMismatches: any[] = [];
 
-    // 5. Loop through all discovered files across folders
+    // 5. Loop through all discovered files across folders (with exception overrides & fault-tolerant skipping)
     for (const fileItem of targetFiles) {
-      const preview = await this.testPreviewParse(db, {
-        ...config,
-        fileNamePattern: fileItem.fullPath
-      });
+      try {
+        // In permanent historical mode, refresh only this file's rows before re-inserting
+        if (config.stagingMode !== 'REPLACE') {
+          await queryPg(
+            `DELETE FROM "${mirrorTableName}" WHERE (_source_file = $1 AND _source_folder = $2) OR _source_file = $3 OR _source_file = $1;`,
+            [fileItem.name, fileItem.folder, fileItem.fullPath]
+          );
+        }
 
-      const rowsToInsert = preview.parsedRowsSample;
-      if (rowsToInsert.length === 0) continue;
+        const effectiveConfig = this.resolveEffectiveConfigForFile(fileItem, config);
+        // maxRows = 0 ensures ALL active rows from the file are staged into the mirror table
+        const preview = await this.testPreviewParse(db, {
+          ...effectiveConfig,
+          fileNamePattern: fileItem.fullPath
+        }, 0);
 
-      const insertChunks: string[] = [];
-      rowsToInsert.forEach((rawRow, idx) => {
-        const colValues: string[] = [];
+        const rowsToInsert = preview.parsedRowsSample;
+        if (!rowsToInsert || rowsToInsert.length === 0) continue;
 
-        columnDefinitions.forEach(c => {
-          let rawVal = rawRow[c.sourceColumn];
-          if (rawVal === undefined || rawVal === null) {
-            const cleanSource = c.sourceColumn.toLowerCase().replace(/[^a-z0-9]/g, '');
-            const foundKey = Object.keys(rawRow).find(k => k.toLowerCase().replace(/[^a-z0-9]/g, '').includes(cleanSource) || cleanSource.includes(k.toLowerCase().replace(/[^a-z0-9]/g, '')));
-            if (foundKey) rawVal = rawRow[foundKey];
-          }
-          const transformed = applyFieldTransform(rawVal, c.transform);
+        const insertChunks: string[] = [];
+        rowsToInsert.forEach((rawRow, idx) => {
+          const colValues: string[] = [];
 
-          if (transformed === null || transformed === undefined) {
-            colValues.push('NULL');
-          } else if (c.dataType.startsWith('NUMERIC')) {
-            const num = parseFloat(String(transformed).replace(/[^0-9.-]/g, ''));
-            colValues.push(isNaN(num) ? '0' : String(num));
-          } else if (c.dataType.startsWith('TIMESTAMP')) {
-            const dt = new Date(transformed);
-            colValues.push(isNaN(dt.getTime()) ? 'NOW()' : `'${dt.toISOString()}'`);
-          } else {
-            const escaped = String(transformed).replace(/'/g, "''");
-            colValues.push(`'${escaped}'`);
-          }
+          columnDefinitions.forEach(c => {
+            let rawVal = rawRow[c.sourceColumn];
+            if (rawVal === undefined || rawVal === null) {
+              const cleanSource = c.sourceColumn.toLowerCase().replace(/[^a-z0-9]/g, '');
+              const foundKey = Object.keys(rawRow).find(k => k.toLowerCase().replace(/[^a-z0-9]/g, '').includes(cleanSource) || cleanSource.includes(k.toLowerCase().replace(/[^a-z0-9]/g, '')));
+              if (foundKey) rawVal = rawRow[foundKey];
+            }
+            const transformed = applyFieldTransform(rawVal, c.transform);
+
+            if (transformed === null || transformed === undefined) {
+              colValues.push('NULL');
+            } else if (c.dataType.startsWith('NUMERIC')) {
+              const num = parseFloat(String(transformed).replace(/[^0-9.-]/g, ''));
+              colValues.push(isNaN(num) ? '0' : String(num));
+            } else if (c.dataType.startsWith('TIMESTAMP')) {
+              const dt = new Date(transformed);
+              colValues.push(isNaN(dt.getTime()) ? 'NOW()' : `'${dt.toISOString()}'`);
+            } else {
+              const escaped = String(transformed).replace(/'/g, "''");
+              colValues.push(`'${escaped}'`);
+            }
+          });
+
+          const escapedFile = fileItem.name.replace(/'/g, "''");
+          const escapedFolder = fileItem.folder.replace(/'/g, "''");
+          const jsonPayload = JSON.stringify(rawRow).replace(/'/g, "''");
+
+          insertChunks.push(`(
+            '${escapedFile}',
+            '${escapedFolder}',
+            ${idx + 1},
+            ${colValues.join(', ')},
+            '${jsonPayload}'::jsonb
+          )`);
+          totalStaged++;
         });
 
-        const escapedFile = fileItem.name.replace(/'/g, "''");
-        const escapedFolder = fileItem.folder.replace(/'/g, "''");
-        const jsonPayload = JSON.stringify(rawRow).replace(/'/g, "''");
+        if (insertChunks.length > 0) {
+          const colNamesSql = columnDefinitions.map(c => `"${c.colName}"`).join(', ');
+          const BATCH_SIZE = 500;
+          for (let b = 0; b < insertChunks.length; b += BATCH_SIZE) {
+            const chunk = insertChunks.slice(b, b + BATCH_SIZE);
+            await queryPg(`
+              INSERT INTO "${mirrorTableName}" (
+                _source_file, _source_folder, _raw_row_index, ${colNamesSql}, raw_payload
+              ) VALUES ${chunk.join(',\n')};
+            `);
+          }
+        }
 
-        insertChunks.push(`(
-          '${escapedFile}',
-          '${escapedFolder}',
-          ${idx + 1},
-          ${colValues.join(', ')},
-          '${jsonPayload}'::jsonb
-        )`);
-        totalStaged++;
-      });
+        processedFilesList.push(fileItem.fullPath);
+      } catch (fileErr: any) {
+        const mismatchItem = {
+          fileName: fileItem.name,
+          folder: fileItem.folder,
+          expectedFormat: config.fileFormat,
+          reason: fileErr.message || 'File structure or format mismatch',
+          timestamp: new Date().toISOString()
+        };
+        skippedMismatches.push(mismatchItem);
+        console.warn(`[ftpFileStagingService] Skipping mismatch in file '${fileItem.name}' (${fileItem.folder}):`, fileErr.message);
 
-      if (insertChunks.length > 0) {
-        const colNamesSql = columnDefinitions.map(c => `"${c.colName}"`).join(', ');
-        await queryPg(`
-          INSERT INTO "${mirrorTableName}" (
-            _source_file, _source_folder, _raw_row_index, ${colNamesSql}, raw_payload
-          ) VALUES ${insertChunks.join(',\n')};
-        `);
+        // Notify user about skipped mismatch
+        try {
+          await repo.createNotification({
+            id: `notif-mismatch-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+            userId: 'all',
+            type: 'system',
+            title: 'File Structure Mismatch Skipped',
+            message: `File '${fileItem.name}' in folder '${fileItem.folder}' did not match expected structure (${fileErr.message}). Skipped during staging for [${config.name}].`,
+            isRead: false,
+            timestamp: new Date().toISOString(),
+            linkTab: 'system_settings'
+          });
+        } catch (notifErr: any) {
+          console.warn('[ftpFileStagingService] Could not send mismatch notification:', notifErr.message);
+        }
+
+        if (config.mismatchHandling === 'ABORT') {
+          throw fileErr;
+        }
+        // Gracefully pass to next file
+        continue;
       }
-
-      processedFilesList.push(fileItem.fullPath);
     }
 
     const executionTimeMs = Date.now() - started;
@@ -871,7 +1122,8 @@ export const ftpFileStagingService = {
       lastStagedStatus: 'STAGED_READY',
       lastStagedCount: totalStaged,
       stagingTableName: mirrorTableName,
-      lastErrorMessage: undefined
+      lastErrorMessage: undefined,
+      lastSkippedMismatches: skippedMismatches
     });
 
     return {
@@ -880,8 +1132,37 @@ export const ftpFileStagingService = {
       stagedCount: totalStaged,
       filesProcessedCount: processedFilesList.length,
       filesProcessed: processedFilesList,
+      skippedMismatches,
       executionTimeMs,
-      message: `Successfully staged ${totalStaged} records across ${processedFilesList.length} files into prepared table [${mirrorTableName}] in ${executionTimeMs}ms. Ready for Lookup Workflows.`
+      message: `Successfully staged ${totalStaged} records across ${processedFilesList.length} files into [${mirrorTableName}]. (${skippedMismatches.length} mismatched files skipped).`
     };
+  },
+
+  /**
+   * Scans PostgreSQL catalog and permanently locks/logs any mirror_ftp_* tables that may be UNLOGGED.
+   */
+  async ensureFtpTablesArePermanent(): Promise<string[]> {
+    const converted: string[] = [];
+    try {
+      const res = await queryPg(`
+        SELECT c.relname 
+        FROM pg_class c
+        JOIN pg_namespace n ON n.oid = c.relnamespace
+        WHERE n.nspname = 'public' 
+          AND c.relkind = 'r' 
+          AND c.relpersistence = 'u' 
+          AND c.relname LIKE 'mirror_ftp_%'
+      `);
+      if (res.rows && res.rows.length > 0) {
+        for (const row of res.rows) {
+          await queryPg(`ALTER TABLE "${row.relname}" SET LOGGED;`);
+          converted.push(row.relname);
+          console.log(`[ftpFileStagingService] Converted table "${row.relname}" to permanent LOGGED table.`);
+        }
+      }
+    } catch (err: any) {
+      console.warn('[ftpFileStagingService] Notice on table persistence check:', err.message);
+    }
+    return converted;
   }
 };

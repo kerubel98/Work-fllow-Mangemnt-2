@@ -24,6 +24,8 @@ CREATE TABLE IF NOT EXISTS users (
     can_execute_select BOOLEAN DEFAULT true,
     can_execute_update BOOLEAN DEFAULT false,
     allowed_db_ids JSONB DEFAULT '[]'::jsonb,
+    permanent_team_id VARCHAR(64),
+    share_workspace_with_team BOOLEAN DEFAULT true,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -294,10 +296,19 @@ CREATE TABLE IF NOT EXISTS issues (
     moved_to_testing BOOLEAN DEFAULT false,
     row_labels JSONB DEFAULT '{}'::jsonb,
     added_label_column_name VARCHAR(128),
-    custom_filters JSONB DEFAULT '[]'::jsonb
+    custom_filters JSONB DEFAULT '[]'::jsonb,
+    team_id VARCHAR(64),
+    visibility VARCHAR(32) DEFAULT 'TEAM_PUBLIC'
 );
 CREATE INDEX IF NOT EXISTS idx_issues_status ON issues(status);
 CREATE INDEX IF NOT EXISTS idx_issues_creator ON issues(creator_id);
+CREATE INDEX IF NOT EXISTS idx_issues_team_visibility ON issues(team_id, visibility);
+
+-- Auto-migration statements for existing databases
+ALTER TABLE users ADD COLUMN IF NOT EXISTS permanent_team_id VARCHAR(64);
+ALTER TABLE users ADD COLUMN IF NOT EXISTS share_workspace_with_team BOOLEAN DEFAULT true;
+ALTER TABLE issues ADD COLUMN IF NOT EXISTS team_id VARCHAR(64);
+ALTER TABLE issues ADD COLUMN IF NOT EXISTS visibility VARCHAR(32) DEFAULT 'TEAM_PUBLIC';
 
 -- 18. Task Dataset Transactions (Standalone Relational Transactions Table)
 CREATE TABLE IF NOT EXISTS task_dataset_transactions (
@@ -441,3 +452,59 @@ CREATE TABLE IF NOT EXISTS ftp_file_staging_configs (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_ftp_staging_conn ON ftp_file_staging_configs(ftp_connection_id);
+
+-- 24. Maker-Checker Resolution Approval Requests
+CREATE TABLE IF NOT EXISTS resolution_approval_requests (
+    id VARCHAR(64) PRIMARY KEY,
+    task_id VARCHAR(64) NOT NULL REFERENCES investigation_tasks(id) ON DELETE CASCADE,
+    transaction_id VARCHAR(64) NOT NULL,
+    team_id VARCHAR(64) NOT NULL,
+    maker_id VARCHAR(64) NOT NULL,
+    maker_name VARCHAR(255) NOT NULL,
+    proposed_action VARCHAR(64) NOT NULL,
+    proposed_status VARCHAR(64) NOT NULL,
+    justification_note TEXT NOT NULL,
+    evidence_snapshot JSONB NOT NULL DEFAULT '{}'::jsonb,
+    checker_id VARCHAR(64),
+    checker_name VARCHAR(255),
+    rejection_reason TEXT,
+    status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    reviewed_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_resolution_team_status ON resolution_approval_requests(team_id, status);
+CREATE INDEX IF NOT EXISTS idx_resolution_task_txn ON resolution_approval_requests(task_id, transaction_id);
+
+-- 25. Cross-Functional Project Groups
+CREATE TABLE IF NOT EXISTS cross_functional_project_groups (
+    id VARCHAR(64) PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    description TEXT,
+    strategic_objective_id VARCHAR(64),
+    member_user_ids JSONB DEFAULT '[]'::jsonb,
+    created_by VARCHAR(64) NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- 26. Team Dashboard Visibility Grants
+CREATE TABLE IF NOT EXISTS team_dashboard_visibility_grants (
+    id VARCHAR(64) PRIMARY KEY,
+    grantor_team_id VARCHAR(64) NOT NULL,
+    grantee_team_id VARCHAR(64) NOT NULL,
+    access_level VARCHAR(32) NOT NULL DEFAULT 'PARTIAL_KPI',
+    granted_by VARCHAR(64) NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- 27. AI Strategic Objectives & Alignment Tracking
+CREATE TABLE IF NOT EXISTS ai_strategic_objectives (
+    id VARCHAR(64) PRIMARY KEY,
+    title VARCHAR(255) NOT NULL,
+    description TEXT,
+    target_metric VARCHAR(128),
+    target_value NUMERIC(18, 4),
+    current_value NUMERIC(18, 4) DEFAULT 0.00,
+    linked_hashtags JSONB DEFAULT '[]'::jsonb,
+    assigned_team_ids JSONB DEFAULT '[]'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
