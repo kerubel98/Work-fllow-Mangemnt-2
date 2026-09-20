@@ -1007,7 +1007,11 @@ export default function ValidationOrchestratorWorkspace({
         || ('_target_record' in row)
         || (row.canonical_data && '_target_record' in row.canonical_data)
       );
-      const targetRecord = isRowEvaluated ? (serverRec?._target_record ?? row._target_record ?? row.canonical_data?._target_record ?? null) : null;
+      const targetRecord = isRowEvaluated
+        ? (serverRec && '_target_record' in serverRec
+            ? serverRec._target_record
+            : (row._target_record !== undefined ? row._target_record : (row.canonical_data && '_target_record' in row.canonical_data ? row.canonical_data._target_record : null)))
+        : null;
       const targetDbName = serverRec?._target_db || row._target_db || activeWorkflow?.targetDbId || 'Target DB';
       const targetTableName = serverRec?._target_table || row._target_table || activeWorkflow?.targetTable || 'transactions';
 
@@ -1048,7 +1052,11 @@ export default function ValidationOrchestratorWorkspace({
         || ('_target_record' in row)
         || (row.canonical_data && '_target_record' in row.canonical_data)
       );
-      const targetRecord = isRowEvaluated ? (serverRec?._target_record ?? row._target_record ?? row.canonical_data?._target_record ?? null) : null;
+      const targetRecord = isRowEvaluated
+        ? (serverRec && '_target_record' in serverRec
+            ? serverRec._target_record
+            : (row._target_record !== undefined ? row._target_record : (row.canonical_data && '_target_record' in row.canonical_data ? row.canonical_data._target_record : null)))
+        : null;
       const targetDbName = serverRec?._target_db || row._target_db || activeWorkflow?.targetDbId || 'Target DB';
       const targetTableName = serverRec?._target_table || row._target_table || activeWorkflow?.targetTable || 'transactions';
 

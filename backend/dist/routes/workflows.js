@@ -2,12 +2,52 @@ import { Router } from 'express';
 import { repo } from '../store/repository.js';
 import { executeLiveQueryOnDb } from '../services/dbConnectionManager.js';
 export const workflowsRouter = Router();
+// Helper to batch-hydrate attached column configurations onto workflow steps
+async function hydrateWorkflowColumnConfigurations(wf) {
+    if (!wf)
+        return wf;
+    const allConfigIds = [];
+    const steps = Array.isArray(wf.steps) ? wf.steps : [];
+    for (const s of steps) {
+        if (Array.isArray(s.columnConfigurationIds)) {
+            for (const cid of s.columnConfigurationIds) {
+                if (cid && !allConfigIds.includes(cid))
+                    allConfigIds.push(cid);
+            }
+        }
+    }
+    let configMap = new Map();
+    if (allConfigIds.length > 0) {
+        const fetched = await repo.getColumnConfigurationsByIds(allConfigIds);
+        configMap = new Map(fetched.map(c => [c.id, c]));
+    }
+    const hydratedSteps = await Promise.all(steps.map(async (s) => {
+        let cfgs = (s.columnConfigurationIds || [])
+            .map(id => configMap.get(id))
+            .filter(Boolean);
+        if (cfgs.length === 0 && (s.targetDbId || wf.targetDbId) && (s.targetTable || wf.targetTable)) {
+            try {
+                cfgs = await repo.getColumnConfigurations(s.targetDbId || wf.targetDbId, s.targetTable || wf.targetTable);
+            }
+            catch { }
+        }
+        return {
+            ...s,
+            columnConfigurations: cfgs
+        };
+    }));
+    return {
+        ...wf,
+        steps: hydratedSteps
+    };
+}
 // GET /api/workflows - List all workflows
 workflowsRouter.get('/', async (req, res) => {
     try {
         const teamId = req.query.teamId;
         const workflows = await repo.getWorkflows(teamId);
-        return res.json(workflows);
+        const hydrated = await Promise.all(workflows.map(wf => hydrateWorkflowColumnConfigurations(wf)));
+        return res.json(hydrated);
     }
     catch (err) {
         return res.status(500).json({ error: err.message });
@@ -19,7 +59,8 @@ workflowsRouter.get('/:id', async (req, res) => {
         const wf = await repo.getWorkflowById(req.params.id);
         if (!wf)
             return res.status(404).json({ error: 'Workflow not found' });
-        return res.json(wf);
+        const hydrated = await hydrateWorkflowColumnConfigurations(wf);
+        return res.json(hydrated);
     }
     catch (err) {
         return res.status(500).json({ error: err.message });
@@ -119,7 +160,8 @@ workflowsRouter.post('/', async (req, res) => {
             visibility: data.visibility || 'team'
         };
         const saved = await repo.createWorkflow(newWorkflow);
-        return res.status(201).json(saved);
+        const hydrated = await hydrateWorkflowColumnConfigurations(saved);
+        return res.status(201).json(hydrated);
     }
     catch (err) {
         return res.status(500).json({ error: err.message });
@@ -141,7 +183,8 @@ workflowsRouter.put('/:id', async (req, res) => {
         const updated = await repo.updateWorkflow(req.params.id, updates);
         if (!updated)
             return res.status(404).json({ error: 'Workflow not found' });
-        return res.json(updated);
+        const hydrated = await hydrateWorkflowColumnConfigurations(updated);
+        return res.json(hydrated);
     }
     catch (err) {
         return res.status(500).json({ error: err.message });

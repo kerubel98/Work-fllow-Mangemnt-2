@@ -3,13 +3,15 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-export type UserRole = 'admin' | 'user' | 'technical' | 'operational';
+export type UserRole = 'admin' | 'user' | 'technical' | 'operational' | 'superadmin' | 'administrator';
 
 export interface User {
   id: string;
   username: string;
+  name?: string;
   email: string;
   role: UserRole;
+  teamId?: string;
   isApproved: boolean;
   createdAt: string;
   canExecuteSelect?: boolean;
@@ -57,6 +59,28 @@ export interface MemberPrivilege {
   allowedQueryTypes: AllowedQueryType[];
 }
 
+export interface TeamAdminPrivileges {
+  isFullAdmin?: boolean;
+  canManageConnections?: boolean;
+  canMonitorConnections?: boolean;
+  canManageAccessRequests?: boolean;
+  canManageColumnMapping?: boolean;
+  canManageUsers?: boolean;
+  canManageSystems?: boolean;
+}
+
+export interface UserAdminCapabilities {
+  isFullAdmin: boolean;
+  isGlobalAdmin?: boolean;
+  canManageConnections: boolean;
+  canMonitorConnections: boolean;
+  canViewMonitoring?: boolean;
+  canManageAccessRequests: boolean;
+  canManageColumnMapping: boolean;
+  canManageUsers: boolean;
+  canManageSystems: boolean;
+}
+
 export interface Team {
   id: string;
   name: string;
@@ -69,6 +93,7 @@ export interface Team {
   allowedDbIds?: string[];
   allowedQueryTypes?: AllowedQueryType[];
   memberPrivileges?: Record<string, MemberPrivilege>;
+  adminPrivileges?: TeamAdminPrivileges;
 }
 
 export type TeamRelationshipType =
@@ -751,7 +776,7 @@ export interface UploadAuditLog {
 // BUSINESS PROCESSING STAGE & STAGE-AWARE WORKFLOWS
 // ==========================================
 
-export type ValidationResultStatus = 'PASS' | 'FAIL' | 'ERROR';
+export type ValidationResultStatus = 'PASS' | 'FAIL' | 'ERROR' | 'SKIPPED' | 'NOT_EVALUATED' | 'PAUSED_DB_OFFLINE';
 export type PipelineAction = 'CONTINUE' | 'STOP' | 'CLOSE' | 'FLAG' | 'REPORT';
 export type TransactionInvestigationStatus = 'PENDING' | 'INVESTIGATING' | 'RECONCILED' | 'FLAGGED' | 'CLOSED';
 
@@ -1405,6 +1430,7 @@ export interface AIStrategicObjective {
 
 export type SettingProposalType = 
   | 'WORKSPACE_CONFIG' 
+  | 'SCHEMA_CONFIG'
   | 'TABLE_MAPPING' 
   | 'COLUMN_CONFIG' 
   | 'VALIDATION_BOX' 
@@ -1446,10 +1472,14 @@ export interface WorkspaceSettingProposal {
 export interface TeamEscalationTarget {
   relationshipId: string;
   relationshipType: string;
+  relationship_type?: string;
   relationshipDescription?: string;
   targetTeamId: string;
+  target_team_id?: string;
   targetTeamName: string;
+  target_team_name?: string;
   targetTeamType: string;
+  target_team_type?: string;
   targetTeamDescription?: string;
   managerId?: string;
   managerName?: string;

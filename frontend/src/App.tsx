@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, Suspense, lazy } from 'react';
+import React, { useState, useEffect, useCallback, Suspense, lazy } from 'react';
 import { 
   User, Issue, HashtagPreset, Plugin, DatabaseConnection, 
   Transaction, ChatMessage, EnvironmentSystem, QueryApprovalRequest, 
@@ -20,6 +20,8 @@ import LoginScreen from './components/LoginScreen';
 import SideNav from './components/SideNav';
 import ErrorBoundary from './components/ErrorBoundary';
 import MessageModal from './components/common/MessageModal';
+import { ShieldAlert } from 'lucide-react';
+import { getUserAdminCapabilities } from './utils/adminCapabilities';
 
 // Code-split dynamic route panels
 const IssueDetailView = lazy(() => import('./components/IssueDetailView'));
@@ -33,6 +35,17 @@ const WorkspaceSettings = lazy(() => import('./components/WorkspaceSettings'));
 const SystemSettings = lazy(() => import('./components/settings/SystemSettings'));
 const AdminTeamResourcesMonitor = lazy(() => import('./components/AdminTeamResourcesMonitor'));
 
+function safeGetJson<T>(key: string, fallback: T): T {
+  try {
+    const saved = localStorage.getItem(key);
+    if (!saved) return fallback;
+    const parsed = JSON.parse(saved);
+    return parsed !== null && parsed !== undefined ? parsed : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
 function PanelLoadingSkeleton() {
   return (
     <div className="w-full h-96 flex flex-col items-center justify-center gap-3 p-8 bg-white/50 rounded-2xl border border-slate-200/80 animate-pulse">
@@ -44,71 +57,20 @@ function PanelLoadingSkeleton() {
 
 
 export default function App() {
-  // 1. Core State Engine (hydrated from localStorage)
-  const [users, setUsers] = useState<User[]>(() => {
-    const saved = localStorage.getItem('it_users');
-    return saved ? JSON.parse(saved) : INITIAL_USERS;
-  });
-
-  const [currentUser, setCurrentUser] = useState<User | null>(() => {
-    const saved = localStorage.getItem('it_session');
-    return saved ? JSON.parse(saved) : null;
-  });
-
-  const [issues, setIssues] = useState<Issue[]>(() => {
-    const saved = localStorage.getItem('it_issues');
-    return saved ? JSON.parse(saved) : INITIAL_ISSUES;
-  });
-
-  const [hashtags, setHashtags] = useState<HashtagPreset[]>(() => {
-    const saved = localStorage.getItem('it_hashtags');
-    return saved ? JSON.parse(saved) : INITIAL_HASHTAGS;
-  });
-
-  const [plugins, setPlugins] = useState<Plugin[]>(() => {
-    const saved = localStorage.getItem('it_plugins');
-    return saved ? JSON.parse(saved) : INITIAL_PLUGINS;
-  });
-
-  const [databases, setDatabases] = useState<DatabaseConnection[]>(() => {
-    const saved = localStorage.getItem('it_databases');
-    return saved ? JSON.parse(saved) : [];
-  });
-
-  const [systems, setSystems] = useState<EnvironmentSystem[]>(() => {
-    const saved = localStorage.getItem('it_systems');
-    return saved ? JSON.parse(saved) : INITIAL_SYSTEMS;
-  });
-
-  const [teams, setTeams] = useState<Team[]>(() => {
-    const saved = localStorage.getItem('it_teams');
-    return saved ? JSON.parse(saved) : INITIAL_TEAMS;
-  });
-
-  const [teamTasks, setTeamTasks] = useState<TeamTask[]>(() => {
-    const saved = localStorage.getItem('it_team_tasks');
-    return saved ? JSON.parse(saved) : INITIAL_TEAM_TASKS;
-  });
-
-  const [teamInsights, setTeamInsights] = useState<TeamInsight[]>(() => {
-    const saved = localStorage.getItem('it_team_insights');
-    return saved ? JSON.parse(saved) : INITIAL_TEAM_INSIGHTS;
-  });
-
-  const [teamMessages, setTeamMessages] = useState<TeamDiscussionMessage[]>(() => {
-    const saved = localStorage.getItem('it_team_messages');
-    return saved ? JSON.parse(saved) : INITIAL_TEAM_MESSAGES;
-  });
-
-  const [notifications, setNotifications] = useState<AppNotification[]>(() => {
-    const saved = localStorage.getItem('it_notifications');
-    return saved ? JSON.parse(saved) : INITIAL_NOTIFICATIONS;
-  });
-
-  const [directMessages, setDirectMessages] = useState<DirectMessage[]>(() => {
-    const saved = localStorage.getItem('it_direct_messages');
-    return saved ? JSON.parse(saved) : INITIAL_DIRECT_MESSAGES;
-  });
+  // 1. Core State Engine (safely hydrated from localStorage with fallbacks)
+  const [users, setUsers] = useState<User[]>(() => safeGetJson('it_users', INITIAL_USERS));
+  const [currentUser, setCurrentUser] = useState<User | null>(() => safeGetJson('it_session', null));
+  const [issues, setIssues] = useState<Issue[]>(() => safeGetJson('it_issues', INITIAL_ISSUES));
+  const [hashtags, setHashtags] = useState<HashtagPreset[]>(() => safeGetJson('it_hashtags', INITIAL_HASHTAGS));
+  const [plugins, setPlugins] = useState<Plugin[]>(() => safeGetJson('it_plugins', INITIAL_PLUGINS));
+  const [databases, setDatabases] = useState<DatabaseConnection[]>(() => safeGetJson('it_databases', []));
+  const [systems, setSystems] = useState<EnvironmentSystem[]>(() => safeGetJson('it_systems', INITIAL_SYSTEMS));
+  const [teams, setTeams] = useState<Team[]>(() => safeGetJson('it_teams', INITIAL_TEAMS));
+  const [teamTasks, setTeamTasks] = useState<TeamTask[]>(() => safeGetJson('it_team_tasks', INITIAL_TEAM_TASKS));
+  const [teamInsights, setTeamInsights] = useState<TeamInsight[]>(() => safeGetJson('it_team_insights', INITIAL_TEAM_INSIGHTS));
+  const [teamMessages, setTeamMessages] = useState<TeamDiscussionMessage[]>(() => safeGetJson('it_team_messages', INITIAL_TEAM_MESSAGES));
+  const [notifications, setNotifications] = useState<AppNotification[]>(() => safeGetJson('it_notifications', INITIAL_NOTIFICATIONS));
+  const [directMessages, setDirectMessages] = useState<DirectMessage[]>(() => safeGetJson('it_direct_messages', INITIAL_DIRECT_MESSAGES));
 
   // Deep-linking target states for Notifications & Navigation
   const [deepLinkTeamId, setDeepLinkTeamId] = useState<string | null>(null);
@@ -125,10 +87,8 @@ export default function App() {
     setCreateTeamSignal(prev => prev + 1);
   };
 
-  const [queryApprovals, setQueryApprovals] = useState<QueryApprovalRequest[]>(() => {
-    const saved = localStorage.getItem('it_query_approvals');
-    if (saved) return JSON.parse(saved);
-    return [
+  const [queryApprovals, setQueryApprovals] = useState<QueryApprovalRequest[]>(() => 
+    safeGetJson('it_query_approvals', [
       {
         id: 'qreq-1',
         systemId: 'sys-2',
@@ -144,13 +104,11 @@ export default function App() {
         issueId: 'ISS-101',
         issueTitle: 'Duplicate auth charges on Amazon cardholders'
       }
-    ];
-  });
+    ])
+  );
 
-  const [dbAccessRequests, setDbAccessRequests] = useState<DbAccessRequest[]>(() => {
-    const saved = localStorage.getItem('it_db_access_requests');
-    if (saved) return JSON.parse(saved);
-    return [
+  const [dbAccessRequests, setDbAccessRequests] = useState<DbAccessRequest[]>(() => 
+    safeGetJson('it_db_access_requests', [
       {
         id: 'dbreq-1',
         userId: 'usr-2',
@@ -163,13 +121,11 @@ export default function App() {
         status: 'pending',
         requestDate: '2026-07-24T10:15:00Z'
       }
-    ];
-  });
+    ])
+  );
 
-  const [connectionUsageLogs, setConnectionUsageLogs] = useState<ConnectionUsageLog[]>(() => {
-    const saved = localStorage.getItem('it_connection_usage_logs');
-    if (saved) return JSON.parse(saved);
-    return [
+  const [connectionUsageLogs, setConnectionUsageLogs] = useState<ConnectionUsageLog[]>(() => 
+    safeGetJson('it_connection_usage_logs', [
       {
         id: 'log-1',
         userId: 'usr-2',
@@ -178,36 +134,13 @@ export default function App() {
         dbId: 'db-1',
         dbName: 'Core Retail Banking DB',
         queryType: 'SELECT',
-        queryStatement: "SELECT * FROM transactions WHERE status = 'PENDING' LIMIT 10;",
-        timestamp: '2026-07-24T11:20:00Z',
-        executionTimeMs: 240
-      },
-      {
-        id: 'log-2',
-        userId: 'usr-3',
-        username: 'tech_sarah',
-        userRole: 'technical',
-        dbId: 'db-2',
-        dbName: 'Card Authorization Network',
-        queryType: 'UPDATE',
-        queryStatement: "UPDATE card_authorizations SET auth_status = 'SETTLED' WHERE auth_code = 'AUTH-7712';",
-        timestamp: '2026-07-24T11:45:00Z',
-        executionTimeMs: 380
-      },
-      {
-        id: 'log-3',
-        userId: 'usr-2',
-        username: 'ops_john',
-        userRole: 'operational',
-        dbId: 'db-3',
-        dbName: 'E-Commerce Gateway DB',
-        queryType: 'SELECT',
-        queryStatement: "REST SELECT query on E-Commerce Gateway DB filter: status=DECLINED",
-        timestamp: '2026-07-24T12:05:00Z',
-        executionTimeMs: 190
+        queryText: 'SELECT id, ext_ref, amt, status FROM sv_fin_tab WHERE txn_date >= CURRENT_DATE - 1 LIMIT 50;',
+        timestamp: '2026-07-24T10:30:00Z',
+        durationMs: 42,
+        status: 'success'
       }
-    ];
-  });
+    ])
+  );
 
   const [transactions] = useState<Transaction[]>(TRANSACTION_ARCHIVE);
 
@@ -348,7 +281,7 @@ export default function App() {
           fetchedHashtags
         ] = await Promise.allSettled([
           api.getUsers(),
-          api.getIssues(),
+          api.getIssues(currentUser?.id),
           api.getDatabases(),
           api.getSystems(),
           api.getTeams(),
@@ -443,11 +376,6 @@ export default function App() {
     hydrateFromBackend();
     return () => { isMounted = false; };
   }, []);
-      }
-    };
-
-    hydrateFromBackend();
-  }, []);
 
   // Real-time EventSource (SSE) listener for multi-device cross-browser live push
   useEffect(() => {
@@ -529,6 +457,17 @@ export default function App() {
             const newIssue: Issue = JSON.parse(e.data);
             setIssues(prev => {
               if (prev.some(i => i.id === newIssue.id)) return prev;
+              const activeUser = currentUser;
+              if (activeUser) {
+                const isAdmin = activeUser.role === 'admin';
+                const isOwner = newIssue.creatorId === activeUser.id;
+                const isAssigned = newIssue.assignedTechUserId === activeUser.id;
+                const permTeamId = activeUser.permanentTeamId || teams.find(t => t.teamType === 'permanent' && (t.managerId === activeUser.id || t.memberIds?.includes(activeUser.id)))?.id;
+                const isTeamVisible = Boolean((newIssue.visibility === 'TEAM_PUBLIC' || !newIssue.visibility) && permTeamId && newIssue.teamId === permTeamId);
+                if (!isAdmin && !isOwner && !isAssigned && !isTeamVisible) {
+                  return prev;
+                }
+              }
               return [newIssue, ...prev];
             });
           } catch (err) {
@@ -573,6 +512,17 @@ export default function App() {
     return () => {
       eventSource?.close();
     };
+  }, [currentUser?.id, teams]);
+
+  // Refresh user-scoped issues whenever the active user changes
+  useEffect(() => {
+    if (currentUser?.id) {
+      api.getIssues(currentUser.id)
+        .then(res => {
+          if (Array.isArray(res)) setIssues(res);
+        })
+        .catch(err => console.warn('Could not refresh user issues:', err));
+    }
   }, [currentUser?.id]);
 
   // Direct Personal Chat Handlers
@@ -1091,12 +1041,21 @@ export default function App() {
     isApproved: true
   } : null;
 
-  // Guard navigation against unauthorized role bypasses
+  // Guard navigation against unauthorized role bypasses (honors global admin & delegated team capabilities)
   const isAuthorizedTab = (tab: string) => {
     if (!currentUser) return false;
-    const isAdmin = currentUser.role === 'admin' || currentUser.username?.toLowerCase() === 'admin' || (currentUser.role as string)?.toLowerCase() === 'administrator';
-    if (tab === 'txn_settings' || tab === 'system_settings' || tab === 'admin_team_resources') {
-      return isAdmin;
+    const caps = getUserAdminCapabilities(currentUser, teams);
+    if (tab === 'admin_panel') {
+      return caps.isFullAdmin || caps.canManageConnections || caps.canMonitorConnections || caps.canManageAccessRequests;
+    }
+    if (tab === 'user_admin') {
+      return caps.isFullAdmin || caps.canManageUsers;
+    }
+    if (tab === 'txn_settings' || tab === 'system_settings') {
+      return caps.isFullAdmin || caps.canManageSystems || caps.canManageColumnMapping;
+    }
+    if (tab === 'admin_team_resources') {
+      return caps.isFullAdmin || caps.canManageConnections || caps.canMonitorConnections;
     }
     return true;
   };
@@ -1133,6 +1092,7 @@ export default function App() {
           {/* Left Vertical Native Sidebar Component */}
           <SideNav 
             currentUser={effectiveUser || currentUser} 
+            teams={teams}
             activeNavigation={activeNavigation} 
             activeAdminSubTab={adminPanelSubTab}
             onSelectNavigation={handleSelectNavigation} 
@@ -1268,6 +1228,7 @@ export default function App() {
             {activeNavigation === 'admin_panel' && isAuthorizedTab('admin_panel') && (
               <AdminPanel 
                 currentUser={effectiveUser || currentUser}
+                teams={teams}
                 users={users} 
                 databases={databases} 
                 plugins={plugins} 
@@ -1296,6 +1257,7 @@ export default function App() {
             {activeNavigation === 'user_admin' && isAuthorizedTab('user_admin') && (
               <AdminPanel 
                 currentUser={effectiveUser || currentUser}
+                teams={teams}
                 users={users} 
                 databases={databases} 
                 plugins={plugins} 
@@ -1325,6 +1287,7 @@ export default function App() {
               <ErrorBoundary fallbackTitle="Workspace Settings Error" fallbackMessage="Could not display workspace settings. You can retry or reset local settings.">
                 <WorkspaceSettings
                   currentUser={effectiveUser || currentUser!}
+                  teams={teams}
                   databases={databases}
                   onNavigateToWorkspace={() => setActiveNavigation('workspace')}
                 />
@@ -1335,6 +1298,7 @@ export default function App() {
               <ErrorBoundary fallbackTitle="System Settings Error" fallbackMessage="Could not display System Settings. You can retry or return to workspace.">
                 <SystemSettings
                   currentUser={effectiveUser || currentUser!}
+                  teams={teams}
                   databases={databases}
                   systems={systems}
                   onAddDatabase={handleAddDatabase}
@@ -1361,10 +1325,11 @@ export default function App() {
               </ErrorBoundary>
             )}
 
-            {activeNavigation === 'txn_settings' && (
+            {activeNavigation === 'txn_settings' && isAuthorizedTab('txn_settings') && (
               <ErrorBoundary fallbackTitle="System Settings Error" fallbackMessage="Could not display System Settings. You can retry or return to workspace.">
                 <SystemSettings
                   currentUser={effectiveUser || currentUser!}
+                  teams={teams}
                   databases={databases}
                   systems={systems}
                   onAddDatabase={handleAddDatabase}
@@ -1375,6 +1340,29 @@ export default function App() {
                   initialTab="dictionary"
                 />
               </ErrorBoundary>
+            )}
+
+            {/* Unauthorized Administrative Route Guard Screen */}
+            {['admin_panel', 'user_admin', 'txn_settings', 'system_settings', 'admin_team_resources'].includes(activeNavigation) && !isAuthorizedTab(activeNavigation) && (
+              <div className="flex flex-col items-center justify-center min-h-[60vh] text-center p-6 space-y-4" id="admin-access-denied-screen">
+                <div className="w-16 h-16 rounded-2xl bg-rose-50 border border-rose-200 flex items-center justify-center text-rose-600 shadow-xs">
+                  <ShieldAlert size={32} />
+                </div>
+                <div className="space-y-1 max-w-md">
+                  <h2 className="text-base font-bold text-slate-900">Access Restricted to Administrators</h2>
+                  <p className="text-xs text-slate-500 font-sans">
+                    Administrative panels (User Administration, System Settings, Global Dictionaries, and Central Team Resource Monitors) require Workspace Administrator authorization.
+                  </p>
+                </div>
+                <div className="pt-2">
+                  <button
+                    onClick={() => setActiveNavigation('workspace')}
+                    className="px-4 py-2 bg-[#155DFC] hover:bg-[#155DFC]/90 text-white text-xs font-bold rounded-xl transition-all shadow-xs cursor-pointer"
+                  >
+                    Return to Operations Workspace
+                  </button>
+                </div>
+              </div>
             )}
             </Suspense>
           </main>

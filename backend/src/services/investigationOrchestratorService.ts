@@ -99,7 +99,11 @@ export const investigationOrchestratorService = {
     }
 
     // Determine primary keyField and full list of active parameters
-    const primaryKeyField = activeParamsInFile[0] || inputKeyField || fileColumns.find(c => !c.startsWith('_')) || 'id';
+    const resolvedKey = activeParamsInFile[0] || inputKeyField || fileColumns.find(c => !c.startsWith('_'));
+    if (!resolvedKey) {
+      throw new Error(`[WorkflowEngine] Configuration Error: Unable to determine primary key for workflow "${workflow.name}". Please configure searchParameters on workflow steps or supply an explicit keyField.`);
+    }
+    const primaryKeyField = resolvedKey;
     const activeKeyFields = activeParamsInFile.length > 0 ? activeParamsInFile : [primaryKeyField];
 
     // Helper to extract candidate keys for any record strictly from configured parameters
@@ -130,7 +134,7 @@ export const investigationOrchestratorService = {
             const evalInfo = resultMap[k];
             return {
               ...r,
-              _validation_status: evalInfo?.status || 'PASS',
+              _validation_status: evalInfo?.status || (existingExec.failedCount > 0 && existingExec.passedCount === 0 ? 'FAIL' : 'PENDING'),
               _validation_details: evalInfo?.details || { lookup: 'task_workflow_executions' },
               _target_record: evalInfo?.targetRecord || null,
               _target_db: evalInfo?.targetDb || null,
@@ -196,8 +200,8 @@ export const investigationOrchestratorService = {
         id: `stage-default-${workflow.id}`,
         name: 'Validation Stage',
         order: 1,
-        targetDbId: workflow.targetDbId || 'db-1',
-        targetDataSource: workflow.targetTable || 'transactions',
+        targetDbId: workflow.targetDbId || '',
+        targetDataSource: workflow.targetTable || '',
         enabled: true,
         actionOnFail: 'STOP'
       }
@@ -341,10 +345,13 @@ export const investigationOrchestratorService = {
               .flatMap((qe: QueryExtraction) => (qe.keyMappings || []).map(km => km.sourceField))
               .filter((k: string) => k && previousCols.includes(k));
 
-            // Priority 2: Fallback heuristic for common downstream keys
-            const heuristicKeys = ['settlement_id', 'clearing_sequence_id', 'batch_id', 'order_id', 'account_id'];
-            const candidateKeys = extractionKeys.length > 0 ? extractionKeys : heuristicKeys;
-            const discoveredKey = candidateKeys.find(k => previousCols.includes(k));
+            // Priority 2: Use searchParameters from the current stage's steps that match previous mirror columns
+            const stageStepKeys = stageSteps
+              .flatMap((step: any) => (step.searchParameters || []).map((sp: any) => sp.targetColumn || sp.inputField))
+              .filter((k: string) => k && previousCols.includes(k));
+
+            const candidateKeys = extractionKeys.length > 0 ? extractionKeys : stageStepKeys;
+            const discoveredKey = candidateKeys.find((k: string) => previousCols.includes(k));
 
             if (discoveredKey) {
               console.log(`[WorkflowEngine] Key Chaining: Auto-discovered downstream key '${discoveredKey}' in ${previousMirrorTable}`);
@@ -365,12 +372,16 @@ export const investigationOrchestratorService = {
         }
 
         // 4. Provision Dedicated Typed Mirror Table in PostgreSQL
+        const targetTable = stage.targetDataSource || workflow.targetTable;
+        if (!targetTable) {
+          throw new Error(`[WorkflowEngine] Configuration Error: Stage "${stage.name}" has no target data source or table configured.`);
+        }
         let mirrorTable: string;
         try {
-          mirrorTable = await mirrorTableManager.ensureMirrorTableExists(targetDb, stage.targetDataSource || 'transactions');
+          mirrorTable = await mirrorTableManager.ensureMirrorTableExists(targetDb, targetTable);
         } catch (mirrorErr: any) {
-          console.warn(`[WorkflowEngine] Fallback to standard staging mirror: ${mirrorErr.message}`);
-          mirrorTable = await mirrorTableManager.ensureMirrorTableExists(null, 'staging_transactions');
+          console.warn(`[WorkflowEngine] Fallback to standard staging mirror for ${targetTable}: ${mirrorErr.message}`);
+          mirrorTable = await mirrorTableManager.ensureMirrorTableExists(null, `staging_${targetTable}`);
         }
 
         // 5. Fetch External Data & Ingest to Mirror
@@ -414,7 +425,7 @@ export const investigationOrchestratorService = {
           workflowId: workflow.id,
           stageId: stage.id,
           targetDbId: stage.targetDbId || workflow.targetDbId || '',
-          targetDataSource: stage.targetDataSource || workflow.targetTable || 'transactions',
+          targetDataSource: targetTable,
           selectedColumns: [],
           keyMappings: stageSearchParams.map(sp => ({ inputField: sp.inputField, sourceField: sp.targetColumn, required: sp.required })),
           enabled: true
@@ -474,6 +485,8 @@ export const investigationOrchestratorService = {
         // Execute compiled set-based batch update
         await queryPg(compiledSql.fullUpdateSql, [jobId]);
 
+        const stageInputRecords = [...currentActiveRecords];
+
         // 7. Segregate Passed vs. Failed Partitions
         const hasKeyCol = mirrorCols.includes(primaryKeyField);
         const hasPayloadCol = mirrorCols.includes('payload');
@@ -488,26 +501,117 @@ export const investigationOrchestratorService = {
         `;
         const partitionRes = await queryPg(partitionQuery, [jobId]);
 
+        const partitionMap = new Map<string, any>();
+        partitionRes.rows.forEach((r: any) => partitionMap.set(String(r.tx_key), r));
+
         const forwardKeys: string[] = [];
         const passKeys: string[] = [];
         const failKeys: string[] = [];
+        const processedKeysInStage = new Set<string>();
 
-        partitionRes.rows.forEach((r: any) => {
-          const isPass = r._validation_status === 'PASS';
-          const action = r._validation_action || (isPass ? 'CONTINUE' : 'STOP');
+        for (let recIdx = 0; recIdx < stageInputRecords.length; recIdx++) {
+          const orig = stageInputRecords[recIdx];
+          const candidateKeys = getRecordCandidateKeys(orig, recIdx);
 
-          if (isPass) {
-            passKeys.push(String(r.tx_key));
+          let matchedPartitionRow: any = null;
+          for (const ck of candidateKeys) {
+            if (partitionMap.has(ck)) {
+              matchedPartitionRow = partitionMap.get(ck);
+              break;
+            }
+          }
+
+          if (matchedPartitionRow) {
+            // Found in target database and evaluated in mirror
+            const keyStr = String(matchedPartitionRow.tx_key);
+            processedKeysInStage.add(keyStr);
+            const isPass = matchedPartitionRow._validation_status === 'PASS';
+            const action = matchedPartitionRow._validation_action || (isPass ? 'CONTINUE' : 'STOP');
+            if (isPass) {
+              passKeys.push(keyStr);
+            } else {
+              failKeys.push(keyStr);
+            }
+
+            const canAdvance = isPass || (matchedPartitionRow._validation_status === 'FAIL' && (action === 'CONTINUE' || action === 'REPORT'));
+            if (canAdvance) {
+              forwardKeys.push(keyStr);
+            }
+
+            const isHalted = !isPass && action !== 'CONTINUE' && action !== 'REPORT';
+            const isLastStage = stageIdx === stages.length - 1;
+
+            if (isLastStage || isHalted) {
+              let targetRec: any = null;
+              if (externalResult?.correlatedRecords) {
+                for (const k of candidateKeys) {
+                  if (externalResult.correlatedRecords[k]) {
+                    targetRec = externalResult.correlatedRecords[k];
+                    break;
+                  }
+                }
+              }
+
+              finalEvaluatedRecords.push({
+                ...orig,
+                _validation_status: matchedPartitionRow._validation_status,
+                _validation_action: matchedPartitionRow._validation_action,
+                _validation_details: matchedPartitionRow._validation_details,
+                _isDiagnosticOnly: orig?._isDiagnosticOnly || false,
+                _target_record: targetRec || null,
+                _target_db: targetDb?.name || stage.targetDbId || 'Target DB',
+                _target_table: targetTable,
+                _evaluated_at: new Date().toISOString()
+              });
+
+              if (isPass) totalPassed++;
+              else totalFailed++;
+
+              if (!shouldForceFresh) {
+                workflowEngineSingleton.cacheResult(
+                  workflowId,
+                  keyStr,
+                  isPass ? 'PASS' : 'FAIL',
+                  matchedPartitionRow._validation_status,
+                  matchedPartitionRow._validation_details
+                );
+              }
+            }
           } else {
-            failKeys.push(String(r.tx_key));
-          }
+            // CRITICAL: Record was NOT found in target database / mirror!
+            // A rule should NEVER say passed for a record not found in the external database!
+            const recKey = candidateKeys[0] || `ROW-${recIdx + 1}`;
+            failKeys.push(recKey);
+            const failDetails = {
+              existence: 'NOT_FOUND_IN_TARGET_DB',
+              message: `Record not found in target database ${targetDb?.name || stage.targetDbId || 'Target DB'} (${targetTable})`
+            };
 
-          // Invariant 1: Advance on PASS, or on non-blocking failures configured to CONTINUE or REPORT
-          const canAdvance = isPass || (r._validation_status === 'FAIL' && (action === 'CONTINUE' || action === 'REPORT'));
-          if (canAdvance) {
-            forwardKeys.push(String(r.tx_key));
+            finalEvaluatedRecords.push({
+              ...orig,
+              _validation_status: 'FAIL',
+              _validation_action: stageSteps[0]?.onFailAction || 'STOP',
+              _validation_details: failDetails,
+              _isDiagnosticOnly: orig?._isDiagnosticOnly || false,
+              _target_record: null,
+              _target_db: targetDb?.name || stage.targetDbId || 'Target DB',
+              _target_table: targetTable,
+              _evaluated_at: new Date().toISOString()
+            });
+
+            totalFailed++;
+
+            if (!shouldForceFresh) {
+              workflowEngineSingleton.cacheResult(
+                workflowId,
+                recKey,
+                'FAIL',
+                'FAIL',
+                failDetails
+              );
+            }
           }
-        });
+        }
 
         console.log(`[WorkflowEngine] Stage '${stage.name}' completed: ${passKeys.length} passed, ${failKeys.length} failed, ${forwardKeys.length} forwarded downstream.`);
 
@@ -523,7 +627,7 @@ export const investigationOrchestratorService = {
 
         // 8. Event-Driven Chaining: Route forward subset to next stage
         currentActiveKeys = forwardKeys;
-        currentActiveRecords = currentActiveRecords.filter((r, idx) => {
+        currentActiveRecords = stageInputRecords.filter((r, idx) => {
           const rKeys = getRecordCandidateKeys(r, idx);
           return rKeys.some(k => forwardKeys.includes(k));
         });
@@ -554,94 +658,9 @@ export const investigationOrchestratorService = {
 
         previousMirrorTable = mirrorTable;
 
-        // Collect final outcomes
-        const processedKeysInStage = new Set<string>();
-        const seenProcessedRecIndices = new Set<number>();
-        partitionRes.rows.forEach((r: any) => {
-          processedKeysInStage.add(String(r.tx_key));
-          const origIdx = toExecute.findIndex((o, idx) => getRecordCandidateKeys(o, idx).includes(String(r.tx_key)));
-          const orig = origIdx >= 0 ? toExecute[origIdx] : null;
-          if (origIdx >= 0 && seenProcessedRecIndices.has(origIdx)) return;
-          if (origIdx >= 0) seenProcessedRecIndices.add(origIdx);
-
-          const verdict: 'PASS' | 'FAIL' | 'DISCREPANCY' = r._validation_status === 'PASS' ? 'PASS' : 'FAIL';
-          const action = r._validation_action || (verdict === 'PASS' ? 'CONTINUE' : 'STOP');
-          const isHalted = verdict === 'FAIL' && action !== 'CONTINUE' && action !== 'REPORT';
-          
-          if (stageIdx === stages.length - 1 || isHalted) {
-            let targetRec: any = null;
-            if (externalResult?.correlatedRecords) {
-              const keysToCheck = orig ? getRecordCandidateKeys(orig, origIdx) : [String(r.tx_key)];
-              for (const k of keysToCheck) {
-                if (externalResult.correlatedRecords[k]) {
-                  targetRec = externalResult.correlatedRecords[k];
-                  break;
-                }
-              }
-            }
-
-            finalEvaluatedRecords.push({
-              ...(orig || {}),
-              _validation_status: r._validation_status,
-              _validation_action: r._validation_action,
-              _validation_details: r._validation_details,
-              _isDiagnosticOnly: orig?._isDiagnosticOnly || false,
-              _target_record: targetRec || null,
-              _target_db: targetDb?.name || stage.targetDbId || 'Target DB',
-              _target_table: stage.targetDataSource || workflow.targetTable || 'transactions',
-              _evaluated_at: new Date().toISOString()
-            });
-
-            if (verdict === 'PASS') totalPassed++;
-            else totalFailed++;
-
-            // Cache result in singleton only if not a fresh live reconciliation run
-            if (!shouldForceFresh) {
-              workflowEngineSingleton.cacheResult(
-                workflowId,
-                String(r.tx_key),
-                verdict,
-                r._validation_status,
-                r._validation_details
-              );
-            }
-          }
-        });
-
-        // Any record in currentActiveRecords that was not found in external query/mirror must be flagged as FAIL
-        for (let recIdx = 0; recIdx < currentActiveRecords.length; recIdx++) {
-          const record = currentActiveRecords[recIdx];
-          const candidateKeys = getRecordCandidateKeys(record, recIdx);
-          const isProcessed = candidateKeys.some(ck => processedKeysInStage.has(ck));
-          const recKey = candidateKeys[0] || '';
-          if (recKey && !isProcessed) {
-            const failDetails = {
-              existence: 'NOT_FOUND_IN_TARGET_DB',
-              message: `Record not found in target database ${targetDb?.name || stage.targetDbId || 'Target DB'} (${stage.targetDataSource || workflow.targetTable || 'transactions'})`
-            };
-            finalEvaluatedRecords.push({
-              ...record,
-              _validation_status: 'FAIL',
-              _validation_details: failDetails,
-              _target_record: null,
-              _target_db: targetDb?.name || stage.targetDbId || 'Target DB',
-              _target_table: stage.targetDataSource || workflow.targetTable || 'transactions',
-              _evaluated_at: new Date().toISOString()
-            });
-            totalFailed++;
-            workflowEngineSingleton.cacheResult(
-              workflowId,
-              recKey,
-              'FAIL',
-              'FAIL',
-              failDetails
-            );
-          }
-        }
-
-        // If no records passed, terminate pipeline early
-        if (currentActiveKeys.length === 0) {
-          console.log(`[WorkflowEngine] No records passed stage '${stage.name}'. Terminating pipeline early.`);
+        // If no records passed/forwarded, terminate pipeline early
+        if (currentActiveRecords.length === 0) {
+          console.log(`[WorkflowEngine] No records forwarded from stage '${stage.name}'. Terminating pipeline early.`);
           break;
         }
       }
@@ -793,9 +812,18 @@ export const investigationOrchestratorService = {
     workflow: DatabaseValidationWorkflow,
     extractions: QueryExtraction[],
     transactions: Record<string, any>[],
-    keyField = 'retrievalRefNum',
+    keyField?: string,
     options: OrchestrationOptions = {}
   ): Promise<InvestigationTask> {
+    const resolvedKey = keyField ||
+      extractions.flatMap(e => (e.keyMappings || []).map(km => km.inputField)).find(Boolean) ||
+      (workflow.steps || []).flatMap(s => (s.searchParameters || []).map(sp => sp.inputField)).find(Boolean) ||
+      (transactions[0] ? Object.keys(transactions[0]).find(k => !k.startsWith('_')) : undefined);
+
+    if (!resolvedKey) {
+      throw new Error(`[WorkflowEngine] Investigation task ${taskId} aborted: No primary key field specified or discovered in transactions.`);
+    }
+    const effectiveKeyField = resolvedKey;
     const task = await repo.getInvestigationTaskById(taskId);
     if (!task) throw new Error(`Investigation task not found: ${taskId}`);
 
@@ -866,7 +894,7 @@ export const investigationOrchestratorService = {
                 targetDbId: workflow.targetDbId || '',
                 targetDataSource: workflow.targetTable || '',
                 selectedColumns: [],
-                keyMappings: [{ inputField: keyField, sourceField: keyField, required: true }],
+                keyMappings: [{ inputField: effectiveKeyField, sourceField: effectiveKeyField, required: true }],
                 enabled: true
               };
 
@@ -904,7 +932,7 @@ export const investigationOrchestratorService = {
                   taskId,
                   batchId,
                   extraction.id,
-                  keyField
+                  effectiveKeyField
                 );
 
                 reconciledTotal += reconOutcome.passCount;

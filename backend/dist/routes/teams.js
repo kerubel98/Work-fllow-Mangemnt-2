@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { repo } from '../store/repository.js';
 import { eventService } from '../services/events.js';
 import { queryPg, isPostgresConnected } from '../config/postgres.js';
+import { resolveUserAdminCapabilities } from '../utils/capabilityHelper.js';
 export const teamsRouter = Router();
 // ================= TEAMS =================
 teamsRouter.get('/', async (req, res) => {
@@ -151,6 +152,84 @@ teamsRouter.put('/:id/member-privileges', async (req, res) => {
             teamId: id,
             memberPrivileges
         });
+        return res.json({
+            success: true,
+            team: updated,
+            ...updated
+        });
+    }
+    catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+});
+// PUT /api/teams/:id/admin-privileges - Workspace Admin delegates admin privileges to a team
+teamsRouter.put('/:id/admin-privileges', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const callerRole = (req.body.callerRole || req.headers['x-user-role'] || req.user?.role);
+        const callerUserId = (req.body.callerUserId || req.headers['x-user-id'] || req.user?.id);
+        const { adminPrivileges } = req.body;
+        const team = await repo.getTeamById(id);
+        if (!team)
+            return res.status(404).json({ error: 'Team not found' });
+        // Strict Authorization: Only Workspace Admin can grant/revoke team administrative privileges
+        const isAdmin = callerRole === 'admin' ||
+            callerRole === 'system_admin' ||
+            callerRole?.toLowerCase() === 'administrator';
+        if (!isAdmin) {
+            return res.status(403).json({
+                error: 'Access Denied: Only a Workspace Administrator can delegate administrative privileges to a team.'
+            });
+        }
+        if (!adminPrivileges || typeof adminPrivileges !== 'object') {
+            return res.status(400).json({ error: 'adminPrivileges object map is required.' });
+        }
+        const updated = await repo.updateTeamAdminPrivileges(id, adminPrivileges);
+        if (!updated)
+            return res.status(404).json({ error: 'Could not update team admin privileges.' });
+        eventService.broadcastEvent('team:admin-privileges:updated', {
+            teamId: id,
+            adminPrivileges
+        });
+        eventService.broadcastEvent('team:updated', updated);
+        return res.json({
+            success: true,
+            team: updated,
+            ...updated
+        });
+    }
+    catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+});
+// PUT /api/teams/:id/allocated-databases - Admin or Database Team allocates databases to a team
+teamsRouter.put('/:id/allocated-databases', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const callerRole = (req.body.callerRole || req.headers['x-user-role'] || req.user?.role);
+        const callerUserId = (req.body.callerUserId || req.headers['x-user-id'] || req.user?.id);
+        const { allowedDbIds } = req.body;
+        const team = await repo.getTeamById(id);
+        if (!team)
+            return res.status(404).json({ error: 'Team not found' });
+        // Capability check: Must be global admin OR belong to a team with canManageConnections
+        const capabilities = await resolveUserAdminCapabilities(callerUserId, callerRole);
+        if (!capabilities.isFullAdmin && !capabilities.canManageConnections) {
+            return res.status(403).json({
+                error: 'Access Denied: You must be a Workspace Admin or member of an authorized Database Team to allocate database connections to teams.'
+            });
+        }
+        if (!Array.isArray(allowedDbIds)) {
+            return res.status(400).json({ error: 'allowedDbIds must be an array of database IDs.' });
+        }
+        const updated = await repo.updateTeam(id, { allowedDbIds });
+        if (!updated)
+            return res.status(404).json({ error: 'Could not update team database allocation.' });
+        eventService.broadcastEvent('team:databases:allocated', {
+            teamId: id,
+            allowedDbIds
+        });
+        eventService.broadcastEvent('team:updated', updated);
         return res.json({
             success: true,
             team: updated,

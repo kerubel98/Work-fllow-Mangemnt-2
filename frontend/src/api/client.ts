@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { DatabaseColumnConfiguration, WorkspaceSettingProposal, TeamEscalationTarget } from '../types';
+import { DatabaseColumnConfiguration, WorkspaceSettingProposal, TeamEscalationTarget, TeamAdminPrivileges } from '../types';
 
 const API_BASE_URL = '/api';
 
@@ -474,6 +474,16 @@ export const api = {
     fetchApi<any>(`/teams/${teamId}/member-privileges`, {
       method: 'PUT',
       body: JSON.stringify({ memberPrivileges, callerUserId, callerRole })
+    }),
+  updateTeamAdminPrivileges: (teamId: string, adminPrivileges: TeamAdminPrivileges, callerUserId?: string, callerRole?: string) =>
+    fetchApi<any>(`/teams/${teamId}/admin-privileges`, {
+      method: 'PUT',
+      body: JSON.stringify({ adminPrivileges, callerUserId, callerRole })
+    }),
+  allocateDatabasesToTeam: (teamId: string, allowedDbIds: string[], callerUserId?: string, callerRole?: string) =>
+    fetchApi<any>(`/teams/${teamId}/allocated-databases`, {
+      method: 'PUT',
+      body: JSON.stringify({ allowedDbIds, callerUserId, callerRole })
     }),
   deleteTeam: (id: string) =>
     fetchApi<{ success: boolean }>(`/teams/${id}`, { method: 'DELETE' }),

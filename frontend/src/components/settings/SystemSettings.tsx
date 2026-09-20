@@ -10,7 +10,8 @@ import {
   EnvironmentSystem, 
   GlobalTransactionSchemaField, 
   DbTableMappingConfig, 
-  GlobalMappingConfig 
+  GlobalMappingConfig,
+  Team 
 } from '../../types';
 import { globalMappingService, DEFAULT_GLOBAL_STANDARD_FIELDS } from '../../services/globalMappingService';
 import { api } from '../../api/client';
@@ -29,6 +30,7 @@ import { showSystemAlert } from '../common/MessageModal';
 
 interface SystemSettingsProps {
   currentUser: User;
+  teams?: Team[];
   databases?: DatabaseConnection[];
   systems?: EnvironmentSystem[];
   onAddDatabase: (newDb: Omit<DatabaseConnection, 'id'>) => void;
@@ -41,6 +43,7 @@ interface SystemSettingsProps {
 
 export default function SystemSettings({
   currentUser,
+  teams = [],
   databases = [],
   systems = [],
   onAddDatabase,
@@ -1204,6 +1207,8 @@ export default function SystemSettings({
 
           <AdminDbConnections
             databases={databases}
+            teams={teams}
+            currentUser={currentUser}
             onAddDatabase={onAddDatabase}
             onToggleDbStatus={onToggleDbStatus}
             onDeleteDb={onDeleteDb}

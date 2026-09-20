@@ -8,7 +8,7 @@ import { DatabaseConnection, Transaction, User, DbAccessRequest, ConnectionUsage
 import { 
   Database, Search, Activity, Play, CheckCircle2, AlertTriangle, 
   Terminal, ArrowRight, Plus, Key, Shield, Wifi, WifiOff, Lock, Unlock, Zap,
-  Loader2, X, Layers, Table, RefreshCw, Copy, Check, Filter, Clock
+  Loader2, X, Layers, Table, RefreshCw, Copy, Check, Filter, Clock, FileCode
 } from 'lucide-react';
 import { api } from '../api/client';
 
@@ -45,6 +45,7 @@ export default function DbQueryTool({
   const [executionMs, setExecutionMs] = useState<number>(0);
   const [queryLog, setQueryLog] = useState<string[]>([]);
   const [copiedCell, setCopiedCell] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   // Validation Workflow Integration State
   const [showValidationModal, setShowValidationModal] = useState<boolean>(false);
@@ -102,17 +103,11 @@ export default function DbQueryTool({
       })
       .catch(err => {
         if (!isMounted) return;
-        console.warn('[DbQueryTool] Live table fetch failed, using fallback:', err.message);
-        const targetDb = databases.find(d => d.id === selectedDb);
-        const fallback = targetDb?.allowedTables || targetDb?.availableTables || [];
-        setAvailableTables(fallback);
-        if (fallback.length > 0) {
-          setSelectedTable(fallback[0]);
-          setCustomSql(`SELECT * FROM ${fallback[0]} LIMIT 25;`);
-        } else {
-          setSelectedTable('');
-          setCustomSql(`SELECT 1;`);
-        }
+        console.error('[DbQueryTool] Live table fetch failed:', err.message);
+        setAvailableTables([]);
+        setSelectedTable('');
+        setCustomSql('');
+        setError(`Failed to fetch database tables: ${err.response?.data?.error || err.message}`);
       })
       .finally(() => {
         if (isMounted) setLoadingTables(false);
@@ -975,7 +970,7 @@ export default function DbQueryTool({
                     <option value="PostgreSQL">PostgreSQL</option>
                     <option value="MySQL">MySQL</option>
                     <option value="MongoDB">MongoDB</option>
-                    <option value="Oracle">Oracle (Mock)</option>
+                    <option value="Oracle">Oracle</option>
                   </select>
                 </div>
                 <div>

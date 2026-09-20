@@ -257,7 +257,7 @@ export const INITIAL_TEAMS = [
         teamType: 'permanent',
         managerId: 'usr-4',
         managerName: 'manager_alex',
-        memberIds: ['usr-1', 'usr-2', 'usr-3', 'usr-4'],
+        memberIds: ['usr-2', 'usr-3', 'usr-4'],
         createdAt: '2026-05-01T10:00:00Z'
     },
     {
@@ -267,7 +267,7 @@ export const INITIAL_TEAMS = [
         teamType: 'permanent',
         managerId: 'usr-4',
         managerName: 'manager_alex',
-        memberIds: ['usr-1', 'usr-2'],
+        memberIds: ['usr-2', 'usr-4'],
         createdAt: '2026-05-10T10:00:00Z'
     },
     {
@@ -277,7 +277,7 @@ export const INITIAL_TEAMS = [
         teamType: 'permanent',
         managerId: 'usr-4',
         managerName: 'manager_alex',
-        memberIds: ['usr-1', 'usr-3'],
+        memberIds: ['usr-3', 'usr-4'],
         createdAt: '2026-05-12T10:00:00Z'
     },
     {
@@ -297,7 +297,7 @@ export const INITIAL_TEAMS = [
         teamType: 'working',
         managerId: 'usr-3',
         managerName: 'tech_sarah',
-        memberIds: ['usr-1', 'usr-3', 'usr-6'],
+        memberIds: ['usr-3', 'usr-6'],
         createdAt: '2026-06-15T10:00:00Z'
     }
 ];

@@ -11,6 +11,7 @@ import { mirrorTableManager } from '../services/mirrorTableManager.js';
 import { ftpFileStagingService } from '../services/ftpFileStagingService.js';
 import { discoverFtpFilesRecursive } from '../services/ftpConnectionService.js';
 import { ftpSchedulerService } from '../services/ftpSchedulerService.js';
+import { resolveUserAdminCapabilities } from '../utils/capabilityHelper.js';
 
 export const databaseRouter = Router();
 
@@ -266,11 +267,7 @@ databaseRouter.post('/test-connection', async (req: Request, res: Response) => {
   if (dbId) {
     dbRecord = await repo.getDatabaseById(dbId);
     if (!dbRecord) {
-      if (isMongoConnected) {
-        dbRecord = await DatabaseConnectionModel.findOne({ id: dbId });
-      } else {
-        dbRecord = store.databases.find(d => d.id === dbId);
-      }
+      dbRecord = store.databases.find(d => d.id === dbId);
     }
     if (dbRecord) {
       if (!connectionString && dbRecord.connectionString) {
@@ -623,9 +620,18 @@ databaseRouter.get('/admin/team-resources', async (_req: Request, res: Response)
 // POST /api/db/databases - Register a new database connection
 databaseRouter.post('/databases', async (req: Request, res: Response) => {
   try {
-    const dbData: Partial<DatabaseConnection> = req.body;
+    const dbData: Partial<DatabaseConnection> & { userId?: string; userRole?: string; callerUserId?: string; callerRole?: string } = req.body;
     if (!dbData.name || !dbData.type || !dbData.host) {
       return res.status(400).json({ error: 'Database name, type, and host are required' });
+    }
+
+    const callerId = dbData.createdByUserId || dbData.userId || dbData.callerUserId || (req.headers['x-user-id'] as string) || (req.query.userId as string);
+    const callerRole = dbData.userRole || dbData.callerRole || (req.headers['x-user-role'] as string) || (req.query.userRole as string) || '';
+    if (callerId) {
+      const caps = await resolveUserAdminCapabilities(callerId, callerRole);
+      if (!caps.isFullAdmin && !caps.canManageConnections && dbData.scope !== 'team') {
+        return res.status(403).json({ error: 'Access Denied: Only Workspace Admins or authorized Database Teams can register global database connections.' });
+      }
     }
 
     let connString = dbData.connectionString || '';
@@ -659,7 +665,10 @@ databaseRouter.post('/databases', async (req: Request, res: Response) => {
       pingMs: 15,
       allowedRoles: dbData.allowedRoles || [],
       allowedTables: dbData.allowedTables || [],
-      availableTables: dbData.availableTables || []
+      availableTables: dbData.availableTables || [],
+      scope: dbData.scope || 'global',
+      teamId: dbData.teamId,
+      createdByUserId: dbData.createdByUserId || callerId
     };
 
     const saved = await repo.createDatabase(newDb);
@@ -676,6 +685,15 @@ databaseRouter.post('/databases', async (req: Request, res: Response) => {
 // PUT /api/db/databases/:id - Update database connection settings
 databaseRouter.put('/databases/:id', async (req: Request, res: Response) => {
   try {
+    const callerId = req.body?.createdByUserId || req.body?.userId || req.body?.callerUserId || (req.query.userId as string);
+    const callerRole = req.body?.userRole || req.body?.callerRole || (req.query.userRole as string) || '';
+    if (callerId) {
+      const caps = await resolveUserAdminCapabilities(callerId, callerRole);
+      if (!caps.isFullAdmin && !caps.canManageConnections) {
+        return res.status(403).json({ error: 'Access Denied: Only Workspace Admins or authorized Database Teams can update database connection settings.' });
+      }
+    }
+
     await evictExternalDbPool(req.params.id);
     const updated = await repo.updateDatabase(req.params.id, req.body);
     if (!updated) return res.status(404).json({ error: 'Database connection not found' });
@@ -688,6 +706,15 @@ databaseRouter.put('/databases/:id', async (req: Request, res: Response) => {
 // DELETE /api/db/databases/:id - Delete a database connection setting
 databaseRouter.delete('/databases/:id', async (req: Request, res: Response) => {
   try {
+    const callerId = req.body?.createdByUserId || req.body?.userId || req.body?.callerUserId || (req.query.userId as string);
+    const callerRole = req.body?.userRole || req.body?.callerRole || (req.query.userRole as string) || '';
+    if (callerId) {
+      const caps = await resolveUserAdminCapabilities(callerId, callerRole);
+      if (!caps.isFullAdmin && !caps.canManageConnections) {
+        return res.status(403).json({ error: 'Access Denied: Only Workspace Admins or authorized Database Teams can delete database connection settings.' });
+      }
+    }
+
     await evictExternalDbPool(req.params.id);
     const success = await repo.deleteDatabase(req.params.id);
     if (!success) return res.status(404).json({ error: 'Database connection not found' });
@@ -1009,11 +1036,26 @@ databaseRouter.get('/databases/:id/tables/:tableName/preview', async (req: Reque
 // GET /api/db/column-configurations
 databaseRouter.get('/column-configurations', async (req: Request, res: Response) => {
   try {
-    const { dbId, tableName } = req.query;
-    const configs = await repo.getColumnConfigurations(
+    const { dbId, tableName, userId, teamId, userRole } = req.query;
+    let configs = await repo.getColumnConfigurations(
       typeof dbId === 'string' ? dbId : undefined,
       typeof tableName === 'string' ? tableName : undefined
     );
+
+    // If caller is non-admin and userId or teamId is provided, filter configs to databases created by user or team
+    const roleStr = typeof userRole === 'string' ? userRole : '';
+    const isAdmin = roleStr === 'admin' || roleStr === 'system_admin' || roleStr === 'administrator';
+    if (!isAdmin && (userId || teamId)) {
+      const allDbs = await repo.getDatabases();
+      const allowedDbIds = new Set(
+        allDbs.filter(d => 
+          (userId && d.createdByUserId === userId) ||
+          (teamId && d.teamId === teamId)
+        ).map(d => d.id)
+      );
+      configs = configs.filter(c => allowedDbIds.has(c.dbId));
+    }
+
     return res.json(configs);
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
@@ -1055,12 +1097,43 @@ databaseRouter.post('/column-configurations', async (req: Request, res: Response
       violationAction,
       severity,
       violationMessage,
-      isActive
+      isActive,
+      createdBy,
+      createdByUserId,
+      userId,
+      userRole,
+      teamId
     } = req.body;
     if (!name || !name.trim()) return res.status(400).json({ error: 'Rule name is required' });
     if (!dbId) return res.status(400).json({ error: 'Database ID is required' });
     if (!tableName) return res.status(400).json({ error: 'Table name is required' });
     if (!ruleType) return res.status(400).json({ error: 'Rule type is required' });
+
+    // Resource Ownership & Governance Check for non-admins
+    const callerId = createdByUserId || userId || (req.headers['x-user-id'] as string) || (req.query.userId as string);
+    const callerRole = userRole || (req.headers['x-user-role'] as string) || (req.query.userRole as string) || '';
+    const isAdmin = callerRole === 'admin' || callerRole === 'system_admin' || callerRole === 'administrator';
+    if (!isAdmin && callerId) {
+      const caps = await resolveUserAdminCapabilities(callerId, callerRole);
+      // Governance Invariant: DB Teams (with connection management/monitoring) cannot modify column mappings unless granted canManageColumnMapping
+      if ((caps.canManageConnections || caps.canMonitorConnections) && !caps.canManageColumnMapping && !caps.isFullAdmin) {
+        return res.status(403).json({
+          error: 'Access Denied: Column mapping and validation rules must be configured by an Operational Governance Team. Database team privileges are restricted to connection management and monitoring.'
+        });
+      }
+
+      const targetDb = await repo.getDatabaseById(dbId);
+      if (targetDb) {
+        const isOwner = targetDb.createdByUserId === callerId || 
+          (targetDb.teamId && teamId && targetDb.teamId === teamId);
+        const allTeams = await repo.getTeams();
+        const userTeams = allTeams.filter(t => t.managerId === callerId || (t.memberIds && t.memberIds.includes(callerId)));
+        const isAllocatedToUserTeam = userTeams.some(t => t.allowedDbIds && t.allowedDbIds.includes(dbId));
+        if (!isOwner && !isAllocatedToUserTeam) {
+          return res.status(403).json({ error: 'You are only authorized to configure column rules for database resources you or your team created or have been allocated.' });
+        }
+      }
+    }
 
     const newConfig: DatabaseColumnConfiguration = {
       id: `colcfg-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
@@ -1085,7 +1158,7 @@ databaseRouter.post('/column-configurations', async (req: Request, res: Response
       severity: severity || 'CRITICAL',
       violationMessage: violationMessage?.trim() || '',
       isActive: isActive !== false,
-      createdBy: 'admin'
+      createdBy: createdBy || callerId || 'operator'
     };
 
     const saved = await repo.createColumnConfiguration(newConfig);
@@ -1101,6 +1174,31 @@ databaseRouter.put('/column-configurations/:id', async (req: Request, res: Respo
     const existing = await repo.getColumnConfigurationById(req.params.id);
     if (!existing) return res.status(404).json({ error: 'Column configuration not found' });
 
+    // Resource Ownership & Governance Check for non-admins
+    const callerId = req.body.createdByUserId || req.body.userId;
+    const callerRole = req.body.userRole || '';
+    const isAdmin = callerRole === 'admin' || callerRole === 'system_admin' || callerRole === 'administrator';
+    if (!isAdmin && callerId) {
+      const caps = await resolveUserAdminCapabilities(callerId, callerRole);
+      if ((caps.canManageConnections || caps.canMonitorConnections) && !caps.canManageColumnMapping && !caps.isFullAdmin) {
+        return res.status(403).json({
+          error: 'Access Denied: Column mapping and validation rules must be configured by an Operational Governance Team. Database team privileges are restricted to connection management and monitoring.'
+        });
+      }
+
+      const targetDb = await repo.getDatabaseById(existing.dbId);
+      if (targetDb) {
+        const isOwner = targetDb.createdByUserId === callerId || 
+          (targetDb.teamId && req.body.teamId && targetDb.teamId === req.body.teamId);
+        const allTeams = await repo.getTeams();
+        const userTeams = allTeams.filter(t => t.managerId === callerId || (t.memberIds && t.memberIds.includes(callerId)));
+        const isAllocatedToUserTeam = userTeams.some(t => t.allowedDbIds && t.allowedDbIds.includes(existing.dbId));
+        if (!isOwner && !isAllocatedToUserTeam) {
+          return res.status(403).json({ error: 'You are only authorized to modify column rules for database resources you or your team created or have been allocated.' });
+        }
+      }
+    }
+
     const updated = await repo.updateColumnConfiguration(req.params.id, req.body);
     return res.json(updated);
   } catch (err: any) {
@@ -1111,9 +1209,35 @@ databaseRouter.put('/column-configurations/:id', async (req: Request, res: Respo
 // DELETE /api/db/column-configurations/:id
 databaseRouter.delete('/column-configurations/:id', async (req: Request, res: Response) => {
   try {
-    const success = await repo.deleteColumnConfiguration(req.params.id);
-    if (!success) return res.status(404).json({ error: 'Column configuration not found' });
-    return res.json({ success: true, message: 'Column configuration deleted successfully' });
+    const existing = await repo.getColumnConfigurationById(req.params.id);
+    if (!existing) return res.status(404).json({ error: 'Column configuration not found' });
+
+    const callerId = req.query.userId as string || req.body?.userId;
+    const callerRole = req.query.userRole as string || req.body?.userRole || '';
+    const isAdmin = callerRole === 'admin' || callerRole === 'system_admin' || callerRole === 'administrator';
+    if (!isAdmin && callerId) {
+      const caps = await resolveUserAdminCapabilities(callerId, callerRole);
+      if ((caps.canManageConnections || caps.canMonitorConnections) && !caps.canManageColumnMapping && !caps.isFullAdmin) {
+        return res.status(403).json({
+          error: 'Access Denied: Column mapping and validation rules must be configured by an Operational Governance Team. Database team privileges are restricted to connection management and monitoring.'
+        });
+      }
+
+      const targetDb = await repo.getDatabaseById(existing.dbId);
+      if (targetDb) {
+        const isOwner = targetDb.createdByUserId === callerId || 
+          (targetDb.teamId && req.query.teamId && targetDb.teamId === req.query.teamId);
+        const allTeams = await repo.getTeams();
+        const userTeams = allTeams.filter(t => t.managerId === callerId || (t.memberIds && t.memberIds.includes(callerId)));
+        const isAllocatedToUserTeam = userTeams.some(t => t.allowedDbIds && t.allowedDbIds.includes(existing.dbId));
+        if (!isOwner && !isAllocatedToUserTeam) {
+          return res.status(403).json({ error: 'You are only authorized to delete column rules for database resources you or your team created or have been allocated.' });
+        }
+      }
+    }
+
+    await repo.deleteColumnConfiguration(req.params.id);
+    return res.json({ success: true, message: `Configuration ${req.params.id} deleted` });
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
   }
@@ -2220,8 +2344,6 @@ databaseRouter.get('/systems', async (_req: Request, res: Response) => {
   }
 });
 
-import { UploadedTransactionRecordModel } from '../models/UploadedTransactionRecord.js';
-import { WorkspaceTableRecordModel } from '../models/WorkspaceTableRecord.js';
 
 databaseRouter.post('/query/execute', async (req: Request, res: Response) => {
   const { userId, username, userRole, dbId, dbName, query, tableName } = req.body;
@@ -2230,11 +2352,15 @@ databaseRouter.post('/query/execute', async (req: Request, res: Response) => {
   }
 
   // Find target database
+  if (!dbId && !dbName) {
+    return res.status(400).json({ error: 'Target database ID or name is required.' });
+  }
+
   const dbs = await repo.getDatabases();
-  const db = (dbId ? dbs.find(d => d.id === dbId) : null) || (dbName ? dbs.find(d => d.name === dbName) : null) || dbs[0];
+  const db = (dbId ? dbs.find(d => d.id === dbId) : null) || (dbName ? dbs.find(d => d.name === dbName) : null);
 
   if (!db) {
-    return res.status(404).json({ error: `No configured database connection found for ID: ${dbId || 'none'}` });
+    return res.status(404).json({ error: `No configured database connection found for ID: ${dbId || dbName}` });
   }
 
   // 1. Identify User's Permanent Team
@@ -2377,11 +2503,7 @@ databaseRouter.post('/query/execute', async (req: Request, res: Response) => {
       executionTimeMs: result.executionTimeMs
     };
 
-    if (isMongoConnected) {
-      await ConnectionUsageLogModel.create(log).catch(() => {});
-    } else {
-      store.connectionLogs.unshift(log);
-    }
+    store.connectionLogs.unshift(log);
 
     return res.json({
       columns: result.columns,
@@ -2448,7 +2570,13 @@ databaseRouter.post('/query/approvals', async (req: Request, res: Response) => {
 
 databaseRouter.put('/query/approvals/:id', async (req: Request, res: Response) => {
   try {
-    const { status } = req.body;
+    const { status, callerUserId, callerRole } = req.body;
+    if (callerUserId) {
+      const caps = await resolveUserAdminCapabilities(callerUserId, callerRole);
+      if (!caps.isFullAdmin && !caps.canManageAccessRequests && !caps.canManageConnections) {
+        return res.status(403).json({ error: 'Access Denied: Only Workspace Admins or authorized Database Teams can resolve query approval requests.' });
+      }
+    }
     const updated = await repo.updateQueryApproval(req.params.id, status);
     if (!updated) return res.status(404).json({ error: 'Request not found' });
     return res.json(updated);
@@ -2491,7 +2619,13 @@ databaseRouter.post('/access-requests', async (req: Request, res: Response) => {
 
 databaseRouter.put('/access-requests/:id', async (req: Request, res: Response) => {
   try {
-    const { status } = req.body;
+    const { status, callerUserId, callerRole } = req.body;
+    if (callerUserId) {
+      const caps = await resolveUserAdminCapabilities(callerUserId, callerRole);
+      if (!caps.isFullAdmin && !caps.canManageAccessRequests && !caps.canManageConnections) {
+        return res.status(403).json({ error: 'Access Denied: Only Workspace Admins or authorized Database Teams can resolve database access requests.' });
+      }
+    }
     const updated = await repo.updateDbAccessRequest(req.params.id, status);
     if (!updated) return res.status(404).json({ error: 'Request not found' });
     return res.json(updated);

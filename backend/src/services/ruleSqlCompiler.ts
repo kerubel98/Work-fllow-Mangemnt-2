@@ -20,13 +20,13 @@ function sanitizeCol(name: string): string {
 function resolveColExpr(targetCol: string, mirrorColPrefix = 'm', validColumns?: string[]): string {
   if (validColumns && validColumns.length > 0) {
     if (validColumns.includes(targetCol)) {
-      return `${mirrorColPrefix}.${targetCol}`;
+      return `${mirrorColPrefix}."${targetCol}"`;
     }
     if (validColumns.includes('payload')) {
-      return `(${mirrorColPrefix}.payload->>'${targetCol}')`;
+      return `(${mirrorColPrefix}."payload"->>'${targetCol}')`;
     }
   }
-  return `${mirrorColPrefix}.${targetCol}`;
+  return `${mirrorColPrefix}."${targetCol}"`;
 }
 
 export function resolveOperandSqlExpr(
@@ -152,7 +152,9 @@ export const ruleSqlCompiler = {
               baseSql = `COALESCE(${colExpr}::text, '') = ''`;
             } else {
               const sqlComp = (rawComp === 'EQUALS' || rawComp === '==') ? '=' : ((rawComp === 'NOT_EQUALS' || rawComp === '<>') ? '!=' : rawComp);
-              baseSql = `COALESCE(${colExpr}::text, '') ${sqlComp} '${expected}'`;
+              const validOps = ['=', '!=', '<>', '>', '<', '>=', '<='];
+              const safeOp = validOps.includes(sqlComp) ? sqlComp : '=';
+              baseSql = `COALESCE(${colExpr}::text, '') ${safeOp} '${expected}'`;
             }
             break;
           }
@@ -218,6 +220,14 @@ export const ruleSqlCompiler = {
               colConfigConditions.push(`COALESCE((${colExp})::numeric, 0) <= ${Number(col.maxValue)}`);
             }
           }
+        } else if (cfg.ruleType === 'PATTERN_CHECK' && Array.isArray(cfg.columns)) {
+          for (const col of cfg.columns) {
+            if (col.pattern) {
+              const colExp = resolveColExpr(sanitizeCol(col.columnName), mirrorColPrefix, validColumns);
+              const cleanPattern = col.pattern.replace(/'/g, "''");
+              colConfigConditions.push(`COALESCE(${colExp}::text, '') ~ '${cleanPattern}'`);
+            }
+          }
         } else if (cfg.ruleType === 'VALUE_LABEL_CHECK' && Array.isArray(cfg.valueLabels)) {
           for (const vl of cfg.valueLabels) {
             if (vl.category === 'ERROR' || vl.severity === 'CRITICAL') {
@@ -225,6 +235,19 @@ export const ruleSqlCompiler = {
               const disVal = String(vl.constantValue ?? vl.value ?? '').replace(/'/g, "''");
               colConfigConditions.push(`LOWER(COALESCE(${colExp}::text, '')) != LOWER('${disVal}')`);
             }
+          }
+        } else if ((cfg.ruleType === 'DUPLICATE_CHECK' || cfg.ruleType === 'UNIQUE_CONSTRAINT') && Array.isArray(cfg.columns)) {
+          for (const col of cfg.columns) {
+            const colExp = resolveColExpr(sanitizeCol(col.columnName), mirrorColPrefix, validColumns);
+            colConfigConditions.push(`COALESCE(${colExp}::text, '') != ''`);
+          }
+        } else if (cfg.ruleType === 'GROUPING_CHECK') {
+          const groupCols = Array.isArray(cfg.groupByColumns) && cfg.groupByColumns.length > 0
+            ? cfg.groupByColumns
+            : (Array.isArray(cfg.columns) ? cfg.columns.map(c => c.columnName) : []);
+          for (const colName of groupCols) {
+            const colExp = resolveColExpr(sanitizeCol(colName), mirrorColPrefix, validColumns);
+            colConfigConditions.push(`COALESCE(${colExp}::text, '') != ''`);
           }
         }
       }

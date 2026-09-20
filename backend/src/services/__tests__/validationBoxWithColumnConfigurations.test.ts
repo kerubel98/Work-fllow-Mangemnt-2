@@ -147,7 +147,7 @@ describe('Validation Box with Database Column Configurations', () => {
 
     const sql = ruleSqlCompiler.compileStepCondition(step, 'm', ['terminal_id', 'reqamt']);
     expect(sql).toContain('m._mirror_id IS NOT NULL');
-    expect(sql).toContain("COALESCE(m.terminal_id::text, '') != ''");
-    expect(sql).toContain('COALESCE((m.reqamt)::numeric, 0) >= 0.01');
+    expect(sql).toContain("COALESCE(m.\"terminal_id\"::text, '') != ''");
+    expect(sql).toContain('COALESCE((m."reqamt")::numeric, 0) >= 0.01');
   });
 });

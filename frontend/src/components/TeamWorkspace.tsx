@@ -8,7 +8,7 @@ import {
   User, Team, TeamTask, TeamInsight, TeamDiscussionMessage, 
   TeamRelationship, TeamRelationshipType,
   WorkspaceSettingProposal, SettingProposalType, SettingProposalStatus, TeamEscalationTarget,
-  DatabaseConnection, AllowedQueryType, MemberPrivilege
+  DatabaseConnection, AllowedQueryType, MemberPrivilege, TeamAdminPrivileges
 } from '../types';
 import { api } from '../api/client';
 import { 
@@ -19,10 +19,17 @@ import {
   Network, GitFork, ArrowUpRight, ArrowDownLeft, Share2, Layers,
   Globe, Lock, FileCode, RefreshCw, GitPullRequest, ExternalLink, Sliders,
   PanelLeftClose, PanelLeftOpen, Settings, Database, Key, Server,
-  BookOpen, Copy, CheckCheck, Search, HardDrive, HelpCircle, FolderPlus
+  BookOpen, Copy, CheckCheck, Search, HardDrive, HelpCircle, FolderPlus, Activity, Table, Shield
 } from 'lucide-react';
 
-export type TeamSettingsSubTab = 'approvals' | 'grants' | 'ai-strategy' | 'relationships' | 'db-access';
+import { TeamHeader } from './team/TeamHeader';
+import { TeamOverviewTab } from './team/TeamOverviewTab';
+import { TeamMembersTab } from './team/TeamMembersTab';
+import { TeamTasksTab } from './team/TeamTasksTab';
+import { TeamDiscussionTab } from './team/TeamDiscussionTab';
+import { TeamResourcesTab } from './team/TeamResourcesTab';
+
+export type TeamSettingsSubTab = 'approvals' | 'grants' | 'ai-strategy' | 'relationships' | 'db-access' | 'delegated-admin';
 export type ResourceSubTab = 'system-resources' | 'library' | 'insights';
 
 interface TeamWorkspaceProps {
@@ -44,7 +51,7 @@ interface TeamWorkspaceProps {
   onSendMessage: (msg: Omit<TeamDiscussionMessage, 'id' | 'timestamp'>) => void;
   openCreateModalSignal?: number;
   initialSelectedTeamId?: string | null;
-  initialActiveTab?: 'members' | 'discussion' | 'tasks' | 'timeline' | 'dashboard' | 'insights' | 'resources' | 'team_settings' | 'approvals' | 'grants' | 'ai-strategy' | 'relationships' | 'db-access' | null;
+  initialActiveTab?: 'overview' | 'members' | 'discussion' | 'tasks' | 'timeline' | 'dashboard' | 'insights' | 'resources' | 'team_settings' | 'approvals' | 'grants' | 'ai-strategy' | 'relationships' | 'db-access' | 'delegated-admin' | null;
   initialSelectedTaskId?: string | null;
   onOpenPersonalChat?: (userId: string) => void;
   onActiveTeamChange?: (teamName: string | null) => void;
@@ -89,13 +96,19 @@ export default function TeamWorkspace({
     }
   };
 
-  // Filter teams so user ONLY sees their own created groups and groups they are added to:
+  // Filter teams so user ONLY sees groups they are a member of (or manager of, or assigned permanent team):
   const visibleTeams = React.useMemo(() => {
-    return teams.filter(t => 
-      t.managerId === currentUser.id || 
-      (t.memberIds && t.memberIds.includes(currentUser.id)) ||
-      (currentUser.teamId && currentUser.teamId === t.id)
-    );
+    if (!currentUser) return [];
+    return teams.filter(t => {
+      const isMember = Array.isArray(t.memberIds) && (
+        t.memberIds.includes(currentUser.id) || 
+        t.memberIds.includes(currentUser.username)
+      );
+      const isManager = t.managerId === currentUser.id || t.managerName === currentUser.username;
+      const isAssignedPermTeam = Boolean(currentUser.permanentTeamId && currentUser.permanentTeamId === t.id);
+      const isAssignedLegacyTeam = Boolean((currentUser as any).teamId && (currentUser as any).teamId === t.id);
+      return isMember || isManager || isAssignedPermTeam || isAssignedLegacyTeam;
+    });
   }, [teams, currentUser]);
 
   // Map of userId -> Permanent Team (for single permanent team invariant)
@@ -110,13 +123,13 @@ export default function TeamWorkspace({
     return map;
   }, [teams]);
 
-  const isInitialSettingsSubTab = ['approvals', 'grants', 'ai-strategy', 'relationships', 'db-access'].includes(initialActiveTab as any);
+  const isInitialSettingsSubTab = ['approvals', 'grants', 'ai-strategy', 'relationships', 'db-access', 'delegated-admin'].includes(initialActiveTab as any);
 
   // Active sub-tab state inside Team Workspace
   const [activeTab, setActiveTab] = useState<
-    'members' | 'discussion' | 'tasks' | 'timeline' | 'dashboard' | 'insights' | 'resources' | 'team_settings' | 'approvals' | 'grants' | 'ai-strategy' | 'relationships' | 'db-access'
+    'overview' | 'members' | 'discussion' | 'tasks' | 'timeline' | 'dashboard' | 'insights' | 'resources' | 'team_settings' | 'approvals' | 'grants' | 'ai-strategy' | 'relationships' | 'db-access' | 'delegated-admin'
   >(
-    isInitialSettingsSubTab ? 'team_settings' : (initialActiveTab === 'insights' ? 'resources' : (initialActiveTab || 'discussion'))
+    isInitialSettingsSubTab ? 'team_settings' : (initialActiveTab === 'insights' ? 'resources' : (initialActiveTab || 'overview'))
   );
 
   const [resourceSubTab, setResourceSubTab] = useState<ResourceSubTab>(
@@ -127,6 +140,12 @@ export default function TeamWorkspace({
     isInitialSettingsSubTab ? (initialActiveTab as TeamSettingsSubTab) : 'approvals'
   );
 
+  const isGlobalAdmin = 
+    currentUser?.role === 'admin' || 
+    (currentUser?.role as any) === 'system_admin' || 
+    currentUser?.username?.toLowerCase() === 'admin' || 
+    (currentUser?.role as string)?.toLowerCase() === 'administrator';
+
   // Database Access & Query Governance state for Current Team (Tier 1 Envelope)
   const [selectedDbIds, setSelectedDbIds] = useState<string[]>([]);
   const [selectedQueryTypes, setSelectedQueryTypes] = useState<AllowedQueryType[]>(['SELECT']);
@@ -134,9 +153,21 @@ export default function TeamWorkspace({
   const [dbAccessSuccessMsg, setDbAccessSuccessMsg] = useState<string | null>(null);
   const [dbAccessErrMsg, setDbAccessErrMsg] = useState<string | null>(null);
 
+  // Delegated Admin Privileges state
+  const [teamAdminPrivileges, setTeamAdminPrivileges] = useState<TeamAdminPrivileges>({});
+  const [isSavingAdminPrivileges, setIsSavingAdminPrivileges] = useState(false);
+  const [adminPrivilegesSuccessMsg, setAdminPrivilegesSuccessMsg] = useState<string | null>(null);
+  const [adminPrivilegesErrMsg, setAdminPrivilegesErrMsg] = useState<string | null>(null);
+
+
   // Team-Specific Database Connections state (Isolated Scope)
   const [teamSpecificDbs, setTeamSpecificDbs] = useState<DatabaseConnection[]>([]);
   const [isLoadingTeamDbs, setIsLoadingTeamDbs] = useState(false);
+
+  // Live socket ping & table inspection monitoring state for team resources
+  const [monitoringDbs, setMonitoringDbs] = useState<Record<string, { testing: boolean; pingMs?: number; success?: boolean; message?: string; lastTested?: string }>>({});
+  const [isHealthCheckingAll, setIsHealthCheckingAll] = useState(false);
+  const [inspectingDbTables, setInspectingDbTables] = useState<{ db: DatabaseConnection; tables: string[]; loading: boolean } | null>(null);
 
   // Add Team Database Modal state
   const [showAddTeamDbModal, setShowAddTeamDbModal] = useState(false);
@@ -276,7 +307,7 @@ export default function TeamWorkspace({
 
   React.useEffect(() => {
     if (initialActiveTab) {
-      if (['approvals', 'grants', 'ai-strategy', 'relationships', 'db-access'].includes(initialActiveTab)) {
+      if (['approvals', 'grants', 'ai-strategy', 'relationships', 'db-access', 'delegated-admin'].includes(initialActiveTab)) {
         setActiveTab('team_settings');
         setTeamSettingsSubTab(initialActiveTab as TeamSettingsSubTab);
       } else if (initialActiveTab === 'insights') {
@@ -297,9 +328,12 @@ export default function TeamWorkspace({
       setDbAccessSuccessMsg(null);
       setDbAccessErrMsg(null);
       setMemberPrivilegesState(currentTeam.memberPrivileges || {});
+      setTeamAdminPrivileges(currentTeam.adminPrivileges || {});
+      setAdminPrivilegesSuccessMsg(null);
+      setAdminPrivilegesErrMsg(null);
       loadTeamSpecificDbs(currentTeam.id);
     }
-  }, [currentTeam?.id, currentTeam?.allowedDbIds, currentTeam?.allowedQueryTypes, currentTeam?.memberPrivileges, loadTeamSpecificDbs]);
+  }, [currentTeam?.id, currentTeam?.allowedDbIds, currentTeam?.allowedQueryTypes, currentTeam?.memberPrivileges, currentTeam?.adminPrivileges, loadTeamSpecificDbs]);
 
   const handleToggleDbId = (dbId: string) => {
     setSelectedDbIds(prev => 
@@ -341,6 +375,24 @@ export default function TeamWorkspace({
       setDbAccessErrMsg(err.message || 'Failed to save database access policy.');
     } finally {
       setIsSavingDbAccess(false);
+    }
+  };
+
+  const handleSaveDelegatedAdminPrivileges = async () => {
+    if (!currentTeam) return;
+    setIsSavingAdminPrivileges(true);
+    setAdminPrivilegesSuccessMsg(null);
+    setAdminPrivilegesErrMsg(null);
+    try {
+      const res = await api.updateTeamAdminPrivileges(currentTeam.id, teamAdminPrivileges);
+      if (onUpdateTeam) {
+        onUpdateTeam(currentTeam.id, { adminPrivileges: teamAdminPrivileges });
+      }
+      setAdminPrivilegesSuccessMsg('Delegated administration privileges updated successfully.');
+    } catch (err: any) {
+      setAdminPrivilegesErrMsg(err.message || 'Failed to update delegated admin privileges.');
+    } finally {
+      setIsSavingAdminPrivileges(false);
     }
   };
 
@@ -423,6 +475,80 @@ export default function TeamWorkspace({
       setPromotionError(err.message || 'Failed to request promotion');
     } finally {
       setIsSubmittingPromotion(false);
+    }
+  };
+
+  // Test and ping connection for a single team database
+  const handleTestTeamDbPing = async (db: DatabaseConnection) => {
+    setMonitoringDbs(prev => ({
+      ...prev,
+      [db.id]: { testing: true, lastTested: new Date().toLocaleTimeString() }
+    }));
+    try {
+      const res = await api.testConnection({
+        dbId: db.id,
+        type: db.type,
+        host: db.host,
+        port: db.port,
+        connectionString: db.connectionString,
+        databaseName: db.databaseName,
+        username: db.username
+      });
+      setMonitoringDbs(prev => ({
+        ...prev,
+        [db.id]: {
+          testing: false,
+          success: res.success,
+          pingMs: res.pingMs,
+          message: res.message || (res.success ? 'Socket reachable and verified' : 'Socket test failed'),
+          lastTested: new Date().toLocaleTimeString()
+        }
+      }));
+      // Update teamSpecificDbs in local state
+      setTeamSpecificDbs(prev => prev.map(item => item.id === db.id ? {
+        ...item,
+        status: res.success ? 'online' : 'offline',
+        pingMs: res.pingMs,
+        lastTestedAt: new Date().toISOString()
+      } : item));
+    } catch (err: any) {
+      setMonitoringDbs(prev => ({
+        ...prev,
+        [db.id]: {
+          testing: false,
+          success: false,
+          pingMs: 0,
+          message: err.message || 'Connection test failed',
+          lastTested: new Date().toLocaleTimeString()
+        }
+      }));
+      setTeamSpecificDbs(prev => prev.map(item => item.id === db.id ? {
+        ...item,
+        status: 'offline',
+        lastTestedAt: new Date().toISOString()
+      } : item));
+    }
+  };
+
+  // Ping all team-scoped database connections concurrently
+  const handleHealthCheckAllTeamDbs = async () => {
+    if (teamSpecificDbs.length === 0) return;
+    setIsHealthCheckingAll(true);
+    await Promise.allSettled(teamSpecificDbs.map(db => handleTestTeamDbPing(db)));
+    setIsHealthCheckingAll(false);
+  };
+
+  // Inspect database tables and schema
+  const handleInspectTables = async (db: DatabaseConnection) => {
+    setInspectingDbTables({ db, tables: [], loading: true });
+    try {
+      const res = await api.getDatabaseTables(db.id);
+      const tableList = Array.isArray(res) 
+        ? res.map((t: any) => typeof t === 'string' ? t : (t.name || t.tableName || '')) 
+        : (res?.tables || res?.availableTables || res?.allowedTables || []);
+      setInspectingDbTables({ db, tables: tableList.filter(Boolean), loading: false });
+    } catch (err) {
+      setInspectingDbTables({ db, tables: db.availableTables || db.allowedTables || [], loading: false });
     }
   };
 
@@ -1118,7 +1244,7 @@ export default function TeamWorkspace({
       teamType: isManagerOrAdmin ? newTeamType : 'working',
       managerId: currentUser.id,
       managerName: currentUser.username,
-      memberIds: newTeamMemberIds,
+      memberIds: Array.from(new Set([currentUser.id, ...newTeamMemberIds])),
       allowedDbIds: [],
       allowedQueryTypes: ['SELECT']
     });
@@ -1166,276 +1292,89 @@ export default function TeamWorkspace({
   });
 
 
+  const allTeamDbs = React.useMemo(() => {
+    const globalAllowed = (databases || []).filter(d => currentTeam?.allowedDbIds?.includes(d.id));
+    const combined = [...globalAllowed];
+    teamSpecificDbs.forEach(td => {
+      if (!combined.some(c => c.id === td.id)) {
+        combined.push(td);
+      }
+    });
+    return combined;
+  }, [databases, currentTeam?.allowedDbIds, teamSpecificDbs]);
+
+  const isGovernanceActive = activeTab === 'team_settings' || ['approvals', 'grants', 'ai-strategy', 'relationships', 'db-access', 'delegated-admin'].includes(activeTab);
+  const pendingApprovalsCount = pendingResolutions.length + settingProposals.filter(p => p.status === 'PENDING_TEAM_APPROVAL' || p.status === 'ESCALATED_TO_TARGET_TEAM').length;
+
   return (
     <div className="flex flex-col gap-2.5 h-[calc(100vh-2.85rem)] min-h-[500px]" id="team-workspace-container">
-      
-      {/* 1. TOP HEADER: Team Title & Badges + Horizontal Team Member Circles Along the Title */}
+      {/* 1. TOP HEADER: Single Switcher, Status Badges, 3 High-Value Actions */}
       {currentTeam && (
-        <header className="w-full bg-white border border-slate-200/90 rounded-2xl px-4 py-2.5 shadow-xs flex flex-wrap items-center justify-between gap-3 shrink-0" id="team-workspace-header">
-          {/* Left: Team Title + Badges */}
-          <div className="flex items-center space-x-2.5 shrink-0">
-            {/* Toggle Team List Rail Button */}
-            <button
-              onClick={handleToggleTeamRail}
-              className="p-1.5 rounded-lg border border-slate-200/90 hover:bg-slate-100 text-slate-600 hover:text-slate-900 transition-colors cursor-pointer flex items-center justify-center shadow-2xs"
-              title={isTeamRailOpen ? "Collapse Team List Rail" : "Expand Team List Rail"}
-              id="btn-toggle-team-rail"
-              aria-label={isTeamRailOpen ? "Collapse Team List Rail" : "Expand Team List Rail"}
-            >
-              {isTeamRailOpen ? <PanelLeftClose size={15} /> : <PanelLeftOpen size={15} />}
-            </button>
-
-            <h2 className="text-base font-bold text-slate-900 font-mono tracking-tight" title={currentTeam.name}>
-              {currentTeam.name}
-            </h2>
-
-            {(currentTeam.teamType || 'working') === 'permanent' ? (
-              <span className="text-[10px] bg-purple-50 text-purple-700 border border-purple-200 font-bold px-2 py-0.5 rounded-full inline-flex items-center gap-1 font-mono">
-                <ShieldCheck size={11} className="text-purple-600" />
-                <span>Permanent Unit</span>
-              </span>
-            ) : (
-              <span className="text-[10px] bg-emerald-50 text-emerald-700 border border-emerald-200 font-bold px-2 py-0.5 rounded-full inline-flex items-center gap-1 font-mono">
-                <Briefcase size={11} className="text-emerald-600" />
-                <span>Working Team</span>
-              </span>
-            )}
-
-            {currentTeam.managerId === currentUser.id ? (
-              <span className="text-[10px] bg-amber-50 text-amber-800 border border-amber-200 font-bold px-2 py-0.5 rounded-full inline-flex items-center gap-1 font-mono">
-                <Crown size={11} className="text-amber-600" />
-                <span>Team Lead</span>
-              </span>
-            ) : (
-              <span className="text-[10px] bg-blue-50 text-blue-700 border border-blue-200 font-bold px-2 py-0.5 rounded-full inline-flex items-center gap-1 font-mono">
-                <UserCheck size={11} className="text-blue-600" />
-                <span>Member</span>
-              </span>
-            )}
-          </div>
-
-          {/* Center: Team Member Cards Horizontally Along The Title (Small circles like the team list) */}
-          <div className="flex items-center space-x-1.5 overflow-x-auto no-scrollbar py-0.5">
-            <span className="text-slate-300 mx-1 hidden sm:inline">|</span>
-            <span className="text-[10px] font-mono text-slate-400 uppercase font-bold mr-1 hidden md:inline">
-              Roster ({currentTeamUsers.length}):
-            </span>
-
-            {currentTeamUsers.map(member => {
-              const isLead = currentTeam && member.id === currentTeam.managerId;
-              const isSelf = member.id === currentUser.id;
-              const initials = member.username.substring(0, 2).toUpperCase();
-
-              return (
-                <div key={member.id} className="relative group shrink-0">
-                  <button
-                    onClick={() => handleStartChatWithMember(member.username)}
-                    title={`@${member.username} (${isLead ? 'Lead' : 'Member'}${isSelf ? ' • You' : ''}) - Click to chat`}
-                    className={`w-8 h-8 rounded-full flex items-center justify-center font-mono font-bold text-[11px] transition-all cursor-pointer relative shadow-2xs ${
-                      isLead
-                        ? 'bg-amber-100 text-amber-900 border-2 border-amber-400 hover:scale-105'
-                        : isSelf
-                        ? 'bg-blue-600 text-white border-2 border-blue-400 hover:scale-105'
-                        : 'bg-slate-100 text-slate-700 border border-slate-300 hover:border-blue-400 hover:bg-blue-50 hover:text-blue-700 hover:scale-105'
-                    }`}
-                  >
-                    {initials}
-
-                    {/* Small Lead Crown indicator dot */}
-                    {isLead && (
-                      <span className="absolute -top-1 -right-0.5 w-3 h-3 bg-amber-400 text-amber-950 rounded-full flex items-center justify-center text-[8px] font-bold shadow-xs">
-                        ★
-                      </span>
-                    )}
-                  </button>
-
-                  {/* Floating Tooltip */}
-                  <div className="absolute top-full mt-1.5 left-1/2 -translate-x-1/2 z-50 pointer-events-none hidden group-hover:flex flex-col bg-slate-900 text-white border border-slate-700 rounded-lg px-2.5 py-1.5 shadow-xl text-xs font-mono whitespace-nowrap">
-                    <span className="font-bold text-slate-100">@{member.username} {isSelf && '(You)'}</span>
-                    <span className="text-[10px] text-slate-400">{member.email}</span>
-                    <div className="flex items-center gap-1.5 text-[10px] text-blue-300 mt-0.5">
-                      <span>{isLead ? '👑 Team Lead' : '👤 Member'}</span>
-                      <span>•</span>
-                      <span className="uppercase text-slate-300">{member.role}</span>
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-
-            {/* Quick Add Member (+) Circle Button */}
-            {(currentUser.id === currentTeam.managerId || true) && (
-              <button
-                onClick={() => setShowAddMemberModal(true)}
-                title="Add member to team"
-                className="w-8 h-8 rounded-full border border-dashed border-slate-300 hover:border-blue-500 bg-slate-50 hover:bg-blue-50 text-slate-400 hover:text-blue-600 flex items-center justify-center transition-all cursor-pointer shrink-0"
-                id="btn-header-add-member"
-              >
-                <Plus size={13} />
-              </button>
-            )}
-          </div>
-
-          {/* Right: Quick Action Buttons */}
-          <div className="flex items-center space-x-2 shrink-0">
-            <button
-              onClick={() => setShowAddTaskModal(true)}
-              className="px-3 py-1.5 bg-[#155DFC] hover:bg-blue-700 text-white rounded-xl text-xs font-bold font-mono flex items-center space-x-1.5 transition-all shadow-2xs cursor-pointer"
-            >
-              <Plus size={13} />
-              <span>Create Task</span>
-            </button>
-          </div>
-        </header>
+        <TeamHeader
+          currentTeam={currentTeam}
+          visibleTeams={visibleTeams}
+          currentUser={currentUser}
+          onSelectTeam={setSelectedTeamId}
+          onCreateTeamClick={() => setShowCreateTeamModal(true)}
+          onAddMemberClick={() => setShowAddMemberModal(true)}
+          onNewTaskClick={() => setShowAddTaskModal(true)}
+          onOpenSettingsClick={() => setActiveTab(isGovernanceActive ? 'overview' : 'team_settings')}
+          pendingApprovalsCount={pendingApprovalsCount}
+          isSettingsOpen={isGovernanceActive}
+        />
       )}
 
-      {/* 2. LOWERED BODY: Left Circle Rail + Right Main Content */}
-      <div className="flex-1 flex gap-2.5 min-h-0 overflow-hidden">
-        {/* Left Side: Lowered Small Circles Navigation Rail - Color White & Aligned with Discussion */}
-        {isTeamRailOpen && (
-          <aside className="w-14 shrink-0 self-start h-[570px] bg-white border border-slate-200/90 rounded-2xl flex flex-col items-center py-2.5 px-1 shadow-xs select-none z-10" id="team-circle-rail">
-            {/* Rail Header Icon */}
-            <div className="w-8 h-8 rounded-xl bg-blue-50 border border-blue-100 flex items-center justify-center text-blue-600 mb-1" title="My Teams">
-              <Users size={14} />
+      {/* 2. MAIN WORKSPACE CONTENT */}
+      <main className="flex-1 flex flex-col min-w-0 overflow-y-auto space-y-2.5" id="team-workspace-main">
+        {!currentTeam ? (
+          <div className="flex-1 flex flex-col items-center justify-center p-8 bg-white rounded-2xl border border-slate-200/80 shadow-xs text-center">
+            <div className="w-14 h-14 rounded-2xl bg-blue-50 flex items-center justify-center text-blue-600 mb-3 border border-blue-100">
+              <Users size={28} />
             </div>
-
-            <div className="w-8 h-[1px] bg-slate-200 my-1 shrink-0" />
-
-            {/* Circles List */}
-            <div className="flex-1 w-full flex flex-col items-center gap-2 overflow-y-auto no-scrollbar py-1">
-              {visibleTeams.map(team => {
-                const isSelected = currentTeam?.id === team.id;
-                const isPermanent = (team.teamType || 'working') === 'permanent';
-                const isManager = team.managerId === currentUser.id;
-                const abbr = getTeamAbbreviation(team.name);
-
-                return (
-                  <div className="relative group w-full flex justify-center" key={team.id}>
-                    {/* Active Indicator Bar on Left */}
-                    {isSelected && (
-                      <div className="absolute -left-1 top-1/2 -translate-y-1/2 w-1 h-5 bg-[#155DFC] rounded-r-full shadow-sm" />
-                    )}
-
-                    <button
-                      onClick={() => setSelectedTeamId(team.id)}
-                      title={`${team.name} (${isPermanent ? 'Permanent Unit' : 'Working Team'}${isManager ? ' • Lead' : ' • Member'})`}
-                      className={`w-10 h-10 flex items-center justify-center font-mono font-bold text-xs transition-all duration-150 cursor-pointer relative ${
-                        isSelected
-                          ? 'bg-[#155DFC] text-white rounded-xl shadow-md ring-2 ring-blue-400/50 scale-105'
-                          : isPermanent
-                          ? 'bg-purple-50 text-purple-700 hover:text-purple-950 hover:bg-purple-100 border border-purple-200/90 rounded-full hover:rounded-xl shadow-2xs'
-                          : 'bg-slate-50 text-slate-700 hover:text-slate-900 hover:bg-slate-100 border border-slate-200/90 rounded-full hover:rounded-xl shadow-2xs'
-                      }`}
-                    >
-                      {abbr}
-
-                      {/* Corner indicator dot: Permanent vs Working */}
-                      <span 
-                        className={`absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-white ${
-                          isPermanent ? 'bg-purple-500' : 'bg-emerald-500'
-                        }`} 
-                        title={isPermanent ? 'Permanent Unit' : 'Working Team'}
-                      />
-                    </button>
-
-                    {/* Floating Tooltip */}
-                    <div className="absolute left-full ml-2.5 top-1/2 -translate-y-1/2 z-50 pointer-events-none hidden group-hover:flex flex-col bg-slate-900 text-white border border-slate-700/90 rounded-lg px-2.5 py-1.5 shadow-xl text-xs font-mono whitespace-nowrap min-w-[130px]">
-                      <span className="font-bold text-slate-100">{team.name}</span>
-                      <div className="flex items-center gap-1.5 text-[10px] text-slate-400 mt-0.5">
-                        <span className={isPermanent ? 'text-purple-300' : 'text-emerald-300'}>
-                          {isPermanent ? 'Permanent Unit' : 'Working Team'}
-                        </span>
-                        <span>•</span>
-                        <span className={isManager ? 'text-amber-300' : 'text-blue-300'}>
-                          {isManager ? 'Lead' : 'Member'}
-                        </span>
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-
-            <div className="w-8 h-[1px] bg-slate-200 my-1 shrink-0" />
-
-            {/* Add Team (+) Circle Button */}
+            <h3 className="text-base font-bold text-slate-800 font-mono">No Teams Joined Yet</h3>
+            <p className="text-xs text-slate-500 max-w-md mt-1.5 leading-relaxed">
+              You will only see groups you create or groups where you were added as an authorized member.
+            </p>
             <button
+              type="button"
               onClick={() => setShowCreateTeamModal(true)}
-              title="Create New Team"
-              className="w-10 h-10 rounded-full border border-dashed border-slate-300 hover:border-[#155DFC] bg-slate-50 hover:bg-blue-50 text-slate-400 hover:text-[#155DFC] flex items-center justify-center transition-all cursor-pointer group shrink-0 shadow-2xs"
-              id="btn-rail-create-team"
+              className="mt-4 px-4 py-2 bg-[#155DFC] hover:bg-[#155DFC]/90 text-white font-mono font-bold text-xs rounded-xl flex items-center space-x-1.5 transition-all shadow-xs cursor-pointer"
             >
-              <Plus size={16} className="group-hover:scale-110 transition-transform" />
+              <Plus size={14} />
+              <span>Create Your First Team</span>
             </button>
-          </aside>
-        )}
-
-        {/* Right Side: Workspace Content */}
-        <main className="flex-1 flex flex-col min-w-0 overflow-y-auto space-y-2.5">
-          {!currentTeam ? (
-            /* Empty state if user has no teams */
-            <div className="flex-1 flex flex-col items-center justify-center p-8 bg-white rounded-2xl border border-slate-200/80 shadow-xs text-center">
-              <div className="w-14 h-14 rounded-2xl bg-blue-50 flex items-center justify-center text-blue-600 mb-3 border border-blue-100">
-                <Users size={28} />
-              </div>
-              <h3 className="text-base font-bold text-slate-800 font-mono">No Teams Joined Yet</h3>
-              <p className="text-xs text-slate-500 max-w-md mt-1.5 leading-relaxed">
-                You will only see groups you create or groups where you were added as an authorized member.
-              </p>
-              <button
-                onClick={() => setShowCreateTeamModal(true)}
-                className="mt-4 px-4 py-2 bg-[#155DFC] hover:bg-[#155DFC]/90 text-white font-mono font-bold text-xs rounded-xl flex items-center space-x-1.5 transition-all shadow-xs cursor-pointer"
-              >
-                <Plus size={14} />
-                <span>Create Your First Team</span>
-              </button>
-            </div>
-          ) : (
-            <div className="flex-1 flex flex-col min-w-0 space-y-2.5">
-              
-              {/* Clean Uniform White Page-Specific Navigation Bar with Full Width for Tabs */}
+          </div>
+        ) : (
+          <div className="flex-1 flex flex-col min-w-0 space-y-2.5">
+            {/* Primary 5-Zone Tab Bar (Only displayed for operational team workspace) */}
+            {!isGovernanceActive && (
               <div className="h-10 min-h-[40px] px-2.5 bg-white border border-slate-200/90 rounded-xl flex items-center justify-between text-xs font-mono shadow-xs shrink-0 gap-2">
                 <div className="flex items-center gap-1 overflow-x-auto no-scrollbar py-0.5 flex-1">
                   {[
+                    { id: 'overview', label: 'Overview', icon: BarChart2 },
+                    { id: 'members', label: 'Members', icon: Users, count: currentTeamUsers.length },
+                    { id: 'tasks', label: 'Tasks', icon: CheckSquare, count: teamTasks.filter(t => t.status !== 'Done').length },
                     { id: 'discussion', label: 'Discussion', icon: MessageSquare, count: teamMessages.length },
-                    { id: 'tasks', label: 'Tasks', icon: CheckSquare, count: teamTasks.length },
-                    { id: 'timeline', label: 'Roadmap', icon: Calendar },
-                    { id: 'dashboard', label: 'Dashboard', icon: BarChart2 },
-                    { id: 'resources', label: 'Resources', icon: Layers, count: (teamSpecificDbs.length + (currentTeam?.allowedDbIds?.length || 0)) },
-                    { 
-                      id: 'team_settings', 
-                      label: 'Team Settings', 
-                      icon: Settings, 
-                      count: (pendingResolutions.length + settingProposals.filter(p => p.status === 'PENDING_TEAM_APPROVAL' || p.status === 'ESCALATED_TO_TARGET_TEAM').length) > 0
-                        ? (pendingResolutions.length + settingProposals.filter(p => p.status === 'PENDING_TEAM_APPROVAL' || p.status === 'ESCALATED_TO_TARGET_TEAM').length)
-                        : undefined
-                    }
+                    { id: 'resources', label: 'Resources', icon: Layers, count: allTeamDbs.length }
                   ].map(tab => {
-                    const isActive = activeTab === tab.id || (tab.id === 'resources' && (activeTab === 'resources' || activeTab === 'insights')) || (tab.id === 'team_settings' && ['team_settings', 'approvals', 'grants', 'ai-strategy', 'relationships', 'db-access'].includes(activeTab));
+                    const isActive = activeTab === tab.id;
                     const IconComp = tab.icon;
                     return (
                       <button
                         key={tab.id}
                         id={`team-tab-${tab.id}`}
-                        onClick={() => {
-                          if (tab.id === 'team_settings') {
-                            setActiveTab('team_settings');
-                          } else if (tab.id === 'resources') {
-                            setActiveTab('resources');
-                          } else {
-                            setActiveTab(tab.id as any);
-                          }
-                        }}
-                        className={`px-2.5 py-1 rounded-lg text-[11px] flex items-center space-x-1.5 transition-all cursor-pointer whitespace-nowrap shrink-0 ${
+                        type="button"
+                        onClick={() => setActiveTab(tab.id as any)}
+                        className={`px-3 py-1.5 rounded-lg text-xs flex items-center space-x-1.5 transition-all cursor-pointer whitespace-nowrap shrink-0 ${
                           isActive
                             ? 'bg-[#155DFC] text-white font-bold shadow-2xs'
                             : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100/90'
                         }`}
                       >
-                        <IconComp size={12} />
+                        <IconComp size={13} />
                         <span>{tab.label}</span>
                         {tab.count !== undefined && tab.count > 0 && (
-                          <span className={`ml-0.5 text-[9px] px-1.5 py-0.2 rounded-full font-mono ${
+                          <span className={`ml-0.5 text-[10px] px-1.5 py-0.2 rounded-full font-mono ${
                             isActive ? 'bg-blue-800 text-white' : 'bg-slate-100 text-slate-600'
                           }`}>
                             {tab.count}
@@ -1446,1316 +1385,75 @@ export default function TeamWorkspace({
                   })}
                 </div>
               </div>
+            )}
 
-              {/* Active Tab Body Content */}
-              <div className="flex-1 min-w-0">
+            {/* Operational Tabs (5 Core Zones) */}
+            {!isGovernanceActive && (
+              <div className="flex-1 flex flex-col min-h-0">
+                {activeTab === 'overview' && (
+                  <TeamOverviewTab
+                    currentTeam={currentTeam}
+                    teamUsers={currentTeamUsers}
+                    teamTasks={teamTasks}
+                    teamMessages={teamMessages}
+                    teamDatabases={allTeamDbs}
+                    currentUser={currentUser}
+                    onNavigateTab={(tab) => setActiveTab(tab as any)}
+                    onOpenPersonalChat={onOpenPersonalChat}
+                    onUpdateTaskStatus={onUpdateTaskStatus}
+                  />
+                )}
 
-        {/* TAB 1: TEAM MEMBERS */}
-        {activeTab === 'members' && (
-          <div className="space-y-5">
-            <div className="bg-white border border-slate-200/80 rounded-2xl p-6 shadow-sm space-y-5">
-              <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-3 border-b border-slate-100 pb-4">
-                <div>
-                  <h3 className="text-xs font-bold text-slate-800 font-mono uppercase tracking-wider">
-                    Team Roster & Roles
-                  </h3>
-                  <p className="text-[11px] text-slate-500 mt-0.5">
-                    Members belonging to <strong className="text-slate-800">{currentTeam?.name || 'this team'}</strong>.
-                  </p>
-                </div>
+                {activeTab === 'members' && (
+                  <TeamMembersTab
+                    currentTeam={currentTeam}
+                    teamUsers={currentTeamUsers}
+                    currentUser={currentUser}
+                    onAddMemberClick={() => setShowAddMemberModal(true)}
+                    onOpenPersonalChat={onOpenPersonalChat}
+                  />
+                )}
 
-                {(currentUser.id === currentTeam?.managerId || true) && (
-                  <button
-                    onClick={() => setShowAddMemberModal(true)}
-                    disabled={availableUsersToAdd.length === 0}
-                    className="px-3.5 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs font-bold rounded-xl flex items-center justify-center space-x-1.5 transition-colors cursor-pointer shrink-0"
-                  >
-                    <UserPlus size={14} />
-                    <span>Add Member to Team</span>
-                  </button>
+                {activeTab === 'tasks' && (
+                  <TeamTasksTab
+                    currentTeam={currentTeam}
+                    tasks={teamTasks}
+                    teamUsers={currentTeamUsers}
+                    currentUser={currentUser}
+                    onAddTaskClick={() => setShowAddTaskModal(true)}
+                    onUpdateTaskStatus={onUpdateTaskStatus}
+                    onDeleteTask={onDeleteTask}
+                  />
+                )}
+
+                {activeTab === 'discussion' && (
+                  <TeamDiscussionTab
+                    currentTeam={currentTeam}
+                    messages={teamMessages}
+                    currentUser={currentUser}
+                    onSendMessage={onSendMessage}
+                  />
+                )}
+
+                {activeTab === 'resources' && (
+                  <TeamResourcesTab
+                    currentTeam={currentTeam}
+                    teamDatabases={allTeamDbs}
+                    libraryTemplates={libraryTemplates}
+                    currentUser={currentUser}
+                    onAddDatabaseClick={() => setShowAddTeamDbModal(true)}
+                    onTestConnection={handleTestTeamDbPing}
+                    onInspectTables={handleInspectTables}
+                    monitoringDbs={monitoringDbs}
+                  />
                 )}
               </div>
-
-              {/* Team Members Grid */}
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-              {currentTeamUsers.map(member => {
-                const isLead = currentTeam && member.id === currentTeam.managerId;
-                const isSelf = member.id === currentUser.id;
-                const memberTasks = teamTasks.filter(t => t.assigneeId === member.id);
-                const completedTasks = memberTasks.filter(t => t.status === 'Done').length;
-
-                return (
-                  <div 
-                    key={member.id} 
-                    onClick={() => handleStartChatWithMember(member.username)}
-                    className={`p-4 rounded-xl border transition-all flex flex-col justify-between cursor-pointer group ${
-                      isSelf 
-                        ? 'bg-blue-50/50 border-blue-200 hover:border-blue-400 shadow-2xs' 
-                        : 'bg-slate-50/70 border-slate-200 hover:border-blue-300 hover:shadow-xs'
-                    }`}
-                    title={`Click to start chat with @${member.username}`}
-                  >
-                    <div className="space-y-3">
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="flex items-center space-x-3">
-                          <div className={`w-10 h-10 rounded-full flex items-center justify-center font-bold text-sm font-mono border ${
-                            isLead ? 'bg-amber-100 text-amber-800 border-amber-300' : 'bg-blue-100 text-blue-800 border-blue-300'
-                          }`}>
-                            {member.username.substring(0, 2).toUpperCase()}
-                          </div>
-                          <div>
-                            <div className="flex items-center space-x-1.5">
-                              <span className="text-xs font-bold text-slate-900 group-hover:text-blue-600 font-mono transition-colors">@{member.username}</span>
-                              {isSelf && (
-                                <span className="text-[9px] bg-blue-600 text-white font-bold px-1.5 py-0.2 rounded font-mono">
-                                  You
-                                </span>
-                              )}
-                            </div>
-                            <span className="text-[11px] text-slate-500 font-mono block">{member.email}</span>
-                          </div>
-                        </div>
-
-                        {/* Team-Specific Role Badge */}
-                        {isLead ? (
-                          <span className="text-[9px] bg-amber-100 text-amber-900 border border-amber-300 font-bold px-2 py-0.5 rounded-full font-mono flex items-center space-x-1 shrink-0">
-                            <Crown size={11} className="text-amber-600" />
-                            <span>Team Lead</span>
-                          </span>
-                        ) : (
-                          <span className="text-[9px] bg-blue-100 text-blue-900 border border-blue-200 font-bold px-2 py-0.5 rounded-full font-mono flex items-center space-x-1 shrink-0">
-                            <UserCheck size={11} className="text-blue-600" />
-                            <span>Member</span>
-                          </span>
-                        )}
-                      </div>
-
-                      <div className="space-y-1.5 pt-2 border-t border-slate-200/60 font-mono text-[11px]">
-                        <div className="flex items-center justify-between text-slate-500">
-                          <span>Team Specific Role:</span>
-                          <span className="font-bold text-slate-800">
-                            {isLead 
-                              ? ((currentTeam?.teamType || 'working') === 'permanent' ? 'Permanent Unit Lead' : 'Working Team Lead') 
-                              : 'Team Member'}
-                          </span>
-                        </div>
-
-                        <div className="flex items-center justify-between text-slate-500">
-                          <span>System Role:</span>
-                          <span className="font-bold px-2 py-0.5 rounded uppercase text-[10px] bg-blue-100 text-blue-700">
-                            {member.role}
-                          </span>
-                        </div>
-
-                        <div className="flex items-center justify-between text-slate-500">
-                          <span>Assigned Tasks:</span>
-                          <span className="font-bold text-slate-800">
-                            {completedTasks} / {memberTasks.length} Completed
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Footer / Controls */}
-                    <div className="pt-3 mt-3 border-t border-slate-200/60 flex justify-between items-center text-[10px] font-mono text-slate-500">
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleStartChatWithMember(member.username);
-                        }}
-                        className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-[10px] font-bold font-mono flex items-center space-x-1.5 transition-all cursor-pointer shadow-2xs shrink-0"
-                        title={`Start chat with @${member.username}`}
-                      >
-                        <MessageSquare size={13} />
-                        <span>Start Chat</span>
-                      </button>
-
-                      <div className="flex items-center space-x-2">
-                        <span className="flex items-center space-x-1 text-emerald-600 font-semibold">
-                          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
-                          <span>Active</span>
-                        </span>
-
-                        {!isLead && !isSelf && (currentUser.id === currentTeam?.managerId || true) && (
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleRemoveMember(member.id);
-                            }}
-                            className="text-slate-400 hover:text-red-600 p-1 rounded hover:bg-red-50 transition-colors cursor-pointer"
-                            title="Remove member from team"
-                          >
-                            <Trash2 size={13} />
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* TAB 2: TEAM DISCUSSION / COMMUNICATION */}
-      {activeTab === 'discussion' && (
-        <div className="bg-white border border-slate-200/80 rounded-2xl p-6 shadow-sm space-y-4 flex flex-col h-[520px]">
-          <div className="border-b border-slate-100 pb-3 flex justify-between items-center shrink-0">
-            <div className="flex items-center space-x-2.5">
-              <MessageSquare size={18} className="text-blue-600" />
-              <div>
-                <h3 className="text-xs font-bold text-slate-800 font-mono uppercase tracking-wider">
-                  Team Communication Stream
-                </h3>
-                <p className="text-[11px] text-slate-500">
-                  Shared discussion channel for team members of <strong className="text-slate-800">{currentTeam?.name}</strong>.
-                </p>
-              </div>
-            </div>
-            <span className="text-[10px] font-mono bg-blue-50 text-blue-700 border border-blue-200 px-2.5 py-1 rounded-full font-bold">
-              {teamMessages.length} Messages
-            </span>
-          </div>
-
-          {/* Messages Feed */}
-          <div className="flex-1 overflow-y-auto space-y-3.5 pr-2 font-mono text-xs">
-            {teamMessages.length === 0 ? (
-              <div className="h-full flex flex-col items-center justify-center text-slate-400 text-center space-y-2">
-                <MessageSquare size={32} className="text-slate-300" />
-                <p className="text-xs font-medium">No messages in team stream yet.</p>
-                <p className="text-[11px] text-slate-400 max-w-xs">Start the conversation below to coordinate with team members.</p>
-              </div>
-            ) : (
-              teamMessages.map(msg => {
-                const isMe = msg.senderId === currentUser.id;
-
-                return (
-                  <div key={msg.id} className={`flex flex-col ${isMe ? 'items-end' : 'items-start'}`}>
-                    <div className="flex items-center space-x-1.5 mb-1 text-[10px] text-slate-500">
-                      <span className="font-bold text-slate-800">@{msg.senderName}</span>
-                      <span className="uppercase text-[9px] bg-slate-100 text-slate-600 px-1 py-0.2 rounded font-mono">
-                        {msg.senderRole}
-                      </span>
-                      <span>•</span>
-                      <span>{new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-                    </div>
-
-                    <div className={`max-w-xl p-3.5 rounded-2xl leading-relaxed text-xs font-sans ${
-                      isMe 
-                        ? 'bg-blue-600 text-white rounded-tr-none shadow-2xs' 
-                        : 'bg-slate-100 text-slate-800 rounded-tl-none border border-slate-200/70'
-                    }`}>
-                      {msg.content}
-                    </div>
-                  </div>
-                );
-              })
             )}
-          </div>
 
-          {/* Send Message Form */}
-          <form onSubmit={handleChatSubmit} className="pt-3 border-t border-slate-100 flex items-center space-x-2 shrink-0">
-            <input
-              ref={chatInputRef}
-              type="text"
-              placeholder={`Message @${currentTeam?.name || 'team'}...`}
-              value={chatInput}
-              onChange={e => setChatInput(e.target.value)}
-              className="flex-1 bg-slate-50 border border-slate-300 text-slate-800 text-xs rounded-xl px-4 py-2.5 focus:outline-none focus:ring-1 focus:ring-blue-500 font-sans"
-            />
-            <button
-              type="submit"
-              disabled={!chatInput.trim()}
-              className="px-4 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs font-bold rounded-xl flex items-center space-x-1.5 transition-colors cursor-pointer shrink-0 shadow-2xs"
-            >
-              <Send size={14} />
-              <span>Send</span>
-            </button>
-          </form>
-        </div>
-      )}
-
-      {/* TAB 3: SHARED TASKS */}
-      {activeTab === 'tasks' && (
-        <div className="space-y-5">
-          <div className="bg-white border border-slate-200/80 rounded-2xl p-6 shadow-sm space-y-4">
-            <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-3 border-b border-slate-100 pb-4">
-              <div>
-                <h3 className="text-xs font-bold text-slate-800 font-mono uppercase tracking-wider">
-                  Team Task Board & Assignments
-                </h3>
-                <p className="text-[11px] text-slate-500 mt-0.5">
-                  Track operational actions, database checks, and discrepancy reconciliation sub-tasks.
-                </p>
-              </div>
-
-              <div className="flex items-center space-x-2">
-                {/* Filter */}
-                <div className="flex items-center space-x-1.5 bg-slate-100 p-1 rounded-xl text-xs font-mono">
-                  <Filter size={13} className="text-slate-500 ml-1.5" />
-                  {['All', 'To Do', 'In Progress', 'Done'].map(st => (
-                    <button
-                      key={st}
-                      onClick={() => setTaskFilterStatus(st)}
-                      className={`px-2.5 py-1 rounded-lg transition-colors cursor-pointer ${
-                        taskFilterStatus === st ? 'bg-white text-blue-700 font-bold shadow-2xs' : 'text-slate-600 hover:text-slate-900'
-                      }`}
-                    >
-                      {st}
-                    </button>
-                  ))}
-                </div>
-
-                <button
-                  onClick={() => setShowAddTaskModal(true)}
-                  className="px-3.5 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-xl flex items-center space-x-1.5 transition-colors cursor-pointer shrink-0"
-                >
-                  <Plus size={15} />
-                  <span>New Task</span>
-                </button>
-              </div>
-            </div>
-
-            {/* Tasks List */}
-            {filteredTasks.length === 0 ? (
-              <div className="p-8 text-center bg-slate-50 border border-slate-200 rounded-xl space-y-2">
-                <CheckSquare size={32} className="mx-auto text-slate-300" />
-                <h4 className="text-xs font-bold text-slate-700 font-mono">No tasks found</h4>
-                <p className="text-[11px] text-slate-500">Create a new task to assign operational work items to team members.</p>
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {filteredTasks.map(task => {
-                  const isDone = task.status === 'Done';
-                  const isInProgress = task.status === 'In Progress';
-
-                  return (
-                    <div 
-                      key={task.id} 
-                      className={`p-4 rounded-xl border flex flex-col justify-between space-y-3 transition-all ${
-                        isDone 
-                          ? 'bg-slate-50/80 border-slate-200 opacity-80' 
-                          : isInProgress
-                          ? 'bg-blue-50/30 border-blue-200 shadow-2xs'
-                          : 'bg-white border-slate-200'
-                      }`}
-                    >
-                      <div className="space-y-2">
-                        <div className="flex justify-between items-start gap-2">
-                          <div className="flex items-center gap-1.5 flex-wrap">
-                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold font-mono uppercase ${
-                              task.priority === 'High' ? 'bg-amber-100 text-amber-700' :
-                              task.priority === 'Medium' ? 'bg-blue-100 text-blue-700' :
-                              'bg-slate-100 text-slate-600'
-                            }`}>
-                              {task.priority} Priority
-                            </span>
-
-                            {task.isPublic !== false && task.visibility !== 'private' ? (
-                              <span className="px-1.5 py-0.5 rounded text-[10px] font-bold font-mono bg-blue-50 text-blue-700 border border-blue-200 flex items-center gap-1">
-                                <Users size={10} />
-                                <span>{task.visibility === 'public' ? 'Public' : 'Team Shared'}</span>
-                              </span>
-                            ) : (
-                              <span className="px-1.5 py-0.5 rounded text-[10px] font-bold font-mono bg-slate-100 text-slate-600 border border-slate-200 flex items-center gap-1">
-                                <Lock size={10} />
-                                <span>Private</span>
-                              </span>
-                            )}
-
-                            {task.escalatedToTeamId && (
-                              <span 
-                                className="px-1.5 py-0.5 rounded text-[10px] font-bold font-mono bg-purple-100 text-purple-800 border border-purple-300 flex items-center gap-1"
-                                title={task.escalationReason ? `Reason: ${task.escalationReason}` : 'Escalated'}
-                              >
-                                <ArrowUpRight size={10} />
-                                <span>Escalated: {task.escalatedToTeamId}</span>
-                              </span>
-                            )}
-                          </div>
-
-                          <button
-                            onClick={() => onDeleteTask(task.id)}
-                            className="text-slate-400 hover:text-red-600 p-1 rounded hover:bg-red-50 transition-colors cursor-pointer shrink-0"
-                            title="Delete task"
-                          >
-                            <Trash2 size={13} />
-                          </button>
-                        </div>
-
-                        <h4 className={`text-xs font-bold font-sans ${isDone ? 'line-through text-slate-500' : 'text-slate-900'}`}>
-                          {task.title}
-                        </h4>
-
-                        {task.description && (
-                          <p className="text-[11px] text-slate-600 leading-relaxed font-sans">
-                            {task.description}
-                          </p>
-                        )}
-                      </div>
-
-                      <div className="pt-2 border-t border-slate-100 space-y-2 text-[10px] font-mono">
-                        <div className="flex justify-between items-center text-slate-500">
-                          <span>Assignee:</span>
-                          <span className="font-bold text-slate-800 bg-slate-100 px-1.5 py-0.5 rounded">
-                            @{task.assigneeName}
-                          </span>
-                        </div>
-
-                        {task.dueDate && (
-                          <div className="flex justify-between items-center text-slate-500">
-                            <span>Due Date:</span>
-                            <span className="font-medium text-slate-700 flex items-center space-x-1">
-                              <Clock size={11} />
-                              <span>{task.dueDate}</span>
-                            </span>
-                          </div>
-                        )}
-
-                        {/* Status & Escalation Buttons */}
-                        <div className="pt-1 flex items-center justify-between gap-2">
-                          <button
-                            type="button"
-                            onClick={() => handleOpenTaskEscalation(task)}
-                            className="px-2 py-1 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-300 rounded-lg text-[10px] font-bold font-mono flex items-center space-x-1 transition cursor-pointer shadow-2xs"
-                            title="Escalate this task to an authorized escalation target team"
-                          >
-                            <ArrowUpRight size={11} />
-                            <span>Escalate</span>
-                          </button>
-
-                          <button
-                            onClick={() => {
-                              const nextStatus = task.status === 'To Do' ? 'In Progress' : task.status === 'In Progress' ? 'Done' : 'To Do';
-                              onUpdateTaskStatus(task.id, nextStatus);
-                            }}
-                            className={`px-2.5 py-1 rounded-lg text-[10px] font-bold font-mono flex items-center space-x-1 transition-all cursor-pointer ${
-                              isDone ? 'bg-emerald-100 text-emerald-800 hover:bg-emerald-200' :
-                              isInProgress ? 'bg-blue-100 text-blue-800 hover:bg-blue-200' :
-                              'bg-slate-200 text-slate-700 hover:bg-slate-300'
-                            }`}
-                          >
-                            {isDone ? <CheckCircle2 size={12} /> : <Clock size={12} />}
-                            <span>{task.status}</span>
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* TAB 4: TIMELINE & ROADMAP */}
-      {activeTab === 'timeline' && (
-        <div className="space-y-5 font-mono text-xs">
-          <div className="bg-white border border-slate-200/80 rounded-2xl p-6 shadow-sm space-y-6">
-            <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-3 border-b border-slate-100 pb-4">
-              <div>
-                <div className="flex items-center space-x-2">
-                  <Calendar className="text-blue-600" size={18} />
-                  <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wider">
-                    Team Project Timeline & Milestones
-                  </h3>
-                </div>
-                <p className="text-[11px] text-slate-500 mt-0.5 font-sans">
-                  Visual roadmap created by Team Lead <strong className="text-slate-800">@{currentTeam?.managerName}</strong> to schedule operational deliverables and track milestones.
-                </p>
-              </div>
-
-              <button
-                onClick={() => setShowAddTaskModal(true)}
-                className="px-3.5 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-xl flex items-center space-x-1.5 transition-colors cursor-pointer shrink-0"
-              >
-                <Plus size={15} />
-                <span>Add Milestone / Task</span>
-              </button>
-            </div>
-
-            {/* Timeline Milestones Roadmap */}
-            {teamTasks.length === 0 ? (
-              <div className="p-8 text-center bg-slate-50 border border-slate-200 rounded-xl space-y-2 font-mono">
-                <Calendar size={32} className="mx-auto text-slate-300" />
-                <h4 className="text-xs font-bold text-slate-700">No milestone tasks defined</h4>
-                <p className="text-[11px] text-slate-500 font-sans">
-                  The Team Lead can create tasks with start dates, due dates, and milestone phases to build a project timeline.
-                </p>
-              </div>
-            ) : (
-              <div className="space-y-6">
-                {/* Milestone Phases Breakdown */}
-                {(() => {
-                  const milestonesMap: { [key: string]: TeamTask[] } = {};
-                  teamTasks.forEach(task => {
-                    const key = task.milestone || 'General Deliverables';
-                    if (!milestonesMap[key]) milestonesMap[key] = [];
-                    milestonesMap[key].push(task);
-                  });
-
-                  return Object.entries(milestonesMap).map(([mName, mTasks]) => {
-                    const doneCount = mTasks.filter(t => t.status === 'Done').length;
-                    const percent = Math.round((doneCount / mTasks.length) * 100);
-
-                    return (
-                      <div key={mName} className="border border-slate-200 rounded-xl p-5 bg-slate-50/50 space-y-4">
-                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-200/80 pb-3">
-                          <div className="flex items-center space-x-2">
-                            <Flag size={16} className="text-blue-600" />
-                            <h4 className="font-bold text-slate-900 text-xs">{mName}</h4>
-                            <span className="text-[10px] bg-slate-200 text-slate-700 px-2 py-0.5 rounded font-bold">
-                              {mTasks.length} {mTasks.length === 1 ? 'task' : 'tasks'}
-                            </span>
-                          </div>
-
-                          <div className="flex items-center space-x-3 text-[11px]">
-                            <span className="text-slate-500">Milestone Progress:</span>
-                            <div className="w-28 bg-slate-200 h-2 rounded-full overflow-hidden">
-                              <div 
-                                className="bg-blue-600 h-full rounded-full transition-all duration-300"
-                                style={{ width: `${percent}%` }}
-                              />
-                            </div>
-                            <span className="font-bold text-slate-800">{percent}%</span>
-                          </div>
-                        </div>
-
-                        {/* Task items in this milestone */}
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                          {mTasks.map(task => {
-                            const isDone = task.status === 'Done';
-                            const isInProg = task.status === 'In Progress';
-
-                            return (
-                              <div 
-                                key={task.id}
-                                className={`p-3.5 rounded-lg border bg-white space-y-2 flex flex-col justify-between ${
-                                  isDone ? 'border-emerald-200 bg-emerald-50/30' : isInProg ? 'border-blue-300 shadow-2xs' : 'border-slate-200'
-                                }`}
-                              >
-                                <div>
-                                  <div className="flex justify-between items-start">
-                                    <span className={`px-2 py-0.5 rounded text-[9px] font-bold uppercase ${
-                                      task.priority === 'High' ? 'bg-amber-100 text-amber-800' : 'bg-slate-100 text-slate-600'
-                                    }`}>
-                                      {task.priority} Priority
-                                    </span>
-                                    <span className={`px-2 py-0.5 rounded text-[9px] font-bold ${
-                                      isDone ? 'bg-emerald-100 text-emerald-800' :
-                                      isInProg ? 'bg-blue-100 text-blue-800' : 'bg-slate-100 text-slate-700'
-                                    }`}>
-                                      {task.status}
-                                    </span>
-                                  </div>
-
-                                  <h5 className={`font-bold text-xs mt-1 font-sans ${isDone ? 'line-through text-slate-500' : 'text-slate-900'}`}>
-                                    {task.title}
-                                  </h5>
-                                  {task.description && (
-                                    <p className="text-[11px] text-slate-600 font-sans mt-0.5 line-clamp-2">
-                                      {task.description}
-                                    </p>
-                                  )}
-                                </div>
-
-                                <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-[10px] text-slate-500">
-                                  <span>Assignee: <strong className="text-slate-800">@{task.assigneeName}</strong></span>
-                                  <div className="flex items-center space-x-1 text-slate-600">
-                                    <Clock size={11} />
-                                    <span>
-                                      {task.startDate ? `${task.startDate} → ` : ''}{task.dueDate || 'No due date'}
-                                    </span>
-                                  </div>
-                                </div>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    );
-                  });
-                })()}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* TAB 5: LEAD MANAGERIAL DASHBOARD (TASK COMPLETION FOLLOW-UP) */}
-      {activeTab === 'dashboard' && (
-        <div className="space-y-5 font-mono text-xs">
-          {/* Header Banner */}
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 text-white space-y-2 shadow-sm">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-              <div className="flex items-center space-x-3">
-                <div className="p-2.5 bg-amber-500/20 text-amber-400 border border-amber-500/30 rounded-xl">
-                  <BarChart2 size={22} />
-                </div>
-                <div>
-                  <div className="flex items-center space-x-2">
-                    <h3 className="text-sm font-bold tracking-tight text-white uppercase">
-                      Team Lead Managerial Dashboard
-                    </h3>
-                    <span className="text-[9px] bg-amber-500/20 text-amber-300 border border-amber-400/40 px-2 py-0.5 rounded-full font-bold">
-                      Completion Follow-Up
-                    </span>
-                  </div>
-                  <p className="text-[11px] text-slate-300 font-sans mt-0.5">
-                    Real-time operational tracking for Team Lead <strong className="text-amber-300">@{currentTeam?.managerName}</strong> to follow up on assigned task completion across team members.
-                  </p>
-                </div>
-              </div>
-
-              <div className="shrink-0 flex items-center space-x-2">
-                <button
-                  onClick={() => setShowAddTaskModal(true)}
-                  className="px-3.5 py-2 bg-amber-500 hover:bg-amber-400 text-slate-900 font-bold rounded-xl flex items-center space-x-1.5 transition-colors cursor-pointer"
-                >
-                  <Plus size={14} />
-                  <span>Assign New Task</span>
-                </button>
-              </div>
-            </div>
-          </div>
-
-          {/* Top KPI Metrics Cards */}
-          {(() => {
-            const total = teamTasks.length;
-            const completed = teamTasks.filter(t => t.status === 'Done').length;
-            const inProgress = teamTasks.filter(t => t.status === 'In Progress').length;
-            const toDo = teamTasks.filter(t => t.status === 'To Do').length;
-            const completionRate = total > 0 ? Math.round((completed / total) * 100) : 0;
-
-            const todayStr = new Date().toISOString().split('T')[0];
-            const overdueTasks = teamTasks.filter(t => t.status !== 'Done' && t.dueDate && t.dueDate < todayStr);
-
-            return (
-              <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-                <div className="p-4 bg-white border border-slate-200 rounded-xl shadow-2xs space-y-1">
-                  <span className="text-[10px] text-slate-500 font-bold uppercase block">Total Tasks</span>
-                  <div className="text-xl font-bold text-slate-900">{total}</div>
-                  <span className="text-[10px] text-slate-400 block font-sans">Assigned in Team</span>
-                </div>
-
-                <div className="p-4 bg-emerald-50/50 border border-emerald-200 rounded-xl shadow-2xs space-y-1">
-                  <span className="text-[10px] text-emerald-700 font-bold uppercase block">Completed</span>
-                  <div className="text-xl font-bold text-emerald-800">{completed} ({completionRate}%)</div>
-                  <div className="w-full bg-emerald-200 h-1.5 rounded-full overflow-hidden mt-1">
-                    <div className="bg-emerald-600 h-full rounded-full" style={{ width: `${completionRate}%` }} />
-                  </div>
-                </div>
-
-                <div className="p-4 bg-blue-50/50 border border-blue-200 rounded-xl shadow-2xs space-y-1">
-                  <span className="text-[10px] text-blue-700 font-bold uppercase block">In Progress</span>
-                  <div className="text-xl font-bold text-blue-800">{inProgress}</div>
-                  <span className="text-[10px] text-blue-600 block font-sans">Active Work</span>
-                </div>
-
-                <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl shadow-2xs space-y-1">
-                  <span className="text-[10px] text-slate-600 font-bold uppercase block">To Do / Pending</span>
-                  <div className="text-xl font-bold text-slate-800">{toDo}</div>
-                  <span className="text-[10px] text-slate-500 block font-sans">Not Started</span>
-                </div>
-
-                <div className={`p-4 rounded-xl border shadow-2xs space-y-1 ${
-                  overdueTasks.length > 0 ? 'bg-red-50 border-red-200 text-red-900' : 'bg-slate-50 border-slate-200 text-slate-700'
-                }`}>
-                  <span className="text-[10px] font-bold uppercase block flex items-center justify-between">
-                    <span>Overdue</span>
-                    {overdueTasks.length > 0 && <AlertCircle size={12} className="text-red-600" />}
-                  </span>
-                  <div className={`text-xl font-bold ${overdueTasks.length > 0 ? 'text-red-700' : 'text-slate-800'}`}>
-                    {overdueTasks.length}
-                  </div>
-                  <span className="text-[10px] opacity-80 block font-sans">
-                    {overdueTasks.length > 0 ? 'Requires Follow-Up' : 'On Schedule'}
-                  </span>
-                </div>
-              </div>
-            );
-          })()}
-
-          {/* Member Workload & Completion Breakdown */}
-          <div className="bg-white border border-slate-200/80 rounded-2xl p-6 shadow-sm space-y-4">
-            <div className="flex justify-between items-center border-b border-slate-100 pb-3">
-              <div className="flex items-center space-x-2">
-                <Users className="text-blue-600" size={16} />
-                <h4 className="font-bold text-slate-800 uppercase tracking-wider text-xs">
-                  Team Member Completion & Workload Matrix
-                </h4>
-              </div>
-              <span className="text-[10px] text-slate-500 font-sans">
-                Follow up on individual completion progress
-              </span>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {currentTeamUsers.map(member => {
-                const isLead = currentTeam && member.id === currentTeam.managerId;
-                const mTasks = teamTasks.filter(t => t.assigneeId === member.id);
-                const mCompleted = mTasks.filter(t => t.status === 'Done').length;
-                const mInProg = mTasks.filter(t => t.status === 'In Progress').length;
-                const mToDo = mTasks.filter(t => t.status === 'To Do').length;
-                const mRate = mTasks.length > 0 ? Math.round((mCompleted / mTasks.length) * 100) : 0;
-
-                return (
-                  <div key={member.id} className="p-4 border border-slate-200 rounded-xl bg-slate-50/50 space-y-3">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center space-x-2.5">
-                        <div className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-xs font-mono border ${
-                          isLead ? 'bg-amber-100 text-amber-800 border-amber-300' : 'bg-blue-100 text-blue-800 border-blue-300'
-                        }`}>
-                          {member.username.substring(0, 2).toUpperCase()}
-                        </div>
-                        <div>
-                          <div className="flex items-center space-x-1.5">
-                            <span className="font-bold text-slate-900 text-xs">@{member.username}</span>
-                            {isLead && (
-                              <span className="text-[9px] bg-amber-100 text-amber-900 border border-amber-300 px-1.5 py-0.2 rounded font-bold">
-                                Team Lead
-                              </span>
-                            )}
-                            <button
-                              onClick={() => handleStartChatWithMember(member.username)}
-                              className="px-1.5 py-0.5 bg-blue-100 hover:bg-blue-200 text-blue-800 rounded text-[9px] font-bold font-mono transition-colors cursor-pointer flex items-center space-x-1 ml-1"
-                              title={`Start chat with @${member.username}`}
-                            >
-                              <MessageSquare size={10} />
-                              <span>Chat</span>
-                            </button>
-                          </div>
-                          <span className="text-[10px] text-slate-500 block">{member.email}</span>
-                        </div>
-                      </div>
-
-                      <div className="text-right">
-                        <span className="text-xs font-bold text-slate-800 block">{mRate}% Done</span>
-                        <span className="text-[10px] text-slate-500">{mCompleted} of {mTasks.length} tasks</span>
-                      </div>
-                    </div>
-
-                    {/* Completion Bar */}
-                    <div className="w-full bg-slate-200 h-2 rounded-full overflow-hidden">
-                      <div 
-                        className={`h-full rounded-full transition-all duration-300 ${
-                          mRate === 100 ? 'bg-emerald-500' : mRate > 0 ? 'bg-blue-600' : 'bg-slate-300'
-                        }`}
-                        style={{ width: `${mRate}%` }}
-                      />
-                    </div>
-
-                    <div className="flex items-center justify-between text-[10px] text-slate-600 pt-1 border-t border-slate-200/60">
-                      <span>In Progress: <strong className="text-blue-700">{mInProg}</strong></span>
-                      <span>To Do: <strong className="text-slate-700">{mToDo}</strong></span>
-                      <span>Done: <strong className="text-emerald-700">{mCompleted}</strong></span>
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Actionable Tasks Completion Follow-Up Table */}
-          <div className="bg-white border border-slate-200/80 rounded-2xl p-6 shadow-sm space-y-4">
-            <div className="flex justify-between items-center border-b border-slate-100 pb-3">
-              <div className="flex items-center space-x-2">
-                <Target className="text-blue-600" size={16} />
-                <h4 className="font-bold text-slate-800 uppercase tracking-wider text-xs">
-                  Managerial Follow-Up & Action Table
-                </h4>
-              </div>
-              <span className="text-[10px] text-slate-500 font-sans">
-                Team Lead direct status update controls
-              </span>
-            </div>
-
-            {teamTasks.length === 0 ? (
-              <div className="p-6 text-center text-slate-400 bg-slate-50 rounded-xl">
-                No active tasks to display in follow-up table.
-              </div>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-left text-xs font-mono">
-                  <thead>
-                    <tr className="border-b border-slate-200 text-slate-500 text-[10px] uppercase">
-                      <th className="pb-2.5 font-bold">Task Title</th>
-                      <th className="pb-2.5 font-bold">Assignee</th>
-                      <th className="pb-2.5 font-bold">Milestone</th>
-                      <th className="pb-2.5 font-bold">Due Date</th>
-                      <th className="pb-2.5 font-bold">Priority</th>
-                      <th className="pb-2.5 font-bold">Completion Status</th>
-                      <th className="pb-2.5 font-bold text-right">Lead Action</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100">
-                    {teamTasks.map(task => {
-                      const isDone = task.status === 'Done';
-                      const isInProg = task.status === 'In Progress';
-                      const todayStr = new Date().toISOString().split('T')[0];
-                      const isOverdue = !isDone && task.dueDate && task.dueDate < todayStr;
-
-                      return (
-                        <tr key={task.id} className="hover:bg-slate-50/80 transition-colors">
-                          <td className="py-3 pr-3 font-sans font-bold text-slate-900">
-                            <div>
-                              <span className={isDone ? 'line-through text-slate-400' : ''}>{task.title}</span>
-                              {isOverdue && (
-                                <span className="ml-2 text-[9px] bg-red-100 text-red-800 border border-red-200 font-bold px-1.5 py-0.2 rounded">
-                                  OVERDUE
-                                </span>
-                              )}
-                            </div>
-                          </td>
-
-                          <td className="py-3 pr-3 font-bold text-slate-800">
-                            @{task.assigneeName}
-                          </td>
-
-                          <td className="py-3 pr-3 text-slate-600">
-                            {task.milestone || 'General'}
-                          </td>
-
-                          <td className="py-3 pr-3 text-slate-600">
-                            {task.dueDate || 'Unscheduled'}
-                          </td>
-
-                          <td className="py-3 pr-3">
-                            <span className={`px-2 py-0.5 rounded text-[9px] font-bold uppercase ${
-                              task.priority === 'High' ? 'bg-amber-100 text-amber-800' : 'bg-slate-100 text-slate-600'
-                            }`}>
-                              {task.priority}
-                            </span>
-                          </td>
-
-                          <td className="py-3 pr-3">
-                            <span className={`px-2.5 py-1 rounded-lg text-[10px] font-bold inline-flex items-center space-x-1 ${
-                              isDone ? 'bg-emerald-100 text-emerald-800' :
-                              isInProg ? 'bg-blue-100 text-blue-800' : 'bg-slate-200 text-slate-700'
-                            }`}>
-                              {isDone ? <CheckCircle2 size={11} /> : <Clock size={11} />}
-                              <span>{task.status}</span>
-                            </span>
-                          </td>
-
-                          <td className="py-3 text-right">
-                            <button
-                              onClick={() => {
-                                const nextStatus = task.status === 'To Do' ? 'In Progress' : task.status === 'In Progress' ? 'Done' : 'To Do';
-                                onUpdateTaskStatus(task.id, nextStatus);
-                              }}
-                              className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-[10px] font-bold transition-colors cursor-pointer"
-                            >
-                              Toggle Status
-                            </button>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* TAB: TEAM RESOURCES (System Resources, Library, Insights) */}
-      {(activeTab === 'resources' || activeTab === 'insights') && (
-        <div className="space-y-4" id="team-resources-container">
-          {/* Subview Navigation Bar for Resources */}
-          <div className="bg-white border border-slate-200/90 rounded-2xl p-3.5 shadow-xs flex flex-wrap items-center justify-between gap-3">
-            <div className="flex items-center space-x-2.5">
-              <div className="p-2 rounded-xl bg-blue-50 text-[#155DFC]">
-                <Layers size={18} />
-              </div>
-              <div>
-                <h3 className="text-sm font-bold text-slate-900 font-mono flex items-center gap-2">
-                  <span>Team Resources</span>
-                  <span className="text-[10px] px-2 py-0.5 rounded-full bg-blue-100 text-[#155DFC] font-bold font-mono">
-                    {currentTeam?.name || 'Unit'}
-                  </span>
-                </h3>
-                <p className="text-[11px] text-slate-500 font-sans">
-                  Manage team-specific external connections, SQL query libraries, and operational shift knowledge.
-                </p>
-              </div>
-            </div>
-
-            {/* Sub-tab pills */}
-            <div className="flex items-center bg-slate-100/80 p-1 rounded-xl border border-slate-200/80 font-mono text-xs">
-              <button
-                type="button"
-                id="btn-subtab-system-resources"
-                onClick={() => setResourceSubTab('system-resources')}
-                className={`px-3 py-1.5 rounded-lg flex items-center space-x-1.5 transition-all cursor-pointer ${
-                  resourceSubTab === 'system-resources'
-                    ? 'bg-white text-[#155DFC] font-bold shadow-xs'
-                    : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                <HardDrive size={13} />
-                <span>System Resources</span>
-                <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-blue-50 text-[#155DFC] font-bold ml-1">
-                  {(teamSpecificDbs.length + (currentTeam?.allowedDbIds?.length || 0))}
-                </span>
-              </button>
-
-              <button
-                type="button"
-                id="btn-subtab-library"
-                onClick={() => setResourceSubTab('library')}
-                className={`px-3 py-1.5 rounded-lg flex items-center space-x-1.5 transition-all cursor-pointer ${
-                  resourceSubTab === 'library'
-                    ? 'bg-white text-[#155DFC] font-bold shadow-xs'
-                    : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                <BookOpen size={13} />
-                <span>Library</span>
-                <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-slate-200 text-slate-700 font-bold ml-1">
-                  {libraryTemplates.length}
-                </span>
-              </button>
-
-              <button
-                type="button"
-                id="btn-subtab-insights"
-                onClick={() => setResourceSubTab('insights')}
-                className={`px-3 py-1.5 rounded-lg flex items-center space-x-1.5 transition-all cursor-pointer ${
-                  resourceSubTab === 'insights'
-                    ? 'bg-white text-[#155DFC] font-bold shadow-xs'
-                    : 'text-slate-600 hover:text-slate-900'
-                }`}
-              >
-                <Lightbulb size={13} />
-                <span>Insights</span>
-                <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-amber-100 text-amber-800 font-bold ml-1">
-                  {teamInsights.length}
-                </span>
-              </button>
-            </div>
-          </div>
-
-          {/* SUBVIEW 1: SYSTEM RESOURCES */}
-          {resourceSubTab === 'system-resources' && (
-            <div className="space-y-4 font-mono text-xs">
-              {/* Information Banner */}
-              <div className="bg-blue-50/70 border border-blue-200/80 rounded-2xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-slate-700">
-                <div className="space-y-1">
-                  <div className="flex items-center gap-2">
-                    <ShieldCheck size={16} className="text-[#155DFC]" />
-                    <span className="font-bold text-slate-900 text-xs">Team Connection Scoping & Promotion Governance</span>
-                  </div>
-                  <p className="text-[11px] text-slate-600 font-sans">
-                    Databases configured here are <strong>isolated to {currentTeam?.name || 'this team'}</strong> and inaccessible to other teams. Team Managers can request promotion to system-wide resources, requiring Workspace Admin approval.
-                  </p>
-                </div>
-
-                <button
-                  type="button"
-                  id="btn-add-team-db"
-                  onClick={() => setShowAddTeamDbModal(true)}
-                  className="px-3.5 py-2 bg-[#155DFC] hover:bg-[#155DFC]/90 text-white font-bold rounded-xl flex items-center space-x-1.5 transition-all shadow-xs cursor-pointer shrink-0"
-                >
-                  <Plus size={14} />
-                  <span>Configure Team Connection</span>
-                </button>
-              </div>
-
-              {/* Subsection A: Team-Specific Database Connections (Isolated Scope) */}
-              <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-xs space-y-4">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-3">
-                  <div>
-                    <h4 className="text-sm font-bold text-slate-900 flex items-center gap-2">
-                      <Lock size={15} className="text-[#155DFC]" />
-                      <span>Team-Specific Connections ({teamSpecificDbs.length})</span>
-                      <span className="text-[9px] px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 font-bold border border-slate-200">
-                        Isolated Scope
-                      </span>
-                    </h4>
-                    <p className="text-xs text-slate-500 font-sans mt-0.5">
-                      Private database connections established by this team. Non-members cannot discover or query these databases.
-                    </p>
-                  </div>
-                </div>
-
-                {isLoadingTeamDbs ? (
-                  <div className="p-8 text-center text-slate-400 font-sans text-xs">
-                    <RefreshCw size={20} className="animate-spin mx-auto mb-2 text-[#155DFC]" />
-                    Loading team-specific database connections...
-                  </div>
-                ) : teamSpecificDbs.length === 0 ? (
-                  <div className="p-8 text-center text-slate-400 font-sans text-xs bg-slate-50 rounded-xl border border-dashed border-slate-200 space-y-2">
-                    <HardDrive size={24} className="mx-auto text-slate-300" />
-                    <p className="font-bold text-slate-600">No team-specific connections configured yet.</p>
-                    <p className="text-slate-400 text-[11px]">Click "Configure Team Connection" to connect a database isolated to your team.</p>
-                  </div>
-                ) : (
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5">
-                    {teamSpecificDbs.map(db => {
-                      const isPending = db.promotionStatus === 'PENDING_ADMIN_APPROVAL';
-                      const isApproved = db.promotionStatus === 'APPROVED';
-                      const isRejected = db.promotionStatus === 'REJECTED';
-
-                      return (
-                        <div
-                          key={db.id}
-                          className="p-4 bg-slate-50/70 border border-slate-200 hover:border-slate-300 rounded-xl flex flex-col justify-between gap-3 transition-colors shadow-2xs"
-                        >
-                          <div className="space-y-2">
-                            <div className="flex items-start justify-between gap-2">
-                              <div className="flex items-center space-x-2">
-                                <div className="p-1.5 rounded-lg bg-blue-100 text-[#155DFC]">
-                                  <Database size={15} />
-                                </div>
-                                <div>
-                                  <span className="font-bold text-slate-900 text-xs block truncate max-w-[160px]" title={db.name}>
-                                    {db.name}
-                                  </span>
-                                  <span className="text-[10px] text-slate-500 font-mono">{db.type || 'PostgreSQL'}</span>
-                                </div>
-                              </div>
-                              <span className="text-[9px] px-1.5 py-0.5 rounded font-bold font-mono bg-blue-50 text-[#155DFC] border border-blue-200">
-                                Team Only
-                              </span>
-                            </div>
-
-                            {db.description && (
-                              <p className="text-[11px] text-slate-600 font-sans line-clamp-2">
-                                {db.description}
-                              </p>
-                            )}
-
-                            <div className="space-y-1 text-[10px] text-slate-500 font-mono bg-white p-2 rounded-lg border border-slate-100">
-                              <div className="flex justify-between">
-                                <span className="text-slate-400">Host:</span>
-                                <span className="truncate max-w-[130px]" title={db.host}>{db.host}:{db.port}</span>
-                              </div>
-                              {db.databaseName && (
-                                <div className="flex justify-between">
-                                  <span className="text-slate-400">Database:</span>
-                                  <span className="truncate max-w-[130px]">{db.databaseName}</span>
-                                </div>
-                              )}
-                              <div className="flex justify-between">
-                                <span className="text-slate-400">Status:</span>
-                                <span className={db.status === 'online' ? 'text-emerald-600 font-bold' : 'text-slate-500'}>
-                                  {db.status === 'online' ? 'Online' : 'Offline'} ({db.pingMs || 15}ms)
-                                </span>
-                              </div>
-                            </div>
-                          </div>
-
-                          {/* Promotion Status & Action Area */}
-                          <div className="pt-2 border-t border-slate-200/80 space-y-2">
-                            {isPending ? (
-                              <div className="p-2 bg-amber-50 border border-amber-200 rounded-lg text-[10px] text-amber-800 flex items-center gap-1.5 font-sans">
-                                <Clock size={12} className="text-amber-600 shrink-0" />
-                                <span>Awaiting Workspace Admin review on sidebar monitor.</span>
-                              </div>
-                            ) : isApproved ? (
-                              <div className="p-2 bg-emerald-50 border border-emerald-200 rounded-lg text-[10px] text-emerald-800 flex items-center gap-1.5 font-sans">
-                                <CheckCircle2 size={12} className="text-emerald-600 shrink-0" />
-                                <span>Approved by Admin as System-Wide Resource.</span>
-                              </div>
-                            ) : isRejected ? (
-                              <div className="p-2 bg-rose-50 border border-rose-200 rounded-lg text-[10px] text-rose-800 flex items-center gap-1.5 font-sans">
-                                <X size={12} className="text-rose-600 shrink-0" />
-                                <span>Promotion rejected. Notes: {db.promotionNotes || 'See admin feedback'}</span>
-                              </div>
-                            ) : (
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setPromotingDb(db);
-                                  setPromotionNotes('');
-                                  setPromotionError(null);
-                                }}
-                                className="w-full py-1.5 px-2 bg-white hover:bg-blue-50 border border-slate-200 hover:border-blue-300 rounded-lg text-slate-700 hover:text-[#155DFC] text-[10px] font-bold flex items-center justify-center space-x-1 transition-colors cursor-pointer"
-                              >
-                                <ArrowUpRight size={12} className="text-[#155DFC]" />
-                                <span>Request System-Wide Promotion</span>
-                              </button>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-
-              {/* Subsection B: Admin-Granted Global Databases */}
-              <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-xs space-y-4">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-3">
-                  <div>
-                    <h4 className="text-sm font-bold text-slate-900 flex items-center gap-2">
-                      <Globe size={15} className="text-[#155DFC]" />
-                      <span>Admin-Authorized Global Databases ({(currentTeam?.allowedDbIds || []).length})</span>
-                      <span className="text-[9px] px-2 py-0.5 rounded-full bg-purple-50 text-purple-700 font-bold border border-purple-200">
-                        Admin Governed
-                      </span>
-                    </h4>
-                    <p className="text-xs text-slate-500 font-sans mt-0.5">
-                      Enterprise data sources configured globally and granted to this team by Workspace Admins.
-                    </p>
-                  </div>
-                </div>
-
-                {databases.filter(d => (currentTeam?.allowedDbIds || []).includes(d.id)).length === 0 ? (
-                  <div className="p-6 text-center text-slate-400 font-sans text-xs bg-slate-50 rounded-xl border border-dashed border-slate-200">
-                    No global databases granted to this team yet. Workspace Admins allocate database envelopes in Team Settings &rarr; DB Access.
-                  </div>
-                ) : (
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3.5">
-                    {databases.filter(d => (currentTeam?.allowedDbIds || []).includes(d.id)).map(db => (
-                      <div
-                        key={db.id}
-                        className="p-4 bg-slate-50/70 border border-slate-200 rounded-xl flex flex-col justify-between gap-3 shadow-2xs"
-                      >
-                        <div className="space-y-2">
-                          <div className="flex items-start justify-between gap-2">
-                            <div className="flex items-center space-x-2">
-                              <div className="p-1.5 rounded-lg bg-purple-100 text-purple-700">
-                                <Server size={15} />
-                              </div>
-                              <div>
-                                <span className="font-bold text-slate-900 text-xs block truncate max-w-[160px]" title={db.name}>
-                                  {db.name}
-                                </span>
-                                <span className="text-[10px] text-slate-500 font-mono">{db.type || 'PostgreSQL'}</span>
-                              </div>
-                            </div>
-                            <span className="text-[9px] px-1.5 py-0.5 rounded font-bold font-mono bg-purple-50 text-purple-700 border border-purple-200">
-                              Global Admin
-                            </span>
-                          </div>
-
-                          <div className="space-y-1 text-[10px] text-slate-500 font-mono bg-white p-2 rounded-lg border border-slate-100">
-                            <div className="flex justify-between">
-                              <span className="text-slate-400">Host:</span>
-                              <span className="truncate max-w-[130px]">{db.host}:{db.port}</span>
-                            </div>
-                            <div className="flex justify-between">
-                              <span className="text-slate-400">Status:</span>
-                              <span className={db.status === 'online' ? 'text-emerald-600 font-bold' : 'text-slate-500'}>
-                                {db.status === 'online' ? 'Online' : 'Offline'} ({db.pingMs || 15}ms)
-                              </span>
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="pt-2 border-t border-slate-200/80 flex items-center justify-between text-[10px] text-slate-500 font-sans">
-                          <span>Envelope: Tier 1 Admin Granted</span>
-                          <span className="font-bold text-[#155DFC]">Accessible in Sandbox</span>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* SUBVIEW 2: LIBRARY (SQL Templates, Schema Guides, Scripts) */}
-          {resourceSubTab === 'library' && (
-            <div className="space-y-4 font-mono text-xs">
-              {/* Search & Filter Toolbar */}
-              <div className="bg-white border border-slate-200 rounded-2xl p-4 shadow-xs flex flex-wrap items-center justify-between gap-3">
-                <div className="flex items-center space-x-2 flex-1 min-w-[240px]">
-                  <div className="relative flex-1">
-                    <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                    <input
-                      type="text"
-                      placeholder="Search query templates by title, description, or SQL..."
-                      value={searchLibraryQuery}
-                      onChange={e => setSearchLibraryQuery(e.target.value)}
-                      className="w-full bg-slate-50 border border-slate-200 rounded-xl pl-9 pr-3 py-2 text-xs text-slate-800 placeholder:text-slate-400 focus:outline-none focus:ring-1 focus:ring-[#155DFC] font-sans"
-                    />
-                  </div>
-
-                  {/* Category Pills */}
-                  <div className="flex items-center gap-1 shrink-0 overflow-x-auto">
-                    {['ALL', 'Reconciliation', 'Staging & Feed', 'Risk & Audit'].map(cat => (
-                      <button
-                        key={cat}
-                        type="button"
-                        onClick={() => setSelectedLibraryCategory(cat)}
-                        className={`px-2.5 py-1 rounded-lg text-[10px] font-bold transition-all cursor-pointer ${
-                          selectedLibraryCategory === cat
-                            ? 'bg-[#155DFC] text-white shadow-xs'
-                            : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                        }`}
-                      >
-                        {cat}
-                      </button>
-                    ))}
-                  </div>
-                </div>
-
-                <button
-                  type="button"
-                  id="btn-add-library-template"
-                  onClick={() => setShowAddTemplateModal(true)}
-                  className="px-3.5 py-2 bg-[#155DFC] hover:bg-[#155DFC]/90 text-white font-bold rounded-xl flex items-center space-x-1.5 transition-all shadow-xs cursor-pointer shrink-0"
-                >
-                  <Plus size={14} />
-                  <span>Save Query Template</span>
-                </button>
-              </div>
-
-              {/* Templates List */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {libraryTemplates
-                  .filter(tmpl => {
-                    const matchesCategory = selectedLibraryCategory === 'ALL' || tmpl.category === selectedLibraryCategory;
-                    const matchesSearch = !searchLibraryQuery.trim() || 
-                      tmpl.title.toLowerCase().includes(searchLibraryQuery.toLowerCase()) ||
-                      tmpl.description.toLowerCase().includes(searchLibraryQuery.toLowerCase()) ||
-                      tmpl.sql.toLowerCase().includes(searchLibraryQuery.toLowerCase());
-                    return matchesCategory && matchesSearch;
-                  })
-                  .map(tmpl => {
-                    const isCopied = copiedTemplateId === tmpl.id;
-                    return (
-                      <div
-                        key={tmpl.id}
-                        className="bg-white border border-slate-200/90 rounded-2xl p-5 shadow-xs flex flex-col justify-between gap-3 hover:border-slate-300 transition-colors"
-                      >
-                        <div className="space-y-2.5">
-                          <div className="flex items-start justify-between gap-2">
-                            <div>
-                              <h4 className="text-sm font-bold text-slate-900 font-mono">{tmpl.title}</h4>
-                              <p className="text-xs text-slate-500 font-sans mt-0.5 leading-relaxed">{tmpl.description}</p>
-                            </div>
-                            <span className="text-[10px] px-2 py-0.5 rounded-full font-bold bg-blue-50 text-[#155DFC] border border-blue-200 shrink-0">
-                              {tmpl.category}
-                            </span>
-                          </div>
-
-                          {/* Code block with 1-click copy */}
-                          <div className="relative group rounded-xl overflow-hidden border border-slate-200 bg-slate-900">
-                            <div className="flex items-center justify-between px-3 py-1.5 bg-slate-800 text-slate-400 text-[10px] border-b border-slate-700">
-                              <span className="font-mono text-slate-300">{tmpl.targetDb}</span>
-                              <button
-                                type="button"
-                                onClick={() => handleCopySql(tmpl.id, tmpl.sql)}
-                                className={`px-2 py-0.5 rounded flex items-center space-x-1 font-mono transition-colors cursor-pointer ${
-                                  isCopied
-                                    ? 'bg-emerald-500/20 text-emerald-300'
-                                    : 'bg-slate-700 hover:bg-slate-600 text-slate-200'
-                                }`}
-                              >
-                                {isCopied ? <CheckCheck size={12} /> : <Copy size={12} />}
-                                <span>{isCopied ? 'Copied!' : 'Copy SQL'}</span>
-                              </button>
-                            </div>
-                            <pre className="p-3 text-[11px] text-emerald-400 font-mono overflow-x-auto whitespace-pre leading-relaxed max-h-40">
-                              {tmpl.sql}
-                            </pre>
-                          </div>
-                        </div>
-
-                        <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-[10px] text-slate-400 font-mono">
-                          <span>Created by @{tmpl.authorName}</span>
-                          <span>{tmpl.createdAt}</span>
-                        </div>
-                      </div>
-                    );
-                  })}
-              </div>
-            </div>
-          )}
-
-          {/* SUBVIEW 3: INSIGHTS (Shift Handovers, Tips, Resolution Learnings) */}
-          {resourceSubTab === 'insights' && (
-            <div className="space-y-4">
-              <div className="bg-white border border-slate-200/80 rounded-2xl p-6 shadow-sm space-y-4">
-                <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-3 border-b border-slate-100 pb-4">
-                  <div>
-                    <h3 className="text-xs font-bold text-slate-800 font-mono uppercase tracking-wider">
-                      Team Knowledge & Query Insights
-                    </h3>
-                    <p className="text-[11px] text-slate-500 mt-0.5">
-                      Share query shortcuts, database safety rules, operational tips, and past resolution learnings.
-                    </p>
-                  </div>
-
-                  <button
-                    onClick={() => setShowAddInsightModal(true)}
-                    className="px-3.5 py-2 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-xl flex items-center space-x-1.5 transition-colors cursor-pointer shrink-0"
-                  >
-                    <Lightbulb size={15} />
-                    <span>Share New Insight</span>
-                  </button>
-                </div>
-
-                {/* Insights List */}
-                {teamInsights.length === 0 ? (
-                  <div className="p-8 text-center bg-slate-50 border border-slate-200 rounded-xl space-y-2">
-                    <Lightbulb size={32} className="mx-auto text-slate-300" />
-                    <h4 className="text-xs font-bold text-slate-700 font-mono">No insights published yet</h4>
-                    <p className="text-[11px] text-slate-500">Publish your operational learnings or query shortcuts to help team members.</p>
-                  </div>
-                ) : (
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                    {teamInsights.map(insight => (
-                      <div key={insight.id} className="p-5 bg-slate-50/70 border border-slate-200 rounded-xl space-y-3 flex flex-col justify-between hover:border-slate-300 transition-colors">
-                        <div className="space-y-2">
-                          <div className="flex justify-between items-start">
-                            <h4 className="text-xs font-bold text-slate-900 font-mono leading-snug">
-                              {insight.title}
-                            </h4>
-
-                            <button
-                              onClick={() => onDeleteInsight(insight.id)}
-                              className="text-slate-400 hover:text-red-600 p-1 rounded hover:bg-red-50 transition-colors cursor-pointer"
-                              title="Delete insight"
-                            >
-                              <Trash2 size={13} />
-                            </button>
-                          </div>
-
-                          <p className="text-xs text-slate-700 leading-relaxed font-sans bg-white p-3 rounded-lg border border-slate-200/80">
-                            {insight.content}
-                          </p>
-                        </div>
-
-                        <div className="pt-2 border-t border-slate-200/80 flex flex-wrap items-center justify-between gap-2 text-[10px] font-mono">
-                          <div className="flex items-center space-x-1.5 text-slate-500">
-                            <span className="font-semibold text-slate-800">@{insight.authorName}</span>
-                            <span className="uppercase text-[9px] bg-slate-200 text-slate-700 px-1 py-0.2 rounded">
-                              {insight.authorRole}
-                            </span>
-                            <span>•</span>
-                            <span>{new Date(insight.createdAt).toLocaleDateString()}</span>
-                          </div>
-
-                          <div className="flex flex-wrap gap-1">
-                            {insight.tags.map((tag, idx) => (
-                              <span key={idx} className="bg-blue-50 text-blue-700 border border-blue-200 px-2 py-0.5 rounded font-bold">
-                                #{tag}
-                              </span>
-                            ))}
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* CONSOLIDATED TAB: TEAM SETTINGS (Approvals, Cross-Team, AI Strategy, Org Structure, DB Access) */}
-      {(activeTab === 'team_settings' || ['approvals', 'grants', 'ai-strategy', 'relationships', 'db-access'].includes(activeTab)) && (
+      {/* CONSOLIDATED TAB: TEAM SETTINGS (Approvals, Cross-Team, AI Strategy, Org Structure, DB Access, Delegated Admin) */}
+      {(activeTab === 'team_settings' || ['approvals', 'grants', 'ai-strategy', 'relationships', 'db-access', 'delegated-admin'].includes(activeTab)) && (
         <div className="space-y-4" id="team-settings-container">
-          {/* Team Settings Header */}
+          {/* Team Settings Header with Back Button */}
           <div className="bg-white border border-slate-200/90 rounded-2xl p-4 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 font-mono text-xs" id="team-settings-header">
             <div className="flex items-center space-x-3">
               <div className="p-2.5 bg-blue-50 text-[#155DFC] border border-blue-200 rounded-xl">
@@ -2775,6 +1473,15 @@ export default function TeamWorkspace({
                 </p>
               </div>
             </div>
+
+            <button
+              type="button"
+              id="btn-back-to-workspace"
+              onClick={() => setActiveTab('overview')}
+              className="px-3.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-mono font-bold rounded-xl flex items-center space-x-1.5 transition-colors cursor-pointer shrink-0"
+            >
+              <span>&larr; Back to Workspace</span>
+            </button>
           </div>
 
           {/* Segmented Sub-navigation Bar */}
@@ -2809,9 +1516,15 @@ export default function TeamWorkspace({
                 label: 'Database Access',
                 icon: Database,
                 count: currentTeam?.allowedDbIds?.length || 0
-              }
+              },
+              ...(isGlobalAdmin ? [{
+                id: 'delegated-admin' as TeamSettingsSubTab,
+                label: 'Admin Privileges',
+                icon: Shield,
+                count: (currentTeam?.adminPrivileges?.canManageConnections ? 1 : 0) + (currentTeam?.adminPrivileges?.canManageColumnMapping ? 1 : 0)
+              }] : [])
             ].map(subTab => {
-              const currentActiveSubTab = (activeTab === 'team_settings' ? teamSettingsSubTab : (['approvals', 'grants', 'ai-strategy', 'relationships', 'db-access'].includes(activeTab) ? activeTab : 'approvals'));
+              const currentActiveSubTab = (activeTab === 'team_settings' ? teamSettingsSubTab : (['approvals', 'grants', 'ai-strategy', 'relationships', 'db-access', 'delegated-admin'].includes(activeTab) ? activeTab : 'approvals'));
               const isSubActive = currentActiveSubTab === subTab.id;
               const SubIcon = subTab.icon;
               return (
@@ -4056,6 +2769,230 @@ export default function TeamWorkspace({
             </div>
           )}
 
+          {/* SUBTAB 6: DELEGATED ADMIN PRIVILEGES (ADMIN-ONLY) */}
+          {((activeTab === 'team_settings' ? teamSettingsSubTab : activeTab) === 'delegated-admin') && (
+            <div className="space-y-5 font-mono text-xs" id="team-settings-delegated-admin-panel">
+              {/* Header Banner */}
+              <div className="bg-indigo-50/70 border border-indigo-200/80 rounded-2xl p-5 text-slate-800 space-y-2 shadow-xs">
+                <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+                  <div className="flex items-center space-x-3">
+                    <div className="p-2.5 bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-xl">
+                      <Shield size={22} />
+                    </div>
+                    <div>
+                      <div className="flex items-center space-x-2">
+                        <h3 className="text-sm font-bold text-slate-900">Delegated Team Administration Privileges</h3>
+                        <span className="px-2 py-0.5 rounded-full text-[10px] bg-indigo-100 text-indigo-800 border border-indigo-200 font-bold flex items-center gap-1">
+                          Admin Delegation
+                        </span>
+                      </div>
+                      <p className="text-xs text-slate-600 font-sans mt-0.5">
+                        Grant full or partial administration capabilities to members of <strong>{currentTeam?.name}</strong>.
+                      </p>
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    id="btn-save-team-admin-privileges"
+                    disabled={isSavingAdminPrivileges}
+                    onClick={handleSaveDelegatedAdminPrivileges}
+                    className="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 disabled:opacity-50 text-white font-bold rounded-xl flex items-center gap-2 shadow-xs transition-all cursor-pointer shrink-0 self-start md:self-auto"
+                  >
+                    {isSavingAdminPrivileges ? (
+                      <>
+                        <RefreshCw size={13} className="animate-spin" />
+                        <span>Saving...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Check size={14} />
+                        <span>Save Privileges</span>
+                      </>
+                    )}
+                  </button>
+                </div>
+
+                {/* Notifications */}
+                {adminPrivilegesSuccessMsg && (
+                  <div className="mt-2 p-2.5 bg-emerald-100/80 border border-emerald-300 rounded-xl text-emerald-900 text-xs flex items-center gap-2 font-sans font-medium">
+                    <CheckCircle2 size={15} className="text-emerald-700 shrink-0" />
+                    <span>{adminPrivilegesSuccessMsg}</span>
+                  </div>
+                )}
+                {adminPrivilegesErrMsg && (
+                  <div className="mt-2 p-2.5 bg-rose-100/80 border border-rose-300 rounded-xl text-rose-900 text-xs flex items-center gap-2 font-sans font-medium">
+                    <AlertCircle size={15} className="text-rose-700 shrink-0" />
+                    <span>{adminPrivilegesErrMsg}</span>
+                  </div>
+                )}
+
+                {/* Explanatory Callout */}
+                <div className="mt-3 p-3 bg-white/90 border border-indigo-200/60 rounded-xl text-xs text-slate-700 font-sans space-y-1">
+                  <p>
+                    <strong>Architectural Governance & Separation of Duties:</strong> Database administrators can be delegated monitoring, DB endpoint creation, cross-team allocation, and query approval rights while strictly forbidding operational column mapping. Operational teams are granted column mapping and validation rule authoring on allocated databases.
+                  </p>
+                </div>
+              </div>
+
+              {/* QUICK PRESETS */}
+              <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-xs space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-3">
+                  <div>
+                    <h4 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                      <Sparkles size={16} className="text-indigo-600" />
+                      <span>Role-Based Governance Presets</span>
+                    </h4>
+                    <p className="text-xs text-slate-500 font-sans mt-0.5">
+                      Apply recommended privilege envelopes tailored for specialized teams.
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <button
+                      type="button"
+                      onClick={() => setTeamAdminPrivileges({
+                        canManageConnections: true,
+                        canViewMonitoring: true,
+                        canManageAccessRequests: true,
+                        canManageColumnMapping: false,
+                        canManageUsers: false
+                      })}
+                      className="px-3 py-1.5 text-xs font-bold text-purple-700 bg-purple-50 hover:bg-purple-100 border border-purple-200 rounded-xl transition-colors cursor-pointer flex items-center gap-1.5"
+                    >
+                      <Database size={13} />
+                      <span>Preset: Database Team (DBA)</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setTeamAdminPrivileges({
+                        canManageConnections: false,
+                        canViewMonitoring: true,
+                        canManageAccessRequests: false,
+                        canManageColumnMapping: true,
+                        canManageUsers: false
+                      })}
+                      className="px-3 py-1.5 text-xs font-bold text-blue-700 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-xl transition-colors cursor-pointer flex items-center gap-1.5"
+                    >
+                      <Table size={13} />
+                      <span>Preset: Operational Team (Ops)</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setTeamAdminPrivileges({
+                        canManageConnections: true,
+                        canViewMonitoring: true,
+                        canManageAccessRequests: true,
+                        canManageColumnMapping: true,
+                        canManageUsers: true
+                      })}
+                      className="px-3 py-1.5 text-xs font-bold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded-xl transition-colors cursor-pointer"
+                    >
+                      Full Admin
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setTeamAdminPrivileges({
+                        canManageConnections: false,
+                        canViewMonitoring: false,
+                        canManageAccessRequests: false,
+                        canManageColumnMapping: false,
+                        canManageUsers: false
+                      })}
+                      className="px-3 py-1.5 text-xs font-bold text-slate-500 bg-slate-100 hover:bg-slate-200 border border-slate-200 rounded-xl transition-colors cursor-pointer"
+                    >
+                      Clear All
+                    </button>
+                  </div>
+                </div>
+
+                {/* GRANULAR PRIVILEGE TOGGLES */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+                  {[
+                    {
+                      key: 'canManageConnections' as keyof TeamAdminPrivileges,
+                      title: 'Manage Database Connections',
+                      desc: 'Register physical databases (PostgreSQL, Oracle, MySQL, MongoDB, FTP), manage credentials, discover tables, test pings, and allocate database connections to other teams.',
+                      icon: Database,
+                      color: 'purple'
+                    },
+                    {
+                      key: 'canViewMonitoring' as keyof TeamAdminPrivileges,
+                      title: 'System Analytics & Connection Monitoring',
+                      desc: 'Access System Analytics & Health dashboard, live socket tracking, execution distribution charts, and connection usage audit logs.',
+                      icon: Activity,
+                      color: 'emerald'
+                    },
+                    {
+                      key: 'canManageAccessRequests' as keyof TeamAdminPrivileges,
+                      title: 'Respond to System Access & Query Approvals',
+                      desc: 'Review and approve/reject pending database access requests (DbAccessRequest) and DML/DDL query execution approvals.',
+                      icon: ShieldCheck,
+                      color: 'amber'
+                    },
+                    {
+                      key: 'canManageColumnMapping' as keyof TeamAdminPrivileges,
+                      title: 'Operational Column Mapping & Rule Builder',
+                      desc: 'Configure table column validation rules, Type Groups, semantic row relationships, and global dictionary fields. (Forbidden for pure DB teams).',
+                      icon: Table,
+                      color: 'blue'
+                    },
+                    {
+                      key: 'canManageUsers' as keyof TeamAdminPrivileges,
+                      title: 'User Administration',
+                      desc: 'Approve new operator registrations, delete users, and update operator privilege envelopes.',
+                      icon: Users,
+                      color: 'indigo'
+                    }
+                  ].map(priv => {
+                    const isChecked = Boolean(teamAdminPrivileges[priv.key]);
+                    const Icon = priv.icon;
+
+                    return (
+                      <div
+                        key={priv.key}
+                        onClick={() => setTeamAdminPrivileges(prev => ({
+                          ...prev,
+                          [priv.key]: !prev[priv.key]
+                        }))}
+                        className={`p-4 rounded-xl border text-xs cursor-pointer transition-all ${
+                          isChecked
+                            ? 'bg-indigo-50/50 border-indigo-500/80 shadow-xs ring-1 ring-indigo-500/20'
+                            : 'bg-white border-slate-200 hover:border-slate-300'
+                        }`}
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="flex items-center space-x-2.5">
+                            <input
+                              type="checkbox"
+                              checked={isChecked}
+                              onChange={() => {}}
+                              className="rounded text-indigo-600 focus:ring-indigo-500 cursor-pointer"
+                            />
+                            <div className="p-1.5 rounded-lg bg-slate-100 text-slate-700">
+                              <Icon size={14} />
+                            </div>
+                            <span className="font-bold text-slate-900 text-xs">{priv.title}</span>
+                          </div>
+                          <span className={`text-[10px] px-2 py-0.5 rounded-full font-bold border ${
+                            isChecked
+                              ? 'bg-emerald-100 text-emerald-800 border-emerald-200'
+                              : 'bg-slate-100 text-slate-500 border-slate-200'
+                          }`}>
+                            {isChecked ? 'Enabled' : 'Disabled'}
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-slate-600 font-sans leading-relaxed mt-2 pl-6">
+                          {priv.desc}
+                        </p>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          )}
+
         </div>
       )}
 
@@ -5240,6 +4177,94 @@ export default function TeamWorkspace({
         </div>
       )}
 
+      {/* MODAL: INSPECT TABLES & SCHEMA */}
+      {inspectingDbTables && (
+        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-xl max-w-lg w-full p-6 space-y-4 font-mono text-xs animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex justify-between items-center border-b border-slate-100 pb-3">
+              <div className="flex items-center space-x-2">
+                <Table size={16} className="text-[#155DFC]" />
+                <h3 className="text-sm font-bold text-slate-900 truncate max-w-[320px]">
+                  Schema & Tables: {inspectingDbTables.db.name}
+                </h3>
+              </div>
+              <button 
+                onClick={() => setInspectingDbTables(null)} 
+                className="text-slate-400 hover:text-slate-600 cursor-pointer"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-1.5 font-sans">
+              <div className="flex justify-between text-xs">
+                <span className="text-slate-500">Connection:</span>
+                <span className="font-mono font-bold text-slate-800">{inspectingDbTables.db.type} • {inspectingDbTables.db.host}:{inspectingDbTables.db.port}</span>
+              </div>
+              {inspectingDbTables.db.databaseName && (
+                <div className="flex justify-between text-xs">
+                  <span className="text-slate-500">Database Name:</span>
+                  <span className="font-mono font-bold text-slate-800">{inspectingDbTables.db.databaseName}</span>
+                </div>
+              )}
+              <div className="flex justify-between text-xs">
+                <span className="text-slate-500">Isolation Scope:</span>
+                <span className="font-bold text-[#155DFC]">Team-Scoped (Private)</span>
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <div className="flex justify-between items-center">
+                <span className="font-bold text-slate-700 text-xs">Discovered Tables ({inspectingDbTables.tables.length})</span>
+                <button
+                  type="button"
+                  onClick={() => handleInspectTables(inspectingDbTables.db)}
+                  className="text-[#155DFC] hover:underline text-[11px] font-bold flex items-center gap-1 cursor-pointer"
+                >
+                  <RefreshCw size={11} className={inspectingDbTables.loading ? 'animate-spin' : ''} />
+                  <span>Refresh</span>
+                </button>
+              </div>
+
+              {inspectingDbTables.loading ? (
+                <div className="p-6 text-center text-slate-400 font-sans text-xs">
+                  <RefreshCw size={18} className="animate-spin mx-auto mb-2 text-[#155DFC]" />
+                  Querying database catalog...
+                </div>
+              ) : inspectingDbTables.tables.length === 0 ? (
+                <div className="p-4 text-center text-slate-400 font-sans text-xs bg-slate-50 rounded-xl border border-dashed border-slate-200">
+                  No public tables discovered on this database catalog.
+                </div>
+              ) : (
+                <div className="max-h-48 overflow-y-auto space-y-1 pr-1">
+                  {inspectingDbTables.tables.map(tbl => (
+                    <div key={tbl} className="flex items-center justify-between p-2 bg-slate-50 rounded-lg border border-slate-200/80 hover:bg-slate-100 transition-colors">
+                      <div className="flex items-center space-x-2">
+                        <Table size={13} className="text-slate-400" />
+                        <span className="font-mono text-slate-800 font-semibold">{tbl}</span>
+                      </div>
+                      <span className="text-[9px] px-1.5 py-0.5 rounded font-mono bg-blue-50 text-[#155DFC] border border-blue-200">
+                        Table
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="pt-3 border-t border-slate-100 flex justify-end">
+              <button
+                type="button"
+                onClick={() => setInspectingDbTables(null)}
+                className="px-4 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-lg text-xs cursor-pointer"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* MODAL: ADD LIBRARY QUERY TEMPLATE */}
       {showAddTemplateModal && (
         <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4 z-50">
@@ -5336,11 +4361,65 @@ export default function TeamWorkspace({
           </div>
         </div>
       )}
+
+      {/* MODAL: INSPECT DATABASE TABLES */}
+      {inspectingDbTables && (
+        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-xl max-w-lg w-full p-6 space-y-4 font-mono text-xs animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex justify-between items-center border-b border-slate-100 pb-3">
+              <div className="flex items-center space-x-2">
+                <Table size={16} className="text-[#155DFC]" />
+                <h3 className="text-sm font-bold text-slate-900">
+                  Tables in {inspectingDbTables.db.name}
+                </h3>
+              </div>
+              <button onClick={() => setInspectingDbTables(null)} className="text-slate-400 hover:text-slate-600 cursor-pointer">
+                <X size={16} />
+              </button>
             </div>
+
+            <div className="space-y-3">
+              <div className="flex items-center justify-between text-[11px] text-slate-500 font-sans">
+                <span>Database: <strong className="text-slate-800 font-mono">{inspectingDbTables.db.databaseName || inspectingDbTables.db.name}</strong></span>
+                <span>Type: <strong className="text-slate-800 font-mono">{inspectingDbTables.db.type || 'PostgreSQL'}</strong></span>
+              </div>
+
+              {inspectingDbTables.loading ? (
+                <div className="p-8 text-center text-slate-400 font-sans flex items-center justify-center space-x-2">
+                  <RefreshCw size={14} className="animate-spin text-[#155DFC]" />
+                  <span>Discovering tables from database...</span>
+                </div>
+              ) : inspectingDbTables.tables.length === 0 ? (
+                <div className="p-6 text-center text-slate-400 font-sans bg-slate-50 rounded-xl border border-dashed border-slate-200">
+                  No public user tables discovered in this database.
+                </div>
+              ) : (
+                <div className="max-h-60 overflow-y-auto space-y-1.5 pr-1">
+                  {inspectingDbTables.tables.map(table => (
+                    <div key={table} className="flex items-center justify-between p-2 rounded-lg bg-slate-50 border border-slate-200/80 text-slate-800 hover:bg-blue-50/50 hover:border-blue-200 transition-colors">
+                      <span className="font-mono text-xs font-semibold">{table}</span>
+                      <span className="text-[10px] text-slate-400 font-sans">Ready for Reconciliation</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="flex justify-end pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setInspectingDbTables(null)}
+                className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold rounded-lg cursor-pointer"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
           </div>
         )}
       </main>
-      </div>
     </div>
   );
 }

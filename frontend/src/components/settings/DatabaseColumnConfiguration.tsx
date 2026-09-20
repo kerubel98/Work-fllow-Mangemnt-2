@@ -15,20 +15,23 @@ import {
   SemanticCrossRowRule,
   TransactionTypeGroupConfig,
   TypeColumnCondition,
-  ColumnValueLabelMapping
+  ColumnValueLabelMapping,
+  Team
 } from '../../types';
 import { api } from '../../api/client';
 import { showSystemAlert } from '../common/MessageModal';
+import { getUserAdminCapabilities } from '../../utils/adminCapabilities';
 import { 
   ShieldCheck, Database, Table, Plus, Trash2, Edit3, Copy, 
   Play, RefreshCw, Layers, CheckCircle2, AlertTriangle, XCircle, 
   Sliders, ArrowUp, ArrowDown, Search, Filter, Eye, ChevronDown, 
   ChevronUp, Check, X, Sparkles, Hash, AlertOctagon, HelpCircle,
-  GitMerge, ArrowRightLeft, Split, Tag
+  GitMerge, ArrowRightLeft, Split, Tag, Lock
 } from 'lucide-react';
 
 interface Props {
   currentUser: User;
+  teams?: Team[];
   databases?: DatabaseConnection[];
 }
 
@@ -99,7 +102,10 @@ function getRowCellValue(row: any, colName: string) {
   return undefined;
 }
 
-export default function DatabaseColumnConfigurationStudio({ currentUser, databases = [] }: Props) {
+export default function DatabaseColumnConfigurationStudio({ currentUser, teams = [], databases = [] }: Props) {
+  const caps = getUserAdminCapabilities(currentUser, teams);
+  const canManageColumnMapping = caps.canManageColumnMapping;
+
   // DB & Table selection
   const [activeDbs, setActiveDbs] = useState<DatabaseConnection[]>(databases);
   const [selectedDbId, setSelectedDbId] = useState<string>('');
@@ -172,20 +178,51 @@ export default function DatabaseColumnConfigurationStudio({ currentUser, databas
     return dbs[0].id;
   };
 
-  // 1. Fetch Databases if not passed
+  // Check administrative privilege
+  const isAdmin = currentUser?.role === 'admin' || 
+    (currentUser?.role as any) === 'system_admin' || 
+    currentUser?.username?.toLowerCase() === 'admin' || 
+    (currentUser?.role as string)?.toLowerCase() === 'administrator';
+
+  // Filter databases strictly to resources the user or their team created OR allocated to their team
+  const filterDbsForUser = useCallback((rawDbs: DatabaseConnection[]) => {
+    if (isAdmin) return rawDbs;
+    const userTeamId = currentUser?.permanentTeamId || currentUser?.teamId;
+    const userTeams = (teams || []).filter(t => 
+      t.memberIds?.includes(currentUser?.id) || 
+      t.id === userTeamId
+    );
+    const allocatedDbIds = new Set<string>();
+    userTeams.forEach(t => {
+      (t.allowedDbIds || []).forEach(id => allocatedDbIds.add(id));
+    });
+
+    return rawDbs.filter(d => 
+      d.createdByUserId === currentUser?.id ||
+      (d as any).createdBy === currentUser?.username ||
+      (d.teamId && userTeamId && d.teamId === userTeamId) ||
+      allocatedDbIds.has(d.id)
+    );
+  }, [isAdmin, currentUser, teams]);
+
+  // 1. Fetch Databases if not passed (scoped strictly to created resources)
   useEffect(() => {
+    const processDbs = (rawDbs: DatabaseConnection[]) => {
+      const filtered = filterDbsForUser(rawDbs);
+      setActiveDbs(filtered);
+      setSelectedDbId(prev => (filtered.some(d => d.id === prev) ? prev : pickBestDefaultDb(filtered)));
+    };
+
     if (databases && databases.length > 0) {
-      setActiveDbs(databases);
-      setSelectedDbId(prev => prev || pickBestDefaultDb(databases));
+      processDbs(databases);
     } else {
       api.getDatabases().then((res) => {
         if (Array.isArray(res) && res.length > 0) {
-          setActiveDbs(res);
-          setSelectedDbId(prev => prev || pickBestDefaultDb(res));
+          processDbs(res);
         }
       }).catch(err => console.warn('Could not load databases:', err));
     }
-  }, [databases]);
+  }, [databases, filterDbsForUser]);
 
   // 2. Fetch Tables when selectedDbId changes (with auto-discovery fallback)
   useEffect(() => {
@@ -371,6 +408,14 @@ export default function DatabaseColumnConfigurationStudio({ currentUser, databas
 
   // Handlers for Configurations
   const handleOpenCreateModal = (prefillColumn?: string) => {
+    if (!canManageColumnMapping) {
+      showSystemAlert({
+        type: 'warning',
+        title: 'Operational Governance Restriction',
+        message: 'Column configuration and mapping is restricted to Operational Teams. Database/Infrastructure teams cannot modify column rules.'
+      });
+      return;
+    }
     const defaultCols: RuleColumnPriority[] = [];
     if (prefillColumn) {
       defaultCols.push({
@@ -416,7 +461,6 @@ export default function DatabaseColumnConfigurationStudio({ currentUser, databas
         }
       ],
       typeGroups: [],
-      typeGroupColumns: [],
       valueLabels: [],
       unmappedValueAction: 'FLAG',
       violationAction: 'FLAG',
@@ -428,11 +472,27 @@ export default function DatabaseColumnConfigurationStudio({ currentUser, databas
   };
 
   const handleEditConfig = (cfg: DatabaseColumnConfiguration) => {
+    if (!canManageColumnMapping) {
+      showSystemAlert({
+        type: 'warning',
+        title: 'Operational Governance Restriction',
+        message: 'Column configuration and mapping is restricted to Operational Teams.'
+      });
+      return;
+    }
     setEditingConfig({ ...cfg });
     setIsModalOpen(true);
   };
 
   const handleCloneConfig = (cfg: DatabaseColumnConfiguration) => {
+    if (!canManageColumnMapping) {
+      showSystemAlert({
+        type: 'warning',
+        title: 'Operational Governance Restriction',
+        message: 'Column configuration and mapping is restricted to Operational Teams.'
+      });
+      return;
+    }
     setEditingConfig({
       ...cfg,
       id: undefined,
@@ -442,6 +502,14 @@ export default function DatabaseColumnConfigurationStudio({ currentUser, databas
   };
 
   const handleDeleteConfig = async (id: string, name: string) => {
+    if (!canManageColumnMapping) {
+      showSystemAlert({
+        type: 'warning',
+        title: 'Operational Governance Restriction',
+        message: 'Column configuration and mapping is restricted to Operational Teams.'
+      });
+      return;
+    }
     showSystemAlert({
       type: 'confirm',
       title: 'Delete Column Configuration',
@@ -484,6 +552,15 @@ export default function DatabaseColumnConfigurationStudio({ currentUser, databas
   const handleSaveConfig = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!editingConfig) return;
+
+    if (!canManageColumnMapping) {
+      showSystemAlert({
+        type: 'warning',
+        title: 'Operational Governance Restriction',
+        message: 'Column configuration and mapping is restricted to Operational Teams. Database/Infrastructure teams cannot modify column rules.'
+      });
+      return;
+    }
 
     if (!editingConfig.name?.trim()) {
       showSystemAlert({ type: 'warning', title: 'Validation Warning', message: 'Please provide a Rule Name.' });
@@ -566,8 +643,16 @@ export default function DatabaseColumnConfigurationStudio({ currentUser, databas
 
     setIsSaving(true);
     try {
+      const payload: any = {
+        ...editingConfig,
+        createdBy: editingConfig.createdBy || currentUser?.username || 'operator',
+        createdByUserId: currentUser?.id,
+        userRole: currentUser?.role,
+        teamId: currentUser?.permanentTeamId || currentUser?.teamId
+      };
+
       if (editingConfig.id) {
-        const updated = await api.updateColumnConfiguration(editingConfig.id, editingConfig);
+        const updated = await api.updateColumnConfiguration(editingConfig.id, payload);
         setConfigurations(prev => prev.map(c => c.id === updated.id ? updated : c));
         showSystemAlert({
           type: 'success',
@@ -575,7 +660,7 @@ export default function DatabaseColumnConfigurationStudio({ currentUser, databas
           message: `Rule "${updated.name}" updated successfully.`
         });
       } else {
-        const created = await api.createColumnConfiguration(editingConfig);
+        const created = await api.createColumnConfiguration(payload);
         setConfigurations(prev => [created, ...prev]);
         showSystemAlert({
           type: 'success',
@@ -726,8 +811,43 @@ export default function DatabaseColumnConfigurationStudio({ currentUser, databas
     }
   };
 
+  // Restrict view if user is non-admin and has no created resources
+  if (!isAdmin && activeDbs.length === 0) {
+    return (
+      <div className="w-full bg-white border border-slate-200 rounded-2xl p-8 shadow-xs text-center space-y-4 font-sans" id="no-created-resources-banner">
+        <div className="w-14 h-14 rounded-2xl bg-blue-50 border border-blue-200 flex items-center justify-center text-[#155DFC] mx-auto shadow-2xs">
+          <Lock size={26} />
+        </div>
+        <div className="max-w-md mx-auto space-y-1.5">
+          <h3 className="text-base font-bold text-slate-900">Resource-Scoped Field Mapping</h3>
+          <p className="text-xs text-slate-500 leading-relaxed">
+            You are authorized to configure field mappings and validation rules strictly for database resources created by you or your team. No resources created by your account or team were found.
+          </p>
+        </div>
+        <div className="pt-2">
+          <p className="text-[11px] text-slate-400 font-mono">
+            Navigate to <strong>Team Workspace &rarr; Resources</strong> to configure a team connection first.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="w-full space-y-5 animate-fadeIn">
+      {/* READ-ONLY NOTICE FOR DB/NON-OPS TEAMS */}
+      {!canManageColumnMapping && (
+        <div className="p-3.5 bg-amber-50/90 border border-amber-200 rounded-2xl text-xs text-amber-900 flex items-start gap-2.5 shadow-2xs">
+          <AlertTriangle className="w-4 h-4 text-amber-600 flex-shrink-0 mt-0.5" />
+          <div>
+            <span className="font-bold">Read-Only Operational View:</span>
+            <p className="mt-0.5 text-amber-800 leading-relaxed">
+              Your current account or team does not possess operational column mapping privileges (<code className="font-mono text-[11px] bg-amber-100 px-1 py-0.2 rounded">canManageColumnMapping: false</code>). You may inspect database tables, schemas, and live data previews, but creating, modifying, and deleting column validation rules is strictly reserved for Operational Teams.
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* 1. TOP HEADER & DATABASE/TABLE SELECTOR BAR */}
       <div className="bg-white border border-slate-200/90 rounded-2xl p-2.5 sm:p-3 text-slate-800 shadow-xs flex items-center justify-between gap-2 overflow-x-auto no-scrollbar" id="db-column-config-header">
         <div className="flex items-center gap-2 shrink-0">
@@ -818,7 +938,8 @@ export default function DatabaseColumnConfigurationStudio({ currentUser, databas
           <button
             type="button"
             onClick={() => handleOpenCreateModal()}
-            disabled={!selectedTable}
+            disabled={!selectedTable || !canManageColumnMapping}
+            title={!canManageColumnMapping ? 'Column mapping is restricted to Operational Teams' : undefined}
             className="px-3 py-1.5 bg-[#155DFC] hover:bg-[#155DFC]/90 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 shadow-xs transition cursor-pointer disabled:opacity-50 shrink-0 whitespace-nowrap"
           >
             <Plus className="w-3.5 h-3.5" />
@@ -1533,30 +1654,34 @@ export default function DatabaseColumnConfigurationStudio({ currentUser, databas
                       >
                         <Play className="w-3.5 h-3.5" />
                       </button>
-                      <button
-                        type="button"
-                        onClick={() => handleCloneConfig(cfg)}
-                        className="p-1.5 hover:bg-slate-100 text-slate-600 hover:text-slate-900 rounded-md transition cursor-pointer"
-                        title="Clone Configuration"
-                      >
-                        <Copy className="w-3.5 h-3.5" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleEditConfig(cfg)}
-                        className="p-1.5 hover:bg-slate-100 text-slate-600 hover:text-slate-900 rounded-md transition cursor-pointer"
-                        title="Edit Configuration"
-                      >
-                        <Edit3 className="w-3.5 h-3.5" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteConfig(cfg.id, cfg.name)}
-                        className="p-1.5 hover:bg-red-50 text-slate-400 hover:text-red-600 rounded-md transition cursor-pointer"
-                        title="Delete Configuration"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
+                      {canManageColumnMapping && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => handleCloneConfig(cfg)}
+                            className="p-1.5 hover:bg-slate-100 text-slate-600 hover:text-slate-900 rounded-md transition cursor-pointer"
+                            title="Clone Configuration"
+                          >
+                            <Copy className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleEditConfig(cfg)}
+                            className="p-1.5 hover:bg-slate-100 text-slate-600 hover:text-slate-900 rounded-md transition cursor-pointer"
+                            title="Edit Configuration"
+                          >
+                            <Edit3 className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteConfig(cfg.id, cfg.name)}
+                            className="p-1.5 hover:bg-red-50 text-slate-400 hover:text-red-600 rounded-md transition cursor-pointer"
+                            title="Delete Configuration"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        </>
+                      )}
                     </div>
                   </div>
                 </div>

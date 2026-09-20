@@ -76,7 +76,7 @@ export const reconciliationService = {
     investigationId: string,
     batchId: string,
     dataSourceId: string,
-    lookupKeyField: string,
+    lookupKeyField: string | string[],
     conditionCheck?: { field: string; expectedValue: any },
     dualSourceCondition?: DualSourceCondition,
     actionConfig?: {
@@ -90,9 +90,18 @@ export const reconciliationService = {
     if (isPostgresConnected) {
       const pool = getPostgresPool();
 
+      const keys = Array.isArray(lookupKeyField)
+        ? lookupKeyField.filter(Boolean)
+        : String(lookupKeyField).split(',').map(s => s.trim()).filter(Boolean);
+
+      const primaryKey = keys[0] || 'transaction_id';
+      const keyJoinSql = keys.length > 1
+        ? `m.record_key = (${keys.map(k => `COALESCE(t.canonical_data->>'${k.replace(/'/g, "''")}', '')`).join(" || '::' || ")})`
+        : `m.record_key = (t.canonical_data->>$3)`;
+
       // PostgreSQL Set-based UPDATE ... FROM Join
       let conditionSql = 'm.record_key IS NOT NULL';
-      const queryParams: any[] = [investigationId, dataSourceId, lookupKeyField, batchId];
+      const queryParams: any[] = [investigationId, dataSourceId, primaryKey, batchId];
 
       if (dualSourceCondition) {
         const dsc = dualSourceCondition;
@@ -111,40 +120,30 @@ export const reconciliationService = {
           return `(m.canonical_payload->>'${col}')`;
         };
 
-        const exprA = getOperandSql(dsc.sourceA);
-        const exprB = getOperandSql(dsc.sourceB);
+        const operandASql = getOperandSql(dsc.sourceA);
+        const operandBSql = getOperandSql(dsc.sourceB);
 
-        if (comp === 'NUMERIC_TOLERANCE') {
-          conditionSql += ` AND ABS(COALESCE((${exprA})::numeric, 0) - COALESCE((${exprB})::numeric, 0)) <= ${margin}`;
-        } else if (comp === 'NOT_EQUALS') {
-          conditionSql += ` AND LOWER(COALESCE(${exprA}::text, '')) != LOWER(COALESCE(${exprB}::text, ''))`;
-        } else if (comp === 'GREATER_THAN') {
-          conditionSql += ` AND COALESCE((${exprA})::numeric, 0) > COALESCE((${exprB})::numeric, 0)`;
-        } else if (comp === 'LESS_THAN') {
-          conditionSql += ` AND COALESCE((${exprA})::numeric, 0) < COALESCE((${exprB})::numeric, 0)`;
-        } else {
-          conditionSql += ` AND LOWER(COALESCE(${exprA}::text, '')) = LOWER(COALESCE(${exprB}::text, ''))`;
+        if (comp === 'EQUALS' || comp === '==' || comp === '=') {
+          conditionSql = `m.record_key IS NOT NULL AND LOWER(COALESCE(${operandASql}, '')) = LOWER(COALESCE(${operandBSql}, ''))`;
+        } else if (comp === 'NOT_EQUALS' || comp === '!=' || comp === '<>') {
+          conditionSql = `m.record_key IS NOT NULL AND LOWER(COALESCE(${operandASql}, '')) != LOWER(COALESCE(${operandBSql}, ''))`;
+        } else if (comp === 'NUMERIC_TOLERANCE') {
+          conditionSql = `m.record_key IS NOT NULL AND ABS(COALESCE((${operandASql})::numeric, 0) - COALESCE((${operandBSql})::numeric, 0)) <= ${margin}`;
         }
       } else if (conditionCheck) {
-        queryParams.push(conditionCheck.field, String(conditionCheck.expectedValue));
-        conditionSql += ` AND (m.canonical_payload->>$5) = $6`;
+        queryParams.push(conditionCheck.expectedValue);
+        conditionSql = `m.record_key IS NOT NULL AND (m.canonical_payload->>'${conditionCheck.field}') = $5`;
       }
 
-      // Resolve pipeline actions from step configuration (Validation Result ≠ Pipeline Action)
       const passAction = actionConfig?.onPassAction || 'CONTINUE';
       const failAction = actionConfig?.onFailAction || 'STOP';
 
       const updateSql = `
         WITH unique_task_source AS (
-          SELECT DISTINCT ON (t.task_id, t.row_number)
-            t.id,
-            t.task_id,
-            t.row_number,
-            t.canonical_data,
-            t.raw_data
-          FROM task_dataset_transactions t
-          WHERE t.task_id = $1
-          ORDER BY t.task_id, t.row_number, t.id ASC
+          SELECT DISTINCT ON (row_number) row_number, canonical_data, raw_data
+          FROM task_dataset_transactions
+          WHERE task_id = $1
+          ORDER BY row_number
         )
         UPDATE investigation_transactions it
         SET 
@@ -173,13 +172,14 @@ export const reconciliationService = {
         LEFT JOIN investigation_external_mirror m 
           ON m.investigation_id = $1 
          AND m.data_source_id = $2 
-         AND m.record_key = (t.canonical_data->>$3)
+         AND ${keyJoinSql}
         WHERE it.task_id = $1 
           AND it.batch_id = $4 
           AND (
             it.transaction_id = t.row_number::text 
             OR it.transaction_id = (t.canonical_data->>'transaction_id')
             OR it.transaction_id = (t.canonical_data->>$3)
+            ${keys.length > 1 ? `OR it.transaction_id = (${keys.map(k => `COALESCE(t.canonical_data->>'${k.replace(/'/g, "''")}', '')`).join(" || '::' || ")})` : ''}
           );
       `;
 

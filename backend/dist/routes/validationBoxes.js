@@ -9,8 +9,7 @@ async function hydrateBoxConfigurations(box) {
         return box;
     const configIds = box.columnConfigurationIds || box.checkStep?.columnConfigurationIds;
     if (Array.isArray(configIds) && configIds.length > 0) {
-        const configs = await Promise.all(configIds.map(id => repo.getColumnConfigurationById(id)));
-        const validConfigs = configs.filter((c) => c !== null);
+        const validConfigs = await repo.getColumnConfigurationsByIds(configIds);
         return {
             ...box,
             columnConfigurationIds: configIds,
@@ -285,8 +284,12 @@ validationBoxesRouter.post('/test', async (req, res) => {
             if (!db) {
                 return res.status(404).json({ error: `Configured target database [${box.targetDbId}] not found.` });
             }
+            function quoteIdent(name) {
+                const clean = String(name || '').replace(/[^a-zA-Z0-9_]/g, '');
+                return `"${clean}"`;
+            }
             const mirrorName = await mirrorTableManager.ensureMirrorTableExists(db, box.targetTable);
-            // 2. Build WHERE clauses from configured searchParameters
+            // 2. Build WHERE clauses from configured searchParameters with ANSI identifier quoting
             const whereClauses = [];
             const handledCols = new Set();
             for (const param of searchParams) {
@@ -296,7 +299,7 @@ validationBoxesRouter.post('/test', async (req, res) => {
                     testRecord[param.targetColumn];
                 if (val !== undefined && val !== null && String(val).trim() !== '') {
                     const safeVal = String(val).replace(/'/g, "''");
-                    whereClauses.push(`${param.targetColumn} = '${safeVal}'`);
+                    whereClauses.push(`${quoteIdent(param.targetColumn)} = '${safeVal}'`);
                     handledCols.add(String(param.targetColumn).toLowerCase());
                     if (param.inputField)
                         handledCols.add(String(param.inputField).toLowerCase());
@@ -323,7 +326,7 @@ validationBoxesRouter.post('/test', async (req, res) => {
                 const matchingCol = tableColNames.find(c => c.toLowerCase() === key.toLowerCase());
                 if (matchingCol) {
                     const safeVal = String(rawVal).replace(/'/g, "''");
-                    whereClauses.push(`${matchingCol} = '${safeVal}'`);
+                    whereClauses.push(`${quoteIdent(matchingCol)} = '${safeVal}'`);
                     handledCols.add(matchingCol.toLowerCase());
                     handledCols.add(key.toLowerCase());
                 }
@@ -341,7 +344,8 @@ validationBoxesRouter.post('/test', async (req, res) => {
                     sampleRecord: testRecord
                 });
             }
-            const queryPreview = `SELECT * FROM ${box.targetTable} WHERE ${whereClauses.join(' AND ')} LIMIT 1;`;
+            const safeTable = quoteIdent(box.targetTable || '');
+            const queryPreview = `SELECT * FROM ${safeTable} WHERE ${whereClauses.join(' AND ')} LIMIT 1;`;
             let queryResult = null;
             try {
                 queryResult = await executeLiveQueryOnDb(db, queryPreview);
@@ -367,13 +371,51 @@ validationBoxesRouter.post('/test', async (req, res) => {
             });
         }
         else if (box.boxType === 'RECONCILIATION') {
-            const inputKey = box.matchKeyInput || 'transaction_id';
-            const extKey = box.matchKeyExternal || 'transaction_id';
-            const keyVal = resolveRecordField(testRecord, inputKey) ??
-                resolveRecordField(testRecord, extKey) ??
-                resolveRecordField(testRecord, 'transaction_id') ??
-                testRecord[inputKey];
-            if (keyVal === undefined || keyVal === null || String(keyVal).trim() === '') {
+            function quoteIdent(name) {
+                const clean = String(name || '').replace(/[^a-zA-Z0-9_]/g, '');
+                return `"${clean}"`;
+            }
+            const matchClauses = [];
+            const missingKeys = [];
+            const evaluatedKeys = {};
+            const searchParams = Array.isArray(box.searchParameters) && box.searchParameters.length > 0
+                ? box.searchParameters
+                : [];
+            if (searchParams.length > 0) {
+                for (const sp of searchParams) {
+                    const inputField = sp.inputField || sp.targetColumn;
+                    const targetCol = sp.targetColumn || sp.inputField;
+                    const val = resolveRecordField(testRecord, inputField) ??
+                        resolveRecordField(testRecord, targetCol) ??
+                        testRecord[inputField] ??
+                        testRecord[targetCol];
+                    if (val !== undefined && val !== null && String(val).trim() !== '') {
+                        const safeVal = String(val).replace(/'/g, "''");
+                        matchClauses.push(`${quoteIdent(targetCol)} = '${safeVal}'`);
+                        evaluatedKeys[targetCol] = val;
+                    }
+                    else if (sp.required !== false) {
+                        missingKeys.push(inputField);
+                    }
+                }
+            }
+            else {
+                const inputKey = box.matchKeyInput || 'transaction_id';
+                const extKey = box.matchKeyExternal || 'transaction_id';
+                const keyVal = resolveRecordField(testRecord, inputKey) ??
+                    resolveRecordField(testRecord, extKey) ??
+                    resolveRecordField(testRecord, 'transaction_id') ??
+                    testRecord[inputKey];
+                if (keyVal !== undefined && keyVal !== null && String(keyVal).trim() !== '') {
+                    const safeVal = String(keyVal).replace(/'/g, "''");
+                    matchClauses.push(`${quoteIdent(extKey)} = '${safeVal}'`);
+                    evaluatedKeys[extKey] = keyVal;
+                }
+                else {
+                    missingKeys.push(inputKey);
+                }
+            }
+            if (missingKeys.length > 0 && matchClauses.length === 0) {
                 return res.json({
                     boxType: 'RECONCILIATION',
                     targetDb: box.targetDbId,
@@ -381,43 +423,68 @@ validationBoxesRouter.post('/test', async (req, res) => {
                     status: 'FAIL',
                     passed: false,
                     badgeText: 'Param Missing',
-                    message: `Required match key [${inputKey}] not found in input record.`,
-                    missingParameters: [inputKey],
+                    message: `Required match key(s) [${missingKeys.join(', ')}] not found in input record.`,
+                    missingParameters: missingKeys,
+                    sampleRecord: testRecord
+                });
+            }
+            if (!box.targetDbId || !box.targetTable) {
+                return res.json({
+                    boxType: 'RECONCILIATION',
+                    targetDb: box.targetDbId || 'None',
+                    targetTable: box.targetTable || 'None',
+                    status: 'FAIL',
+                    passed: false,
+                    badgeText: 'Config Missing',
+                    message: 'Reconciliation box requires both a targetDbId and targetTable configured.',
                     sampleRecord: testRecord
                 });
             }
             let liveCheck = null;
             let isMatch = false;
-            if (box.targetDbId && box.targetTable) {
-                try {
-                    const db = await repo.getDatabaseById(box.targetDbId);
-                    if (db) {
-                        const safeVal = String(keyVal).replace(/'/g, "''");
-                        const q = `SELECT * FROM ${box.targetTable} WHERE ${extKey} = '${safeVal}' LIMIT 1;`;
-                        liveCheck = await executeLiveQueryOnDb(db, q);
-                        isMatch = Boolean(liveCheck?.rows && liveCheck.rows.length > 0);
-                    }
+            try {
+                const db = await repo.getDatabaseById(box.targetDbId);
+                if (!db) {
+                    return res.json({
+                        boxType: 'RECONCILIATION',
+                        targetDb: box.targetDbId,
+                        targetTable: box.targetTable,
+                        status: 'ERROR',
+                        passed: false,
+                        badgeText: 'DB Not Found',
+                        message: `Target database [${box.targetDbId}] not found in registered database connections.`,
+                        sampleRecord: testRecord
+                    });
                 }
-                catch (e) {
-                    liveCheck = { error: e.message };
-                }
+                const safeTable = quoteIdent(box.targetTable);
+                const q = `SELECT * FROM ${safeTable} WHERE ${matchClauses.join(' AND ')} LIMIT 1;`;
+                liveCheck = await executeLiveQueryOnDb(db, q);
+                isMatch = Boolean(liveCheck?.rows && liveCheck.rows.length > 0);
             }
+            catch (e) {
+                liveCheck = { error: e.message };
+            }
+            const hasError = Boolean(liveCheck?.error);
+            const status = hasError ? 'ERROR' : (isMatch ? 'MATCH_FOUND' : 'NO_MATCH_OR_EXTERNAL_UNAVAILABLE');
+            const badgeText = hasError ? 'DB Error' : (isMatch ? 'Match Found (200)' : 'No Match (404)');
             return res.json({
                 boxType: 'RECONCILIATION',
                 targetDb: box.targetDbId,
                 targetTable: box.targetTable,
                 mirrorTable: box.mirrorTableName,
-                matchKeyInput: inputKey,
-                matchKeyExternal: extKey,
+                matchKeyInput: box.matchKeyInput,
+                matchKeyExternal: box.matchKeyExternal,
+                evaluatedKeys,
                 multiRowPolicy: box.multiRowPolicy || 'COMPOSITE_BUNDLE',
                 hasGroupConfig: !!box.groupConfig,
-                testRecordKey: keyVal,
-                passed: liveCheck ? isMatch : true,
-                status: isMatch ? 'MATCH_FOUND' : (liveCheck ? 'NO_MATCH_OR_EXTERNAL_UNAVAILABLE' : 'READY'),
-                badgeText: isMatch ? 'Match Found (200)' : (liveCheck ? 'No Match (404)' : 'Ready'),
-                message: isMatch
-                    ? `Matched record in ${box.targetTable} for key ${extKey}='${keyVal}'`
-                    : (liveCheck ? `No matching record found in ${box.targetTable} for key ${extKey}='${keyVal}'` : 'Reconciliation box configured and ready'),
+                passed: !hasError && isMatch,
+                status,
+                badgeText,
+                message: hasError
+                    ? `External database query failed: ${liveCheck.error}`
+                    : (isMatch
+                        ? `Matched record in ${box.targetTable} across ${matchClauses.length} key criteria`
+                        : `No matching record found in ${box.targetTable} with the given criteria.`),
                 liveExecution: liveCheck,
                 sampleRecord: testRecord
             });
@@ -439,7 +506,7 @@ validationBoxesRouter.post('/test', async (req, res) => {
             // Condition Check Block execution test (unified via evaluateRuleCondition)
             const step = box.checkStep || {};
             const op = step.operator || step.comparator || (box.dualSourceCondition ? box.dualSourceCondition.comparator : 'EQUALS');
-            const comparator = (op === 'EQUALS' ? '=' : (op === 'NOT_EQUALS' ? '!=' : (op === 'NUMERIC_TOLERANCE' ? '=' : op)));
+            const comparator = (op === 'EQUALS' ? '=' : (op === 'NOT_EQUALS' ? '!=' : op));
             const dsc = box.dualSourceCondition || step.dualSourceCondition;
             const isDual = Boolean(dsc);
             const sourceField = dsc?.sourceA?.field ||

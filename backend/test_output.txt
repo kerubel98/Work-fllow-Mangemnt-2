@@ -1,0 +1,224 @@
+
+> operational-workflow-manager-backend@1.0.0 test
+> vitest run
+
+
+[1m[30m[46m RUN [49m[39m[22m [36mv5.0.0 [39m[90mC:/Users/hp/Downloads/opration-workflow-mangement1/backend[39m
+
+ [32m✓[39m src/services/__tests__/teamDatabaseAccessAndPermanentTeam.test.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 246[2mms[22m[39m
+[90mstdout[2m | src/services/__tests__/teamMemberPrivilegesAndResources.test.ts[2m > [22m[2mTwo-Tier External System Privileges & Team Resources Governance[2m > [22m[2m2. Team-Specific Database Creation & Cross-Team Isolation[2m > [22m[2mretrieves team-specific databases via dedicated GET /api/db/team-databases
+[22m[39mGET /api/db/team-databases returned: []
+
+ [31m❯[39m src/services/__tests__/teamMemberPrivilegesAndResources.test.ts [2m([22m[2m9 tests[22m[2m | [22m[31m6 failed[39m[2m)[22m[33m 386[2mms[22m[39m
+   [31m❯[39m Two-Tier External System Privileges & Team Resources Governance [2m(9)[22m
+     [31m❯[39m 1. Tier 2: Manager Delegation & Strict Privilege Ceiling [2m(3)[22m
+       [32m✓[39m allows Manager to allocate privileges within the team envelope[32m 17[2mms[22m[39m
+[31m       [31m×[31m rejects allocating a database that the team does NOT have in its envelope (Ceiling Violation)[39m[32m 18[2mms[22m[39m
+[31m       [31m×[31m rejects allocating a query statement type that the team does NOT have in its envelope (Ceiling Violation)[39m[32m 10[2mms[22m[39m
+     [31m❯[39m 2. Team-Specific Database Creation & Cross-Team Isolation [2m(3)[22m
+       [32m✓[39m creates a team-scoped connection isolated to the team[32m 126[2mms[22m[39m
+[31m       [31m×[31m retrieves team-specific databases via dedicated GET /api/db/team-databases[39m[32m 14[2mms[22m[39m
+[31m       [31m×[31m blocks users from other teams from executing queries against team-scoped databases[39m[32m 6[2mms[22m[39m
+     [31m❯[39m 3. Team Manager Promotion Workflow & Admin Monitor [2m(3)[22m
+[31m       [31m×[31m allows Manager to submit promotion request for system-wide promotion[39m[32m 6[2mms[22m[39m
+[31m       [31m×[31m surfaces pending team resources on Admin monitoring endpoint GET /api/db/admin/team-resources[39m[32m 6[2mms[22m[39m
+       [32m✓[39m allows Workspace Admin to approve promotion, converting connection to global scope[32m 6[2mms[22m[39m
+[90mstdout[2m | src/services/__tests__/schemaMigrationService.test.ts[2m > [22m[2mschemaMigrationService
+[22m[39m[SchemaMigration] Initialized central repository schema: 0 columns added, 253 total columns.
+
+ [32m✓[39m src/services/__tests__/dataSanitizerService.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 137[2mms[22m[39m
+[90mstdout[2m | src/services/__tests__/autoMappingAndTypeTransformation.test.ts[2m > [22m[2mAuto-Mapping & Data Type Transformation Pipeline
+[22m[39m✅ Successfully connected to PostgreSQL database [operational_workflow_db] at Sun Sep 20 2026 16:14:34 GMT+0300 (East Africa Time).
+
+ [32m✓[39m src/services/__tests__/databaseColumnConfiguration.test.ts [2m([22m[2m11 tests[22m[2m)[22m[32m 178[2mms[22m[39m
+ [32m✓[39m src/services/__tests__/schemaMigrationService.test.ts [2m([22m[2m3 tests[22m[2m)[22m[33m 313[2mms[22m[39m
+[90mstdout[2m | src/services/__tests__/autoMappingAndTypeTransformation.test.ts[2m > [22m[2mAuto-Mapping & Data Type Transformation Pipeline[2m > [22m[2mFull Dataset Sanitization and Type Transformation[2m > [22m[2mautomatically maps, transforms, and ingests transactions on task creation
+[22m[39m[DatasetIngestion] Sanitized 1 rows for task TASK-AUTO-MAP-TEST-777: pruned 0 unmapped keys, 0 nulls/empty values.
+
+[90mstdout[2m | src/services/__tests__/autoMappingAndTypeTransformation.test.ts[2m > [22m[2mAuto-Mapping & Data Type Transformation Pipeline[2m > [22m[2mFull Dataset Sanitization and Type Transformation[2m > [22m[2mautomatically maps, transforms, and ingests transactions on task creation
+[22m[39m⚡ Ingested 1 transactions (1 batches, 0 duplicates) for task TASK-AUTO-MAP-TEST-777 in 28ms
+
+ [32m✓[39m src/services/__tests__/autoMappingAndTypeTransformation.test.ts [2m([22m[2m9 tests[22m[2m)[22m[32m 284[2mms[22m[39m
+ [32m✓[39m src/services/__tests__/ruleSqlCompiler.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 10[2mms[22m[39m
+ [32m✓[39m src/services/__tests__/validationBoxWithColumnConfigurations.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 10[2mms[22m[39m
+ [32m✓[39m src/services/__tests__/workflowEngineSingleton.test.ts [2m([22m[2m3 tests[22m[2m)[22m[32m 7[2mms[22m[39m
+[90mstdout[2m | src/services/__tests__/notFoundInDbFailsRule.test.ts[2m > [22m[2mExternal Database Existence Check Governance[2m > [22m[2mstrictly flags records as FAIL when not found in external target database
+[22m[39m[WorkflowEngine] Starting job job-1789910075090-fflp2 from INVESTIGATION_PANEL with 1 records using parameters [terminal_id, refnum, reqamt, fe_utrnno].
+[WorkflowEngine] Deduplication: 0 cache hits, 0 in-flight joins, 1 fresh executions.
+
+[90mstdout[2m | src/services/__tests__/crossTaskAndLookup.test.ts[2m > [22m[2mTask Workflow Executions Lookup & Cross-Task Duplicates[2m > [22m[2mTask-Workflow Execution Lookup Table[2m > [22m[2mbypasses duplicate rerun and serves cached evaluation when already run
+[22m[39m[WorkflowEngine] Starting job job-1789910075117-lopal from INVESTIGATION_PANEL with 2 records using parameters [amount, transaction_id].
+[WorkflowEngine] Deduplication: 0 cache hits, 0 in-flight joins, 2 fresh executions.
+
+[90mstderr[2m | src/services/__tests__/crossTaskAndLookup.test.ts[2m > [22m[2mTask Workflow Executions Lookup & Cross-Task Duplicates[2m > [22m[2mTask-Workflow Execution Lookup Table[2m > [22m[2mbypasses duplicate rerun and serves cached evaluation when already run
+[22m[39m[WorkflowEngine] Target database not configured for stage 'Validation Stage'. Using simulation.
+
+[90mstdout[2m | src/services/__tests__/crossTaskAndLookup.test.ts[2m > [22m[2mTask Workflow Executions Lookup & Cross-Task Duplicates[2m > [22m[2mTask-Workflow Execution Lookup Table[2m > [22m[2mbypasses duplicate rerun and serves cached evaluation when already run
+[22m[39m[WorkflowEngine] Stage 'Validation Stage' completed: 2 passed, 0 failed, 2 forwarded downstream.
+
+[90mstdout[2m | src/services/__tests__/crossTaskAndLookup.test.ts[2m > [22m[2mTask Workflow Executions Lookup & Cross-Task Duplicates[2m > [22m[2mTask-Workflow Execution Lookup Table[2m > [22m[2mbypasses duplicate rerun and serves cached evaluation when already run
+[22m[39m[MirrorManager] Cleaned up 2 rows from mirror_local_transactions for batch job-1789910075117-lopal.
+
+[90mstdout[2m | src/services/__tests__/crossTaskAndLookup.test.ts[2m > [22m[2mTask Workflow Executions Lookup & Cross-Task Duplicates[2m > [22m[2mTask-Workflow Execution Lookup Table[2m > [22m[2mbypasses duplicate rerun and serves cached evaluation when already run
+[22m[39m[WorkflowEngine] Recorded execution and synced task_dataset_transactions for task 'TASK-TEST-LOOKUP-101', workflow 'wf-1789049056364'.
+
+[90mstdout[2m | src/services/__tests__/crossTaskAndLookup.test.ts[2m > [22m[2mTask Workflow Executions Lookup & Cross-Task Duplicates[2m > [22m[2mTask-Workflow Execution Lookup Table[2m > [22m[2mbypasses duplicate rerun and serves cached evaluation when already run
+[22m[39m[WorkflowEngine] Task 'TASK-TEST-LOOKUP-101' already evaluated with workflow 'wf-1789049056364'. Serving from task_workflow_executions lookup table.
+
+[90mstdout[2m | src/services/__tests__/crossTaskAndLookup.test.ts[2m > [22m[2mTask Workflow Executions Lookup & Cross-Task Duplicates[2m > [22m[2mTask-Workflow Execution Lookup Table[2m > [22m[2mbypasses duplicate rerun and serves cached evaluation when already run
+[22m[39m[WorkflowEngine] Starting job job-1789910075162-nviqu from INVESTIGATION_PANEL with 2 records using parameters [amount, transaction_id].
+[WorkflowEngine] Deduplication: 0 cache hits, 0 in-flight joins, 2 fresh executions.
+
+[90mstderr[2m | src/services/__tests__/crossTaskAndLookup.test.ts[2m > [22m[2mTask Workflow Executions Lookup & Cross-Task Duplicates[2m > [22m[2mTask-Workflow Execution Lookup Table[2m > [22m[2mbypasses duplicate rerun and serves cached evaluation when already run
+[22m[39m[WorkflowEngine] Target database not configured for stage 'Validation Stage'. Using simulation.
+
+[90mstdout[2m | src/services/__tests__/crossTaskAndLookup.test.ts[2m > [22m[2mTask Workflow Executions Lookup & Cross-Task Duplicates[2m > [22m[2mTask-Workflow Execution Lookup Table[2m > [22m[2mbypasses duplicate rerun and serves cached evaluation when already run
+[22m[39m[WorkflowEngine] Stage 'Validation Stage' completed: 2 passed, 0 failed, 2 forwarded downstream.
+
+[90mstdout[2m | src/services/__tests__/crossTaskAndLookup.test.ts[2m > [22m[2mTask Workflow Executions Lookup & Cross-Task Duplicates[2m > [22m[2mTask-Workflow Execution Lookup Table[2m > [22m[2mbypasses duplicate rerun and serves cached evaluation when already run
+[22m[39m[MirrorManager] Cleaned up 2 rows from mirror_local_transactions for batch job-1789910075162-nviqu.
+
+[90mstdout[2m | src/services/__tests__/crossTaskAndLookup.test.ts[2m > [22m[2mTask Workflow Executions Lookup & Cross-Task Duplicates[2m > [22m[2mTask-Workflow Execution Lookup Table[2m > [22m[2mbypasses duplicate rerun and serves cached evaluation when already run
+[22m[39m[WorkflowEngine] Recorded execution and synced task_dataset_transactions for task 'TASK-TEST-LOOKUP-101', workflow 'wf-1789049056364'.
+
+ [32m✓[39m src/services/__tests__/ftpStagingHierarchyAndSchedule.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 142[2mms[22m[39m
+ [32m✓[39m src/services/__tests__/auditFindingsResolution.test.ts [2m([22m[2m11 tests[22m[2m)[22m[32m 130[2mms[22m[39m
+ [32m✓[39m src/services/__tests__/validationBoxParameterResolution.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 261[2mms[22m[39m
+ [32m✓[39m src/services/__tests__/zeroErrorReconciliationHardening.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 19[2mms[22m[39m
+ [32m✓[39m src/services/__tests__/ftpMirrorTableResolution.test.ts [2m([22m[2m10 tests[22m[2m)[22m[33m 439[2mms[22m[39m
+[90mstdout[2m | src/services/__tests__/notFoundInDbFailsRule.test.ts[2m > [22m[2mExternal Database Existence Check Governance[2m > [22m[2mstrictly flags records as FAIL when not found in external target database
+[22m[39m📡 Dispatching batch query (1 keys) to [LocalFTP]: SELECT * FROM transactions WHERE "terminal_id" = ? AND "refnum" = ? AND "reqamt" = ? AND "fe_utrnno" = ?...
+
+[90mstdout[2m | src/services/__tests__/notFoundInDbFailsRule.test.ts[2m > [22m[2mExternal Database Existence Check Governance[2m > [22m[2mstrictly flags records as FAIL when not found in external target database
+[22m[39m[WorkflowEngine] Stage 'auth_4' completed: 0 passed, 1 failed, 0 forwarded downstream.
+
+[90mstdout[2m | src/services/__tests__/notFoundInDbFailsRule.test.ts[2m > [22m[2mExternal Database Existence Check Governance[2m > [22m[2mstrictly flags records as FAIL when not found in external target database
+[22m[39m[WorkflowEngine] No records forwarded from stage 'auth_4'. Terminating pipeline early.
+
+[90mstdout[2m | src/services/__tests__/notFoundInDbFailsRule.test.ts[2m > [22m[2mExternal Database Existence Check Governance[2m > [22m[2mstrictly flags records as FAIL when not found in external target database
+[22m[39m[MirrorManager] Cleaned up 0 rows from mirror_localftp_transactions for batch job-1789910075090-fflp2.
+
+[90mstdout[2m | src/services/__tests__/notFoundInDbFailsRule.test.ts[2m > [22m[2mExternal Database Existence Check Governance[2m > [22m[2mstrictly flags records as FAIL when not found in external target database
+[22m[39m[WorkflowEngine] Recorded execution and synced task_dataset_transactions for task 'TASK-TEST-NOTFOUND-01', workflow 'wf-1789852589770'.
+
+ [32m✓[39m src/services/__tests__/notFoundInDbFailsRule.test.ts [2m([22m[2m1 test[22m[2m)[22m[33m 1010[2mms[22m[39m
+   [32m✓[39m External Database Existence Check Governance [2m(1)[22m
+     [33m[2m✓[22m[39m strictly flags records as FAIL when not found in external target database[33m 1009[2mms[22m[39m
+ [32m✓[39m src/services/__tests__/crossTaskAndLookup.test.ts [2m([22m[2m6 tests[22m[2m)[22m[33m 1093[2mms[22m[39m
+   [32m✓[39m Task Workflow Executions Lookup & Cross-Task Duplicates [2m(6)[22m
+     [32m✓[39m PostgreSQL Cross-Task Duplicate Detection & Resolution Stored Procedures [2m(3)[22m
+       [33m[2m✓[22m[39m detects cross-task duplicate transactions via sp_detect_and_flag_cross_task_duplicates[33m 825[2mms[22m[39m
+
+[31m⎯⎯⎯⎯⎯⎯⎯[39m[1m[41m Failed Tests 6 [49m[22m[31m⎯⎯⎯⎯⎯⎯⎯[39m
+
+[41m[1m FAIL [22m[49m src/services/__tests__/teamMemberPrivilegesAndResources.test.ts[2m > [22mTwo-Tier External System Privileges & Team Resources Governance[2m > [22m1. Tier 2: Manager Delegation & Strict Privilege Ceiling[2m > [22mrejects allocating a database that the team does NOT have in its envelope (Ceiling Violation)
+[31m[1mAssertionError[22m: expected 'Privilege Ceiling Exceeded for user u…' to contain 'Privilege ceiling violation'[39m
+
+Expected: [32m"Privilege [7mc[27meiling [7mviolation[27m"[39m
+Received: [31m"Privilege [7mC[27meiling [7mExceeded for user usr-mem-1789910073686: Database "unauthorized-db-999" has not been granted to team "Cards Settlement Unit" by Workspace Admin.[27m"[39m
+
+[36m [2m❯[22m src/services/__tests__/teamMemberPrivilegesAndResources.test.ts:[2m103:26[22m[39m
+    [90m101|[39m       const body = await res.json();
+    [90m102|[39m       expect(res.status).toBe(400);
+    [90m103|[39m       expect(body.error).toContain('Privilege ceiling violation');
+    [90m   |[39m                          [31m^[39m
+    [90m104|[39m       expect(body.error).toContain('unauthorized-db-999');
+    [90m105|[39m     });
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/6]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/services/__tests__/teamMemberPrivilegesAndResources.test.ts[2m > [22mTwo-Tier External System Privileges & Team Resources Governance[2m > [22m1. Tier 2: Manager Delegation & Strict Privilege Ceiling[2m > [22mrejects allocating a query statement type that the team does NOT have in its envelope (Ceiling Violation)
+[31m[1mAssertionError[22m: expected 'Privilege Ceiling Exceeded for user u…' to contain 'Privilege ceiling violation'[39m
+
+Expected: [32m"Privilege [7mc[27meiling [7mviolation[27m"[39m
+Received: [31m"Privilege [7mC[27meiling [7mExceeded for user usr-mem-1789910073686: Query privilege "DELETE" exceeds the operations permitted for team "Cards Settlement Unit" by Workspace Admin. Team permitted types: [SELECT, INSERT][27m"[39m
+
+[36m [2m❯[22m src/services/__tests__/teamMemberPrivilegesAndResources.test.ts:[2m125:26[22m[39m
+    [90m123|[39m       const body = await res.json();
+    [90m124|[39m       expect(res.status).toBe(400);
+    [90m125|[39m       expect(body.error).toContain('Privilege ceiling violation');
+    [90m   |[39m                          [31m^[39m
+    [90m126|[39m       expect(body.error).toContain('DELETE');
+    [90m127|[39m     });
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/6]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/services/__tests__/teamMemberPrivilegesAndResources.test.ts[2m > [22mTwo-Tier External System Privileges & Team Resources Governance[2m > [22m2. Team-Specific Database Creation & Cross-Team Isolation[2m > [22mretrieves team-specific databases via dedicated GET /api/db/team-databases
+[31m[1mAssertionError[22m: expected false to be true // Object.is equality[39m
+
+[32m- Expected[39m
+[31m+ Received[39m
+
+[32m- true[39m
+[31m+ false[39m
+
+[36m [2m❯[22m src/services/__tests__/teamMemberPrivilegesAndResources.test.ts:[2m161:63[22m[39m
+    [90m159|[39m       expect(res.status).toBe(200);
+    [90m160|[39m       expect(Array.isArray(body)).toBe(true);
+    [90m161|[39m       expect(body.some((d: any) => d.id === createdTeamDbId)).toBe(tru…
+    [90m   |[39m                                                               [31m^[39m
+    [90m162|[39m     });
+    [90m163|[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/6]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/services/__tests__/teamMemberPrivilegesAndResources.test.ts[2m > [22mTwo-Tier External System Privileges & Team Resources Governance[2m > [22m2. Team-Specific Database Creation & Cross-Team Isolation[2m > [22mblocks users from other teams from executing queries against team-scoped databases
+[31m[1mAssertionError[22m: expected 'Access Denied: Your permanent team "D…' to contain 'Access Denied: Team-specific database'[39m
+
+Expected: [32m"Access Denied: [7mTeam-specific database[27m"[39m
+Received: [31m"Access Denied: [7mYour permanent team "Disputes Unit" is not authorized to access database "Private Reconciliation PostgreSQL". Permitted databases: [db-1789318844365][27m"[39m
+
+[36m [2m❯[22m src/services/__tests__/teamMemberPrivilegesAndResources.test.ts:[2m180:26[22m[39m
+    [90m178|[39m       const body = await res.json();
+    [90m179|[39m       expect(res.status).toBe(403);
+    [90m180|[39m       expect(body.error).toContain('Access Denied: Team-specific datab…
+    [90m   |[39m                          [31m^[39m
+    [90m181|[39m       expect(body.error).toContain('is private to its designated team'…
+    [90m182|[39m     });
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/6]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/services/__tests__/teamMemberPrivilegesAndResources.test.ts[2m > [22mTwo-Tier External System Privileges & Team Resources Governance[2m > [22m3. Team Manager Promotion Workflow & Admin Monitor[2m > [22mallows Manager to submit promotion request for system-wide promotion
+[31m[1mAssertionError[22m: expected 400 to be 200 // Object.is equality[39m
+
+[32m- Expected[39m
+[31m+ Received[39m
+
+[32m- 200[39m
+[31m+ 400[39m
+
+[36m [2m❯[22m src/services/__tests__/teamMemberPrivilegesAndResources.test.ts:[2m197:26[22m[39m
+    [90m195|[39m
+    [90m196|[39m       const body = await res.json();
+    [90m197|[39m       expect(res.status).toBe(200);
+    [90m   |[39m                          [31m^[39m
+    [90m198|[39m       expect(body.promotionStatus).toBe('PENDING_ADMIN_APPROVAL');
+    [90m199|[39m       expect(body.promotionNotes).toContain('quarterly dispute reconci…
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/6]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/services/__tests__/teamMemberPrivilegesAndResources.test.ts[2m > [22mTwo-Tier External System Privileges & Team Resources Governance[2m > [22m3. Team Manager Promotion Workflow & Admin Monitor[2m > [22msurfaces pending team resources on Admin monitoring endpoint GET /api/db/admin/team-resources
+[31m[1mAssertionError[22m: expected undefined to be defined[39m
+[36m [2m❯[22m src/services/__tests__/teamMemberPrivilegesAndResources.test.ts:[2m208:25[22m[39m
+    [90m206|[39m       expect(Array.isArray(body)).toBe(true);
+    [90m207|[39m       const monitored = body.find((d: any) => d.id === createdTeamDbId…
+    [90m208|[39m       expect(monitored).toBeDefined();
+    [90m   |[39m                         [31m^[39m
+    [90m209|[39m       expect(monitored.promotionStatus).toBe('PENDING_ADMIN_APPROVAL');
+    [90m210|[39m       expect(monitored.teamName).toBe('Cards Settlement Unit');
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/6]⎯[22m[39m
+
+
+[2m Test Files [22m [1m[31m1 failed[39m[22m[2m | [22m[1m[32m15 passed[39m[22m[90m (16)[39m
+[2m      Tests [22m [1m[31m6 failed[39m[22m[2m | [22m[1m[32m98 passed[39m[22m[90m (104)[39m
+[2m   Start at [22m 16:14:33
+[2m   Duration [22m 2.73s[2m (import 43%, tests 31%, transform 25%, worker 2%)[22m
+
+npm error Lifecycle script `test` failed with error:
+npm error code 1
+npm error path C:\Users\hp\Downloads\opration-workflow-mangement1\backend
+npm error workspace operational-workflow-manager-backend@1.0.0
+npm error location C:\Users\hp\Downloads\opration-workflow-mangement1\backend
+npm error command failed
+npm error command C:\WINDOWS\system32\cmd.exe /d /s /c vitest run

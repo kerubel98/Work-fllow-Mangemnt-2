@@ -154,13 +154,14 @@ export function resolveGroupedRows(groupedRows, policy = 'COMPOSITE_BUNDLE', gro
         if (!rows || rows.length === 0)
             continue;
         const hasDuplicates = rows.length > 1;
+        const safeRawRows = rows.length > 5 ? rows.slice(0, 5) : rows;
         if (policy === 'STRICT_SINGLE') {
             resolved[key] = hasDuplicates
                 ? {
                     ...rows[0],
                     _discrepancyFlag: 'DUPLICATE_EXTERNAL_MATCH',
                     _matchCount: rows.length,
-                    _rawRows: rows
+                    _rawRows: safeRawRows
                 }
                 : rows[0];
         }
@@ -175,7 +176,7 @@ export function resolveGroupedRows(groupedRows, policy = 'COMPOSITE_BUNDLE', gro
                     ...sorted[0],
                     _discrepancyFlag: 'DUPLICATE_EXTERNAL_MATCH',
                     _matchCount: rows.length,
-                    _rawRows: rows
+                    _rawRows: safeRawRows
                 }
                 : sorted[0];
         }
@@ -190,7 +191,7 @@ export function resolveGroupedRows(groupedRows, policy = 'COMPOSITE_BUNDLE', gro
                     ...sorted[0],
                     _discrepancyFlag: 'DUPLICATE_EXTERNAL_MATCH',
                     _matchCount: rows.length,
-                    _rawRows: rows
+                    _rawRows: safeRawRows
                 }
                 : sorted[0];
         }
@@ -210,13 +211,13 @@ export function resolveGroupedRows(groupedRows, policy = 'COMPOSITE_BUNDLE', gro
                     baseRow[col] = total;
             }
             baseRow._rowCount = rows.length;
-            baseRow._rawRows = rows;
+            baseRow._rawRows = safeRawRows;
             resolved[key] = baseRow;
         }
         else {
             // COMPOSITE_BUNDLE: classify by event phase and leg indicator
             const envelope = {
-                _rawRows: rows,
+                _rawRows: safeRawRows,
                 _rowCount: rows.length,
                 ORIGINAL: {},
                 REVERSAL: {},
@@ -251,8 +252,8 @@ export function resolveGroupedRows(groupedRows, policy = 'COMPOSITE_BUNDLE', gro
                     envelope[phase][leg] = r;
                 }
             }
-            // Merge first row attributes into top level for convenient fallback without circular reference
-            const groupDataSnapshot = { ...envelope };
+            // Merge first row attributes into top level for convenient fallback without circular reference or nested duplication
+            const { _rawRows: _discard, ...groupDataSnapshot } = envelope;
             Object.assign(envelope, rows[0], {
                 _groupComposite: groupDataSnapshot,
                 _groupedData: groupDataSnapshot

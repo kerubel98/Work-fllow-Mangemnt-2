@@ -29,11 +29,29 @@ export function evaluateAttachedColumnConfigurations(
     return { status: 'PASS', badgeText: 'Passed', message: 'All checks passed' };
   }
 
-  const evalTarget = record._target_record ?? record.canonical_data?._target_record ?? record._mirrorData ?? record._externalData ?? record.canonical_data ?? record;
   const activeConfigs = configurations.filter(c => c && c.isActive !== false);
 
   for (const cfg of activeConfigs) {
     const cols = Array.isArray(cfg.columns) ? cfg.columns : [];
+    const isExternalConfig = Boolean(cfg.tableName && cfg.tableName.toLowerCase() !== 'input' && cfg.tableName.toLowerCase() !== 'transactions');
+    const hasExternalData = Boolean(record._target_record || record.canonical_data?._target_record || record._mirrorData || record._externalData);
+    const recordHasConfigCols = cols.length > 0 && cols.some(col => col.columnName in record || (record.canonical_data && col.columnName in record.canonical_data));
+
+    // If configuration targets external table and neither external record lookup was performed nor columns exist on the evaluated record
+    if (isExternalConfig && !hasExternalData && !recordHasConfigCols) {
+      return {
+        status: 'FAIL',
+        badgeText: 'Ext Data Missing',
+        message: cfg.violationMessage || `Cannot evaluate column rules for external table [${cfg.tableName}]: target record was not found or not yet retrieved.`,
+        detail: `Attached rule [${cfg.name}] applies to external table '${cfg.tableName}'.`,
+        action: cfg.violationAction || 'FLAG',
+        severity: cfg.severity || 'CRITICAL'
+      };
+    }
+
+    const evalTarget = hasExternalData
+      ? (record._target_record ?? record.canonical_data?._target_record ?? record._mirrorData ?? record._externalData)
+      : (record.canonical_data ?? record);
 
     switch (cfg.ruleType) {
       case 'COMPLETENESS_CHECK': {
@@ -44,7 +62,9 @@ export function evaluateAttachedColumnConfigurations(
               status: 'FAIL',
               badgeText: 'Incomplete Col',
               message: cfg.violationMessage || `Completeness Check failed on [${cfg.name}]: column '${col.columnName}' is missing or empty.`,
-              detail: `Table column completeness violation: ${col.columnName}`
+              detail: `Table column completeness violation: ${col.columnName}`,
+              action: cfg.violationAction || 'FLAG',
+              severity: cfg.severity || 'CRITICAL'
             };
           }
         }
@@ -62,7 +82,9 @@ export function evaluateAttachedColumnConfigurations(
                   status: 'FAIL',
                   badgeText: 'Below Min',
                   message: cfg.violationMessage || `Value Range Check failed on [${cfg.name}]: '${col.columnName}' (${num}) is below minimum (${col.minValue}).`,
-                  detail: `Range violation: ${col.columnName} < ${col.minValue}`
+                  detail: `Range violation: ${col.columnName} < ${col.minValue}`,
+                  action: cfg.violationAction || 'FLAG',
+                  severity: cfg.severity || 'CRITICAL'
                 };
               }
               if (col.maxValue !== undefined && num > Number(col.maxValue)) {
@@ -70,7 +92,9 @@ export function evaluateAttachedColumnConfigurations(
                   status: 'FAIL',
                   badgeText: 'Above Max',
                   message: cfg.violationMessage || `Value Range Check failed on [${cfg.name}]: '${col.columnName}' (${num}) exceeds maximum (${col.maxValue}).`,
-                  detail: `Range violation: ${col.columnName} > ${col.maxValue}`
+                  detail: `Range violation: ${col.columnName} > ${col.maxValue}`,
+                  action: cfg.violationAction || 'FLAG',
+                  severity: cfg.severity || 'CRITICAL'
                 };
               }
             }
@@ -90,14 +114,18 @@ export function evaluateAttachedColumnConfigurations(
                   status: 'FAIL',
                   badgeText: 'Pattern Error',
                   message: cfg.violationMessage || `Pattern Check failed on [${cfg.name}]: '${col.columnName}' (${val}) does not match pattern '${col.pattern}'.`,
-                  detail: `Pattern mismatch on ${col.columnName}`
+                  detail: `Pattern mismatch on ${col.columnName}`,
+                  action: cfg.violationAction || 'FLAG',
+                  severity: cfg.severity || 'CRITICAL'
                 };
               }
             } catch (err: any) {
               return {
                 status: 'ERROR',
                 badgeText: 'Regex Error',
-                message: `Invalid regex pattern in [${cfg.name}]: ${err.message}`
+                message: `Invalid regex pattern in [${cfg.name}]: ${err.message}`,
+                action: cfg.violationAction || 'STOP',
+                severity: cfg.severity || 'CRITICAL'
               };
             }
           }
@@ -117,7 +145,9 @@ export function evaluateAttachedColumnConfigurations(
                   status: 'FAIL',
                   badgeText: vl.label || 'Value Error',
                   message: cfg.violationMessage || `Value Label Check [${cfg.name}] flagged: '${vl.columnName}' has disallowed value '${val}' (${vl.label || vl.description || 'Error category'}).`,
-                  detail: `Disallowed constant: ${vl.constantValue}`
+                  detail: `Disallowed constant: ${vl.constantValue}`,
+                  action: cfg.violationAction || 'FLAG',
+                  severity: cfg.severity || 'CRITICAL'
                 };
               }
             }
@@ -128,7 +158,6 @@ export function evaluateAttachedColumnConfigurations(
 
       case 'DUPLICATE_CHECK':
       case 'UNIQUE_CONSTRAINT': {
-        // In individual row evaluation, check that all key columns required for uniqueness are present
         for (const col of cols) {
           const val = resolveRecordField(evalTarget, col.columnName);
           if (val === undefined || val === null || String(val).trim() === '') {
@@ -136,8 +165,136 @@ export function evaluateAttachedColumnConfigurations(
               status: 'FAIL',
               badgeText: 'Missing Key Col',
               message: cfg.violationMessage || `Duplicate Check prerequisite failed on [${cfg.name}]: key column '${col.columnName}' is null or empty.`,
-              detail: `Uniqueness key missing: ${col.columnName}`
+              detail: `Uniqueness key missing: ${col.columnName}`,
+              action: cfg.violationAction || 'FLAG',
+              severity: cfg.severity || 'CRITICAL'
             };
+          }
+        }
+        if (Array.isArray(record._batchRecords) && record._batchRecords.length > 1) {
+          const thisKey = cols.map(c => String(resolveRecordField(evalTarget, c.columnName) ?? '')).join('::');
+          const dupCount = record._batchRecords.filter((other: any) => {
+            const otherTarget = other._target_record ?? other.canonical_data?._target_record ?? other._mirrorData ?? other.canonical_data ?? other;
+            const otherKey = cols.map(c => String(resolveRecordField(otherTarget, c.columnName) ?? '')).join('::');
+            return otherKey === thisKey;
+          }).length;
+          if (dupCount > 1) {
+            return {
+              status: 'FAIL',
+              badgeText: 'Duplicate Found',
+              message: cfg.violationMessage || `Duplicate Check failed on [${cfg.name}]: ${dupCount} records share key [${thisKey}].`,
+              detail: `Cross-record duplicate violation (${dupCount} occurrences)`,
+              action: cfg.violationAction || 'FLAG',
+              severity: cfg.severity || 'CRITICAL'
+            };
+          }
+        }
+        if (record._matchCount && record._matchCount > 1) {
+          return {
+            status: 'FAIL',
+            badgeText: 'Duplicate Match',
+            message: cfg.violationMessage || `Uniqueness constraint violated: ${record._matchCount} matches found in external table.`,
+            detail: `External duplicate match count: ${record._matchCount}`,
+            action: cfg.violationAction || 'FLAG',
+            severity: cfg.severity || 'CRITICAL'
+          };
+        }
+        break;
+      }
+
+      case 'GROUPING_CHECK': {
+        const groupCols = Array.isArray(cfg.groupByColumns) && cfg.groupByColumns.length > 0
+          ? cfg.groupByColumns
+          : cols.map(c => c.columnName);
+        for (const colName of groupCols) {
+          const val = resolveRecordField(evalTarget, colName);
+          if (val === undefined || val === null || String(val).trim() === '') {
+            return {
+              status: 'FAIL',
+              badgeText: 'Missing Group Key',
+              message: cfg.violationMessage || `Grouping Check failed on [${cfg.name}]: grouping key column '${colName}' is missing or empty.`,
+              detail: `Group key column missing: ${colName}`,
+              action: cfg.violationAction || 'FLAG',
+              severity: cfg.severity || 'WARNING'
+            };
+          }
+        }
+        break;
+      }
+
+      case 'MULTI_ROW_SEMANTIC_CHECK': {
+        if (Array.isArray(cfg.crossRowRules) && cfg.crossRowRules.length > 0) {
+          for (const crr of cfg.crossRowRules) {
+            if (crr.valueColumn) {
+              const valA = resolveRecordField(evalTarget, crr.valueColumn);
+              if (valA === undefined || valA === null || String(valA).trim() === '') {
+                return {
+                  status: 'FAIL',
+                  badgeText: 'Cross-Row Mismatch',
+                  message: cfg.violationMessage || `Multi-row semantic check failed on [${cfg.name}]: value column '${crr.valueColumn}' is missing.`,
+                  detail: `Cross-row rule violation on ${crr.valueColumn}`,
+                  action: cfg.violationAction || 'FLAG',
+                  severity: cfg.severity || 'WARNING'
+                };
+              }
+            }
+          }
+        }
+        break;
+      }
+
+      case 'TYPE_RELATION_CHECK': {
+        if (Array.isArray(cfg.typeGroups) && cfg.typeGroups.length > 0) {
+          const matchesAnyGroup = cfg.typeGroups.some(tg => {
+            if (!Array.isArray(tg.conditions) || tg.conditions.length === 0) return true;
+            return tg.conditions.every(c => {
+              const val = resolveRecordField(evalTarget, c.columnName);
+              if (val === undefined || val === null) return false;
+              const strVal = String(val).trim();
+              if (c.operator === '=') return strVal.toLowerCase() === c.value.trim().toLowerCase();
+              if (c.operator === '!=') return strVal.toLowerCase() !== c.value.trim().toLowerCase();
+              if (c.operator === 'IN') {
+                const targets = c.value.split(',').map(s => s.trim().toLowerCase());
+                return targets.includes(strVal.toLowerCase());
+              }
+              if (c.operator === 'NOT_IN') {
+                const targets = c.value.split(',').map(s => s.trim().toLowerCase());
+                return !targets.includes(strVal.toLowerCase());
+              }
+              if (c.operator === 'LIKE') return strVal.toLowerCase().includes(c.value.trim().toLowerCase());
+              if (c.operator === 'STARTS_WITH') return strVal.toLowerCase().startsWith(c.value.trim().toLowerCase());
+              return false;
+            });
+          });
+
+          if (!matchesAnyGroup) {
+            return {
+              status: 'FAIL',
+              badgeText: 'Type Group Error',
+              message: cfg.violationMessage || `Type Relation Check failed on [${cfg.name}]: record does not match any configured type group.`,
+              detail: `Type group classification failed for record`,
+              action: cfg.violationAction || 'FLAG',
+              severity: cfg.severity || 'WARNING'
+            };
+          }
+        }
+        break;
+      }
+
+      case 'CUSTOM_LOGIC': {
+        if (cols.length > 0) {
+          for (const col of cols) {
+            const val = resolveRecordField(evalTarget, col.columnName);
+            if (val === undefined || val === null || String(val).trim() === '') {
+              return {
+                status: 'FAIL',
+                badgeText: 'Custom Logic Fail',
+                message: cfg.violationMessage || `Custom Logic check failed on [${cfg.name}]: column '${col.columnName}' check failed.`,
+                detail: `Custom logic verification failed on ${col.columnName}`,
+                action: cfg.violationAction || 'FLAG',
+                severity: cfg.severity || 'WARNING'
+              };
+            }
           }
         }
         break;
@@ -293,6 +450,8 @@ export interface ConditionEvaluationResult {
   detail?: string;
   dbValue?: any;
   errorDetail?: string;
+  action?: PipelineAction;
+  severity?: string;
 }
 
 /**
@@ -354,42 +513,78 @@ export function evaluateRuleCondition(
           || (record.canonical_data && record.canonical_data._validation_status && record.canonical_data._validation_status !== 'PENDING');
         const hasExplicitTarget = isRowEvaluated && (('_target_record' in record) || (record.canonical_data && '_target_record' in record.canonical_data) || ('_mirrorData' in record) || ('_externalData' in record));
 
-        // If target database was queried and returned no matching record:
-        if (hasExplicitTarget && !targetRec) {
+          const isTargetDbConfigured = Boolean(
+            stage?.targetDbId ||
+            rule.targetDbId ||
+            stage?.targetDataSource ||
+            rule.targetTable
+          );
+
+          // If target database was queried and returned no matching record:
+          if (hasExplicitTarget && !targetRec) {
+            return {
+              status: 'FAIL',
+              badgeText: '404 Missing',
+              message: rule.failureMessage || `Record not found in ${stage?.name || rule.targetTable || 'data source'}`,
+              detail: `Target record lookup returned no matching record.`
+            };
+          }
+
+          if (targetRec) {
+            return {
+              status: 'PASS',
+              badgeText: 'Found (200)',
+              message: rule.successMessage || `Record verified present in ${stage?.name || rule.targetTable || 'data source'}`,
+              dbValue: recordVal
+            };
+          }
+
+          // If target database connection tripped circuit breaker or reported offline
+          if (record._isTargetDbOffline || (stage?.targetDbId && record._dbOfflineIds?.includes(stage.targetDbId))) {
+            return {
+              status: 'PAUSED_DB_OFFLINE',
+              badgeText: 'DB Offline',
+              message: `Target database [${stage?.targetDbId || rule.targetDbId}] is offline (circuit breaker tripped). Execution paused.`,
+              detail: 'External database socket connection failed or circuit breaker tripped.'
+            };
+          }
+
+          // If no target database or table is configured on stage or rule:
+          if (!isTargetDbConfigured) {
+            return {
+              status: 'ERROR',
+              badgeText: 'No DB Attached',
+              message: `Target database or table not configured for stage "${stage?.name || 'Validation Stage'}". Cannot verify record existence.`,
+              detail: 'Validation step has checkType EXISTENCE_CHECK but no target database or table is connected.'
+            };
+          }
+
+          // In simulated/mock test scenarios, ORD-FAIL-TEST or missing values indicate absence
+          const isSimulatedMissing = String(recordVal) === 'ORD-FAIL-TEST' || record.simulatedMissing === true;
+          const allParamsPresent = configuredStepParams.length > 0
+            ? configuredStepParams.every(p => {
+                const v = resolveRecordField(record, p);
+                return v !== undefined && v !== null && String(v).trim() !== '';
+              })
+            : (recordVal !== undefined && recordVal !== null && String(recordVal).trim() !== '');
+
+          if (!allParamsPresent || isSimulatedMissing) {
+            const paramSummary = configuredStepParams.map(p => `"${p}": "${resolveRecordField(record, p) ?? 'null'}"`).join(', ');
+            return {
+              status: 'FAIL',
+              badgeText: '404 Missing',
+              message: rule.failureMessage || `Record not found in ${stage?.name || rule.targetTable || 'data source'}`,
+              detail: `Lookup parameters [${paramSummary}] returned no matching records.`
+            };
+          }
+
           return {
-            status: 'FAIL',
-            badgeText: '404 Missing',
-            message: rule.failureMessage || `Record not found in ${stage?.name || rule.targetTable || 'data source'}`,
-            detail: `Target record lookup returned no matching record.`
+            status: 'PASS',
+            badgeText: 'Found (200)',
+            message: rule.successMessage || `Record verified present in ${stage?.name || rule.targetTable || 'data source'}`,
+            dbValue: recordVal
           };
         }
-
-        // Record existence check: verify ALL configured parameters are present
-        const allParamsPresent = configuredStepParams.length > 0
-          ? configuredStepParams.every(p => {
-              const v = resolveRecordField(record, p);
-              return v !== undefined && v !== null && String(v).trim() !== '';
-            })
-          : (recordVal !== undefined && recordVal !== null && String(recordVal).trim() !== '');
-
-        // In simulated/mock test scenarios, ORD-FAIL-TEST or missing values indicate absence
-        const isSimulatedMissing = String(recordVal) === 'ORD-FAIL-TEST' || record.simulatedMissing === true;
-        if (!allParamsPresent || isSimulatedMissing) {
-          const paramSummary = configuredStepParams.map(p => `"${p}": "${resolveRecordField(record, p) ?? 'null'}"`).join(', ');
-          return {
-            status: 'FAIL',
-            badgeText: '404 Missing',
-            message: rule.failureMessage || `Record not found in ${stage?.name || rule.targetTable || 'data source'}`,
-            detail: `Lookup parameters [${paramSummary}] returned no matching records.`
-          };
-        }
-        return {
-          status: 'PASS',
-          badgeText: 'Found (200)',
-          message: rule.successMessage || `Record verified present in ${stage?.name || rule.targetTable || 'data source'}`,
-          dbValue: recordVal
-        };
-      }
 
       case 'FIELD_COMPARATOR': {
         const comp = String(rule.comparator || rule.operator || '=').trim().toUpperCase();
@@ -486,6 +681,15 @@ export function evaluateRuleCondition(
                 message: `Invalid regex pattern '${expected}'`,
                 errorDetail: e?.message || 'Regex compilation error'
               };
+            }
+            break;
+          }
+          case 'NUMERIC_TOLERANCE': {
+            const margin = Number(rule.toleranceMargin ?? (rule as any).tolerance ?? 0.00);
+            if (!isNumeric) {
+              isMatch = false;
+            } else {
+              isMatch = Math.abs(actualNum - expectedNum) <= margin;
             }
             break;
           }
@@ -621,14 +825,33 @@ export function evaluateRuleCondition(
           };
         }
 
-        const fieldKey = rule.sourceField || 'amount';
+        const fieldKey = rule.sourceField;
+        if (!fieldKey) {
+          return {
+            status: 'ERROR',
+            badgeText: 'Missing Source',
+            message: 'AMOUNT_MATCH rule requires sourceField to be configured.',
+            errorDetail: 'sourceField is missing on rule definition.'
+          };
+        }
+
+        const hasTarget = rule.targetField || (rule.compareValue !== undefined && String(rule.compareValue).trim() !== '') || (rule.expectedValue !== undefined && String(rule.expectedValue).trim() !== '');
+        if (!hasTarget) {
+          return {
+            status: 'ERROR',
+            badgeText: 'Config Error',
+            message: 'AMOUNT_MATCH rule requires targetField, compareValue, or expectedValue to be configured.',
+            errorDetail: 'No comparison target specified for AMOUNT_MATCH check.'
+          };
+        }
+
         const fileAmount = Number(resolveRecordField(record, fieldKey) ?? 0);
         const targetValRaw = rule.targetField ? resolveRecordField(record, rule.targetField) : undefined;
         const targetVal = targetValRaw !== undefined
           ? Number(targetValRaw)
           : (rule.compareValue !== undefined && String(rule.compareValue).trim() !== ''
               ? Number(rule.compareValue)
-              : (rule.expectedValue !== undefined && String(rule.expectedValue).trim() !== '' ? Number(rule.expectedValue) : fileAmount));
+              : Number(rule.expectedValue));
         const margin = Number(rule.toleranceMargin ?? rule.tolerance ?? 0.00);
         const diff = Math.abs(fileAmount - targetVal);
         if (diff > margin) {
@@ -648,7 +871,15 @@ export function evaluateRuleCondition(
       }
 
       case 'STATUS_MATCH': {
-        const fieldKey = rule.sourceField || rule.targetField || 'status';
+        const fieldKey = rule.sourceField || rule.targetField;
+        if (!fieldKey) {
+          return {
+            status: 'ERROR',
+            badgeText: 'Missing Source',
+            message: 'STATUS_MATCH rule requires sourceField or targetField to be configured.',
+            errorDetail: 'Neither sourceField nor targetField was provided.'
+          };
+        }
         const rawStatus = resolveRecordField(record, fieldKey);
         const sourceStatus = rawStatus !== undefined && rawStatus !== null ? String(rawStatus).toUpperCase() : '';
         const expectedStatus = String(rule.compareValue ?? rule.expectedValue ?? '').toUpperCase();
@@ -669,7 +900,15 @@ export function evaluateRuleCondition(
       }
 
       case 'ISO_DECLINE_CODE': {
-        const fieldKey = rule.sourceField || 'response_code';
+        const fieldKey = rule.sourceField;
+        if (!fieldKey) {
+          return {
+            status: 'ERROR',
+            badgeText: 'Missing Source',
+            message: 'ISO_DECLINE_CODE rule requires sourceField to be configured.',
+            errorDetail: 'sourceField is missing on rule definition.'
+          };
+        }
         const code = String(resolveRecordField(record, fieldKey) ?? '').trim();
         const expectedCode = (rule.compareValue ?? rule.expectedValue) ? String(rule.compareValue ?? rule.expectedValue).trim() : '00';
         const dict = rule.dualSourceCondition?.lookupDictionary || DEFAULT_RESPONSE_CODE_LABELS;
@@ -791,12 +1030,13 @@ export function evaluateRuleCondition(
 
       case 'CROSS_DB_LOOKUP': {
         // Cross-DB lookups check consistency between primary and secondary attributes
-        const secVal = record.secondary_db_value ?? record[sourceKey];
+        const secVal = record.secondary_db_value ?? (sourceKey ? record[sourceKey] : undefined);
         if (secVal === undefined || secVal === null || secVal === 'MISSING') {
           return {
             status: 'FAIL',
             badgeText: 'Secondary Missing',
-            message: rule.failureMessage || 'Cross-DB lookup failed: record missing in secondary database node'
+            message: rule.failureMessage || 'Cross-DB lookup failed: record missing in secondary database node',
+            detail: 'Secondary database node returned no matching record.'
           };
         }
         return {
@@ -809,9 +1049,10 @@ export function evaluateRuleCondition(
 
         default: {
           return {
-            status: 'PASS',
-            badgeText: 'Passed',
-            message: `Check passed criteria for ${checkType}`
+            status: 'ERROR',
+            badgeText: 'Unknown Rule',
+            message: `Unsupported or unknown rule checkType: "${checkType}". Please verify rule configuration.`,
+            errorDetail: `checkType "${checkType}" has no evaluator implemented.`
           };
         }
       }
@@ -857,6 +1098,7 @@ export function resolveRuleAction(
     case 'FAIL':
       return rule.onFailAction || 'STOP';
     case 'ERROR':
+    case 'PAUSED_DB_OFFLINE':
       return rule.onErrorAction || 'STOP';
     default:
       return 'STOP';
@@ -971,8 +1213,8 @@ export function executeWorkflowForTransaction(
           description: 'Default validation stage',
           order: 1,
           enabled: true,
-          targetDbId: workflow.targetDbId || 'db-1',
-          targetDataSource: workflow.targetTable || 'transactions'
+          targetDbId: workflow.targetDbId || '',
+          targetDataSource: workflow.targetTable || ''
         } as ProcessingStage
       ];
 
@@ -1012,7 +1254,7 @@ export function executeWorkflowForTransaction(
           ruleId: rule.id,
           ruleName: rule.name,
           checkType: rule.checkType,
-          validationResult: 'FAIL', // default skip representation
+          validationResult: 'SKIPPED',
           pipelineAction: 'CONTINUE',
           executedAt: new Date().toISOString(),
           message: depCheck.skipReason || 'Step skipped due to dependency criteria.',
@@ -1021,9 +1263,28 @@ export function executeWorkflowForTransaction(
         continue;
       }
 
+      // Diagnostic Taint Tracking & Downstream Math Isolation (Principle 12)
+      if (currentWorkingRecord._isDiagnosticOnly && 
+          (rule.checkType === 'AMOUNT_MATCH' || rule.checkType === 'NUMERIC_THRESHOLD' || rule.checkType === 'DUAL_SOURCE_COMPARISON')) {
+        auditTrail.push({
+          transactionId,
+          stageId: stage.id,
+          stageName: stage.name,
+          ruleId: rule.id,
+          ruleName: rule.name,
+          checkType: rule.checkType,
+          validationResult: 'PASS',
+          pipelineAction: 'CONTINUE',
+          executedAt: new Date().toISOString(),
+          message: `[Bypassed: Diagnostic Taint] Math check bypassed due to upstream diagnostic taint (${currentWorkingRecord._diagnosticTaintReason})`,
+          durationMs: 0
+        });
+        continue;
+      }
+
       // Evaluate condition against active working record
       const evalResult = evaluateRuleCondition(currentWorkingRecord, rule, stage);
-      const action = resolveRuleAction(evalResult.status, rule);
+      const action = evalResult.action || resolveRuleAction(evalResult.status, rule);
       const durationMs = Date.now() - startTime;
 
       if (evalResult.status === 'ERROR') {
@@ -1076,8 +1337,25 @@ export function executeWorkflowForTransaction(
         isHalted = true;
         haltReason = `Pipeline STOPPED by rule '${rule.name}' in '${stage.name}' (Result: ${evalResult.status})`;
         break;
+      } else if (action === 'FLAG') {
+        currentWorkingRecord._isFlagged = true;
+        currentWorkingRecord._discrepancyFlag = evalResult.message || `FLAGGED_BY_${rule.name}`;
+        if (rule.onFailAction === 'STOP' && evalResult.status !== 'PASS') {
+          isHalted = true;
+          haltReason = `Pipeline FLAGGED and STOPPED by rule '${rule.name}' in '${stage.name}'`;
+          break;
+        }
+      } else if (action === 'REPORT') {
+        currentWorkingRecord._isDiagnosticOnly = true;
+        currentWorkingRecord._diagnosticTaintReason = `UPSTREAM_FAILURE_DIAGNOSTIC_ONLY: ${evalResult.message || rule.name}`;
       }
-      // If action is CONTINUE, proceed to next rule / stage
+
+      if (evalResult.status === 'PAUSED_DB_OFFLINE') {
+        isHalted = true;
+        haltReason = `Pipeline PAUSED: Target database offline in stage '${stage.name}'`;
+        break;
+      }
+      // If action is CONTINUE (or non-halting REPORT/FLAG), proceed to next rule / stage
     }
   }
 
@@ -1096,13 +1374,10 @@ export function executeWorkflowForTransaction(
 
   // Derive contextual Status Flag Text & Color for the investigation conclusion
   const recordDate = (() => {
-    const candidateKeys = [
-      'settlement_date', 'settled_at', 'settled_date', 'clearing_date',
-      'auth_time', 'created_at', 'transaction_date', 'timestamp', 'date'
-    ];
-    for (const k of candidateKeys) {
-      if (transactionRecord[k]) {
-        const str = String(transactionRecord[k]).trim();
+    // Look for any date/timestamp-like property on the record dynamically
+    for (const [k, v] of Object.entries(transactionRecord)) {
+      if (v && /date|time|timestamp/i.test(k) && !k.startsWith('_')) {
+        const str = String(v).trim();
         if (str.length >= 10) return str.substring(0, 10);
         return str;
       }
@@ -1182,11 +1457,8 @@ export function executeWorkflowForTransaction(
     statusFlagColor = 'blue';
   }
 
-  // Suggest remedy SQL if applicable
+  // Suggest remedy SQL if applicable (must be configured via Maker template, never hardcoded raw SQL)
   let remedySql: string | undefined = undefined;
-  if (investigationStatus === 'FLAGGED' && transactionRecord.card_number) {
-    remedySql = `UPDATE transactions\nSET status = 'REVERSED'\nWHERE card_number = '${transactionRecord.card_number}';`;
-  }
 
   return {
     transactionId,

@@ -98,7 +98,7 @@ organizationRouter.post('/:id/leave', async (req: Request, res: Response) => {
     const org = await repo.getOrganizationById(id);
     if (!org) return res.status(404).json({ error: 'Organization not found' });
 
-    org.memberIds = org.memberIds.filter((m) => m !== userId);
+    org.memberIds = org.memberIds.filter((m: string) => m !== userId);
     await repo.updateOrganization(id, { memberIds: org.memberIds });
     return res.json({ message: 'Left organization successfully', organization: org });
   } catch (err: any) {

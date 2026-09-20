@@ -25,21 +25,42 @@ export function aggregateParentIssueStatus(transactions) {
     let investigatingCount = 0;
     let pendingCount = 0;
     for (const t of transactions) {
-        const status = String(t.investigationStatus || '').toUpperCase();
-        if (status === 'VERIFIED_MATCH' || status === 'RECONCILED') {
+        const rawVal = (t.investigationStatus ||
+            t.investigation_status ||
+            t._validation_status ||
+            t.validationStatus ||
+            t.finalResult ||
+            t.final_result ||
+            t.status ||
+            '');
+        const status = String(rawVal).trim().toUpperCase();
+        if (status === 'VERIFIED_MATCH' ||
+            status === 'RECONCILED' ||
+            status === 'PASS' ||
+            status === 'PASSED' ||
+            status === 'SUCCESS') {
             reconciledCount++;
         }
         else if (status === 'CLOSED') {
             closedCount++;
         }
-        else if (status === 'FLAGGED_DISCREPANCY' || status === 'FLAGGED') {
+        else if (status === 'FLAGGED_DISCREPANCY' ||
+            status === 'FLAGGED' ||
+            status === 'FAIL' ||
+            status === 'FAILED' ||
+            status === 'DISCREPANCY' ||
+            status === 'ERROR' ||
+            status === 'NOT_FOUND_IN_TARGET_DB' ||
+            status.includes('FAIL')) {
             flaggedCount++;
         }
-        else if (status === 'IN_PROGRESS' || status === 'INVESTIGATING') {
+        else if (status === 'IN_PROGRESS' ||
+            status === 'INVESTIGATING' ||
+            status === 'PAUSED_DB_OFFLINE') {
             investigatingCount++;
         }
         else {
-            // UNINVESTIGATED, ERROR, or any other status
+            // UNINVESTIGATED, PENDING, or un-evaluated
             pendingCount++;
         }
     }
@@ -48,12 +69,12 @@ export function aggregateParentIssueStatus(transactions) {
     let issueStatus;
     let summaryText;
     if (flaggedCount > 0) {
-        // If even one transaction is FLAGGED, parent demands action
+        // If even one transaction is FLAGGED or FAIL, parent demands action
         issueStatus = 'ACTION_REQUIRED';
-        summaryText = `${flaggedCount} transaction(s) flagged for manual review / remedy.`;
+        summaryText = `${flaggedCount} transaction(s) flagged for manual review / discrepancy.`;
     }
     else if (investigatingCount > 0) {
-        // If any are under investigation
+        // If any are under active investigation
         issueStatus = 'IN_PROGRESS';
         summaryText = `${investigatingCount} transaction(s) actively undergoing multi-stage verification.`;
     }
@@ -68,8 +89,12 @@ export function aggregateParentIssueStatus(transactions) {
             summaryText = `All ${totalTransactions} transactions verified and reconciled cleanly.`;
         }
     }
+    else if (reconciledCount > 0) {
+        issueStatus = 'IN_PROGRESS';
+        summaryText = `${reconciledCount} of ${totalTransactions} transactions verified cleanly.`;
+    }
     else {
-        // All pending or not yet started
+        // All pending or not yet evaluated
         issueStatus = 'OPEN';
         summaryText = `${pendingCount} transaction(s) queued for investigation workflow.`;
     }

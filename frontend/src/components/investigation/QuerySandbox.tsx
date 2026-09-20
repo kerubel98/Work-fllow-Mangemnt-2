@@ -77,6 +77,7 @@ export const QuerySandbox: React.FC<QuerySandboxProps> = ({
   const [sampleResult, setSampleResult] = useState<any[] | null>(null);
   const [isPreviewing, setIsPreviewing] = useState<boolean>(false);
   const [saveSuccess, setSaveSuccess] = useState<boolean>(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [columnSearch, setColumnSearch] = useState<string>('');
 
   // Auto-detect required fields from stage rules
@@ -244,7 +245,7 @@ export const QuerySandbox: React.FC<QuerySandboxProps> = ({
           userRole: 'admin',
           dbId: targetDbId,
           dbName: currentDb?.name || targetDbId,
-          query: `SELECT ${cols.length > 0 ? cols.join(', ') : '*'} FROM ${targetDataSource} LIMIT 10;`,
+          query: `SELECT ${cols.length > 0 ? cols.map(c => c.sourceColumn).join(', ') : '*'} FROM ${targetDataSource} LIMIT 10;`,
           tableName: targetDataSource
         });
         setSampleResult(liveSample?.rows || []);
@@ -259,6 +260,7 @@ export const QuerySandbox: React.FC<QuerySandboxProps> = ({
 
   // Save QueryExtraction
   const handleSave = async () => {
+    setSaveError(null);
     const cols: QueryColumn[] = Object.keys(selectedColMap)
       .filter(k => selectedColMap[k])
       .map(c => ({
@@ -290,16 +292,15 @@ export const QuerySandbox: React.FC<QuerySandboxProps> = ({
 
     try {
       await api.createQueryExtraction(workflow.id, extraction);
-    } catch {
-      // In-memory fallback
+      if (onSaveExtraction) {
+        onSaveExtraction(extraction);
+      }
+      setSaveSuccess(true);
+      setTimeout(() => setSaveSuccess(false), 3000);
+    } catch (err: any) {
+      console.error('Failed to save query extraction:', err);
+      setSaveError(`Failed to save extraction: ${err.response?.data?.error || err.message}`);
     }
-
-    if (onSaveExtraction) {
-      onSaveExtraction(extraction);
-    }
-
-    setSaveSuccess(true);
-    setTimeout(() => setSaveSuccess(false), 3000);
   };
 
   return (
@@ -345,6 +346,13 @@ export const QuerySandbox: React.FC<QuerySandboxProps> = ({
           </button>
         </div>
       </div>
+
+      {saveError && (
+        <div className="p-3 bg-red-50 border border-red-200 text-red-700 text-xs rounded-lg flex items-center justify-between">
+          <span>{saveError}</span>
+          <button type="button" onClick={() => setSaveError(null)} className="font-bold text-red-500 hover:text-red-700">✕</button>
+        </div>
+      )}
 
       {/* Top Config Row: Stage Association & DB Connection */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4 p-3.5 bg-slate-50 rounded-xl border border-slate-200 text-xs">

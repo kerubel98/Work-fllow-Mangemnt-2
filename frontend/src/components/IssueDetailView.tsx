@@ -345,14 +345,11 @@ export default function IssueDetailView({
           setSandboxTable(tbls[0]);
         }
       })
-      .catch(() => {
+      .catch((err: any) => {
         if (!isMounted) return;
-        const activeDb = databases.find(d => d.id === sandboxSelectedDbId);
-        const tbls = activeDb?.allowedTables || activeDb?.availableTables || [];
-        setSandboxAvailableTables(tbls);
-        if (tbls.length > 0 && (!sandboxTable || !tbls.includes(sandboxTable))) {
-          setSandboxTable(tbls[0]);
-        }
+        setSandboxAvailableTables([]);
+        setSandboxTable('');
+        setSandboxError(`Failed to fetch tables: ${err.response?.data?.error || err.message || 'Database unavailable'}`);
       });
 
     return () => { isMounted = false; };
@@ -376,14 +373,11 @@ export default function IssueDetailView({
           executeSandboxQuery(defaultSql, sandboxTable, sandboxSelectedDbId);
         }
       })
-      .catch(() => {
+      .catch((err: any) => {
         if (!isMounted) return;
         setSandboxAvailableColumns([]);
-        const defaultSql = `SELECT *\nFROM ${sandboxTable}\nLIMIT 25;`;
-        setSandboxSql(defaultSql);
-        if (currentMode === 'workspace' && workspaceSubView === 'sandbox') {
-          executeSandboxQuery(defaultSql, sandboxTable, sandboxSelectedDbId);
-        }
+        const errorMsg = err.response?.data?.error || err.message || 'Failed to fetch table columns';
+        setSandboxError(errorMsg);
       });
 
     return () => { isMounted = false; };
@@ -436,13 +430,13 @@ export default function IssueDetailView({
     const currentTable = tableOverride || sandboxTable;
     const currentDbId = dbOverride || sandboxSelectedDbId;
     const currentEnv = envOverride || sandboxEnv;
-    const currentDb = (databases && databases.find(d => d.id === currentDbId)) || {
-      id: currentDbId || 'db-1',
-      name: 'Database',
-      type: 'PostgreSQL',
-      host: 'localhost',
-      status: 'online'
-    };
+    const currentDb = databases && databases.find(d => d.id === currentDbId);
+    if (!currentDb) {
+      const errMsg = `Database connection not found for ID: ${currentDbId || 'unspecified'}. Please select a valid database.`;
+      setSandboxError(errMsg);
+      setIsSandboxExecuting(false);
+      return;
+    }
 
     const startTime = performance.now();
     const timestamp = new Date().toLocaleTimeString();
@@ -1474,22 +1468,35 @@ export default function IssueDetailView({
     : 0;
   const privateCount = issues.filter(i => i.creatorId === currentUser.id && i.visibility === 'PERSONAL_PRIVATE').length;
 
-  // Filters issues based on Search + Status + Hashtag + Task Scope
+  // Filters issues based on Search + Status + Hashtag + Task Scope + Visibility
   const filteredIssues = issues.filter(issue => {
     const matchesSearch = issue.title.toLowerCase().includes(searchTerm.toLowerCase()) || 
                           issue.id.toLowerCase().includes(searchTerm.toLowerCase());
     const matchesStatus = statusFilter === 'ALL' ? true : issue.status === statusFilter;
     const matchesHashtag = hashtagFilter === 'ALL' ? true : issue.linkedHashtag === hashtagFilter;
+
+    // Visibility & Privacy access control:
+    // User can see tasks if they are admin, creator, assigned tech, or if the task is TEAM_PUBLIC within their team
+    const isOwner = Boolean(currentUser && issue.creatorId === currentUser.id);
+    const isAssigned = Boolean(currentUser && issue.assignedTechUserId === currentUser.id);
+    const isAdmin = currentUser?.role === 'admin';
+    const isTeamVisible = Boolean(
+      (issue.visibility === 'TEAM_PUBLIC' || !issue.visibility) &&
+      isMemberOfPermanentTeam &&
+      issue.teamId === effectivePermanentTeamId
+    );
+    const hasAccess = isAdmin || isOwner || isAssigned || isTeamVisible;
+    if (!hasAccess) return false;
     
     let matchesScope = true;
     if (taskScopeFilter === 'ASSIGNED') {
-      matchesScope = issue.assignedTechUserId === currentUser.id;
+      matchesScope = isAssigned;
     } else if (taskScopeFilter === 'MINE') {
-      matchesScope = issue.creatorId === currentUser.id;
+      matchesScope = isOwner;
     } else if (taskScopeFilter === 'TEAM') {
-      matchesScope = issue.teamId === effectivePermanentTeamId && issue.visibility === 'TEAM_PUBLIC';
+      matchesScope = isTeamVisible;
     } else if (taskScopeFilter === 'PRIVATE') {
-      matchesScope = issue.creatorId === currentUser.id && issue.visibility === 'PERSONAL_PRIVATE';
+      matchesScope = isOwner && issue.visibility === 'PERSONAL_PRIVATE';
     }
 
     return matchesSearch && matchesStatus && matchesHashtag && matchesScope;
@@ -1656,65 +1663,6 @@ export default function IssueDetailView({
     }, 600);
   };
 
-  // 2. Fetch Sandbox Ledger Values against environment table
-  const handleFetchSandboxValues = () => {
-    if (!sandboxSystemId || !sandboxTable) {
-      alert('Please configure target System Pipeline and Table before fetching values.');
-      return;
-    }
-
-    setIsQuerying(true);
-    setSandboxQueryLogs([
-      `[CLIENT_RPC] Handshaking secure operational API endpoint...`,
-      `[CLIENT_RPC] Gateway resolved: ${selectedSystem?.[sandboxEnv]?.apiEndpoint || 'https://api.internal'}`,
-      `[DB_SANDBOX] Selecting records from database: "${selectedSystem?.[sandboxEnv]?.dbName}" on table "${sandboxTable}"...`
-    ]);
-
-    setTimeout(() => {
-      // Mock rows fetched from backend sandbox mapping
-      let mockedFetched: any[] = [];
-      const fileRows = selectedIssue.firstLevelMappedData || [];
-
-      if (fileRows.length > 0) {
-        mockedFetched = fileRows.map((row, idx) => ({
-          db_id: `row-${idx + 101}`,
-          table_origin: sandboxTable,
-          txn_id: row.Transaction_ID || row.TxnID || `TXN-902${idx + 1}`,
-          card_num: row.Card_Number || row.Card_Num || '4111********9982',
-          amount_usd: Number(row.Amount_USD || row.Amt || 149.99),
-          status_state: idx % 2 === 0 ? 'PENDING' : 'SETTLED',
-          last_update: new Date().toISOString()
-        }));
-      } else {
-        // Fallback for single transaction manual queries
-        mockedFetched = [{
-          db_id: 'row-201',
-          table_origin: sandboxTable,
-          txn_id: selectedIssue.transactionId || 'TXN-UNKNOWN',
-          card_num: '4111********1234',
-          amount_usd: 120.00,
-          status_state: 'PENDING',
-          last_update: new Date(Date.now() - 3600000).toISOString()
-        }];
-      }
-
-      setSandboxQueryLogs(prev => [
-        ...prev,
-        `[DB_SANDBOX] Success: Fetched ${mockedFetched.length} transaction entries corresponding to reconciliation criteria.`,
-        `[AUDIT_LOGGER] Sandbox verification completed. Integrity status: CLEAR.`
-      ]);
-      setSandboxFetchedRows(mockedFetched);
-      setIsQuerying(false);
-
-      // Persist results to issue
-      onUpdateIssue(selectedIssue.id, {
-        queryResults: mockedFetched,
-        investigationSystemId: sandboxSystemId,
-        investigationEnvironment: sandboxEnv,
-        investigationTable: sandboxTable
-      });
-    }, 1200);
-  };
 
   // 3. Promote / Move to testing environment sandbox
   const handlePromoteToTesting = () => {

@@ -90,7 +90,7 @@ describe('Two-Tier External System Privileges & Team Resources Governance', () =
             });
             const body = await res.json();
             expect(res.status).toBe(400);
-            expect(body.error).toContain('Privilege ceiling violation');
+            expect(body.error).toContain('Privilege Ceiling Exceeded');
             expect(body.error).toContain('unauthorized-db-999');
         });
         it('rejects allocating a query statement type that the team does NOT have in its envelope (Ceiling Violation)', async () => {
@@ -110,7 +110,7 @@ describe('Two-Tier External System Privileges & Team Resources Governance', () =
             });
             const body = await res.json();
             expect(res.status).toBe(400);
-            expect(body.error).toContain('Privilege ceiling violation');
+            expect(body.error).toContain('Privilege Ceiling Exceeded');
             expect(body.error).toContain('DELETE');
         });
     });
@@ -140,6 +140,7 @@ describe('Two-Tier External System Privileges & Team Resources Governance', () =
         it('retrieves team-specific databases via dedicated GET /api/db/team-databases', async () => {
             const res = await fetch(`${BASE_URL}/db/team-databases?teamId=${teamId}`);
             const body = await res.json();
+            console.log('GET /api/db/team-databases returned:', JSON.stringify(body, null, 2));
             expect(res.status).toBe(200);
             expect(Array.isArray(body)).toBe(true);
             expect(body.some((d) => d.id === createdTeamDbId)).toBe(true);
@@ -203,6 +204,76 @@ describe('Two-Tier External System Privileges & Team Resources Governance', () =
             expect(body.scope).toBe('global');
             expect(body.promotionStatus).toBe('APPROVED');
             expect(body.promotionNotes).toContain('Verified socket connectivity');
+        });
+    });
+    describe('3. Resource-Scoped Column Mapping & Field Isolation', () => {
+        let privateDbId;
+        let createdConfigId;
+        beforeAll(async () => {
+            // Create a private team database
+            const res = await fetch(`${BASE_URL}/db/team-databases`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    teamId,
+                    userId: testManagerId,
+                    name: 'Private Creator DB',
+                    type: 'PostgreSQL',
+                    host: 'localhost',
+                    port: 5432,
+                    databaseName: 'creator_db'
+                })
+            });
+            const db = await res.json();
+            privateDbId = db.id;
+        });
+        it('allows resource creator to create column configurations on their created database', async () => {
+            const res = await fetch(`${BASE_URL}/db/column-configurations`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    name: 'Creator Match Rule',
+                    dbId: privateDbId,
+                    tableName: 'records',
+                    ruleType: 'MATCHING_RULE',
+                    userId: testManagerId,
+                    userRole: 'manager',
+                    teamId,
+                    columns: [{ columnName: 'ref_num', priority: 1, role: 'MATCH_KEY' }]
+                })
+            });
+            expect(res.status).toBe(201);
+            const cfg = await res.json();
+            createdConfigId = cfg.id;
+            expect(cfg.name).toBe('Creator Match Rule');
+            expect(cfg.dbId).toBe(privateDbId);
+        });
+        it('rejects another non-admin user attempting to configure rules on someone elses resource', async () => {
+            const res = await fetch(`${BASE_URL}/db/column-configurations`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    name: 'Unauthorized Rule',
+                    dbId: privateDbId,
+                    tableName: 'records',
+                    ruleType: 'MATCHING_RULE',
+                    userId: 'usr-unauthorized-operator-999',
+                    userRole: 'operator',
+                    teamId: 'other-team-999',
+                    columns: [{ columnName: 'ref_num', priority: 1, role: 'MATCH_KEY' }]
+                })
+            });
+            expect(res.status).toBe(403);
+            const body = await res.json();
+            expect(body.error).toContain('only authorized to configure column rules for database resources you or your team created');
+        });
+        it('scopes GET /api/db/column-configurations to created resources when userId/teamId is provided', async () => {
+            const res = await fetch(`${BASE_URL}/db/column-configurations?userId=${testManagerId}&teamId=${teamId}&userRole=manager`);
+            expect(res.status).toBe(200);
+            const list = await res.json();
+            expect(Array.isArray(list)).toBe(true);
+            const found = list.find((c) => c.id === createdConfigId);
+            expect(found).toBeDefined();
         });
     });
 });

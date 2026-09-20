@@ -118,11 +118,22 @@ async function startServer() {
     const distPath = path.resolve(rootDir, 'frontend/dist');
     if (fs.existsSync(distPath)) {
         console.log(`[ServerBoot] Serving frontend application from ${distPath}`);
-        app.use(express.static(distPath));
+        app.use(express.static(distPath, {
+            setHeaders: (res, filePath) => {
+                if (filePath.endsWith('.html')) {
+                    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+                    res.setHeader('Pragma', 'no-cache');
+                    res.setHeader('Expires', '0');
+                }
+            }
+        }));
         app.get('*', (req, res, next) => {
             if (req.originalUrl.startsWith('/api') || req.originalUrl.startsWith('/assets/')) {
                 return next();
             }
+            res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+            res.setHeader('Pragma', 'no-cache');
+            res.setHeader('Expires', '0');
             res.sendFile(path.join(distPath, 'index.html'));
         });
     }

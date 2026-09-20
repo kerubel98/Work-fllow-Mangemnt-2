@@ -337,6 +337,8 @@ CREATE TABLE IF NOT EXISTS database_validation_workflows (
     category VARCHAR(64),
     stages JSONB NOT NULL DEFAULT '[]'::jsonb,
     steps JSONB NOT NULL DEFAULT '[]'::jsonb,
+    nodes JSONB NOT NULL DEFAULT '[]'::jsonb,
+    connections JSONB NOT NULL DEFAULT '[]'::jsonb,
     global_success_message TEXT,
     global_failure_message TEXT,
     created_by VARCHAR(255),
@@ -360,6 +362,36 @@ CREATE TABLE IF NOT EXISTS query_extractions (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Validation Boxes (Reusable Modular Pipeline Blocks)
+CREATE TABLE IF NOT EXISTS validation_boxes (
+    id VARCHAR(64) PRIMARY KEY,
+    name VARCHAR(255) NOT NULL,
+    description TEXT,
+    box_type VARCHAR(64) NOT NULL,
+    category VARCHAR(64) DEFAULT 'General',
+    target_db_id VARCHAR(64),
+    target_table VARCHAR(255),
+    mirror_table_name VARCHAR(128),
+    search_parameters JSONB DEFAULT '[]'::jsonb,
+    check_step JSONB DEFAULT '{}'::jsonb,
+    column_configuration_ids JSONB DEFAULT '[]'::jsonb,
+    match_key_input VARCHAR(128),
+    match_key_external VARCHAR(128),
+    multi_row_policy VARCHAR(32) DEFAULT 'COMPOSITE_BUNDLE',
+    group_config JSONB DEFAULT NULL,
+    dual_source_condition JSONB DEFAULT NULL,
+    output_columns JSONB DEFAULT '[]'::jsonb,
+    status_binding JSONB DEFAULT NULL,
+    message_template TEXT DEFAULT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    team_id VARCHAR(64),
+    is_public BOOLEAN DEFAULT true,
+    visibility VARCHAR(32) DEFAULT 'team'
+);
+CREATE INDEX IF NOT EXISTS idx_vbox_team ON validation_boxes(team_id);
+CREATE INDEX IF NOT EXISTS idx_vbox_match_keys ON validation_boxes(match_key_input, match_key_external);
 
 -- 20. Investigation Tasks & Batches
 CREATE TABLE IF NOT EXISTS investigation_tasks (

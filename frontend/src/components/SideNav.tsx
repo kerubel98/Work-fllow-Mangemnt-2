@@ -1,40 +1,17 @@
 import React, { useState, useEffect } from 'react';
-import { User, AppNotification, NotificationType } from '../types';
+import { User, Team, AppNotification, NotificationType } from '../types';
 import { 
   BarChart3, Settings, Search,
   Layers, ShieldCheck, Users, Bell, CheckSquare, 
   MessageSquare, AlertCircle, X, CheckCheck, Trash2, ArrowRight, DatabaseZap, Plus, Sliders,
   PanelLeftClose, PanelLeftOpen, Server
 } from 'lucide-react';
-
-
-export const isAuthorizedTabForUser = (user: User | null, tab: string) => {
-  if (!user) return false;
-  switch (tab) {
-    case 'workspace':
-      return true; // All roles can see cases
-    case 'team_workspace':
-      return true; // All users can access Team Workspace
-    case 'direct_chat':
-      return true; // Personal 1-on-1 direct chat
-    case 'db_explorer':
-    case 'create_case':
-    case 'manager_analytics':
-    case 'admin_panel':
-    case 'user_admin':
-    case 'txn_settings':
-    case 'workspace_settings':
-      return true;
-    case 'system_settings':
-    case 'admin_team_resources':
-      return user.role === 'admin' || (user.role as any) === 'system_admin' || user.username?.toLowerCase() === 'admin';
-    default:
-      return false;
-  }
-};
+import { canAccessTab, isAuthorizedTabForUser } from '../utils/navigationPermissions';
+export { isAuthorizedTabForUser };
 
 interface SideNavProps {
   currentUser: User;
+  teams?: Team[];
   activeNavigation: string;
   activeAdminSubTab?: 'analytics' | 'connection_settings' | 'user_admin' | 'systems' | 'plugins';
   onSelectNavigation: (tab: string, subTab?: 'analytics' | 'connection_settings' | 'user_admin' | 'systems' | 'plugins') => void;
@@ -50,6 +27,7 @@ interface SideNavProps {
 
 export default function SideNav({
   currentUser,
+  teams = [],
   activeNavigation,
   activeAdminSubTab = 'analytics',
   onSelectNavigation,
@@ -99,7 +77,7 @@ export default function SideNav({
 
   const checkAuthorized = (tab: string) => {
     if (isAuthorizedTab) return isAuthorizedTab(tab);
-    return isAuthorizedTabForUser(currentUser, tab);
+    return isAuthorizedTabForUser(currentUser, tab, teams);
   };
 
   // Filter notifications relevant to current user
@@ -466,8 +444,8 @@ export default function SideNav({
             )
           )}
 
-          {/* 5. System Administration Section Header & Sub-Items */}
-          {(checkAuthorized('admin_panel') || checkAuthorized('user_admin') || checkAuthorized('db_explorer')) && (
+          {/* 5. System Administration Section Header & Sub-Items (Strictly Admin) */}
+          {(checkAuthorized('admin_panel') || checkAuthorized('user_admin') || checkAuthorized('system_settings') || checkAuthorized('admin_team_resources')) && (
             isCollapsed ? (
               <div className="space-y-1 pt-1 border-t border-slate-800/80 flex flex-col items-center">
                 {checkAuthorized('admin_panel') && (
@@ -506,7 +484,7 @@ export default function SideNav({
                   </button>
                 )}
 
-                {(currentUser?.role === 'admin' || (currentUser?.role as any) === 'system_admin' || currentUser?.username?.toLowerCase() === 'admin' || (currentUser?.role as string)?.toLowerCase() === 'administrator') && (
+                {checkAuthorized('system_settings') && (
                   <button
                     onClick={() => {
                       setShowNotificationPanel(false);
@@ -524,7 +502,7 @@ export default function SideNav({
                   </button>
                 )}
 
-                {(currentUser?.role === 'admin' || (currentUser?.role as any) === 'system_admin' || currentUser?.username?.toLowerCase() === 'admin' || (currentUser?.role as string)?.toLowerCase() === 'administrator') && (
+                {checkAuthorized('admin_team_resources') && (
                   <button
                     onClick={() => {
                       setShowNotificationPanel(false);
@@ -588,7 +566,7 @@ export default function SideNav({
                 )}
 
                 {/* Team Resources Monitor (Admin Route) */}
-                {(currentUser?.role === 'admin' || (currentUser?.role as any) === 'system_admin' || currentUser?.username?.toLowerCase() === 'admin' || (currentUser?.role as string)?.toLowerCase() === 'administrator') && (
+                {checkAuthorized('admin_team_resources') && (
                   <button
                     onClick={() => {
                       setShowNotificationPanel(false);
@@ -608,7 +586,7 @@ export default function SideNav({
                 )}
 
                 {/* System Settings (Administrator View Only) */}
-                {(currentUser?.role === 'admin' || (currentUser?.role as any) === 'system_admin' || currentUser?.username?.toLowerCase() === 'admin' || (currentUser?.role as string)?.toLowerCase() === 'administrator') && (
+                {checkAuthorized('system_settings') && (
                   <button
                     onClick={() => {
                       setShowNotificationPanel(false);

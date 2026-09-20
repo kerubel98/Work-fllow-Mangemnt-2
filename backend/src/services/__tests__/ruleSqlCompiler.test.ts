@@ -42,7 +42,7 @@ describe('ruleSqlCompiler', () => {
         severityOnFailure: 'WARNING'
       };
       const sql = ruleSqlCompiler.compileStepCondition(step, 'm', ['amount_usd']);
-      expect(sql).toContain('ABS(COALESCE((m.amount_usd)::numeric, 0) - 150.5) <= 0.05');
+      expect(sql).toContain('ABS(COALESCE((m."amount_usd")::numeric, 0) - 150.5) <= 0.05');
     });
 
     it('compiles FIELD_COMPARATOR with IN operator', () => {
@@ -107,7 +107,7 @@ describe('ruleSqlCompiler', () => {
         severityOnFailure: 'WARNING'
       };
       const sql = ruleSqlCompiler.compileStepCondition(step, 'm', ['status']);
-      expect(sql).toBe("UPPER(COALESCE(m.status::text, '')) = 'SETTLED'");
+      expect(sql).toBe("UPPER(COALESCE(m.\"status\"::text, '')) = 'SETTLED'");
     });
 
     it('sanitizes user input against SQL injection attempts', () => {
@@ -129,7 +129,7 @@ describe('ruleSqlCompiler', () => {
         severityOnFailure: 'CRITICAL'
       };
       const sql = ruleSqlCompiler.compileStepCondition(step, 'm', ['code']);
-      expect(sql).toBe("COALESCE(m.code::text, '') = '''; DROP TABLE users; --'");
+      expect(sql).toBe("COALESCE(m.\"code\"::text, '') = '''; DROP TABLE users; --'");
     });
 
     it('compiles DUAL_SOURCE_COMPARISON between input and mirror column', () => {

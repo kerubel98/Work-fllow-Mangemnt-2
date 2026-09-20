@@ -315,10 +315,7 @@ export async function getTableColumnsForDb(db, tableName) {
             }
             catch { }
         }
-        return [
-            { name: 'id', type: 'VARCHAR(255)', nullable: false, isPrimary: true },
-            { name: 'status', type: 'VARCHAR(50)', nullable: true, isPrimary: false }
-        ];
+        return [];
     }
     return [];
 }

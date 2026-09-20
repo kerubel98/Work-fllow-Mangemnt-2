@@ -52,6 +52,16 @@ export interface MemberPrivilege {
   allowedQueryTypes: AllowedQueryType[];
 }
 
+export interface TeamAdminPrivileges {
+  isFullAdmin?: boolean;
+  canManageConnections?: boolean;
+  canMonitorConnections?: boolean;
+  canManageAccessRequests?: boolean;
+  canManageColumnMapping?: boolean;
+  canManageUsers?: boolean;
+  canManageSystems?: boolean;
+}
+
 export interface Team {
   id: string;
   name: string;
@@ -64,6 +74,7 @@ export interface Team {
   allowedDbIds?: string[];
   allowedQueryTypes?: AllowedQueryType[];
   memberPrivileges?: Record<string, MemberPrivilege>;
+  adminPrivileges?: TeamAdminPrivileges;
 }
 
 export type TeamRelationshipType =
@@ -372,6 +383,7 @@ export interface DatabaseConnection {
   promotionReviewedAt?: string;
   promotionReviewedBy?: string;
   promotionNotes?: string;
+  lastError?: string;
 }
 
 export interface FtpFieldMapping {
@@ -501,6 +513,8 @@ export interface Organization {
   pendingJoinRequestUserIds?: string[];
   associatedTeamIds?: string[];
   associatedDbIds?: string[];
+  domain?: string;
+  settings?: Record<string, any>;
   createdAt: string;
 }
 
@@ -652,7 +666,7 @@ export interface UploadAuditLog {
 // BUSINESS PROCESSING STAGE & STAGE-AWARE WORKFLOWS
 // ==========================================
 
-export type ValidationResultStatus = 'PASS' | 'FAIL' | 'ERROR' | 'NOT_EVALUATED';
+export type ValidationResultStatus = 'PASS' | 'FAIL' | 'ERROR' | 'SKIPPED' | 'NOT_EVALUATED' | 'PAUSED_DB_OFFLINE';
 export type PipelineAction = 'CONTINUE' | 'STOP' | 'CLOSE' | 'FLAG' | 'REPORT';
 export type TransactionInvestigationStatus =
   | 'PENDING'

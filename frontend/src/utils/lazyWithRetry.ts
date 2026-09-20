@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { lazy, ComponentType } from 'react';
+import React, { lazy, ComponentType } from 'react';
 
 /**
  * Resilient lazy loader for code-split modules.
