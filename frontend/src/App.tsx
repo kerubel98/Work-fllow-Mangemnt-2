@@ -239,112 +239,123 @@ export default function App() {
     setActiveNavigation(tab);
   };
 
+  // Helper to asynchronously persist state cache to localStorage without blocking the main rendering thread
+  const persistCacheDebounced = useCallback((key: string, data: any) => {
+    try {
+      if (typeof window === 'undefined') return;
+      setTimeout(() => {
+        try {
+          let toStore = data;
+          if (key === 'it_issues' && Array.isArray(data)) {
+            // Strip out nested large mapped data to avoid QuotaExceededError and main-thread serialization freezes
+            toStore = data.map(i => {
+              const { firstLevelMappedData, queryResults, ...lightweightIssue } = i;
+              return lightweightIssue;
+            });
+          }
+          localStorage.setItem(key, JSON.stringify(toStore));
+        } catch (e) {
+          console.warn(`[LocalStorage] Deferred write bypassed for ${key}:`, e);
+        }
+      }, 200);
+    } catch {
+      // Non-fatal
+    }
+  }, []);
+
   // Sync state changes to LocalStorage as cache fallback
   useEffect(() => {
-    localStorage.setItem('it_users', JSON.stringify(users));
-  }, [users]);
+    persistCacheDebounced('it_users', users);
+  }, [users, persistCacheDebounced]);
 
   useEffect(() => {
     if (currentUser) {
-      localStorage.setItem('it_session', JSON.stringify(currentUser));
+      persistCacheDebounced('it_session', currentUser);
     } else {
-      localStorage.removeItem('it_session');
+      try { localStorage.removeItem('it_session'); } catch {}
     }
-  }, [currentUser]);
+  }, [currentUser, persistCacheDebounced]);
 
   useEffect(() => {
-    localStorage.setItem('it_issues', JSON.stringify(issues));
-  }, [issues]);
+    persistCacheDebounced('it_issues', issues);
+  }, [issues, persistCacheDebounced]);
 
   useEffect(() => {
-    localStorage.setItem('it_hashtags', JSON.stringify(hashtags));
-  }, [hashtags]);
+    persistCacheDebounced('it_hashtags', hashtags);
+  }, [hashtags, persistCacheDebounced]);
 
   useEffect(() => {
-    localStorage.setItem('it_plugins', JSON.stringify(plugins));
-  }, [plugins]);
+    persistCacheDebounced('it_plugins', plugins);
+  }, [plugins, persistCacheDebounced]);
 
   useEffect(() => {
-    localStorage.setItem('it_databases', JSON.stringify(databases));
-  }, [databases]);
+    persistCacheDebounced('it_databases', databases);
+  }, [databases, persistCacheDebounced]);
 
   useEffect(() => {
-    localStorage.setItem('it_systems', JSON.stringify(systems));
-  }, [systems]);
+    persistCacheDebounced('it_systems', systems);
+  }, [systems, persistCacheDebounced]);
 
   useEffect(() => {
-    localStorage.setItem('it_query_approvals', JSON.stringify(queryApprovals));
-  }, [queryApprovals]);
+    persistCacheDebounced('it_query_approvals', queryApprovals);
+  }, [queryApprovals, persistCacheDebounced]);
 
   useEffect(() => {
-    localStorage.setItem('it_db_access_requests', JSON.stringify(dbAccessRequests));
-  }, [dbAccessRequests]);
+    persistCacheDebounced('it_db_access_requests', dbAccessRequests);
+  }, [dbAccessRequests, persistCacheDebounced]);
 
   useEffect(() => {
-    localStorage.setItem('it_connection_usage_logs', JSON.stringify(connectionUsageLogs));
-  }, [connectionUsageLogs]);
+    persistCacheDebounced('it_connection_usage_logs', connectionUsageLogs);
+  }, [connectionUsageLogs, persistCacheDebounced]);
 
   useEffect(() => {
-    localStorage.setItem('it_teams', JSON.stringify(teams));
-  }, [teams]);
+    persistCacheDebounced('it_teams', teams);
+  }, [teams, persistCacheDebounced]);
 
   useEffect(() => {
-    localStorage.setItem('it_team_tasks', JSON.stringify(teamTasks));
-  }, [teamTasks]);
+    persistCacheDebounced('it_team_tasks', teamTasks);
+  }, [teamTasks, persistCacheDebounced]);
 
   useEffect(() => {
-    localStorage.setItem('it_team_insights', JSON.stringify(teamInsights));
-  }, [teamInsights]);
+    persistCacheDebounced('it_team_insights', teamInsights);
+  }, [teamInsights, persistCacheDebounced]);
 
   useEffect(() => {
-    localStorage.setItem('it_team_messages', JSON.stringify(teamMessages));
-  }, [teamMessages]);
+    persistCacheDebounced('it_team_messages', teamMessages);
+  }, [teamMessages, persistCacheDebounced]);
 
   useEffect(() => {
-    localStorage.setItem('it_notifications', JSON.stringify(notifications));
-  }, [notifications]);
+    persistCacheDebounced('it_notifications', notifications);
+  }, [notifications, persistCacheDebounced]);
 
   useEffect(() => {
-    localStorage.setItem('it_direct_messages', JSON.stringify(directMessages));
-  }, [directMessages]);
+    persistCacheDebounced('it_direct_messages', directMessages);
+  }, [directMessages, persistCacheDebounced]);
 
-  // Centralized initial state hydration from backend API
+  // Two-stage state hydration: prioritize workspace essentials first, then load collaboration/audit secondary data
   useEffect(() => {
+    let isMounted = true;
+
     const hydrateFromBackend = async () => {
       try {
+        // Stage 1: Critical Workspace Entities (renders the active view immediately)
         const [
           fetchedUsers,
           fetchedIssues,
           fetchedDatabases,
           fetchedSystems,
           fetchedTeams,
-          fetchedTeamTasks,
-          fetchedTeamInsights,
-          fetchedTeamMessages,
-          fetchedDirectMessages,
-          fetchedNotifications,
-          fetchedApprovals,
-          fetchedDbRequests,
-          fetchedLogs,
-          fetchedHashtags,
-          fetchedPlugins
+          fetchedHashtags
         ] = await Promise.allSettled([
           api.getUsers(),
           api.getIssues(),
           api.getDatabases(),
           api.getSystems(),
           api.getTeams(),
-          api.getTeamTasks(),
-          api.getTeamInsights(),
-          api.getTeamMessages(),
-          api.getDirectMessages(),
-          api.getNotifications(),
-          api.getQueryApprovals(),
-          api.getDbAccessRequests(),
-          api.getQueryLogs(),
-          api.getHashtags(),
-          api.getPlugins()
+          api.getHashtags()
         ]);
+
+        if (!isMounted) return;
 
         if (fetchedUsers.status === 'fulfilled' && Array.isArray(fetchedUsers.value) && fetchedUsers.value.length > 0) {
           setUsers(fetchedUsers.value);
@@ -361,38 +372,77 @@ export default function App() {
         if (fetchedTeams.status === 'fulfilled' && Array.isArray(fetchedTeams.value) && fetchedTeams.value.length > 0) {
           setTeams(fetchedTeams.value);
         }
-        if (fetchedTeamTasks.status === 'fulfilled' && Array.isArray(fetchedTeamTasks.value) && fetchedTeamTasks.value.length > 0) {
-          setTeamTasks(fetchedTeamTasks.value);
-        }
-        if (fetchedTeamInsights.status === 'fulfilled' && Array.isArray(fetchedTeamInsights.value) && fetchedTeamInsights.value.length > 0) {
-          setTeamInsights(fetchedTeamInsights.value);
-        }
-        if (fetchedTeamMessages.status === 'fulfilled' && Array.isArray(fetchedTeamMessages.value) && fetchedTeamMessages.value.length > 0) {
-          setTeamMessages(fetchedTeamMessages.value);
-        }
-        if (fetchedDirectMessages.status === 'fulfilled' && Array.isArray(fetchedDirectMessages.value) && fetchedDirectMessages.value.length > 0) {
-          setDirectMessages(fetchedDirectMessages.value);
-        }
-        if (fetchedNotifications.status === 'fulfilled' && Array.isArray(fetchedNotifications.value) && fetchedNotifications.value.length > 0) {
-          setNotifications(fetchedNotifications.value);
-        }
-        if (fetchedApprovals.status === 'fulfilled' && Array.isArray(fetchedApprovals.value) && fetchedApprovals.value.length > 0) {
-          setQueryApprovals(fetchedApprovals.value);
-        }
-        if (fetchedDbRequests.status === 'fulfilled' && Array.isArray(fetchedDbRequests.value) && fetchedDbRequests.value.length > 0) {
-          setDbAccessRequests(fetchedDbRequests.value);
-        }
-        if (fetchedLogs.status === 'fulfilled' && Array.isArray(fetchedLogs.value) && fetchedLogs.value.length > 0) {
-          setConnectionUsageLogs(fetchedLogs.value);
-        }
         if (fetchedHashtags.status === 'fulfilled' && Array.isArray(fetchedHashtags.value) && fetchedHashtags.value.length > 0) {
           setHashtags(fetchedHashtags.value);
         }
-        if (fetchedPlugins.status === 'fulfilled' && Array.isArray(fetchedPlugins.value) && fetchedPlugins.value.length > 0) {
-          setPlugins(fetchedPlugins.value);
-        }
+
+        // Stage 2: Secondary / Collaboration Data (yields to render loop before fetching)
+        setTimeout(async () => {
+          if (!isMounted) return;
+          try {
+            const [
+              fetchedTeamTasks,
+              fetchedTeamInsights,
+              fetchedTeamMessages,
+              fetchedDirectMessages,
+              fetchedNotifications,
+              fetchedApprovals,
+              fetchedDbRequests,
+              fetchedLogs,
+              fetchedPlugins
+            ] = await Promise.allSettled([
+              api.getTeamTasks(),
+              api.getTeamInsights(),
+              api.getTeamMessages(),
+              api.getDirectMessages(),
+              api.getNotifications(),
+              api.getQueryApprovals(),
+              api.getDbAccessRequests(),
+              api.getQueryLogs(),
+              api.getPlugins()
+            ]);
+
+            if (!isMounted) return;
+
+            if (fetchedTeamTasks.status === 'fulfilled' && Array.isArray(fetchedTeamTasks.value) && fetchedTeamTasks.value.length > 0) {
+              setTeamTasks(fetchedTeamTasks.value);
+            }
+            if (fetchedTeamInsights.status === 'fulfilled' && Array.isArray(fetchedTeamInsights.value) && fetchedTeamInsights.value.length > 0) {
+              setTeamInsights(fetchedTeamInsights.value);
+            }
+            if (fetchedTeamMessages.status === 'fulfilled' && Array.isArray(fetchedTeamMessages.value) && fetchedTeamMessages.value.length > 0) {
+              setTeamMessages(fetchedTeamMessages.value);
+            }
+            if (fetchedDirectMessages.status === 'fulfilled' && Array.isArray(fetchedDirectMessages.value) && fetchedDirectMessages.value.length > 0) {
+              setDirectMessages(fetchedDirectMessages.value);
+            }
+            if (fetchedNotifications.status === 'fulfilled' && Array.isArray(fetchedNotifications.value) && fetchedNotifications.value.length > 0) {
+              setNotifications(fetchedNotifications.value);
+            }
+            if (fetchedApprovals.status === 'fulfilled' && Array.isArray(fetchedApprovals.value) && fetchedApprovals.value.length > 0) {
+              setQueryApprovals(fetchedApprovals.value);
+            }
+            if (fetchedDbRequests.status === 'fulfilled' && Array.isArray(fetchedDbRequests.value) && fetchedDbRequests.value.length > 0) {
+              setDbAccessRequests(fetchedDbRequests.value);
+            }
+            if (fetchedLogs.status === 'fulfilled' && Array.isArray(fetchedLogs.value) && fetchedLogs.value.length > 0) {
+              setConnectionUsageLogs(fetchedLogs.value);
+            }
+            if (fetchedPlugins.status === 'fulfilled' && Array.isArray(fetchedPlugins.value) && fetchedPlugins.value.length > 0) {
+              setPlugins(fetchedPlugins.value);
+            }
+          } catch {
+            // Secondary hydration notice
+          }
+        }, 150);
       } catch (err) {
         console.warn('Backend hydration notice: using localStorage cache fallback:', err);
+      }
+    };
+
+    hydrateFromBackend();
+    return () => { isMounted = false; };
+  }, []);
       }
     };
 

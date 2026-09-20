@@ -3205,5 +3205,154 @@ export const postgresRepo = {
         catch (err) {
             console.warn(`[postgresRepo] Error applying setting proposal changes: ${err.message}`);
         }
-    }
+    },
+    // ================= ORGANIZATIONS =================
+    async getOrganizations() {
+        const pool = getPostgresPool();
+        const { rows } = await pool.query(`SELECT data FROM organizations ORDER BY (data->>'createdAt') ASC;`);
+        return rows.map(r => r.data);
+    },
+    async getOrganizationById(id) {
+        const pool = getPostgresPool();
+        const { rows } = await pool.query(`SELECT data FROM organizations WHERE data->>'id' = $1 OR data->>'slug' = $1 LIMIT 1;`, [id]);
+        return rows.length ? rows[0].data : null;
+    },
+    async createOrganization(org) {
+        const pool = getPostgresPool();
+        await pool.query(`INSERT INTO organizations (id, data) VALUES ($1, $2)
+       ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data;`, [org.id, JSON.stringify(org)]);
+        return org;
+    },
+    async updateOrganization(id, updates) {
+        const pool = getPostgresPool();
+        const current = await this.getOrganizationById(id);
+        if (!current)
+            return null;
+        const merged = { ...current, ...updates };
+        await pool.query(`UPDATE organizations SET data = $2 WHERE id = $1;`, [id, JSON.stringify(merged)]);
+        return merged;
+    },
+    async deleteOrganization(id) {
+        const pool = getPostgresPool();
+        const { rowCount } = await pool.query(`DELETE FROM organizations WHERE id = $1;`, [id]);
+        return (rowCount ?? 0) > 0;
+    },
+    // ================= DATABASE CONNECTIONS =================
+    async getDatabases() {
+        const pool = getPostgresPool();
+        const { rows } = await pool.query(`SELECT id, name, type, host, port, connection_string, database_name, username, password,
+              status, api_endpoint, created_by_admin, requires_access_approval, description,
+              allowed_roles, allowed_tables, available_tables, scope, team_id, last_tested_at, last_error
+       FROM database_connections ORDER BY name ASC;`);
+        return rows.map(r => ({
+            id: r.id,
+            name: r.name,
+            type: r.type,
+            host: r.host,
+            port: r.port,
+            connectionString: r.connection_string,
+            databaseName: r.database_name,
+            username: r.username,
+            password: r.password,
+            status: r.status,
+            apiEndpoint: r.api_endpoint,
+            createdByAdmin: r.created_by_admin,
+            requiresAccessApproval: r.requires_access_approval,
+            description: r.description,
+            allowedRoles: parseJson(r.allowed_roles, []),
+            allowedTables: parseJson(r.allowed_tables, []),
+            availableTables: parseJson(r.available_tables, []),
+            scope: r.scope || 'global',
+            teamId: r.team_id,
+            lastTestedAt: r.last_tested_at?.toISOString(),
+            lastError: r.last_error,
+        }));
+    },
+    async getDatabaseById(id) {
+        const pool = getPostgresPool();
+        const { rows } = await pool.query(`SELECT id, name, type, host, port, connection_string, database_name, username, password,
+              status, api_endpoint, created_by_admin, requires_access_approval, description,
+              allowed_roles, allowed_tables, available_tables, scope, team_id, last_tested_at, last_error
+       FROM database_connections WHERE id = $1 LIMIT 1;`, [id]);
+        if (!rows.length)
+            return null;
+        const r = rows[0];
+        return {
+            id: r.id, name: r.name, type: r.type, host: r.host, port: r.port,
+            connectionString: r.connection_string, databaseName: r.database_name,
+            username: r.username, password: r.password, status: r.status,
+            apiEndpoint: r.api_endpoint, createdByAdmin: r.created_by_admin,
+            requiresAccessApproval: r.requires_access_approval, description: r.description,
+            allowedRoles: parseJson(r.allowed_roles, []),
+            allowedTables: parseJson(r.allowed_tables, []),
+            availableTables: parseJson(r.available_tables, []),
+            scope: r.scope || 'global', teamId: r.team_id,
+            lastTestedAt: r.last_tested_at?.toISOString(), lastError: r.last_error,
+        };
+    },
+    async createDatabase(db) {
+        const pool = getPostgresPool();
+        await pool.query(`INSERT INTO database_connections
+         (id, name, type, host, port, connection_string, database_name, username, password,
+          status, api_endpoint, created_by_admin, requires_access_approval, description, allowed_roles)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+       ON CONFLICT (id) DO UPDATE SET
+         name=EXCLUDED.name, type=EXCLUDED.type, host=EXCLUDED.host, port=EXCLUDED.port,
+         connection_string=EXCLUDED.connection_string, database_name=EXCLUDED.database_name,
+         username=EXCLUDED.username, password=EXCLUDED.password, status=EXCLUDED.status,
+         api_endpoint=EXCLUDED.api_endpoint, created_by_admin=EXCLUDED.created_by_admin,
+         requires_access_approval=EXCLUDED.requires_access_approval, description=EXCLUDED.description,
+         allowed_roles=EXCLUDED.allowed_roles;`, [
+            db.id, db.name, db.type, db.host || '', db.port || null,
+            db.connectionString || null, db.databaseName || null,
+            db.username || null, db.password || null,
+            db.status || 'offline', db.apiEndpoint || null,
+            db.createdByAdmin ?? false, db.requiresAccessApproval ?? false,
+            db.description || null, JSON.stringify(db.allowedRoles || [])
+        ]);
+        return db;
+    },
+    async updateDatabase(id, updates) {
+        const current = await this.getDatabaseById(id);
+        if (!current)
+            return null;
+        const merged = { ...current, ...updates };
+        const pool = getPostgresPool();
+        await pool.query(`UPDATE database_connections SET
+         name=$2, type=$3, host=$4, port=$5, connection_string=$6, database_name=$7,
+         username=$8, password=$9, status=$10, api_endpoint=$11, created_by_admin=$12,
+         requires_access_approval=$13, description=$14, allowed_roles=$15,
+         allowed_tables=$16, available_tables=$17, scope=$18, team_id=$19,
+         last_tested_at=$20, last_error=$21
+       WHERE id=$1;`, [
+            id, merged.name, merged.type, merged.host || '', merged.port || null,
+            merged.connectionString || null, merged.databaseName || null,
+            merged.username || null, merged.password || null,
+            merged.status || 'offline', merged.apiEndpoint || null,
+            merged.createdByAdmin ?? false, merged.requiresAccessApproval ?? false,
+            merged.description || null, JSON.stringify(merged.allowedRoles || []),
+            JSON.stringify(merged.allowedTables || []),
+            JSON.stringify(merged.availableTables || []),
+            merged.scope || 'global', merged.teamId || null,
+            merged.lastTestedAt ? new Date(merged.lastTestedAt) : null,
+            merged.lastError || null
+        ]);
+        return merged;
+    },
+    async deleteDatabase(id) {
+        const pool = getPostgresPool();
+        const { rowCount } = await pool.query(`DELETE FROM database_connections WHERE id = $1;`, [id]);
+        return (rowCount ?? 0) > 0;
+    },
+    // Alias for consistency with callers using getDatabaseConnectionById
+    async getDatabaseConnectionById(id) {
+        return this.getDatabaseById(id);
+    },
+    // ================= TEAM HELPERS =================
+    async getUserPermanentTeam(userId) {
+        const user = await this.getUserById(userId);
+        if (!user?.permanentTeamId)
+            return null;
+        return this.getTeamById(user.permanentTeamId);
+    },
 };

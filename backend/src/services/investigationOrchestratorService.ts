@@ -697,14 +697,29 @@ export const investigationOrchestratorService = {
     // Record execution in task_workflow_executions lookup table and sync task_dataset_transactions in PostgreSQL
     if (sourceId) {
       try {
+        const sanitizeTargetRecord = (tr: any) => {
+          if (!tr || typeof tr !== 'object') return tr;
+          const { _rawRows, ...rest } = tr;
+          if (rest._groupedData && typeof rest._groupedData === 'object') {
+            const { _rawRows: _, ...cleanGd } = rest._groupedData;
+            rest._groupedData = cleanGd;
+          }
+          if (rest._groupComposite && typeof rest._groupComposite === 'object') {
+            const { _rawRows: _, ...cleanGc } = rest._groupComposite;
+            rest._groupComposite = cleanGc;
+          }
+          return rest;
+        };
+
         const resultMap: Record<string, any> = {};
         for (let idx = 0; idx < result.records.length; idx++) {
           const rec = result.records[idx];
           const candidateKeys = getRecordCandidateKeys(rec, idx);
+          const sanitizedTarget = sanitizeTargetRecord(rec._target_record);
           const evalEntry = {
             status: rec._validation_status,
             details: rec._validation_details,
-            targetRecord: rec._target_record || null,
+            targetRecord: sanitizedTarget || null,
             targetDb: rec._target_db || null,
             targetTable: rec._target_table || null
           };
@@ -734,7 +749,7 @@ export const investigationOrchestratorService = {
             key: r._rowNumber ? `ROW-${r._rowNumber}` : (r.row_number ? `ROW-${r.row_number}` : (getRecordCandidateKeys(r, idx)[0] || `ROW-${idx + 1}`)),
             status: r._validation_status,
             details: r._validation_details,
-            targetRecord: r._target_record || null,
+            targetRecord: sanitizeTargetRecord(r._target_record) || null,
             targetDb: r._target_db || null,
             targetTable: r._target_table || null
           }))

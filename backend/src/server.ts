@@ -4,8 +4,7 @@ import 'dotenv/config';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
-import { connectDB, isMongoConnected } from './config/db.js';
-import { seedDatabase } from './config/seed.js';
+
 import { connectPostgres, isPostgresConnected } from './config/postgres.js';
 import { seedPostgres } from './config/seedPostgres.js';
 import { authRouter } from './routes/auth.js';
@@ -65,9 +64,7 @@ app.get('/api/health', (_req, res) => {
   res.json({
     status: 'OK',
     service: 'Operational Workflow Manager Backend Service',
-    database: isPostgresConnected
-      ? 'PostgreSQL (operational_workflow_db)'
-      : (isMongoConnected ? 'MongoDB (fallback)' : 'In-Memory Store'),
+    database: isPostgresConnected ? 'PostgreSQL (operational_workflow_db)' : 'Unavailable',
     uptimeSeconds: process.uptime(),
     timestamp: new Date().toISOString()
   });
@@ -105,7 +102,7 @@ async function startServer() {
       const sweepRes = await queryPg(`
         UPDATE issues i
         SET status = 'Failed',
-            notes = COALESCE(notes, '') || ' [Orphaned in-flight job swept on application restart: heartbeat expired]'
+            description = COALESCE(description, '') || ' [Orphaned in-flight job swept on application restart: heartbeat expired]'
         WHERE i.status = 'In Progress'
           AND NOT EXISTS (
             SELECT 1 FROM task_batch_heartbeats h
@@ -121,11 +118,7 @@ async function startServer() {
       console.warn('[ServerBoot] Precision sweeper check warning:', sweepErr.message);
     }
   }
-  // Only attempt MongoDB connection if explicitly configured in environment
-  if (process.env.MONGODB_URI) {
-    await connectDB();
-    await seedDatabase();
-  }
+  // MongoDB fallback removed — PostgreSQL is the sole persistence layer.
 
   const rootDir = fs.existsSync(path.resolve(process.cwd(), 'frontend'))
     ? process.cwd()
@@ -140,7 +133,7 @@ async function startServer() {
     console.log(`[ServerBoot] Serving frontend application from ${distPath}`);
     app.use(express.static(distPath));
     app.get('*', (req, res, next) => {
-      if (req.originalUrl.startsWith('/api')) {
+      if (req.originalUrl.startsWith('/api') || req.originalUrl.startsWith('/assets/')) {
         return next();
       }
       res.sendFile(path.join(distPath, 'index.html'));
@@ -160,7 +153,7 @@ async function startServer() {
         console.log(`📱 Network access: http://${ip}:${PORT}`);
       });
     }
-    console.log(`🗄️ Database mode:  ${isPostgresConnected ? 'PostgreSQL (localhost:5432)' : (isMongoConnected ? 'MongoDB (localhost)' : 'In-Memory Store')}`);
+    console.log(`🗄️ Database mode:  ${isPostgresConnected ? 'PostgreSQL (localhost:5432)' : 'In-Memory Store'}`);
     console.log(`⚡ Real-time SSE:  http://localhost:${PORT}/api/events`);
     console.log(`====================================================`);
   });

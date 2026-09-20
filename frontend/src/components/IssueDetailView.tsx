@@ -372,18 +372,22 @@ export default function IssueDetailView({
         const colProjection = colNames.length > 0 && colNames.length <= 8 ? colNames.join(', ') : '*';
         const defaultSql = `SELECT ${colProjection}\nFROM ${sandboxTable}\nLIMIT 25;`;
         setSandboxSql(defaultSql);
-        executeSandboxQuery(defaultSql, sandboxTable, sandboxSelectedDbId);
+        if (currentMode === 'workspace' && workspaceSubView === 'sandbox') {
+          executeSandboxQuery(defaultSql, sandboxTable, sandboxSelectedDbId);
+        }
       })
       .catch(() => {
         if (!isMounted) return;
         setSandboxAvailableColumns([]);
         const defaultSql = `SELECT *\nFROM ${sandboxTable}\nLIMIT 25;`;
         setSandboxSql(defaultSql);
-        executeSandboxQuery(defaultSql, sandboxTable, sandboxSelectedDbId);
+        if (currentMode === 'workspace' && workspaceSubView === 'sandbox') {
+          executeSandboxQuery(defaultSql, sandboxTable, sandboxSelectedDbId);
+        }
       });
 
     return () => { isMounted = false; };
-  }, [sandboxSelectedDbId, sandboxTable]);
+  }, [sandboxSelectedDbId, sandboxTable, currentMode, workspaceSubView]);
 
   // Dynamic query templates constructed using the selected database table and columns
   const sandboxTemplates = useMemo(() => {

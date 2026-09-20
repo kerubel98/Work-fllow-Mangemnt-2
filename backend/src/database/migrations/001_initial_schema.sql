@@ -142,7 +142,11 @@ CREATE TABLE IF NOT EXISTS database_connections (
     created_by_admin BOOLEAN DEFAULT false,
     requires_access_approval BOOLEAN DEFAULT false,
     description TEXT,
-    allowed_roles JSONB DEFAULT '[]'::jsonb
+    allowed_roles JSONB DEFAULT '[]'::jsonb,
+    allowed_tables JSONB DEFAULT '[]'::jsonb,
+    available_tables JSONB DEFAULT '[]'::jsonb,
+    last_tested_at TIMESTAMP WITH TIME ZONE,
+    last_error TEXT
 );
 
 -- 11. Environment Systems

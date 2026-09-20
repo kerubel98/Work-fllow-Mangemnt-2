@@ -14,10 +14,11 @@ import {
 } from 'lucide-react';
 import { api } from '../api/client';
 import ErrorBoundary from './ErrorBoundary';
+import { lazyWithRetry } from '../utils/lazyWithRetry';
 
-const DatabaseColumnConfigurationStudio = lazy(() => import('./settings/DatabaseColumnConfiguration'));
-const ValidationBoxManager = lazy(() => import('./settings/ValidationBoxManager').then(m => ({ default: m.ValidationBoxManager })));
-const WorkflowStudioFlowchart = lazy(() => import('./settings/WorkflowStudioFlowchart').then(m => ({ default: m.WorkflowStudioFlowchart })));
+const DatabaseColumnConfigurationStudio = lazyWithRetry(() => import('./settings/DatabaseColumnConfiguration'), 'DatabaseColumnConfiguration');
+const ValidationBoxManager = lazyWithRetry(() => import('./settings/ValidationBoxManager').then(m => ({ default: m.ValidationBoxManager })), 'ValidationBoxManager');
+const WorkflowStudioFlowchart = lazyWithRetry(() => import('./settings/WorkflowStudioFlowchart').then(m => ({ default: m.WorkflowStudioFlowchart })), 'WorkflowStudioFlowchart');
 
 function StudioLoadingFallback() {
   return (
@@ -426,24 +427,29 @@ export default function WorkspaceSettings({
       </div>
 
       {/* 3. Settings Content Pane */}
-      <Suspense fallback={<StudioLoadingFallback />}>
       {activeTab === 'database_validation' ? (
         <ErrorBoundary fallbackTitle="Column Configuration Error" fallbackMessage="Could not render Database Column Configuration Studio. You can retry or refresh.">
-          <DatabaseColumnConfigurationStudio
-            currentUser={currentUser}
-            databases={databases}
-          />
+          <Suspense fallback={<StudioLoadingFallback />}>
+            <DatabaseColumnConfigurationStudio
+              currentUser={currentUser}
+              databases={databases}
+            />
+          </Suspense>
         </ErrorBoundary>
       ) : activeTab === 'validation_box' ? (
         <ErrorBoundary fallbackTitle="Validation Box Error" fallbackMessage="Could not render Validation Box interface.">
-          <ValidationBoxManager currentUser={currentUser} />
+          <Suspense fallback={<StudioLoadingFallback />}>
+            <ValidationBoxManager currentUser={currentUser} />
+          </Suspense>
         </ErrorBoundary>
       ) : activeTab === 'workflow_studio' ? (
         <ErrorBoundary fallbackTitle="Workflow Studio Error" fallbackMessage="Could not render Workflow Studio Flowchart.">
-          <WorkflowStudioFlowchart 
-            currentUser={currentUser}
-            selectedWorkflowId={selectedWorkflowId}
-          />
+          <Suspense fallback={<StudioLoadingFallback />}>
+            <WorkflowStudioFlowchart 
+              currentUser={currentUser}
+              selectedWorkflowId={selectedWorkflowId}
+            />
+          </Suspense>
         </ErrorBoundary>
       ) : activeTab === 'pending_approvals' ? (
         <div className="bg-white rounded-xl border border-slate-200 shadow-xs p-5 space-y-4">
@@ -990,7 +996,6 @@ export default function WorkspaceSettings({
           )}
         </div>
       )}
-      </Suspense>
 
       {/* MODAL 1: SUBMIT SETTING PROPOSAL */}
       {showSubmitModal && (

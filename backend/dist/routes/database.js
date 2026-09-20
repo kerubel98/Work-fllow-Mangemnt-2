@@ -3,8 +3,6 @@ import mongoose from 'mongoose';
 import net from 'net';
 import { isMongoConnected, getMongoStatus, connectDB, disconnectDB } from '../config/db.js';
 import { queryPg } from '../config/postgres.js';
-import { DatabaseConnectionModel } from '../models/DatabaseConnection.js';
-import { ConnectionUsageLogModel } from '../models/ConnectionUsageLog.js';
 import { store } from '../store/dataStore.js';
 import { repo } from '../store/repository.js';
 import { discoverTablesForDb, getTableColumnsForDb, executeLiveQueryOnDb, testExternalDbConnection, evictExternalDbPool } from '../services/dbConnectionManager.js';

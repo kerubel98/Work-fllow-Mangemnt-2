@@ -1,5 +1,4 @@
 import mongoose from 'mongoose';
-import { seedDatabase } from './seed.js';
 export let isMongoConnected = false;
 export let currentMongoUri = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/operational_workflow_db';
 export let lastConnectionError = null;
@@ -20,8 +19,6 @@ export async function connectDB(customUri) {
         isMongoConnected = true;
         lastConnectionError = null;
         console.log(`✅ Successfully connected to MongoDB database [${mongoose.connection.name}].`);
-        // Seed database if empty collections exist
-        await seedDatabase();
         return {
             success: true,
             message: `Successfully connected to MongoDB (${mongoose.connection.name || 'operational_workflow_db'})`,

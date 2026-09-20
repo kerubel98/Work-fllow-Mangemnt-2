@@ -3,10 +3,6 @@ import mongoose from 'mongoose';
 import net from 'net';
 import { isMongoConnected, getMongoStatus, connectDB, disconnectDB } from '../config/db.js';
 import { queryPg } from '../config/postgres.js';
-import { DatabaseConnectionModel } from '../models/DatabaseConnection.js';
-import { EnvironmentSystemModel } from '../models/EnvironmentSystem.js';
-import { ConnectionUsageLogModel } from '../models/ConnectionUsageLog.js';
-import { QueryApprovalRequestModel } from '../models/QueryApprovalRequest.js';
 import { store } from '../store/dataStore.js';
 import { repo } from '../store/repository.js';
 import { DatabaseConnection, ConnectionUsageLog, QueryApprovalRequest, DbAccessRequest, DatabaseColumnConfiguration, RuleColumnPriority, RuleAggregation, SemanticRowRoleConfig, SemanticCrossRowRule, TransactionTypeGroupConfig, TypeColumnCondition, ColumnValueLabelMapping, AllowedQueryType, Team } from '../types.js';
@@ -17,6 +13,7 @@ import { discoverFtpFilesRecursive } from '../services/ftpConnectionService.js';
 import { ftpSchedulerService } from '../services/ftpSchedulerService.js';
 
 export const databaseRouter = Router();
+
 
 // Socket host/port health check helper with strict timeout
 async function testHostPortSocket(host: string, port: number, timeoutMs = 3000): Promise<{ connected: boolean; pingMs: number; error?: string }> {

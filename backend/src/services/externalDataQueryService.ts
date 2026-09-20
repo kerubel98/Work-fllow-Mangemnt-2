@@ -211,13 +211,15 @@ export function resolveGroupedRows(
 
     const hasDuplicates = rows.length > 1;
 
+    const safeRawRows = rows.length > 5 ? rows.slice(0, 5) : rows;
+
     if (policy === 'STRICT_SINGLE') {
       resolved[key] = hasDuplicates
         ? {
             ...rows[0],
             _discrepancyFlag: 'DUPLICATE_EXTERNAL_MATCH',
             _matchCount: rows.length,
-            _rawRows: rows
+            _rawRows: safeRawRows
           }
         : rows[0];
     } else if (policy === 'EARLIEST') {
@@ -231,7 +233,7 @@ export function resolveGroupedRows(
             ...sorted[0],
             _discrepancyFlag: 'DUPLICATE_EXTERNAL_MATCH',
             _matchCount: rows.length,
-            _rawRows: rows
+            _rawRows: safeRawRows
           }
         : sorted[0];
     } else if (policy === 'LATEST') {
@@ -245,7 +247,7 @@ export function resolveGroupedRows(
             ...sorted[0],
             _discrepancyFlag: 'DUPLICATE_EXTERNAL_MATCH',
             _matchCount: rows.length,
-            _rawRows: rows
+            _rawRows: safeRawRows
           }
         : sorted[0];
     } else if (policy === 'AGGREGATE_SUM') {
@@ -263,12 +265,12 @@ export function resolveGroupedRows(
         if (hasCol) baseRow[col] = total;
       }
       baseRow._rowCount = rows.length;
-      baseRow._rawRows = rows;
+      baseRow._rawRows = safeRawRows;
       resolved[key] = baseRow;
     } else {
       // COMPOSITE_BUNDLE: classify by event phase and leg indicator
       const envelope: Record<string, any> = {
-        _rawRows: rows,
+        _rawRows: safeRawRows,
         _rowCount: rows.length,
         ORIGINAL: {},
         REVERSAL: {},
@@ -306,8 +308,8 @@ export function resolveGroupedRows(
         }
       }
 
-      // Merge first row attributes into top level for convenient fallback without circular reference
-      const groupDataSnapshot = { ...envelope };
+      // Merge first row attributes into top level for convenient fallback without circular reference or nested duplication
+      const { _rawRows: _discard, ...groupDataSnapshot } = envelope;
       Object.assign(envelope, rows[0], {
         _groupComposite: groupDataSnapshot,
         _groupedData: groupDataSnapshot

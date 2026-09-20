@@ -1,34 +1,25 @@
 import { Router, Request, Response } from 'express';
-import { isMongoConnected } from '../config/db.js';
 import { isPostgresConnected } from '../config/postgres.js';
 import { postgresRepo } from '../store/postgresRepo.js';
-import { TransactionTemplateModel } from '../models/TransactionTemplate.js';
-import { GlobalTransactionSchemaConfigModel } from '../models/GlobalTransactionSchemaConfig.js';
-import { UploadedTransactionRecordModel } from '../models/UploadedTransactionRecord.js';
-import { UploadAuditLogModel } from '../models/UploadAuditLog.js';
-import { WorkspaceTableRecordModel } from '../models/WorkspaceTableRecord.js';
-import { GlobalStandardDirectoryModel } from '../models/GlobalStandardDirectory.js';
 import { store, INITIAL_GLOBAL_STANDARD_DIRECTORY_RECORDS } from '../store/dataStore.js';
 import { TransactionTemplate, ColumnMappingRule, GlobalStandardDirectoryRecord } from '../types.js';
 import { GlobalSchemaDiscoveryService, classifyColumn, formatColumnLabel } from '../services/globalSchemaDiscoveryService.js';
+
 
 export const transactionSettingsRouter = Router();
 
 // GET /api/transactions/settings - Retrieve global transaction schema config and mapping templates
 transactionSettingsRouter.get('/settings', async (_req: Request, res: Response) => {
-  if (isMongoConnected) {
+  if (isPostgresConnected) {
     try {
-      let schema = await GlobalTransactionSchemaConfigModel.findOne().lean();
-      if (!schema) {
-        schema = await GlobalTransactionSchemaConfigModel.create(store.globalSchema) as any;
-      }
-      const templates = await TransactionTemplateModel.find().lean();
+      const schema = await postgresRepo.getGlobalSchemaConfig();
+      const templates = await postgresRepo.getTransactionTemplates();
       return res.json({
         schema: schema || store.globalSchema,
-        templates: templates.length > 0 ? templates : store.transactionTemplates
+        templates: templates && templates.length > 0 ? templates : store.transactionTemplates
       });
     } catch (e: any) {
-      console.warn('Error fetching settings from Mongo, using store:', e.message);
+      console.warn('Error fetching settings from PostgreSQL, using store:', e.message);
     }
   }
 
@@ -50,20 +41,11 @@ transactionSettingsRouter.post('/settings/schema', async (req: Request, res: Res
   store.globalSchema.updatedAt = new Date().toISOString();
   store.globalSchema.updatedBy = updatedBy || 'system';
 
-  if (isMongoConnected) {
+  if (isPostgresConnected) {
     try {
-      await GlobalTransactionSchemaConfigModel.findOneAndUpdate(
-        {},
-        {
-          customFields: store.globalSchema.customFields,
-          defaultTemplateId: store.globalSchema.defaultTemplateId,
-          updatedAt: store.globalSchema.updatedAt,
-          updatedBy: store.globalSchema.updatedBy
-        },
-        { upsert: true, new: true }
-      );
+      await postgresRepo.saveGlobalSchemaConfig(store.globalSchema);
     } catch (e: any) {
-      console.warn('Could not update schema in Mongo:', e.message);
+      console.warn('Could not update schema in PostgreSQL:', e.message);
     }
   }
 
@@ -102,25 +84,6 @@ transactionSettingsRouter.get('/schema/config', async (_req: Request, res: Respo
       return res.json(pgDoc);
     } catch (err: any) {
       console.warn('[SchemaConfig] Error fetching from PostgreSQL:', err.message);
-    }
-  }
-
-  if (isMongoConnected) {
-    try {
-      const doc = await GlobalTransactionSchemaConfigModel.findOne().lean();
-      if (doc && doc.standardFields && doc.standardFields.length > 0) {
-        return res.json({
-          version: doc.version || '2.3.0',
-          updatedAt: doc.updatedAt || new Date().toISOString(),
-          updatedBy: doc.updatedBy || 'system',
-          standardFields: doc.standardFields,
-          tableMappings: doc.tableMappings || {},
-          versionHistory: doc.versionHistory || [],
-          strictMappingEnforced: doc.strictMappingEnforced !== undefined ? doc.strictMappingEnforced : true
-        });
-      }
-    } catch (err: any) {
-      console.warn('[SchemaConfig] Error fetching from Mongo, fallback to memory:', err.message);
     }
   }
 
@@ -197,26 +160,7 @@ transactionSettingsRouter.post('/schema/config', async (req: Request, res: Respo
     }
   }
 
-  // Secondary fallback: MongoDB
-  if (isMongoConnected) {
-    try {
-      await GlobalTransactionSchemaConfigModel.findOneAndUpdate(
-        {},
-        {
-          version: store.globalSchema.version,
-          updatedAt: store.globalSchema.updatedAt,
-          updatedBy: store.globalSchema.updatedBy,
-          standardFields: store.globalSchema.standardFields,
-          tableMappings: store.globalSchema.tableMappings,
-          versionHistory: store.globalSchema.versionHistory,
-          strictMappingEnforced: store.globalSchema.strictMappingEnforced
-        },
-        { upsert: true, new: true }
-      );
-    } catch (err: any) {
-      console.warn('[SchemaConfig] Failed to save config to Mongo:', err.message);
-    }
-  }
+
 
   return res.json({
     message: `Global Schema updated to version ${newVersion}`,
@@ -238,16 +182,7 @@ transactionSettingsRouter.get('/table-mappings', async (_req: Request, res: Resp
     }
   }
 
-  if (isMongoConnected) {
-    try {
-      const doc = await GlobalTransactionSchemaConfigModel.findOne().lean();
-      if (doc && doc.tableMappings) {
-        return res.json(doc.tableMappings);
-      }
-    } catch (err: any) {
-      console.warn('[TableMappings] Error fetching from Mongo:', err.message);
-    }
-  }
+
 
   return res.json(store.globalSchema.tableMappings || {});
 });
@@ -286,21 +221,7 @@ transactionSettingsRouter.post('/table-mappings', async (req: Request, res: Resp
     }
   }
 
-  // Secondary fallback: MongoDB
-  if (isMongoConnected) {
-    try {
-      await GlobalTransactionSchemaConfigModel.findOneAndUpdate(
-        {},
-        {
-          $set: { [`tableMappings.${mappingKey}`]: mappingObj },
-          updatedAt: now
-        },
-        { upsert: true }
-      );
-    } catch (err: any) {
-      console.warn('[TableMappings] Error saving table mapping to Mongo:', err.message);
-    }
-  }
+
 
   const standardFields = store.globalSchema.standardFields || store.globalStandardDirectory || [];
   const requiredKeys = standardFields.filter((f: any) => f.required).map((f: any) => f.key);
@@ -384,9 +305,7 @@ transactionSettingsRouter.post('/settings/templates', async (req: Request, res: 
   // Handle setting default flag
   if (isDefault) {
     store.transactionTemplates.forEach(t => t.isDefault = false);
-    if (isMongoConnected) {
-      await TransactionTemplateModel.updateMany({}, { isDefault: false }).catch(() => {});
-    }
+
   }
 
   let template: TransactionTemplate;
@@ -426,17 +345,7 @@ transactionSettingsRouter.post('/settings/templates', async (req: Request, res: 
     store.globalSchema.defaultTemplateId = template.id;
   }
 
-  if (isMongoConnected) {
-    try {
-      await TransactionTemplateModel.findOneAndUpdate(
-        { id: template.id },
-        template,
-        { upsert: true, new: true }
-      );
-    } catch (e: any) {
-      console.warn('Could not save template to Mongo:', e.message);
-    }
-  }
+
 
   return res.status(201).json({
     message: 'Mapping template saved successfully',
@@ -454,9 +363,7 @@ transactionSettingsRouter.delete('/settings/templates/:id', async (req: Request,
 
   const [deleted] = store.transactionTemplates.splice(index, 1);
 
-  if (isMongoConnected) {
-    await TransactionTemplateModel.deleteOne({ id }).catch(() => {});
-  }
+
 
   return res.json({ message: 'Mapping template deleted', id: deleted.id });
 });
@@ -522,14 +429,7 @@ transactionSettingsRouter.post('/upload', async (req: Request, res: Response) =>
 
   store.uploadAuditLogs.unshift(auditLog);
 
-  if (isMongoConnected) {
-    try {
-      await UploadedTransactionRecordModel.insertMany(savedRecords);
-      await UploadAuditLogModel.create(auditLog);
-    } catch (e: any) {
-      console.warn('Could not insert uploaded records to Mongo:', e.message);
-    }
-  }
+
 
   return res.status(201).json({
     message: `Successfully uploaded ${records.length} transactions into working database`,
@@ -544,38 +444,7 @@ transactionSettingsRouter.post('/upload', async (req: Request, res: Response) =>
 transactionSettingsRouter.get('/working-db', async (req: Request, res: Response) => {
   const { batchId, search, status, limit } = req.query;
 
-  if (isMongoConnected) {
-    try {
-      const filter: any = {};
-      if (batchId) filter.batchId = String(batchId);
-      if (status) filter['mappedData.status'] = new RegExp(`^${status}$`, 'i');
-      if (search) {
-        const q = String(search);
-        filter.$or = [
-          { 'mappedData.transaction_id': { $regex: q, $options: 'i' } },
-          { 'mappedData.card_number': { $regex: q, $options: 'i' } },
-          { 'mappedData.customer_email': { $regex: q, $options: 'i' } },
-          { sourceFilename: { $regex: q, $options: 'i' } },
-          { batchId: { $regex: q, $options: 'i' } }
-        ];
-      }
 
-      const totalCount = await UploadedTransactionRecordModel.countDocuments(filter);
-      const pageLimit = limit ? parseInt(String(limit), 10) : 200;
-      const docs = await UploadedTransactionRecordModel.find(filter)
-        .sort({ uploadedAt: -1 })
-        .limit(pageLimit)
-        .lean();
-
-      return res.json({
-        totalCount,
-        returnedCount: docs.length,
-        transactions: docs
-      });
-    } catch (e: any) {
-      console.warn('Error querying working db from Mongo, using store:', e.message);
-    }
-  }
 
   let results = [...store.uploadedTransactions];
 
@@ -610,14 +479,7 @@ transactionSettingsRouter.get('/working-db', async (req: Request, res: Response)
 
 // GET /api/transactions/audit-logs - List upload audit track records
 transactionSettingsRouter.get('/audit-logs', async (_req: Request, res: Response) => {
-  if (isMongoConnected) {
-    try {
-      const logs = await UploadAuditLogModel.find().sort({ uploadedAt: -1 }).lean();
-      return res.json(logs);
-    } catch (e: any) {
-      console.warn('Error fetching audit logs from Mongo, using store:', e.message);
-    }
-  }
+
   return res.json(store.uploadAuditLogs);
 });
 
@@ -629,10 +491,7 @@ transactionSettingsRouter.delete('/working-db/clear', async (req: Request, res: 
     store.uploadedTransactions = store.uploadedTransactions.filter(r => r.batchId !== bId);
     store.uploadAuditLogs = store.uploadAuditLogs.filter(a => a.batchId !== bId);
 
-    if (isMongoConnected) {
-      await UploadedTransactionRecordModel.deleteMany({ batchId: bId }).catch(() => {});
-      await UploadAuditLogModel.deleteMany({ batchId: bId }).catch(() => {});
-    }
+
 
     return res.json({ message: `Batch ${bId} cleared from working database` });
   }
@@ -641,24 +500,14 @@ transactionSettingsRouter.delete('/working-db/clear', async (req: Request, res: 
   store.uploadedTransactions = [];
   store.uploadAuditLogs = [];
 
-  if (isMongoConnected) {
-    await UploadedTransactionRecordModel.deleteMany({}).catch(() => {});
-    await UploadAuditLogModel.deleteMany({}).catch(() => {});
-  }
+
 
   return res.json({ message: `Cleared all ${previousCount} transactions from working database` });
 });
 
 // GET /api/transactions/workspace-table - List workspace table records
 transactionSettingsRouter.get('/workspace-table', async (_req: Request, res: Response) => {
-  if (isMongoConnected) {
-    try {
-      const records = await WorkspaceTableRecordModel.find().sort({ createdAt: -1 }).lean();
-      return res.json(records);
-    } catch (e: any) {
-      console.warn('Error fetching workspace records from Mongo, using store:', e.message);
-    }
-  }
+
   return res.json(store.workspaceTableRecords);
 });
 
@@ -695,13 +544,7 @@ transactionSettingsRouter.post('/workspace-table', async (req: Request, res: Res
     newRecords.push(item);
   });
 
-  if (isMongoConnected) {
-    try {
-      await WorkspaceTableRecordModel.insertMany(newRecords);
-    } catch (e: any) {
-      console.warn('Could not insert workspace records to Mongo:', e.message);
-    }
-  }
+
 
   return res.status(201).json({
     message: `Saved ${newRecords.length} workspace table records`,
@@ -714,9 +557,7 @@ transactionSettingsRouter.delete('/workspace-table/clear', async (_req: Request,
   const count = store.workspaceTableRecords.length;
   store.workspaceTableRecords = [];
 
-  if (isMongoConnected) {
-    await WorkspaceTableRecordModel.deleteMany({}).catch(() => {});
-  }
+
 
   return res.json({ message: `Cleared all ${count} records from workspace table` });
 });
@@ -726,9 +567,7 @@ transactionSettingsRouter.delete('/workspace-table/:id', async (req: Request, re
   const { id } = req.params;
   store.workspaceTableRecords = store.workspaceTableRecords.filter(r => r.id !== id);
 
-  if (isMongoConnected) {
-    await WorkspaceTableRecordModel.deleteOne({ id }).catch(() => {});
-  }
+
 
   return res.json({ message: `Record ${id} deleted` });
 });
@@ -827,14 +666,7 @@ transactionSettingsRouter.get('/directory', async (_req: Request, res: Response)
     }
   }
 
-  if (isMongoConnected) {
-    try {
-      const records = await GlobalStandardDirectoryModel.find().sort({ created_at: -1 }).lean();
-      return res.json(records || []);
-    } catch (e: any) {
-      console.warn('Error querying GlobalStandardDirectoryModel:', e.message);
-    }
-  }
+
 
   return res.json(store.globalStandardDirectory || []);
 });
@@ -908,13 +740,7 @@ transactionSettingsRouter.post('/directory', async (req: Request, res: Response)
     }
   }
 
-  if (isMongoConnected) {
-    try {
-      await GlobalStandardDirectoryModel.create(record);
-    } catch (e: any) {
-      console.warn('Could not insert to GlobalStandardDirectoryModel:', e.message);
-    }
-  }
+
 
   return res.status(201).json({
     message: 'Global Standard Directory record created successfully',
@@ -1010,17 +836,7 @@ transactionSettingsRouter.put('/directory/:id', async (req: Request, res: Respon
     }
   }
 
-  if (isMongoConnected) {
-    try {
-      await GlobalStandardDirectoryModel.findOneAndUpdate(
-        { $or: [{ id }, { key: id }, { key: cleanKey }] },
-        { ...updatedRecord },
-        { new: true }
-      );
-    } catch (e: any) {
-      console.warn('Could not update GlobalStandardDirectoryModel:', e.message);
-    }
-  }
+
 
   return res.json({
     message: 'Global Standard Directory record updated successfully',
@@ -1047,17 +863,7 @@ transactionSettingsRouter.delete('/directory/:id', async (req: Request, res: Res
     }
   }
 
-  if (isMongoConnected) {
-    try {
-      await GlobalStandardDirectoryModel.deleteOne({ $or: [{ id }, { key: id }] });
-      await GlobalTransactionSchemaConfigModel.updateMany(
-        {},
-        { $pull: { standardFields: { $or: [{ id }, { key: id }] } } }
-      );
-    } catch (e: any) {
-      console.warn('Could not delete from GlobalStandardDirectoryModel:', e.message);
-    }
-  }
+
 
   return res.json({
     message: `Directory record '${id}' deleted successfully`,
@@ -1081,14 +887,7 @@ transactionSettingsRouter.delete('/directory', async (_req: Request, res: Respon
     }
   }
 
-  if (isMongoConnected) {
-    try {
-      await GlobalStandardDirectoryModel.deleteMany({});
-      await GlobalTransactionSchemaConfigModel.updateMany({}, { $set: { standardFields: [] } });
-    } catch (e: any) {
-      console.warn('Could not clear GlobalStandardDirectoryModel:', e.message);
-    }
-  }
+
 
   return res.json({
     message: 'All Global Standard Directory records have been deleted successfully',
