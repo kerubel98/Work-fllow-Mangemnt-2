@@ -23,6 +23,8 @@ import MessageModal from './components/common/MessageModal';
 import { ShieldAlert } from 'lucide-react';
 import { getUserAdminCapabilities } from './utils/adminCapabilities';
 
+import { usePersistentState } from './hooks/usePersistentState';
+
 // Code-split dynamic route panels
 const IssueDetailView = lazy(() => import('./components/IssueDetailView'));
 const TeamWorkspace = lazy(() => import('./components/TeamWorkspace'));
@@ -35,17 +37,6 @@ const WorkspaceSettings = lazy(() => import('./components/WorkspaceSettings'));
 const SystemSettings = lazy(() => import('./components/settings/SystemSettings'));
 const AdminTeamResourcesMonitor = lazy(() => import('./components/AdminTeamResourcesMonitor'));
 
-function safeGetJson<T>(key: string, fallback: T): T {
-  try {
-    const saved = localStorage.getItem(key);
-    if (!saved) return fallback;
-    const parsed = JSON.parse(saved);
-    return parsed !== null && parsed !== undefined ? parsed : fallback;
-  } catch {
-    return fallback;
-  }
-}
-
 function PanelLoadingSkeleton() {
   return (
     <div className="w-full h-96 flex flex-col items-center justify-center gap-3 p-8 bg-white/50 rounded-2xl border border-slate-200/80 animate-pulse">
@@ -55,22 +46,29 @@ function PanelLoadingSkeleton() {
   );
 }
 
+const serializeIssues = (data: Issue[]) => {
+  if (!Array.isArray(data)) return data;
+  return data.map(i => {
+    const { firstLevelMappedData, queryResults, ...lightweightIssue } = i;
+    return lightweightIssue;
+  });
+};
 
 export default function App() {
-  // 1. Core State Engine (safely hydrated from localStorage with fallbacks)
-  const [users, setUsers] = useState<User[]>(() => safeGetJson('it_users', INITIAL_USERS));
-  const [currentUser, setCurrentUser] = useState<User | null>(() => safeGetJson('it_session', null));
-  const [issues, setIssues] = useState<Issue[]>(() => safeGetJson('it_issues', INITIAL_ISSUES));
-  const [hashtags, setHashtags] = useState<HashtagPreset[]>(() => safeGetJson('it_hashtags', INITIAL_HASHTAGS));
-  const [plugins, setPlugins] = useState<Plugin[]>(() => safeGetJson('it_plugins', INITIAL_PLUGINS));
-  const [databases, setDatabases] = useState<DatabaseConnection[]>(() => safeGetJson('it_databases', []));
-  const [systems, setSystems] = useState<EnvironmentSystem[]>(() => safeGetJson('it_systems', INITIAL_SYSTEMS));
-  const [teams, setTeams] = useState<Team[]>(() => safeGetJson('it_teams', INITIAL_TEAMS));
-  const [teamTasks, setTeamTasks] = useState<TeamTask[]>(() => safeGetJson('it_team_tasks', INITIAL_TEAM_TASKS));
-  const [teamInsights, setTeamInsights] = useState<TeamInsight[]>(() => safeGetJson('it_team_insights', INITIAL_TEAM_INSIGHTS));
-  const [teamMessages, setTeamMessages] = useState<TeamDiscussionMessage[]>(() => safeGetJson('it_team_messages', INITIAL_TEAM_MESSAGES));
-  const [notifications, setNotifications] = useState<AppNotification[]>(() => safeGetJson('it_notifications', INITIAL_NOTIFICATIONS));
-  const [directMessages, setDirectMessages] = useState<DirectMessage[]>(() => safeGetJson('it_direct_messages', INITIAL_DIRECT_MESSAGES));
+  // 1. Core State Engine (safely persisted with usePersistentState)
+  const [users, setUsers] = usePersistentState<User[]>('it_users', INITIAL_USERS);
+  const [currentUser, setCurrentUser] = usePersistentState<User | null>('it_session', null);
+  const [issues, setIssues] = usePersistentState<Issue[]>('it_issues', INITIAL_ISSUES, serializeIssues);
+  const [hashtags, setHashtags] = usePersistentState<HashtagPreset[]>('it_hashtags', INITIAL_HASHTAGS);
+  const [plugins, setPlugins] = usePersistentState<Plugin[]>('it_plugins', INITIAL_PLUGINS);
+  const [databases, setDatabases] = usePersistentState<DatabaseConnection[]>('it_databases', []);
+  const [systems, setSystems] = usePersistentState<EnvironmentSystem[]>('it_systems', INITIAL_SYSTEMS);
+  const [teams, setTeams] = usePersistentState<Team[]>('it_teams', INITIAL_TEAMS);
+  const [teamTasks, setTeamTasks] = usePersistentState<TeamTask[]>('it_team_tasks', INITIAL_TEAM_TASKS);
+  const [teamInsights, setTeamInsights] = usePersistentState<TeamInsight[]>('it_team_insights', INITIAL_TEAM_INSIGHTS);
+  const [teamMessages, setTeamMessages] = usePersistentState<TeamDiscussionMessage[]>('it_team_messages', INITIAL_TEAM_MESSAGES);
+  const [notifications, setNotifications] = usePersistentState<AppNotification[]>('it_notifications', INITIAL_NOTIFICATIONS);
+  const [directMessages, setDirectMessages] = usePersistentState<DirectMessage[]>('it_direct_messages', INITIAL_DIRECT_MESSAGES);
 
   // Deep-linking target states for Notifications & Navigation
   const [deepLinkTeamId, setDeepLinkTeamId] = useState<string | null>(null);
@@ -87,60 +85,54 @@ export default function App() {
     setCreateTeamSignal(prev => prev + 1);
   };
 
-  const [queryApprovals, setQueryApprovals] = useState<QueryApprovalRequest[]>(() => 
-    safeGetJson('it_query_approvals', [
-      {
-        id: 'qreq-1',
-        systemId: 'sys-2',
-        systemName: 'Back End Settlement Engine',
-        environment: 'production',
-        tableName: 'sv_fin_tab',
-        query: "UPDATE sv_fin_tab SET settlement_status = 'RECONCILED' WHERE ext_ref = 'TXN-9021';",
-        requesterId: 'usr-3',
-        requesterName: 'tech_sarah',
-        requesterRole: 'technical',
-        status: 'pending',
-        requestDate: '2026-07-11T08:15:00Z',
-        issueId: 'ISS-101',
-        issueTitle: 'Duplicate auth charges on Amazon cardholders'
-      }
-    ])
-  );
+  const [queryApprovals, setQueryApprovals] = usePersistentState<QueryApprovalRequest[]>('it_query_approvals', [
+    {
+      id: 'qreq-1',
+      systemId: 'sys-2',
+      systemName: 'Back End Settlement Engine',
+      environment: 'production',
+      tableName: 'sv_fin_tab',
+      query: "UPDATE sv_fin_tab SET settlement_status = 'RECONCILED' WHERE ext_ref = 'TXN-9021';",
+      requesterId: 'usr-3',
+      requesterName: 'tech_sarah',
+      requesterRole: 'technical',
+      status: 'pending',
+      requestDate: '2026-07-11T08:15:00Z',
+      issueId: 'ISS-101',
+      issueTitle: 'Duplicate auth charges on Amazon cardholders'
+    }
+  ]);
 
-  const [dbAccessRequests, setDbAccessRequests] = useState<DbAccessRequest[]>(() => 
-    safeGetJson('it_db_access_requests', [
-      {
-        id: 'dbreq-1',
-        userId: 'usr-2',
-        username: 'ops_john',
-        userRole: 'operational',
-        dbId: 'db-1',
-        dbName: 'Core Retail Banking DB',
-        requestedPrivilege: 'SELECT',
-        reason: 'Need read access for checking card discrepancy settlement records',
-        status: 'pending',
-        requestDate: '2026-07-24T10:15:00Z'
-      }
-    ])
-  );
+  const [dbAccessRequests, setDbAccessRequests] = usePersistentState<DbAccessRequest[]>('it_db_access_requests', [
+    {
+      id: 'dbreq-1',
+      userId: 'usr-2',
+      username: 'ops_john',
+      userRole: 'operational',
+      dbId: 'db-1',
+      dbName: 'Core Retail Banking DB',
+      requestedPrivilege: 'SELECT',
+      reason: 'Need read access for checking card discrepancy settlement records',
+      status: 'pending',
+      requestDate: '2026-07-24T10:15:00Z'
+    }
+  ]);
 
-  const [connectionUsageLogs, setConnectionUsageLogs] = useState<ConnectionUsageLog[]>(() => 
-    safeGetJson('it_connection_usage_logs', [
-      {
-        id: 'log-1',
-        userId: 'usr-2',
-        username: 'ops_john',
-        userRole: 'operational',
-        dbId: 'db-1',
-        dbName: 'Core Retail Banking DB',
-        queryType: 'SELECT',
-        queryText: 'SELECT id, ext_ref, amt, status FROM sv_fin_tab WHERE txn_date >= CURRENT_DATE - 1 LIMIT 50;',
-        timestamp: '2026-07-24T10:30:00Z',
-        durationMs: 42,
-        status: 'success'
-      }
-    ])
-  );
+  const [connectionUsageLogs, setConnectionUsageLogs] = usePersistentState<ConnectionUsageLog[]>('it_connection_usage_logs', [
+    {
+      id: 'log-1',
+      userId: 'usr-2',
+      username: 'ops_john',
+      userRole: 'operational',
+      dbId: 'db-1',
+      dbName: 'Core Retail Banking DB',
+      queryType: 'SELECT',
+      queryText: 'SELECT id, ext_ref, amt, status FROM sv_fin_tab WHERE txn_date >= CURRENT_DATE - 1 LIMIT 50;',
+      timestamp: '2026-07-24T10:30:00Z',
+      durationMs: 42,
+      status: 'success'
+    }
+  ]);
 
   const [transactions] = useState<Transaction[]>(TRANSACTION_ARCHIVE);
 
@@ -171,99 +163,6 @@ export default function App() {
     }
     setActiveNavigation(tab);
   };
-
-  // Helper to asynchronously persist state cache to localStorage without blocking the main rendering thread
-  const persistCacheDebounced = useCallback((key: string, data: any) => {
-    try {
-      if (typeof window === 'undefined') return;
-      setTimeout(() => {
-        try {
-          let toStore = data;
-          if (key === 'it_issues' && Array.isArray(data)) {
-            // Strip out nested large mapped data to avoid QuotaExceededError and main-thread serialization freezes
-            toStore = data.map(i => {
-              const { firstLevelMappedData, queryResults, ...lightweightIssue } = i;
-              return lightweightIssue;
-            });
-          }
-          localStorage.setItem(key, JSON.stringify(toStore));
-        } catch (e) {
-          console.warn(`[LocalStorage] Deferred write bypassed for ${key}:`, e);
-        }
-      }, 200);
-    } catch {
-      // Non-fatal
-    }
-  }, []);
-
-  // Sync state changes to LocalStorage as cache fallback
-  useEffect(() => {
-    persistCacheDebounced('it_users', users);
-  }, [users, persistCacheDebounced]);
-
-  useEffect(() => {
-    if (currentUser) {
-      persistCacheDebounced('it_session', currentUser);
-    } else {
-      try { localStorage.removeItem('it_session'); } catch {}
-    }
-  }, [currentUser, persistCacheDebounced]);
-
-  useEffect(() => {
-    persistCacheDebounced('it_issues', issues);
-  }, [issues, persistCacheDebounced]);
-
-  useEffect(() => {
-    persistCacheDebounced('it_hashtags', hashtags);
-  }, [hashtags, persistCacheDebounced]);
-
-  useEffect(() => {
-    persistCacheDebounced('it_plugins', plugins);
-  }, [plugins, persistCacheDebounced]);
-
-  useEffect(() => {
-    persistCacheDebounced('it_databases', databases);
-  }, [databases, persistCacheDebounced]);
-
-  useEffect(() => {
-    persistCacheDebounced('it_systems', systems);
-  }, [systems, persistCacheDebounced]);
-
-  useEffect(() => {
-    persistCacheDebounced('it_query_approvals', queryApprovals);
-  }, [queryApprovals, persistCacheDebounced]);
-
-  useEffect(() => {
-    persistCacheDebounced('it_db_access_requests', dbAccessRequests);
-  }, [dbAccessRequests, persistCacheDebounced]);
-
-  useEffect(() => {
-    persistCacheDebounced('it_connection_usage_logs', connectionUsageLogs);
-  }, [connectionUsageLogs, persistCacheDebounced]);
-
-  useEffect(() => {
-    persistCacheDebounced('it_teams', teams);
-  }, [teams, persistCacheDebounced]);
-
-  useEffect(() => {
-    persistCacheDebounced('it_team_tasks', teamTasks);
-  }, [teamTasks, persistCacheDebounced]);
-
-  useEffect(() => {
-    persistCacheDebounced('it_team_insights', teamInsights);
-  }, [teamInsights, persistCacheDebounced]);
-
-  useEffect(() => {
-    persistCacheDebounced('it_team_messages', teamMessages);
-  }, [teamMessages, persistCacheDebounced]);
-
-  useEffect(() => {
-    persistCacheDebounced('it_notifications', notifications);
-  }, [notifications, persistCacheDebounced]);
-
-  useEffect(() => {
-    persistCacheDebounced('it_direct_messages', directMessages);
-  }, [directMessages, persistCacheDebounced]);
 
   // Two-stage state hydration: prioritize workspace essentials first, then load collaboration/audit secondary data
   useEffect(() => {

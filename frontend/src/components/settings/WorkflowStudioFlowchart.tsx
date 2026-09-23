@@ -53,6 +53,10 @@ import {
   WorkflowMessageAggregationRule
 } from '../../types';
 
+import { WorkflowPalette } from './workflow/WorkflowPalette';
+import { WorkflowInspector } from './workflow/WorkflowInspector';
+import { WorkflowValidationSummary } from './workflow/WorkflowValidationSummary';
+
 interface WorkflowStudioFlowchartProps {
   currentUser?: any;
   selectedWorkflowId?: string;
@@ -107,8 +111,49 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
   const [selectedConnection, setSelectedConnection] = useState<FlowchartConnection | null>(null);
   const [canvasZoom, setCanvasZoom] = useState(1);
   const [paletteSearch, setPaletteSearch] = useState('');
+  const [savedSnapshot, setSavedSnapshot] = useState<string>('');
 
   const canvasRef = useRef<HTMLDivElement>(null);
+
+  const createSnapshot = (
+    wNodes: FlowchartNode[],
+    wConns: FlowchartConnection[],
+    wName: string,
+    wCat: string,
+    wDesc: string,
+    wAggs: WorkflowMessageAggregationRule[]
+  ) => {
+    return JSON.stringify({
+      name: (wName || '').trim(),
+      category: wCat || 'Settlement',
+      description: (wDesc || '').trim(),
+      nodes: (wNodes || []).map(n => ({
+        id: n.id,
+        name: n.name,
+        type: n.type,
+        x: Math.round(n.x),
+        y: Math.round(n.y),
+        onPassAction: n.onPassAction,
+        onFailAction: n.onFailAction,
+        reportColumnName: n.reportColumnName,
+        reportField: n.reportField
+      })),
+      connections: (wConns || []).map(c => ({
+        id: c.id,
+        fromNodeId: c.fromNodeId,
+        fromPort: c.fromPort,
+        toNodeId: c.toNodeId,
+        action: c.action
+      })),
+      aggregations: (wAggs || []).map(a => a.id)
+    });
+  };
+
+  const currentSnapshot = React.useMemo(() => {
+    return createSnapshot(nodes, connections, workflowName, workflowCategory, workflowDescription, messageAggregations);
+  }, [nodes, connections, workflowName, workflowCategory, workflowDescription, messageAggregations]);
+
+  const hasUnsavedChanges = Boolean(savedSnapshot && savedSnapshot !== currentSnapshot);
 
   useEffect(() => {
     loadData();
@@ -225,18 +270,28 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
     setMessageAggregations(safeAggs as WorkflowMessageAggregationRule[]);
 
     if (wf.nodes && Array.isArray(wf.nodes) && wf.nodes.length > 0) {
-      setNodes(wf.nodes.filter(Boolean));
-      setConnections(Array.isArray(wf.connections) ? wf.connections.filter(Boolean) : []);
+      const initialNodes = wf.nodes.filter(Boolean);
+      const initialConns = Array.isArray(wf.connections) ? wf.connections.filter(Boolean) : [];
+      setNodes(initialNodes);
+      setConnections(initialConns);
+      setSavedSnapshot(createSnapshot(
+        initialNodes,
+        initialConns,
+        wf.name || '',
+        wf.category || 'Settlement',
+        wf.description || '',
+        safeAggs as WorkflowMessageAggregationRule[]
+      ));
     } else {
       // Synthesize vertical flowchart nodes from existing stages & steps
-      convertStagesToFlowchart(wf, boxesToUse);
+      convertStagesToFlowchart(wf, boxesToUse, safeAggs as WorkflowMessageAggregationRule[]);
     }
   };
 
   /**
    * Converts linear, stage-based or step-based workflow into a clean VERTICAL flowchart
    */
-  const convertStagesToFlowchart = (wf: DatabaseValidationWorkflow, availableBoxes: ValidationBox[]) => {
+  const convertStagesToFlowchart = (wf: DatabaseValidationWorkflow, availableBoxes: ValidationBox[], safeAggs?: WorkflowMessageAggregationRule[]) => {
     if (!wf) return;
     const safeBoxes = (availableBoxes || validationBoxes || []).filter(Boolean);
     const newNodes: FlowchartNode[] = [];
@@ -371,6 +426,14 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
 
     setNodes(newNodes);
     setConnections(newConns);
+    setSavedSnapshot(createSnapshot(
+      newNodes,
+      newConns,
+      wf.name || '',
+      wf.category || 'Settlement',
+      wf.description || '',
+      safeAggs || []
+    ));
   };
 
   /**
@@ -502,6 +565,162 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
 
     setNodes(newNodes);
     setConnections(newConns);
+  };
+
+  const initIngressAuditFlowchart = (availableBoxes: ValidationBox[]) => {
+    setActiveWorkflow(null);
+    setMessageAggregations([]);
+    setWorkflowName('Ingress & Audit Lookup Pipeline');
+    setWorkflowCategory('Compliance');
+    setWorkflowDescription('Single-stage lookup verifying existence and status in transaction mirror.');
+
+    const box = availableBoxes[0];
+    const centerX = 320;
+
+    const newNodes: FlowchartNode[] = [
+      {
+        id: 'start-1',
+        type: 'START',
+        name: 'Transaction Batches',
+        description: 'Uploaded datasets',
+        x: centerX,
+        y: 40,
+        onPassAction: 'CONTINUE',
+        onFailAction: 'STOP'
+      },
+      {
+        id: 'box-node-1',
+        type: 'VALIDATION_BOX',
+        boxId: box?.id,
+        name: box?.name || 'Audit Existence Verification',
+        description: 'Checks database mirror match',
+        category: 'Audit',
+        x: centerX,
+        y: 200,
+        onPassAction: 'CONTINUE',
+        onFailAction: 'STOP',
+        targetDbId: box?.targetDbId,
+        targetTable: box?.targetTable,
+        columnConfigurationIds: box?.columnConfigurationIds || [],
+        columnConfigurations: box?.columnConfigurations || []
+      },
+      {
+        id: 'end-reconciled',
+        type: 'END',
+        name: 'AUDITED_CLEAN',
+        description: 'Audit verified',
+        x: 200,
+        y: 380,
+        onPassAction: 'CONTINUE',
+        onFailAction: 'STOP'
+      },
+      {
+        id: 'end-flagged',
+        type: 'END',
+        name: 'AUDIT_EXCEPTION',
+        description: 'Discrepancy flagged',
+        x: 440,
+        y: 380,
+        onPassAction: 'STOP',
+        onFailAction: 'STOP'
+      }
+    ];
+
+    const newConns: FlowchartConnection[] = [
+      {
+        id: 'conn-start-box',
+        fromNodeId: 'start-1',
+        fromPort: 'output',
+        toNodeId: 'box-node-1',
+        action: 'CONTINUE',
+        label: 'Process'
+      },
+      {
+        id: 'conn-box-pass',
+        fromNodeId: 'box-node-1',
+        fromPort: 'pass',
+        toNodeId: 'end-reconciled',
+        action: 'CONTINUE',
+        label: 'Valid'
+      },
+      {
+        id: 'conn-box-fail',
+        fromNodeId: 'box-node-1',
+        fromPort: 'fail',
+        toNodeId: 'end-flagged',
+        action: 'STOP',
+        label: 'Mismatch'
+      }
+    ];
+
+    setNodes(newNodes);
+    setConnections(newConns);
+  };
+
+  const initThreeWayMatchFlowchart = (availableBoxes: ValidationBox[]) => {
+    setActiveWorkflow(null);
+    setMessageAggregations([]);
+    setWorkflowName('3-Way Match & Multi-Currency Pipeline');
+    setWorkflowCategory('Reconciliation');
+    setWorkflowDescription('Three-stage pipeline comparing terminal, gateway authorization, and core bank ledger.');
+
+    const b1 = availableBoxes[0];
+    const b2 = availableBoxes[1] || availableBoxes[0];
+    const b3 = availableBoxes[2] || availableBoxes[0];
+    const centerX = 320;
+
+    const newNodes: FlowchartNode[] = [
+      { id: 'start-1', type: 'START', name: 'File Ingress', description: 'Batch ingress', x: centerX, y: 40, onPassAction: 'CONTINUE', onFailAction: 'STOP' },
+      { id: 'box-1', type: 'VALIDATION_BOX', boxId: b1?.id, name: b1?.name || 'Terminal Feed Match', description: 'Stage 1 match', category: 'Stage 1', x: centerX, y: 190, onPassAction: 'CONTINUE', onFailAction: 'STOP', targetDbId: b1?.targetDbId, targetTable: b1?.targetTable },
+      { id: 'box-2', type: 'VALIDATION_BOX', boxId: b2?.id, name: b2?.name || 'Gateway Auth Cross-Check', description: 'Stage 2 match', category: 'Stage 2', x: centerX, y: 360, onPassAction: 'CONTINUE', onFailAction: 'STOP', targetDbId: b2?.targetDbId, targetTable: b2?.targetTable },
+      { id: 'box-3', type: 'VALIDATION_BOX', boxId: b3?.id, name: b3?.name || 'Core Bank Ledger Post', description: 'Stage 3 match', category: 'Stage 3', x: centerX, y: 530, onPassAction: 'CONTINUE', onFailAction: 'STOP', targetDbId: b3?.targetDbId, targetTable: b3?.targetTable },
+      { id: 'end-reconciled', type: 'END', name: '3-WAY RECONCILED', description: 'Complete match across all 3 ledgers', x: 200, y: 700, onPassAction: 'CONTINUE', onFailAction: 'STOP' },
+      { id: 'end-flagged', type: 'END', name: 'LEDGER BREAK', description: 'Break identified', x: 440, y: 700, onPassAction: 'STOP', onFailAction: 'STOP' }
+    ];
+
+    const newConns: FlowchartConnection[] = [
+      { id: 'conn-s-1', fromNodeId: 'start-1', fromPort: 'output', toNodeId: 'box-1', action: 'CONTINUE', label: 'Ingest' },
+      { id: 'conn-1-2', fromNodeId: 'box-1', fromPort: 'pass', toNodeId: 'box-2', action: 'CONTINUE', label: 'Match 1' },
+      { id: 'conn-1-f', fromNodeId: 'box-1', fromPort: 'fail', toNodeId: 'end-flagged', action: 'STOP', label: 'Break 1' },
+      { id: 'conn-2-3', fromNodeId: 'box-2', fromPort: 'pass', toNodeId: 'box-3', action: 'CONTINUE', label: 'Match 2' },
+      { id: 'conn-2-f', fromNodeId: 'box-2', fromPort: 'fail', toNodeId: 'end-flagged', action: 'STOP', label: 'Break 2' },
+      { id: 'conn-3-e', fromNodeId: 'box-3', fromPort: 'pass', toNodeId: 'end-reconciled', action: 'CONTINUE', label: 'Reconciled' },
+      { id: 'conn-3-f', fromNodeId: 'box-3', fromPort: 'fail', toNodeId: 'end-flagged', action: 'STOP', label: 'Break 3' }
+    ];
+
+    setNodes(newNodes);
+    setConnections(newConns);
+  };
+
+  const handleApplyTemplate = (templateType: 'two_stage' | 'ingress_audit' | 'threeway_match') => {
+    if (templateType === 'two_stage') {
+      initDefaultFlowchart(validationBoxes);
+    } else if (templateType === 'ingress_audit') {
+      initIngressAuditFlowchart(validationBoxes);
+    } else if (templateType === 'threeway_match') {
+      initThreeWayMatchFlowchart(validationBoxes);
+    }
+  };
+
+  const handleNewWorkflow = () => {
+    setActiveWorkflow(null);
+    setWorkflowName('New Validation Pipeline');
+    setWorkflowCategory('Settlement');
+    setWorkflowDescription('');
+    setMessageAggregations([]);
+    setNodes([
+      {
+        id: 'node-start',
+        type: 'START',
+        name: 'Transaction Ingress',
+        description: 'Uploaded datasets',
+        x: 320,
+        y: 40,
+        onPassAction: 'CONTINUE',
+        onFailAction: 'STOP'
+      }
+    ]);
+    setConnections([]);
   };
 
   /**
@@ -729,6 +948,9 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
     e.stopPropagation();
     const node = nodes.find(n => n.id === nodeId);
     if (!node || !canvasRef.current) return;
+
+    setSelectedNode(node);
+    setSelectedConnection(null);
 
     const rect = canvasRef.current.getBoundingClientRect();
     const scrollLeft = canvasRef.current.scrollLeft || 0;
@@ -1170,148 +1392,31 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
 
   return (
     <div className="space-y-4">
-      {/* Top Header & Settings Bar */}
-      <div className="bg-white border border-slate-200/90 rounded-2xl p-2.5 sm:p-3 text-slate-800 shadow-xs" id="workflow-studio-header">
-        <div className="flex items-center justify-between gap-2 overflow-x-auto no-scrollbar">
-          <div className="flex items-center gap-2 shrink-0">
+      {/* Consolidated Workflow Navigation & Controls Card */}
+      <div className="bg-white border border-slate-200/90 rounded-2xl p-3 sm:p-3.5 text-slate-800 shadow-xs space-y-2.5" id="workflow-studio-header">
+        <div className="flex flex-wrap items-center justify-between gap-2.5">
+          {/* Workflow Identity & Metadata Inputs */}
+          <div className="flex flex-wrap items-center gap-2 flex-1 min-w-[260px]">
             <div className="p-1.5 bg-purple-50 text-purple-600 border border-purple-200/60 rounded-lg shrink-0">
-              <GitFork size={18} />
-            </div>
-            <div className="flex items-center gap-1.5 shrink-0">
-              <h2 className="text-xs sm:text-sm font-bold text-slate-900 tracking-tight whitespace-nowrap">Workflow Studio</h2>
-              <span className="hidden xl:inline-flex px-1.5 py-0.5 rounded text-[10px] font-mono font-bold bg-purple-50 text-purple-600 border border-purple-200/60 items-center gap-1 whitespace-nowrap">
-                <span>Top ➔ Down Flow</span>
-                <ArrowDown size={10} className="text-purple-600" />
-              </span>
-              {activeWorkflow && (
-                <span className="px-2 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200/80 flex items-center gap-1.5 shadow-2xs whitespace-nowrap">
-                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                  <span>Selected: <strong className="text-emerald-900 font-bold">{activeWorkflow.name}</strong></span>
-                </span>
-              )}
-            </div>
-          </div>
-
-          {/* Quick Actions */}
-          <div className="flex items-center gap-1.5 shrink-0" id="workflow-studio-actions-row">
-            <button
-              type="button"
-              onClick={handleCreateNewFlowchart}
-              className="px-2.5 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-xs transition shrink-0 whitespace-nowrap"
-              title="Create a brand new blank flowchart pipeline"
-            >
-              <Plus size={13} />
-              <span>+ New Flowchart</span>
-            </button>
-
-            <div className="flex items-center gap-1 bg-slate-50 border border-slate-200 rounded-lg px-2 py-1 text-slate-700 shrink-0">
-              <GitFork size={12} className="text-purple-600 shrink-0" />
-              <select
-                value={activeWorkflow?.id || ''}
-                onChange={(e) => {
-                  const found = (workflows || []).find(w => w && w.id === e.target.value);
-                  if (found) selectWorkflow(found);
-                }}
-                className="bg-transparent text-xs text-slate-800 font-semibold focus:outline-none cursor-pointer max-w-[130px] sm:max-w-[150px] truncate"
-                title="Select active workflow to inspect and edit"
-              >
-                <option value="" className="bg-white text-slate-500">-- Select Workflow ({(workflows || []).filter(Boolean).length}) --</option>
-                {(workflows || []).filter(Boolean).map(wf => (
-                  <option key={wf.id} value={wf.id} className="bg-white text-slate-800">
-                    {wf.name} {activeWorkflow?.id === wf.id ? '✓ (Active)' : ''}
-                  </option>
-                ))}
-              </select>
+              <GitFork size={16} />
             </div>
 
-            {activeWorkflow && (
-              <div className="flex items-center gap-1 px-2 py-1 bg-blue-50 border border-blue-200/60 text-blue-700 rounded-lg text-xs font-mono shrink-0 whitespace-nowrap">
-                <Users size={11} className="text-blue-500 shrink-0" />
-                <span>Team: #{activeWorkflow.teamId || currentUser?.teamId || 'team-cards'}</span>
-              </div>
-            )}
-
-            {activeWorkflow && (
-              <button
-                type="button"
-                onClick={handleDeleteWorkflow}
-                className="px-2 py-1.5 bg-rose-50 hover:bg-rose-100 border border-rose-200 text-rose-700 rounded-lg text-xs font-semibold transition cursor-pointer flex items-center gap-1 shadow-2xs shrink-0 whitespace-nowrap"
-                title={`Delete workflow "${activeWorkflow.name}"`}
-              >
-                <Trash2 size={12} className="text-rose-500" />
-                <span>Delete</span>
-              </button>
-            )}
-
-            <button
-              type="button"
-              onClick={handleAutoAlignVertical}
-              className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 border border-slate-200 text-slate-700 rounded-lg text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition shrink-0 whitespace-nowrap"
-              title="Cleanly arrange all nodes vertically"
-            >
-              <AlignVerticalJustifyCenter size={12} className="text-purple-600" />
-              <span>Align</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => initDefaultFlowchart(validationBoxes)}
-              className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 border border-slate-200 text-slate-700 rounded-lg text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition shrink-0 whitespace-nowrap"
-              title="Load standard two-stage template"
-            >
-              <Sparkles size={12} className="text-amber-500" />
-              <span>Sample Flow</span>
-            </button>
-
-            {/* Message Aggregator Settings Button */}
-            <button
-              type="button"
-              onClick={() => {
-                setShowAggregatorModal(true);
-                resetRuleForm(aggregatorTab);
-              }}
-              className="px-2.5 py-1.5 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 text-indigo-700 rounded-lg text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition shadow-2xs shrink-0 whitespace-nowrap"
-              title="Configure aggregated Pass and Fail outcome messages for this workflow"
-            >
-              <Sliders size={12} className="text-indigo-600" />
-              <span>Aggregator</span>
-              {messageAggregations.length > 0 && (
-                <span className="px-1.5 py-0.2 rounded-full text-[10px] font-mono font-bold bg-indigo-600 text-white shadow-2xs">
-                  {messageAggregations.length}
-                </span>
-              )}
-            </button>
-
-            <button
-              type="button"
-              onClick={handleSaveWorkflow}
-              disabled={isSaving}
-              className="px-3.5 py-1.5 bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-xs transition disabled:opacity-50 shrink-0 whitespace-nowrap"
-            >
-              <Save size={13} />
-              <span>{isSaving ? 'Saving...' : 'Save Flowchart'}</span>
-            </button>
-          </div>
-        </div>
-
-        {/* Workflow Title and Description Fields */}
-        <div className="mt-2.5 pt-2.5 border-t border-slate-200 grid grid-cols-1 md:grid-cols-3 gap-2.5 text-xs">
-          <div>
-            <label className="block text-[11px] font-medium text-slate-600 mb-1">Workflow Name:</label>
+            {/* Editable Workflow Title */}
             <input
               type="text"
               value={workflowName}
               onChange={(e) => setWorkflowName(e.target.value)}
-              className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1 text-slate-800 font-semibold focus:outline-none focus:border-purple-500 focus:bg-white"
-              placeholder="e.g. Vertical Clearing Pipeline"
+              placeholder="Workflow Pipeline Name..."
+              className="text-xs sm:text-sm font-bold text-slate-900 bg-slate-50 hover:bg-slate-100/70 focus:bg-white border border-slate-200 rounded-lg px-2.5 py-1 focus:outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500/20 transition min-w-[180px] max-w-sm flex-1 font-sans"
+              title="Click to rename workflow"
             />
-          </div>
-          <div>
-            <label className="block text-[11px] font-medium text-slate-600 mb-1">Category:</label>
+
+            {/* Category Selector Pill */}
             <select
               value={workflowCategory}
               onChange={(e: any) => setWorkflowCategory(e.target.value)}
-              className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1 text-slate-800 focus:outline-none focus:border-purple-500 focus:bg-white"
+              className="text-xs font-semibold bg-slate-50 border border-slate-200 rounded-lg px-2 py-1 text-slate-700 focus:outline-none focus:border-purple-500 cursor-pointer shadow-2xs"
+              title="Workflow Business Category"
             >
               <option value="Settlement">Settlement</option>
               <option value="Reconciliation">Reconciliation</option>
@@ -1319,169 +1424,118 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
               <option value="Fulfillment">Fulfillment</option>
               <option value="Custom">Custom</option>
             </select>
+
+            {/* Scoped Team Tag */}
+            <span className="text-[10px] font-mono text-slate-500 bg-slate-100 px-2 py-0.5 rounded border border-slate-200 whitespace-nowrap">
+              #{activeWorkflow?.teamId || currentUser?.teamId || 'team-cards'}
+            </span>
           </div>
-          <div>
-            <label className="block text-[11px] font-medium text-slate-600 mb-1">Description:</label>
-            <input
-              type="text"
-              value={workflowDescription}
-              onChange={(e) => setWorkflowDescription(e.target.value)}
-              className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1 text-slate-700 focus:outline-none focus:border-purple-500 focus:bg-white"
-              placeholder="Brief summary of this vertical flow"
-            />
+
+          {/* Actions: Save & Delete */}
+          <div className="flex items-center gap-2 shrink-0">
+            {hasUnsavedChanges && (
+              <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-amber-500/15 text-amber-600 border border-amber-500/30 flex items-center gap-1.5 shadow-2xs">
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse"></span>
+                <span>Unsaved</span>
+              </span>
+            )}
+
+            <button
+              type="button"
+              onClick={() => handleSaveWorkflow()}
+              disabled={isSaving}
+              className={`px-3.5 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-xs transition disabled:opacity-50 ${
+                hasUnsavedChanges
+                  ? 'bg-amber-600 hover:bg-amber-500 text-white ring-2 ring-amber-500/30 shadow-md'
+                  : 'bg-purple-600 hover:bg-purple-500 text-white'
+              }`}
+            >
+              <Save size={13} />
+              <span>{isSaving ? 'Saving...' : 'Save Flowchart'}</span>
+            </button>
+
+            {activeWorkflow && (
+              <button
+                type="button"
+                onClick={handleDeleteWorkflow}
+                className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 border border-transparent hover:border-rose-200 rounded-lg transition cursor-pointer"
+                title={`Delete workflow "${activeWorkflow.name}"`}
+              >
+                <Trash2 size={14} />
+              </button>
+            )}
           </div>
         </div>
 
+        {/* Compact Description Line */}
+        <div className="flex items-center gap-2 pt-2 border-t border-slate-100 text-xs">
+          <span className="text-[11px] font-medium text-slate-500 shrink-0">Description:</span>
+          <input
+            type="text"
+            value={workflowDescription}
+            onChange={(e) => setWorkflowDescription(e.target.value)}
+            className="w-full bg-slate-50/60 border border-slate-200/70 rounded-lg px-2.5 py-1 text-xs text-slate-700 focus:outline-none focus:border-purple-500 focus:bg-white placeholder:text-slate-400 transition"
+            placeholder="Brief operational summary of this flowchart pipeline..."
+          />
+        </div>
+
         {saveSuccessMsg && (
-          <div className="mt-2 p-2 bg-emerald-50 border border-emerald-200 rounded-lg text-emerald-800 text-xs flex items-center gap-2 animate-in fade-in">
-            <CheckCircle2 size={14} className="text-emerald-600" />
+          <div className="p-2 bg-emerald-50 border border-emerald-200 rounded-lg text-emerald-800 text-xs flex items-center gap-2 animate-in fade-in">
+            <CheckCircle2 size={14} className="text-emerald-600 shrink-0" />
             <span>{saveSuccessMsg}</span>
           </div>
         )}
       </div>
 
-      {/* Main Studio Area: Palette Sidebar + Vertical Visual Canvas */}
-      <div className="flex flex-col lg:flex-row gap-4 items-start">
-        {/* Left Sidebar: Palette of Blocks & Outcomes */}
-        <div className="w-full lg:w-72 bg-white border border-slate-300 rounded-xl p-4 space-y-4 shadow-sm shrink-0">
-          <div className="flex items-center justify-between pb-2 border-b border-slate-200">
-            <span className="font-bold text-xs uppercase tracking-wider font-mono text-slate-700 flex items-center gap-1.5">
-              <Boxes size={14} className="text-purple-600" />
-              <span>Toolbox Palette</span>
-            </span>
-            <span className="text-[10px] bg-slate-100 text-slate-600 px-1.5 py-0.2 rounded font-mono font-bold">
-              {validationBoxes.length} Boxes
-            </span>
+      {/* Main Studio Area: 3-Pane Power-User Architecture */}
+      <div className="flex flex-col xl:flex-row gap-0 bg-slate-950 rounded-2xl border border-slate-800 overflow-hidden min-h-[780px] shadow-2xl items-stretch">
+        {/* Left Pane: Palette of Workflows, Templates & Validation Blocks */}
+        <WorkflowPalette
+          workflows={workflows}
+          activeWorkflow={activeWorkflow}
+          onSelectWorkflow={(wf) => selectWorkflow(wf)}
+          onNewWorkflow={handleNewWorkflow}
+          validationBoxes={validationBoxes}
+          onAddTerminalNode={handleAddTerminalNode}
+          onAddBoxNode={handleAddBoxNode}
+          onApplyTemplate={handleApplyTemplate}
+          onOpenAggregators={() => {
+            setShowAggregatorModal(true);
+            resetRuleForm(aggregatorTab);
+          }}
+          aggregationsCount={messageAggregations.length}
+        />
+
+        {/* Center: Interactive Vertical Flowchart Canvas */}
+        <div className="flex-1 w-full bg-[#060A14] flex flex-col h-[820px] max-h-[85vh] min-w-0 border-r border-slate-800">
+          {/* Pre-Flight Validation Topology Bar */}
+          <div className="p-2.5 bg-slate-950/90 border-b border-slate-800">
+            <WorkflowValidationSummary nodes={nodes} connections={connections} />
           </div>
 
-          {/* Core Pipeline Controls */}
-          <div className="space-y-1.5">
-            <span className="text-[10px] font-bold text-slate-400 uppercase font-mono">Flow Control Terminals</span>
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                onClick={() => handleAddTerminalNode('START', 'Transaction Ingress')}
-                className="p-2 rounded-lg border border-emerald-200 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 text-left transition cursor-pointer flex items-center gap-1.5 text-xs font-semibold"
-              >
-                <div className="w-2.5 h-2.5 rounded-full bg-emerald-600"></div>
-                <span>Start Point (Top)</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => handleAddTerminalNode('END', 'Reconciliation Goal')}
-                className="p-2 rounded-lg border border-slate-300 bg-slate-50 hover:bg-slate-100 text-slate-800 text-left transition cursor-pointer flex items-center gap-1.5 text-xs font-semibold"
-              >
-                <ShieldCheck size={13} className="text-slate-600" />
-                <span>End Goal (Bottom)</span>
-              </button>
-            </div>
-          </div>
-
-          {/* Validation Boxes List */}
-          <div className="space-y-2">
-            <div className="flex items-center justify-between">
-              <span className="text-[10px] font-bold text-slate-400 uppercase font-mono">Available Validation Blocks</span>
-            </div>
-            
-            <div className="relative">
-              <Search size={11} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
-              <input
-                type="text"
-                value={paletteSearch}
-                onChange={(e) => setPaletteSearch(e.target.value)}
-                placeholder="Search boxes..."
-                className="w-full pl-7 pr-2 py-1 text-xs bg-slate-50 border border-slate-200 rounded-md focus:outline-none focus:ring-1 focus:ring-purple-600 font-sans"
-              />
-            </div>
-
-            <div className="space-y-1.5 max-h-[360px] overflow-y-auto pr-1">
-              {filteredBoxes.map(box => (
-                <div
-                  key={box.id}
-                  onClick={() => handleAddBoxNode(box)}
-                  className="p-2.5 bg-slate-50 hover:bg-purple-50/70 rounded-lg border border-slate-200 hover:border-purple-300 transition cursor-pointer group shadow-2xs"
-                >
-                  <div className="flex items-center justify-between mb-1">
-                    <span className={`px-1.5 py-0.2 rounded text-[9px] font-mono font-bold uppercase ${
-                      box.boxType === 'INGESTION_SEARCH' ? 'bg-blue-100 text-blue-800' : 'bg-emerald-100 text-emerald-800'
-                    }`}>
-                      {box.boxType === 'INGESTION_SEARCH' ? 'Search / Ingest' : 'Condition Check'}
-                    </span>
-                    <Plus size={13} className="text-slate-400 group-hover:text-purple-600 transition" />
-                  </div>
-                  <h4 className="text-xs font-bold text-slate-800 group-hover:text-purple-900 truncate">
-                    {box.name}
-                  </h4>
-                  {box.targetTable && (
-                    <p className="text-[10px] text-slate-500 font-mono truncate mt-0.5">
-                      Target: {box.targetTable}
-                    </p>
-                  )}
-                </div>
-              ))}
-
-              {filteredBoxes.length === 0 && (
-                <div className="p-3 text-center text-slate-400 italic text-xs">
-                  No validation boxes found. Create boxes in the "Validation Box" tab.
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Decision Actions Legend */}
-          <div className="p-3 bg-slate-50 rounded-lg border border-slate-200 text-[11px] space-y-2">
-            <span className="font-bold text-slate-700 font-mono block uppercase text-[10px]">Flowchart Notation:</span>
-            <div className="flex items-center gap-2 text-slate-700">
-              <span className="w-4 h-2.5 rounded-xs bg-emerald-700 border border-emerald-500 shrink-0"></span>
-              <span><strong>Rectangle:</strong> Search & Ingest Block</span>
-            </div>
-            <div className="flex items-center gap-2 text-slate-700">
-              <span className="w-3 h-3 rotate-45 bg-blue-700 border border-blue-500 shrink-0"></span>
-              <span><strong>Rhombus:</strong> Condition Check Block</span>
-            </div>
-            <div className="flex items-center gap-2 text-slate-700">
-              <span className="w-4 h-2.5 rounded-full bg-emerald-600 border border-emerald-400 shrink-0"></span>
-              <span><strong>Oval:</strong> Terminator (Start / End)</span>
-            </div>
-
-            <div className="pt-2 border-t border-slate-200 space-y-1">
-              <span className="font-bold text-slate-700 font-mono block uppercase text-[10px]">Wire Output Actions:</span>
-              <div className="flex items-center gap-1.5 text-slate-700">
-                <span className="w-2 h-2 rounded-full bg-emerald-500 shrink-0"></span>
-                <span><strong>Continue:</strong> Advance downward</span>
-              </div>
-              <div className="flex items-center gap-1.5 text-slate-700">
-                <span className="w-2 h-2 rounded-full bg-rose-500 shrink-0"></span>
-                <span><strong>Stop:</strong> Terminate / Flag record</span>
-              </div>
-              <div className="flex items-center gap-1.5 text-slate-700">
-                <span className="w-2 h-2 rounded-full bg-purple-600 shrink-0"></span>
-                <span><strong>Report:</strong> Add column to Investigation</span>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        {/* Right: Interactive Vertical Flowchart Canvas */}
-        <div className="flex-1 w-full bg-slate-900 border border-slate-800 rounded-xl overflow-hidden shadow-sm flex flex-col h-[820px] max-h-[85vh]">
           {/* Canvas Toolbar */}
           <div className="bg-slate-950 px-4 py-2 border-b border-slate-800 flex items-center justify-between text-xs text-slate-300">
-            <div className="flex items-center gap-3">
-              <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-purple-950/80 text-purple-200 border border-purple-800 flex items-center gap-1.5 shadow-2xs">
-                <GitFork size={12} className="text-purple-400" />
-                <span>Workflow: <strong className="text-white">{workflowName || activeWorkflow?.name || 'Selected Pipeline'}</strong></span>
-              </span>
+            <div className="flex items-center gap-2.5">
               <span className="font-mono text-slate-400 font-semibold flex items-center gap-1.5">
                 <Move size={13} className="text-purple-400" />
-                <span>Vertical DAG: {nodes.length} Nodes, {connections.length} Wires</span>
+                <span>DAG: {nodes.length} Nodes, {connections.length} Wires</span>
               </span>
               <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-slate-800 text-slate-300 border border-slate-700 flex items-center gap-1">
-                <span>Height: {canvasDimensions.height}px</span>
+                <span>Canvas: {canvasDimensions.height}px</span>
                 <ArrowDown size={10} className="text-emerald-400" />
               </span>
             </div>
 
             <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleAutoAlignVertical}
+                className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 rounded text-xs flex items-center gap-1.5 cursor-pointer transition shadow-xs"
+                title="Auto-align all nodes vertically into a straight top-to-bottom layout"
+              >
+                <AlignVerticalJustifyCenter size={12} className="text-purple-400" />
+                <span>Align Nodes</span>
+              </button>
               <button
                 type="button"
                 onClick={() => setExtraCanvasHeight(h => h + 600)}
@@ -1574,7 +1628,10 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
                 const markerId = isReport ? 'url(#arrow-purple)' : isStop ? 'url(#arrow-rose)' : 'url(#arrow-emerald)';
 
                 return (
-                  <g key={conn.id} className="pointer-events-auto cursor-pointer group" onClick={() => setSelectedConnection(conn)}>
+                  <g key={conn.id} className="pointer-events-auto cursor-pointer group" onClick={() => {
+                    setSelectedConnection(conn);
+                    setSelectedNode(null);
+                  }}>
                     {/* Background hit area for easier clicking */}
                     <path
                       d={path}
@@ -1965,131 +2022,31 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
             </div>
           </div>
         </div>
+
+        {/* Right Pane: Properties & Routing Inspector Drawer */}
+        <WorkflowInspector
+          selectedNode={selectedNode}
+          onUpdateNode={(updated) => {
+            setNodes(prev => prev.map(n => n.id === updated.id ? updated : n));
+            setSelectedNode(updated);
+          }}
+          onDeleteNode={handleDeleteNode}
+          onCloseNode={() => setSelectedNode(null)}
+          selectedConnection={selectedConnection}
+          onUpdateConnection={(updated) => {
+            setConnections(prev => prev.map(c => c.id === updated.id ? updated : c));
+            if (updated.fromPort === 'fail') {
+              setNodes(prev => prev.map(n => n.id === updated.fromNodeId ? { ...n, onFailAction: updated.action } : n));
+            } else if (updated.fromPort === 'pass') {
+              setNodes(prev => prev.map(n => n.id === updated.fromNodeId ? { ...n, onPassAction: updated.action } : n));
+            }
+            setSelectedConnection(updated);
+          }}
+          onDeleteConnection={handleDeleteConnection}
+          onCloseConnection={() => setSelectedConnection(null)}
+          validationBoxes={validationBoxes}
+        />
       </div>
-
-      {/* =========================================================================
-          CONNECTION DECISION INSPECTOR (CONTINUE / STOP / REPORT)
-          ========================================================================= */}
-      {selectedConnection && (
-        <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-2xs z-50 flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-700 rounded-xl max-w-md w-full p-5 space-y-4 shadow-2xl animate-in zoom-in-95 text-white">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-2.5">
-              <div className="flex items-center gap-2">
-                <Link2 size={16} className="text-purple-400" />
-                <h3 className="font-bold text-xs uppercase tracking-wider font-mono text-white">
-                  Connection Branch Outcome
-                </h3>
-              </div>
-              <button
-                type="button"
-                onClick={() => setSelectedConnection(null)}
-                className="p-1 text-slate-400 hover:text-white rounded cursor-pointer"
-              >
-                <X size={16} />
-              </button>
-            </div>
-
-            <p className="text-xs text-slate-400">
-              Configure what happens when transaction evaluation follows this wire:
-            </p>
-
-            {/* Action Selection Radio */}
-            <div className="space-y-2">
-              <label
-                onClick={() => setSelectedConnection({ ...selectedConnection, action: 'CONTINUE', label: 'Continue' })}
-                className={`p-3 rounded-lg border flex items-start gap-3 cursor-pointer transition ${
-                  selectedConnection.action === 'CONTINUE'
-                    ? 'bg-emerald-950/60 border-emerald-500 text-emerald-100'
-                    : 'bg-slate-950 border-slate-800 text-slate-400 hover:border-slate-700'
-                }`}
-              >
-                <input
-                  type="radio"
-                  name="connAction"
-                  checked={selectedConnection.action === 'CONTINUE'}
-                  onChange={() => {}}
-                  className="mt-1 text-emerald-500 focus:ring-emerald-500"
-                />
-                <div>
-                  <span className="font-bold text-xs block text-white">🟢 Continue Downstream</span>
-                  <span className="text-[11px] text-slate-400">Progress directly to the connected downstream validation block.</span>
-                </div>
-              </label>
-
-              <label
-                onClick={() => setSelectedConnection({ ...selectedConnection, action: 'STOP', label: 'Stop Pipeline' })}
-                className={`p-3 rounded-lg border flex items-start gap-3 cursor-pointer transition ${
-                  selectedConnection.action === 'STOP'
-                    ? 'bg-rose-950/60 border-rose-500 text-rose-100'
-                    : 'bg-slate-950 border-slate-800 text-slate-400 hover:border-slate-700'
-                }`}
-              >
-                <input
-                  type="radio"
-                  name="connAction"
-                  checked={selectedConnection.action === 'STOP'}
-                  onChange={() => {}}
-                  className="mt-1 text-rose-500 focus:ring-rose-500"
-                />
-                <div>
-                  <span className="font-bold text-xs block text-white">🔴 Stop Pipeline</span>
-                  <span className="text-[11px] text-slate-400">Halt transaction execution here and mark transaction as FLAGGED or TERMINATED.</span>
-                </div>
-              </label>
-
-              <label
-                onClick={() => setSelectedConnection({ ...selectedConnection, action: 'REPORT', label: 'Report & Continue' })}
-                className={`p-3 rounded-lg border flex items-start gap-3 cursor-pointer transition ${
-                  selectedConnection.action === 'REPORT'
-                    ? 'bg-purple-950/60 border-purple-500 text-purple-100'
-                    : 'bg-slate-950 border-slate-800 text-slate-400 hover:border-slate-700'
-                }`}
-              >
-                <input
-                  type="radio"
-                  name="connAction"
-                  checked={selectedConnection.action === 'REPORT'}
-                  onChange={() => {}}
-                  className="mt-1 text-purple-500 focus:ring-purple-500"
-                />
-                <div>
-                  <span className="font-bold text-xs block text-white">📊 Intermediate Report Function</span>
-                  <span className="text-[11px] text-slate-400">
-                    Captures this node's evaluated result or mirror data and projects it as an extra visible column in the Investigation View.
-                  </span>
-                </div>
-              </label>
-            </div>
-
-            <div className="flex items-center justify-between pt-2 border-t border-slate-800">
-              <button
-                type="button"
-                onClick={() => handleDeleteConnection(selectedConnection.id)}
-                className="px-3 py-1.5 bg-rose-950/60 hover:bg-rose-900 border border-rose-700 text-rose-300 rounded text-xs font-semibold cursor-pointer flex items-center gap-1.5 transition"
-              >
-                <Unlink size={13} />
-                <span>Delete Wire</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => {
-                  setConnections(prev => prev.map(c => c.id === selectedConnection.id ? selectedConnection : c));
-                  if (selectedConnection.fromPort === 'fail') {
-                    setNodes(prev => prev.map(n => n.id === selectedConnection.fromNodeId ? { ...n, onFailAction: selectedConnection.action } : n));
-                  } else if (selectedConnection.fromPort === 'pass') {
-                    setNodes(prev => prev.map(n => n.id === selectedConnection.fromNodeId ? { ...n, onPassAction: selectedConnection.action } : n));
-                  }
-                  setSelectedConnection(null);
-                }}
-                className="px-4 py-1.5 bg-purple-600 hover:bg-purple-500 text-white rounded text-xs font-bold cursor-pointer transition shadow-md"
-              >
-                Apply Outcome
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
             {/* Workflow Message Aggregator Modal */}
       {showAggregatorModal && (
@@ -2522,194 +2479,6 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
                   <span>{isSaving ? 'Saving...' : 'Save & Attach to Workflow'}</span>
                 </button>
               </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-
-      {/* =========================================================================
-          NODE CONFIGURATION & REPORT COLUMN MODAL
-          ========================================================================= */}
-      {selectedNode && (
-        <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-2xs z-50 flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-slate-700 rounded-xl max-w-md w-full p-5 space-y-4 shadow-2xl animate-in zoom-in-95 text-white">
-            <div className="flex items-center justify-between border-b border-slate-800 pb-2.5">
-              <div className="flex items-center gap-2">
-                <Sliders size={16} className="text-purple-400" />
-                <h3 className="font-bold text-xs uppercase tracking-wider font-mono text-white">
-                  Configure: {selectedNode.name}
-                </h3>
-              </div>
-              <button
-                type="button"
-                onClick={() => setSelectedNode(null)}
-                className="p-1 text-slate-400 hover:text-white rounded cursor-pointer"
-              >
-                <X size={16} />
-              </button>
-            </div>
-
-            <div className="space-y-3 text-xs">
-              <div>
-                <label className="block text-[11px] font-mono text-slate-400 mb-1">Block Label:</label>
-                <input
-                  type="text"
-                  value={selectedNode.name}
-                  onChange={(e) => setSelectedNode({ ...selectedNode, name: e.target.value })}
-                  className="w-full bg-slate-950 border border-slate-800 rounded px-2.5 py-1.5 text-white focus:outline-none focus:border-purple-500"
-                />
-              </div>
-
-              {/* Pipeline Routing Outcomes (PASS & FAIL) */}
-              <div className="p-3 bg-slate-950/80 border border-slate-800 rounded-lg space-y-2.5">
-                <span className="font-bold text-slate-300 flex items-center gap-1.5 text-[11px] font-mono uppercase">
-                  <Sliders size={13} className="text-blue-400" />
-                  <span>Pipeline Routing Outcomes</span>
-                </span>
-                
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-[10px] font-mono text-emerald-400 mb-1 font-semibold">On PASS Action:</label>
-                    <select
-                      value={selectedNode.onPassAction || 'CONTINUE'}
-                      onChange={(e) => setSelectedNode({ ...selectedNode, onPassAction: e.target.value as FlowchartOutputAction })}
-                      className={`w-full bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-xs font-semibold focus:outline-none font-mono ${
-                        selectedNode.onPassAction === 'STOP' ? 'text-rose-400 border-rose-500/60' : 'text-emerald-300 focus:border-emerald-500'
-                      }`}
-                    >
-                      <option value="CONTINUE">CONTINUE (Advance)</option>
-                      <option value="STOP">STOP (Halt Pipeline)</option>
-                      <option value="REPORT">REPORT (Add Grid Col)</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-[10px] font-mono text-rose-400 mb-1 font-semibold">On FAILURE Action:</label>
-                    <select
-                      value={selectedNode.onFailAction || 'STOP'}
-                      onChange={(e) => setSelectedNode({ ...selectedNode, onFailAction: e.target.value as FlowchartOutputAction })}
-                      className={`w-full bg-slate-900 border border-slate-700 rounded px-2 py-1.5 text-xs font-semibold focus:outline-none font-mono ${
-                        selectedNode.onFailAction === 'CONTINUE' ? 'text-blue-400 border-blue-500/60' : 'text-rose-400'
-                      }`}
-                    >
-                      <option value="CONTINUE">CONTINUE (Advance)</option>
-                      <option value="STOP">STOP (Halt Pipeline)</option>
-                      <option value="REPORT">REPORT (Add Grid Col)</option>
-                    </select>
-                  </div>
-                </div>
-                <p className="text-[10px] text-slate-400 leading-relaxed">
-                  Controls whether the investigation advances downstream when this block yields a FAIL verdict.
-                </p>
-              </div>
-
-              {/* Intermediate Report Column Setting */}
-              <div className="p-3 bg-purple-950/30 border border-purple-500/30 rounded-lg space-y-2">
-                <span className="font-bold text-purple-300 flex items-center gap-1.5 text-[11px] font-mono uppercase">
-                  <FileSpreadsheet size={13} className="text-purple-400" />
-                  <span>Intermediate Report Column</span>
-                </span>
-                <p className="text-[11px] text-slate-400">
-                  Adds a dedicated column in the Investigation View to show the evaluated output or retrieved mirror value for every row.
-                </p>
-
-                <div>
-                  <label className="block text-[10px] font-mono text-slate-400 mb-1">Investigation Grid Column Title:</label>
-                  <input
-                    type="text"
-                    value={selectedNode.reportColumnName || ''}
-                    onChange={(e) => setSelectedNode({ ...selectedNode, reportColumnName: e.target.value })}
-                    placeholder="e.g. Gateway Auth Result or Net Amount Variance"
-                    className="w-full bg-slate-950 border border-slate-800 rounded px-2 py-1 text-purple-200 text-xs focus:outline-none focus:border-purple-500 font-mono"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-[10px] font-mono text-slate-400 mb-1">
-                    Target Field / Property <span className="text-purple-400 font-normal">(Global List)</span>:
-                  </label>
-                  <select
-                    value={selectedNode.reportField || ''}
-                    onChange={(e) => {
-                      const val = e.target.value;
-                      const std = globalMappingService.getStandardFields().find(f => f.key === val);
-                      setSelectedNode({
-                        ...selectedNode,
-                        reportField: val,
-                        reportColumnName: (!selectedNode.reportColumnName || selectedNode.reportColumnName === 'Result') && std
-                          ? std.label
-                          : selectedNode.reportColumnName
-                      });
-                    }}
-                    className="w-full bg-slate-950 border border-slate-800 rounded px-2 py-1 text-slate-300 text-xs focus:outline-none focus:border-purple-500 font-mono"
-                  >
-                    <option value="">-- Select Standard Field (Global List) --</option>
-                    {globalMappingService.getStandardFields().map(f => (
-                      <option key={f.key} value={f.key}>{f.label} ({f.key})</option>
-                    ))}
-                    {selectedNode.reportField && !globalMappingService.getStandardFields().some(f => f.key === selectedNode.reportField) && (
-                      <option value={selectedNode.reportField}>{selectedNode.reportField} (Custom)</option>
-                    )}
-                  </select>
-                </div>
-              </div>
-
-              {/* Attached Database Table Column Rules */}
-              {((selectedNode.columnConfigurations && selectedNode.columnConfigurations.length > 0) || (selectedNode.columnConfigurationIds && selectedNode.columnConfigurationIds.length > 0)) && (
-                <div className="p-3 bg-emerald-950/20 border border-emerald-500/30 rounded-lg space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="font-bold text-emerald-400 flex items-center gap-1.5 text-[11px] font-mono uppercase">
-                      <CheckCircle2 size={13} className="text-emerald-400" />
-                      <span>Attached Table Rules ({selectedNode.columnConfigurations?.length || selectedNode.columnConfigurationIds?.length})</span>
-                    </span>
-                  </div>
-                  <p className="text-[10px] text-slate-400">
-                    Active completeness, range, and pattern rules configured on the target database table:
-                  </p>
-                  <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1">
-                    {(selectedNode.columnConfigurations || []).map((cfg) => (
-                      <div key={cfg.id} className="p-1.5 bg-slate-900 border border-slate-800 rounded text-[11px] flex items-center justify-between">
-                        <div className="flex items-center gap-1">
-                          <span className="font-mono text-emerald-300 font-semibold">{cfg.column_name}</span>
-                          <span className="text-slate-500 text-[9px]">({cfg.data_type || 'text'})</span>
-                        </div>
-                        <div className="flex gap-1 text-[8px] font-mono">
-                          {cfg.completeness_rule?.enabled && <span className="px-1 py-0.2 bg-emerald-900/60 text-emerald-300 rounded border border-emerald-700/50">Complete</span>}
-                          {cfg.value_range_rule?.enabled && <span className="px-1 py-0.2 bg-blue-900/60 text-blue-300 rounded border border-blue-700/50">Range</span>}
-                          {cfg.pattern_rule?.enabled && <span className="px-1 py-0.2 bg-purple-900/60 text-purple-300 rounded border border-purple-700/50">Pattern</span>}
-                          {cfg.value_label_rule?.enabled && <span className="px-1 py-0.2 bg-amber-900/60 text-amber-300 rounded border border-amber-700/50">Labels</span>}
-                          {cfg.duplicate_rule?.is_duplicate_key && <span className="px-1 py-0.2 bg-rose-900/60 text-rose-300 rounded border border-rose-700/50">Duplicate</span>}
-                        </div>
-                      </div>
-                    ))}
-                    {(!selectedNode.columnConfigurations || selectedNode.columnConfigurations.length === 0) && selectedNode.columnConfigurationIds && (
-                      <div className="text-[11px] text-slate-400 font-mono">
-                        {selectedNode.columnConfigurationIds.length} column rule(s) linked to this box.
-                      </div>
-                    )}
-                  </div>
-                </div>
-              )}
-            </div>
-
-            <div className="flex justify-end gap-2 pt-2 border-t border-slate-800">
-              <button
-                type="button"
-                onClick={() => setSelectedNode(null)}
-                className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded text-xs cursor-pointer"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setNodes(prev => prev.map(n => n.id === selectedNode.id ? selectedNode : n));
-                  setSelectedNode(null);
-                }}
-                className="px-4 py-1.5 bg-purple-600 hover:bg-purple-500 text-white rounded text-xs font-bold cursor-pointer transition shadow-md"
-              >
-                Apply Changes
-              </button>
             </div>
           </div>
         </div>
