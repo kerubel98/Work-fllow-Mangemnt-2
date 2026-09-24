@@ -7,6 +7,7 @@ import { repo } from '../../store/repository.js';
 import { escalationService } from '../escalationService.js';
 import { approvalService } from '../approvalService.js';
 import { outboundDispatchService } from './outboundDispatchService.js';
+import { stagingService } from './stagingService.js';
 import { eventService } from '../events.js';
 export class MessageIntakeService {
     /**
@@ -322,6 +323,19 @@ export class MessageIntakeService {
                 linkedIssueId,
                 linkedMessageId: envelope.messageId
             });
+        }
+        // 10. Automatically stage inbound customer requests in external request queue
+        try {
+            const staged = await stagingService.stageInboundEnvelope(envelope);
+            if (createdIssueId && staged) {
+                const pool = getPostgresPool();
+                await pool.query(`UPDATE staged_messages 
+           SET status = 'CONVERTED_TO_TASK', created_issue_id = $1, updated_at = NOW() 
+           WHERE id = $2;`, [createdIssueId, staged.id]);
+            }
+        }
+        catch (stagingErr) {
+            console.warn(`[MessageIntakeService] Warning: Failed to stage message in external queue: ${stagingErr.message}`);
         }
         return {
             messageId: envelope.messageId,

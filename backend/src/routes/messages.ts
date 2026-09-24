@@ -251,6 +251,21 @@ messagesRouter.post('/providers/:id/fetch', async (req: Request, res: Response) 
   }
 });
 
+// POST /api/messages/oauth2/test - Direct test of OAuth2 credentials & token acquisition
+messagesRouter.post('/oauth2/test', async (req: Request, res: Response) => {
+  try {
+    const { oauth2Service } = await import('../services/messaging/oauth2Service.js');
+    const { config, channel } = req.body;
+    if (!config) {
+      return res.status(400).json({ error: 'config is required.' });
+    }
+    const result = await oauth2Service.testOAuth2Credentials(config, channel || 'email');
+    return res.json(result);
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 /**
  * ========================================================
  * External Requests Staging Queue & Maker-Checker Endpoints

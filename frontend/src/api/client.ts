@@ -1135,6 +1135,12 @@ export const api = {
       method: 'POST'
     }),
 
+  testOAuth2Credentials: (config: any, channel: string = 'email') =>
+    fetchApi<{ success: boolean; message: string; details?: any }>('/messages/oauth2/test', {
+      method: 'POST',
+      body: JSON.stringify({ config, channel })
+    }),
+
   fetchProviderMessages: (id: string) =>
     fetchApi<{ success: boolean; stagedCount: number; job: any }>(`/messages/providers/${encodeURIComponent(id)}/fetch`, {
       method: 'POST'

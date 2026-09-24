@@ -8,7 +8,7 @@ import {
   MessageSquare, Mail, Send, CheckCircle2, AlertTriangle, 
   RefreshCw, Plus, Shield, Terminal, Hash, PhoneCall, Bot,
   Inbox, FileText, Check, X, ArrowUpRight, Clock, UserCheck,
-  ChevronRight, Filter, Search, Layers, Server, Play, Eye
+  ChevronRight, Filter, Search, Layers, Server, Play, Eye, Key, Lock
 } from 'lucide-react';
 import { Team, User } from '../../types';
 import { api } from '../../api/client';
@@ -57,10 +57,25 @@ const TeamChannelsTabContent: React.FC<TeamChannelsTabProps> = ({ currentTeam, c
   const [activeActionModal, setActiveActionModal] = useState<'propose' | 'approve' | 'reject' | 'escalate' | null>(null);
   const [isProcessingAction, setIsProcessingAction] = useState(false);
 
-  // Provider Connection Form
+  // Provider Connection Form & OAuth2 State
   const [showAddProviderModal, setShowAddProviderModal] = useState(false);
   const [providerChannel, setProviderChannel] = useState<'email' | 'teams' | 'whatsapp' | 'telegram'>('email');
   const [providerDisplayName, setProviderDisplayName] = useState('');
+  const [authType, setAuthType] = useState<'OAUTH2' | 'BASIC'>('OAUTH2');
+  const [providerPreset, setProviderPreset] = useState<'MICROSOFT_365' | 'GOOGLE_WORKSPACE' | 'ZOHO' | 'CUSTOM'>('ZOHO');
+  const [zohoRegion, setZohoRegion] = useState<'COM' | 'EU' | 'IN' | 'AU' | 'JP' | 'CA'>('COM');
+  const [oauthGrantType, setOauthGrantType] = useState<'client_credentials' | 'refresh_token' | 'authorization_code'>('refresh_token');
+  const [oauthRefreshToken, setOauthRefreshToken] = useState('');
+  const [oauthAuthCode, setOauthAuthCode] = useState('');
+  const [oauthTenantId, setOauthTenantId] = useState('');
+  const [oauthClientId, setOauthClientId] = useState('');
+  const [oauthClientSecret, setOauthClientSecret] = useState('');
+  const [oauthScope, setOauthScope] = useState('ZohoMail.messages.ALL,ZohoMail.accounts.ALL');
+  const [oauthTokenUrl, setOauthTokenUrl] = useState('');
+  const [oauthUserEmail, setOauthUserEmail] = useState('');
+  const [isTestingOAuth, setIsTestingOAuth] = useState(false);
+  const [oauthTestResult, setOauthTestResult] = useState<{ success: boolean; message: string; details?: any } | null>(null);
+
   const [providerHost, setProviderHost] = useState('');
   const [providerUser, setProviderUser] = useState('');
   const [providerToken, setProviderToken] = useState('');
@@ -112,19 +127,133 @@ const TeamChannelsTabContent: React.FC<TeamChannelsTabProps> = ({ currentTeam, c
     loadAllData();
   }, [teamId]);
 
-  // Provider Connection Handlers
+  // Provider Connection & OAuth 2.0 Handlers
+  const handlePresetChange = (preset: 'MICROSOFT_365' | 'GOOGLE_WORKSPACE' | 'ZOHO' | 'CUSTOM') => {
+    setProviderPreset(preset);
+    setOauthTestResult(null);
+    if (preset === 'ZOHO') {
+      setOauthScope('ZohoMail.messages.ALL,ZohoMail.accounts.ALL');
+      setOauthTokenUrl('');
+      setOauthTenantId('');
+      setOauthGrantType('refresh_token');
+      setProviderHost(zohoRegion === 'EU' ? 'imap.zoho.eu' : 'imappro.zoho.com');
+    } else if (preset === 'MICROSOFT_365') {
+      setOauthScope(providerChannel === 'teams' ? 'https://graph.microsoft.com/.default' : 'https://outlook.office365.com/.default');
+      setOauthTokenUrl('');
+      setOauthGrantType('client_credentials');
+      setProviderHost('outlook.office365.com');
+    } else if (preset === 'GOOGLE_WORKSPACE') {
+      setOauthScope('https://mail.google.com/');
+      setOauthTokenUrl('https://oauth2.googleapis.com/token');
+      setOauthGrantType('client_credentials');
+      setProviderHost('imap.gmail.com');
+    } else {
+      setOauthScope('');
+      setOauthTokenUrl('');
+      setOauthGrantType('client_credentials');
+    }
+  };
+
+  const handleZohoRegionChange = (region: 'COM' | 'EU' | 'IN' | 'AU' | 'JP' | 'CA') => {
+    setZohoRegion(region);
+    setOauthTestResult(null);
+    const host = region === 'EU' ? 'imap.zoho.eu' : region === 'IN' ? 'imap.zoho.in' : region === 'AU' ? 'imap.zoho.com.au' : region === 'JP' ? 'imap.zoho.jp' : 'imappro.zoho.com';
+    setProviderHost(host);
+  };
+
+  const handleChannelChange = (channel: 'email' | 'teams' | 'whatsapp' | 'telegram') => {
+    setProviderChannel(channel);
+    setOauthTestResult(null);
+    if (providerPreset === 'MICROSOFT_365') {
+      setOauthScope(channel === 'teams' ? 'https://graph.microsoft.com/.default' : 'https://outlook.office365.com/.default');
+    }
+  };
+
+  const handleTestOAuth2 = async () => {
+    if (!oauthClientId.trim() || !oauthClientSecret.trim()) {
+      setOauthTestResult({ success: false, message: 'Client ID and Client Secret are required to test OAuth2.' });
+      return;
+    }
+    if (providerPreset === 'ZOHO' && oauthGrantType === 'refresh_token' && !oauthRefreshToken.trim()) {
+      setOauthTestResult({ success: false, message: 'Zoho Refresh Token is required for Refresh Token flow. Generate one in Zoho API Console (Self-Client).' });
+      return;
+    }
+    if (providerPreset === 'ZOHO' && oauthGrantType === 'authorization_code' && !oauthAuthCode.trim()) {
+      setOauthTestResult({ success: false, message: 'Zoho Grant Token / Code is required for Code Exchange.' });
+      return;
+    }
+    setIsTestingOAuth(true);
+    setOauthTestResult(null);
+    try {
+      const res = await api.testOAuth2Credentials({
+        grantType: oauthGrantType,
+        preset: providerPreset,
+        zohoRegion: providerPreset === 'ZOHO' ? zohoRegion : undefined,
+        tenantId: oauthTenantId.trim() || undefined,
+        clientId: oauthClientId.trim(),
+        clientSecret: oauthClientSecret.trim(),
+        scope: oauthScope.trim(),
+        tokenUrl: oauthTokenUrl.trim() || undefined,
+        userEmail: oauthUserEmail.trim() || undefined,
+        refreshToken: oauthRefreshToken.trim() || undefined,
+        code: oauthAuthCode.trim() || undefined,
+      }, providerChannel);
+      setOauthTestResult(res);
+    } catch (err: any) {
+      setOauthTestResult({ success: false, message: err.message || 'OAuth2 verification failed' });
+    } finally {
+      setIsTestingOAuth(false);
+    }
+  };
+
   const handleSaveProvider = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!teamId || !providerDisplayName.trim()) return;
 
     try {
-      const config: Record<string, any> = {
-        host: providerHost.trim(),
-        user: providerUser.trim(),
-        token: providerToken.trim(),
-        botToken: providerToken.trim(),
-        accessToken: providerToken.trim()
-      };
+      let config: Record<string, any> = {};
+
+      if (authType === 'OAUTH2') {
+        const defaultHost = providerPreset === 'ZOHO'
+          ? (zohoRegion === 'EU' ? 'imap.zoho.eu' : zohoRegion === 'IN' ? 'imap.zoho.in' : zohoRegion === 'AU' ? 'imap.zoho.com.au' : zohoRegion === 'JP' ? 'imap.zoho.jp' : 'imappro.zoho.com')
+          : (providerPreset === 'MICROSOFT_365' ? 'outlook.office365.com' : (providerPreset === 'GOOGLE_WORKSPACE' ? 'imap.gmail.com' : ''));
+
+        const oauth2Config = {
+          grantType: oauthGrantType,
+          preset: providerPreset,
+          zohoRegion: providerPreset === 'ZOHO' ? zohoRegion : undefined,
+          tenantId: oauthTenantId.trim() || undefined,
+          clientId: oauthClientId.trim(),
+          clientSecret: oauthClientSecret.trim(),
+          scope: oauthScope.trim(),
+          tokenUrl: oauthTokenUrl.trim() || undefined,
+          userEmail: oauthUserEmail.trim() || undefined,
+          refreshToken: oauthRefreshToken.trim() || undefined,
+          code: oauthAuthCode.trim() || undefined,
+        };
+
+        config = {
+          authType: 'OAUTH2',
+          oauth2: oauth2Config,
+          host: providerHost.trim() || defaultHost,
+          user: oauthUserEmail.trim() || providerUser.trim(),
+          clientId: oauthClientId.trim(),
+          clientSecret: oauthClientSecret.trim(),
+          tenantId: oauthTenantId.trim(),
+          token: oauthClientSecret.trim(),
+          accessToken: oauthClientSecret.trim(),
+          botToken: oauthClientSecret.trim()
+        };
+      } else {
+        config = {
+          authType: 'BASIC',
+          host: providerHost.trim(),
+          user: providerUser.trim(),
+          token: providerToken.trim(),
+          botToken: providerToken.trim(),
+          accessToken: providerToken.trim()
+        };
+      }
 
       await api.createMessageProvider({
         teamId,
@@ -135,12 +264,20 @@ const TeamChannelsTabContent: React.FC<TeamChannelsTabProps> = ({ currentTeam, c
         createdBy: currentUser.username || currentUser.id
       });
 
-      setSuccessMsg(`Provider "${providerDisplayName}" saved successfully.`);
+      setSuccessMsg(`Provider "${providerDisplayName}" configured successfully.`);
       setShowAddProviderModal(false);
       setProviderDisplayName('');
       setProviderHost('');
       setProviderUser('');
       setProviderToken('');
+      setOauthTenantId('');
+      setOauthClientId('');
+      setOauthClientSecret('');
+      setOauthUserEmail('');
+      setOauthTokenUrl('');
+      setOauthRefreshToken('');
+      setOauthAuthCode('');
+      setOauthTestResult(null);
       await loadAllData();
     } catch (err: any) {
       setErrorMsg(err.message || 'Failed to save provider connection');
@@ -714,13 +851,18 @@ const TeamChannelsTabContent: React.FC<TeamChannelsTabProps> = ({ currentTeam, c
                         {getChannelIcon(prov.channel)}
                       </div>
                       <div>
-                        <div className="font-bold text-slate-900 text-xs flex items-center gap-2">
+                        <div className="font-bold text-slate-900 text-xs flex items-center gap-2 flex-wrap">
                           <span>{prov.displayName}</span>
                           <span className={`px-2 py-0.2 rounded text-[9px] font-bold uppercase ${
                             prov.status === 'ACTIVE' ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'
                           }`}>
                             {prov.status}
                           </span>
+                          {prov.config?.authType === 'OAUTH2' && (
+                            <span className="px-1.5 py-0.2 rounded text-[9px] font-bold uppercase bg-indigo-100 text-indigo-800 flex items-center gap-1">
+                              <Key size={10} /> OAuth 2.0 ({prov.config?.oauth2?.preset || 'MODERN'})
+                            </span>
+                          )}
                         </div>
                         <div className="text-slate-500 font-mono text-[11px] truncate mt-0.5">
                           Channel: <span className="uppercase">{prov.channel}</span> | ID: {prov.id}
@@ -1283,97 +1425,364 @@ const TeamChannelsTabContent: React.FC<TeamChannelsTabProps> = ({ currentTeam, c
 
       {/* Add Provider Modal */}
       {showAddProviderModal && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl p-6 max-w-lg w-full shadow-2xl space-y-4">
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs z-50 flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-white rounded-2xl p-6 max-w-lg w-full shadow-2xl space-y-4 my-8">
             <div className="flex items-center justify-between border-b border-slate-200 pb-3">
               <h4 className="font-bold text-slate-900 text-sm flex items-center gap-2">
                 <Server size={16} className="text-blue-600" />
-                <span>Configure New Message Provider Connector</span>
+                <span>Configure Message Provider Connector</span>
               </h4>
               <button onClick={() => setShowAddProviderModal(false)} className="text-slate-400 hover:text-slate-700">
                 <X size={16} />
               </button>
             </div>
 
-            <form onSubmit={handleSaveProvider} className="space-y-3">
-              <div>
-                <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">Channel Type</label>
-                <select
-                  value={providerChannel}
-                  onChange={e => setProviderChannel(e.target.value as any)}
-                  className="w-full bg-slate-50 border border-slate-300 rounded-lg p-2 text-slate-800"
-                >
-                  <option value="email">IMAP / Corporate Email</option>
-                  <option value="teams">Microsoft Teams Graph API</option>
-                  <option value="whatsapp">Meta WhatsApp Cloud API</option>
-                  <option value="telegram">Telegram Bot</option>
-                </select>
+            <form onSubmit={handleSaveProvider} className="space-y-4">
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">Channel Type *</label>
+                  <select
+                    value={providerChannel}
+                    onChange={e => handleChannelChange(e.target.value as any)}
+                    className="w-full bg-slate-50 border border-slate-300 rounded-lg p-2 text-slate-800 text-xs"
+                  >
+                    <option value="email">IMAP / Corporate Email</option>
+                    <option value="teams">Microsoft Teams Graph API</option>
+                    <option value="whatsapp">Meta WhatsApp Cloud API</option>
+                    <option value="telegram">Telegram Bot</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">Display Name *</label>
+                  <input
+                    type="text"
+                    required
+                    placeholder="e.g. Enterprise Shared Mailbox"
+                    value={providerDisplayName}
+                    onChange={e => setProviderDisplayName(e.target.value)}
+                    className="w-full bg-slate-50 border border-slate-300 rounded-lg p-2 text-slate-800 text-xs"
+                  >
+                  </input>
+                </div>
               </div>
 
+              {/* Authentication Type Toggle */}
               <div>
-                <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">Display Name *</label>
-                <input
-                  type="text"
-                  required
-                  placeholder="e.g. Enterprise Shared Mailbox"
-                  value={providerDisplayName}
-                  onChange={e => setProviderDisplayName(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-300 rounded-lg p-2 text-slate-800"
-                />
+                <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1.5">Authentication Mechanism</label>
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setAuthType('OAUTH2')}
+                    className={`py-2 px-3 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer ${
+                      authType === 'OAUTH2'
+                        ? 'bg-blue-600 text-white shadow-xs'
+                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                    }`}
+                  >
+                    <Key size={13} />
+                    <span>OAuth 2.0 (Modern Auth)</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAuthType('BASIC')}
+                    className={`py-2 px-3 rounded-xl text-xs font-bold transition flex items-center justify-center gap-1.5 cursor-pointer ${
+                      authType === 'BASIC'
+                        ? 'bg-blue-600 text-white shadow-xs'
+                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                    }`}
+                  >
+                    <Lock size={13} />
+                    <span>Basic Auth / Token</span>
+                  </button>
+                </div>
               </div>
 
-              <div>
-                <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">
-                  Server Host / Endpoint / Tenant ID
-                </label>
-                <input
-                  type="text"
-                  placeholder="e.g. imap.corp.bank.com, or Tenant UUID"
-                  value={providerHost}
-                  onChange={e => setProviderHost(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-300 rounded-lg p-2 text-slate-800 font-mono"
-                />
-              </div>
+              {/* OAuth 2.0 Configuration Form */}
+              {authType === 'OAUTH2' && (
+                <div className="bg-slate-50 border border-slate-200 rounded-xl p-3.5 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[10px] font-bold text-indigo-700 uppercase flex items-center gap-1">
+                      <Key size={12} />
+                      <span>OAuth 2.0 Provider Preset</span>
+                    </span>
+                    <select
+                      value={providerPreset}
+                      onChange={e => handlePresetChange(e.target.value as any)}
+                      className="bg-white border border-slate-300 rounded-lg px-2 py-1 text-slate-800 text-xs font-semibold"
+                    >
+                      <option value="ZOHO">Zoho Mail / Zoho Workspace</option>
+                      <option value="MICROSOFT_365">Microsoft 365 / Entra ID</option>
+                      <option value="GOOGLE_WORKSPACE">Google Workspace / Gmail</option>
+                      <option value="CUSTOM">Custom OAuth 2.0 (RFC 6749)</option>
+                    </select>
+                  </div>
 
-              <div>
-                <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">
-                  Username / Client ID / Phone ID
-                </label>
-                <input
-                  type="text"
-                  placeholder="e.g. settlement-ops, or App Client ID"
-                  value={providerUser}
-                  onChange={e => setProviderUser(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-300 rounded-lg p-2 text-slate-800 font-mono"
-                />
-              </div>
+                  {/* Zoho Data Center & Authorization Mode Controls */}
+                  {providerPreset === 'ZOHO' && (
+                    <div className="p-3 bg-amber-50/70 border border-amber-200/80 rounded-xl space-y-2.5">
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                        <div>
+                          <label className="block text-[10px] font-bold text-amber-900 uppercase mb-1">
+                            Zoho Data Center Region
+                          </label>
+                          <select
+                            value={zohoRegion}
+                            onChange={e => handleZohoRegionChange(e.target.value as any)}
+                            className="w-full bg-white border border-amber-300 rounded-lg p-2 text-slate-800 text-xs font-medium"
+                          >
+                            <option value="COM">Global / US (accounts.zoho.com)</option>
+                            <option value="EU">Europe (accounts.zoho.eu)</option>
+                            <option value="IN">India (accounts.zoho.in)</option>
+                            <option value="AU">Australia (accounts.zoho.com.au)</option>
+                            <option value="JP">Japan (accounts.zoho.jp)</option>
+                            <option value="CA">Canada (accounts.zohocloud.ca)</option>
+                          </select>
+                        </div>
 
-              <div>
-                <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">
-                  Access Token / Client Secret / Bot Token
-                </label>
-                <input
-                  type="password"
-                  placeholder="Enter secure credential or token..."
-                  value={providerToken}
-                  onChange={e => setProviderToken(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-300 rounded-lg p-2 text-slate-800 font-mono"
-                />
-              </div>
+                        <div>
+                          <label className="block text-[10px] font-bold text-amber-900 uppercase mb-1">
+                            Authorization Mode
+                          </label>
+                          <select
+                            value={oauthGrantType}
+                            onChange={e => setOauthGrantType(e.target.value as any)}
+                            className="w-full bg-white border border-amber-300 rounded-lg p-2 text-slate-800 text-xs font-medium"
+                          >
+                            <option value="refresh_token">Refresh Token (Standard Background Sync)</option>
+                            <option value="authorization_code">Self-Client Grant Token (Code Exchange)</option>
+                            <option value="client_credentials">Client Credentials</option>
+                          </select>
+                        </div>
+                      </div>
 
-              <div className="flex items-center justify-end gap-2 pt-2">
+                      {/* Refresh Token Input */}
+                      {oauthGrantType === 'refresh_token' && (
+                        <div>
+                          <label className="block text-[10px] font-bold text-amber-900 uppercase mb-1">
+                            Zoho Refresh Token *
+                          </label>
+                          <input
+                            type="password"
+                            required
+                            placeholder="e.g. 1000.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                            value={oauthRefreshToken}
+                            onChange={e => setOauthRefreshToken(e.target.value)}
+                            className="w-full bg-white border border-amber-300 rounded-lg p-2 text-slate-800 font-mono text-xs"
+                          />
+                          <p className="text-[10px] text-amber-700 mt-1">
+                            Generated from Zoho API Console Self-Client tab or OAuth authorization flow. Never expires unless revoked.
+                          </p>
+                        </div>
+                      )}
+
+                      {/* Code Exchange Input */}
+                      {oauthGrantType === 'authorization_code' && (
+                        <div>
+                          <label className="block text-[10px] font-bold text-amber-900 uppercase mb-1">
+                            Zoho Self-Client Code / Grant Token *
+                          </label>
+                          <input
+                            type="text"
+                            required
+                            placeholder="e.g. 1000.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+                            value={oauthAuthCode}
+                            onChange={e => setOauthAuthCode(e.target.value)}
+                            className="w-full bg-white border border-amber-300 rounded-lg p-2 text-slate-800 font-mono text-xs"
+                          />
+                          <p className="text-[10px] text-amber-700 mt-1">
+                            Temporary code from Zoho API Console &gt; Self-Client &gt; Generate Code (valid 10 mins). System exchanges it for a permanent Refresh Token.
+                          </p>
+                        </div>
+                      )}
+
+                      <div className="text-[10px] text-amber-800 pt-1">
+                        💡 Visit <a href="https://api-console.zoho.com" target="_blank" rel="noopener noreferrer" className="underline font-bold text-blue-700">api-console.zoho.com</a> to create a Client ID &amp; Secret for your organization.
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">
+                        Application (Client) ID *
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        placeholder={providerPreset === 'ZOHO' ? 'e.g. 1000.XXXXXXXXXX' : 'Azure App ID / Google Client ID'}
+                        value={oauthClientId}
+                        onChange={e => setOauthClientId(e.target.value)}
+                        className="w-full bg-white border border-slate-300 rounded-lg p-2 text-slate-800 font-mono text-xs"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">
+                        Client Secret *
+                      </label>
+                      <input
+                        type="password"
+                        required
+                        placeholder="Client Secret Value"
+                        value={oauthClientSecret}
+                        onChange={e => setOauthClientSecret(e.target.value)}
+                        className="w-full bg-white border border-slate-300 rounded-lg p-2 text-slate-800 font-mono text-xs"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">
+                        User / Mailbox Email
+                      </label>
+                      <input
+                        type="email"
+                        placeholder="settlement-ops@corp.bank.com"
+                        value={oauthUserEmail}
+                        onChange={e => setOauthUserEmail(e.target.value)}
+                        className="w-full bg-white border border-slate-300 rounded-lg p-2 text-slate-800 font-mono text-xs"
+                      />
+                    </div>
+
+                    {providerPreset === 'MICROSOFT_365' && (
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">
+                          Tenant ID (Microsoft Entra ID)
+                        </label>
+                        <input
+                          type="text"
+                          placeholder="Directory UUID or common"
+                          value={oauthTenantId}
+                          onChange={e => setOauthTenantId(e.target.value)}
+                          className="w-full bg-white border border-slate-300 rounded-lg p-2 text-slate-800 font-mono text-xs"
+                        />
+                      </div>
+                    )}
+
+                    {providerPreset !== 'MICROSOFT_365' && (
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">
+                          Server / IMAP Host
+                        </label>
+                        <input
+                          type="text"
+                          placeholder={providerPreset === 'ZOHO' ? 'imappro.zoho.com' : 'imap.mail.com'}
+                          value={providerHost}
+                          onChange={e => setProviderHost(e.target.value)}
+                          className="w-full bg-white border border-slate-300 rounded-lg p-2 text-slate-800 font-mono text-xs"
+                        />
+                      </div>
+                    )}
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">Scope</label>
+                    <input
+                      type="text"
+                      placeholder="e.g. ZohoMail.messages.ALL,ZohoMail.accounts.ALL"
+                      value={oauthScope}
+                      onChange={e => setOauthScope(e.target.value)}
+                      className="w-full bg-white border border-slate-300 rounded-lg p-2 text-slate-800 font-mono text-xs"
+                    />
+                  </div>
+
+                  {providerPreset === 'CUSTOM' && (
+                    <div>
+                      <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">Token Endpoint URL *</label>
+                      <input
+                        type="text"
+                        placeholder="https://auth.bank.com/oauth/v2/token"
+                        value={oauthTokenUrl}
+                        onChange={e => setOauthTokenUrl(e.target.value)}
+                        className="w-full bg-white border border-slate-300 rounded-lg p-2 text-slate-800 font-mono text-xs"
+                      />
+                    </div>
+                  )}
+
+                  {/* Live OAuth2 Test Verification */}
+                  <div className="pt-1 flex items-center justify-between">
+                    <button
+                      type="button"
+                      disabled={isTestingOAuth || !oauthClientId.trim() || !oauthClientSecret.trim()}
+                      onClick={handleTestOAuth2}
+                      className="px-3 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-bold rounded-lg transition text-xs flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+                    >
+                      {isTestingOAuth ? <RefreshCw size={12} className="animate-spin" /> : <Key size={12} />}
+                      <span>Test OAuth 2.0 Token Acquisition</span>
+                    </button>
+
+                    {oauthTestResult && (
+                      <span className={`text-[11px] font-semibold flex items-center gap-1 ${
+                        oauthTestResult.success ? 'text-emerald-700' : 'text-rose-700'
+                      }`}>
+                        {oauthTestResult.success ? <CheckCircle2 size={13} /> : <AlertTriangle size={13} />}
+                        <span>{oauthTestResult.message}</span>
+                      </span>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Basic Auth Configuration Form */}
+              {authType === 'BASIC' && (
+                <div className="space-y-3">
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">
+                      Server Host / Endpoint / Port
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="e.g. imap.corp.bank.com:993"
+                      value={providerHost}
+                      onChange={e => setProviderHost(e.target.value)}
+                      className="w-full bg-slate-50 border border-slate-300 rounded-lg p-2 text-slate-800 font-mono text-xs"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">
+                      Username / Bot Username / Phone ID
+                    </label>
+                    <input
+                      type="text"
+                      placeholder="e.g. settlement-ops, or App Username"
+                      value={providerUser}
+                      onChange={e => setProviderUser(e.target.value)}
+                      className="w-full bg-slate-50 border border-slate-300 rounded-lg p-2 text-slate-800 font-mono text-xs"
+                    />
+                  </div>
+
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">
+                      Access Token / Password / Bot Secret
+                    </label>
+                    <input
+                      type="password"
+                      placeholder="Enter secure credential or token..."
+                      value={providerToken}
+                      onChange={e => setProviderToken(e.target.value)}
+                      className="w-full bg-slate-50 border border-slate-300 rounded-lg p-2 text-slate-800 font-mono text-xs"
+                    />
+                  </div>
+                </div>
+              )}
+
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-100">
                 <button
                   type="button"
                   onClick={() => setShowAddProviderModal(false)}
-                  className="px-3 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold rounded-xl transition"
+                  className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold rounded-xl transition text-xs cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl transition"
+                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl transition text-xs cursor-pointer flex items-center gap-1.5 shadow-xs"
                 >
-                  Save Provider Connection
+                  <Check size={14} />
+                  <span>Save Provider Connection</span>
                 </button>
               </div>
             </form>

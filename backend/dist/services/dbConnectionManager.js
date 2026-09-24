@@ -5,8 +5,7 @@
  */
 import mysql from 'mysql2/promise';
 import pg from 'pg';
-import mongoose from 'mongoose';
-import { isMongoConnected } from '../config/db.js';
+import { isMongoConnected, mongoose } from '../config/db.js';
 /**
  * Resolves connection configuration from connection string or explicit fields
  */

@@ -477,7 +477,7 @@ export default function ManagerialDashboard({
       {activeDashboardTab === 'overview' && (
         <div className="space-y-6">
           {/* Task Progress & Control Room KPI Cards Section */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
         
         {/* Card 1: Tasks Assigned to Me */}
         <div 
@@ -665,6 +665,58 @@ export default function ManagerialDashboard({
             </span>
             <span className="text-emerald-700 font-bold group-hover:underline flex items-center gap-0.5">
               Explore <ArrowRight size={11} />
+            </span>
+          </div>
+        </div>
+
+        {/* Card 5: External Customer Request Intake & SLA */}
+        <div 
+          onClick={() => onChangeTab?.('team_workspace')}
+          className="bg-white border border-slate-200/80 rounded-2xl p-4.5 space-y-3 shadow-xs hover:border-sky-400 hover:shadow-sm transition-all cursor-pointer group"
+          id="card-external-intake"
+        >
+          <div className="flex justify-between items-start">
+            <div className="flex items-center space-x-2.5">
+              <div className="p-2 bg-sky-50 text-sky-600 rounded-xl border border-sky-100 group-hover:bg-sky-600 group-hover:text-white transition-colors">
+                <Inbox size={17} />
+              </div>
+              <div>
+                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider font-mono block">Intake Flow</span>
+                <h4 className="text-xs font-bold text-slate-900">External Requests</h4>
+              </div>
+            </div>
+            <span className={`text-[11px] font-bold font-mono px-2 py-0.5 rounded-full ${
+              (externalSummary?.pendingTriage || 0) > 0 ? 'bg-sky-100 text-sky-800' : 'bg-slate-100 text-slate-600'
+            }`}>
+              {externalSummary?.pendingTriage || 0} Pending
+            </span>
+          </div>
+
+          <div>
+            <div className="flex justify-between items-baseline mb-1 font-mono text-[11px]">
+              <span className="text-slate-500">Converted Ratio</span>
+              <span className="font-bold text-slate-800">
+                {externalSummary?.convertedToTask || 0} / {externalSummary?.totalInbound || 0}
+              </span>
+            </div>
+            <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden">
+              <div 
+                className="bg-sky-500 h-full rounded-full transition-all duration-500"
+                style={{ 
+                  width: `${(externalSummary?.totalInbound || 0) > 0 
+                    ? Math.min(100, Math.round(((externalSummary?.convertedToTask || 0) / externalSummary.totalInbound) * 100)) 
+                    : 100}%` 
+                }}
+              />
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between pt-1 text-[10px] font-mono">
+            <span className={externalSummary?.slaBreachCount > 0 ? 'text-rose-600 font-bold' : 'text-slate-500'}>
+              {externalSummary?.slaBreachCount || 0} SLA Breaches
+            </span>
+            <span className="text-sky-600 font-bold group-hover:underline flex items-center gap-0.5">
+              Triage <ArrowRight size={11} />
             </span>
           </div>
         </div>

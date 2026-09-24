@@ -10,8 +10,21 @@ export const makerCheckerService = {
      */
     async submitResolutionProposal(input) {
         if (!input.taskId || !input.transactionId || !input.makerId || !input.justificationNote) {
-            throw new Error('Missing required fields for resolution proposal.');
+            throw new Error('Missing required fields for resolution proposal: taskId, transactionId, makerId, and justificationNote are mandatory.');
         }
+        if (!input.teamId || !input.teamId.trim()) {
+            throw new Error('Missing required field: teamId is mandatory for resolution proposal.');
+        }
+        if (!input.makerName || !input.makerName.trim()) {
+            throw new Error('Missing required field: makerName is mandatory for resolution proposal.');
+        }
+        if (!input.proposedAction || !input.proposedAction.trim()) {
+            throw new Error('Missing required field: proposedAction is mandatory for resolution proposal.');
+        }
+        const resolvedAction = input.proposedAction.trim();
+        const resolvedStatus = (input.proposedStatus && input.proposedStatus.trim()) ||
+            (resolvedAction === 'WRITE_OFF' ? 'WRITTEN_OFF' :
+                resolvedAction === 'MANUAL_REVERSAL' ? 'MANUALLY_REVERSED' : 'VERIFIED_MATCH');
         const id = `res-req-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
         const snapshotJson = JSON.stringify(input.evidenceSnapshot || {});
         const sql = `
@@ -26,11 +39,11 @@ export const makerCheckerService = {
             id,
             input.taskId,
             input.transactionId,
-            input.teamId || 'default-team',
+            input.teamId.trim(),
             input.makerId,
-            input.makerName || 'Maker Operator',
-            input.proposedAction || 'FORCE_MATCH',
-            input.proposedStatus || 'VERIFIED_MATCH',
+            input.makerName.trim(),
+            resolvedAction,
+            resolvedStatus,
             input.justificationNote,
             snapshotJson
         ]);
@@ -81,6 +94,12 @@ export const makerCheckerService = {
             }
             const isApprove = input.action === 'APPROVE';
             const newStatus = isApprove ? 'APPROVED' : 'REJECTED';
+            if (!input.checkerName || !input.checkerName.trim()) {
+                throw new Error('Missing required field: checkerName is mandatory for reviewing resolution proposal.');
+            }
+            if (!isApprove && (!input.rejectionReason || !input.rejectionReason.trim())) {
+                throw new Error('Missing required field: rejectionReason is mandatory when rejecting a resolution proposal.');
+            }
             // 3. Update proposal status in PostgreSQL
             const updateSql = `
         UPDATE resolution_approval_requests
@@ -95,8 +114,8 @@ export const makerCheckerService = {
             const updateRes = await queryPg(updateSql, [
                 newStatus,
                 input.checkerId,
-                input.checkerName || 'Checker Supervisor',
-                isApprove ? null : (input.rejectionReason || 'Rejected by supervisor'),
+                input.checkerName.trim(),
+                isApprove ? null : input.rejectionReason.trim(),
                 input.requestId
             ]);
             const updatedRow = updateRes.rows[0];

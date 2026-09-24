@@ -1,5 +1,6 @@
 import { getPostgresPool, isPostgresConnected } from '../config/postgres.js';
 import { repo } from '../store/repository.js';
+import { resolveCanonicalKey } from './canonicalKeyResolver.js';
 export const reconciliationService = {
     /**
      * Persists external batch results into the transient investigation mirror in PostgreSQL.
@@ -42,8 +43,9 @@ export const reconciliationService = {
             const pool = getPostgresPool();
             const keys = Array.isArray(lookupKeyField)
                 ? lookupKeyField.filter(Boolean)
-                : String(lookupKeyField).split(',').map(s => s.trim()).filter(Boolean);
-            const primaryKey = keys[0] || 'transaction_id';
+                : String(lookupKeyField || '').split(',').map(s => s.trim()).filter(Boolean);
+            const resolved = resolveCanonicalKey({ explicitKey: keys[0] });
+            const primaryKey = resolved.primaryKey;
             const keyJoinSql = keys.length > 1
                 ? `m.record_key = (${keys.map(k => `COALESCE(t.canonical_data->>'${k.replace(/'/g, "''")}', '')`).join(" || '::' || ")})`
                 : `m.record_key = (t.canonical_data->>$3)`;
@@ -53,7 +55,7 @@ export const reconciliationService = {
             if (dualSourceCondition) {
                 const dsc = dualSourceCondition;
                 const comp = dsc.comparator || 'EQUALS';
-                const margin = Number(dsc.toleranceMargin ?? 0.00);
+                const margin = Number.isFinite(Number(dsc.toleranceMargin)) ? Number(dsc.toleranceMargin) : 0.00;
                 const getOperandSql = (op) => {
                     const col = op.field.toLowerCase().replace(/[^a-z0-9_]/g, '_');
                     if (op.origin === 'INPUT') {

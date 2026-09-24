@@ -6,6 +6,103 @@ import { queryPg } from '../config/postgres.js';
 import { postgresRepo } from '../store/postgresRepo.js';
 import { eventService } from './events.js';
 import { workflowBundleService } from './workflowBundleService.js';
+/**
+ * Dedicated domain adapter for financial transaction resolutions.
+ */
+export function adaptResolutionProposal(r) {
+    return {
+        id: r.id,
+        type: 'TRANSACTION_RESOLUTION',
+        title: `Resolution: ${r.proposed_action || 'Override'} on ${r.transaction_id}`,
+        description: r.justification_note || '',
+        makerId: r.maker_id,
+        makerName: r.maker_name,
+        teamId: r.team_id,
+        status: r.status === 'PENDING' ? 'PENDING' : r.status === 'APPROVED' ? 'APPROVED' : 'REJECTED',
+        evidenceSnapshot: r.evidence_snapshot || {},
+        proposedChanges: {
+            taskId: r.task_id,
+            transactionId: r.transaction_id,
+            proposedAction: r.proposed_action,
+            proposedStatus: r.proposed_status
+        },
+        checkerId: r.checker_id,
+        checkerName: r.checker_name,
+        reviewedAt: r.reviewed_at,
+        rejectionReason: r.rejection_reason,
+        createdAt: r.created_at
+    };
+}
+/**
+ * Dedicated domain adapter for composite workflow bundles.
+ */
+export function adaptWorkflowBundle(b) {
+    let normalizedStatus = 'PENDING';
+    if (b.status === 'APPROVED')
+        normalizedStatus = 'APPROVED';
+    else if (b.status === 'REJECTED')
+        normalizedStatus = 'REJECTED';
+    return {
+        id: b.id,
+        type: 'WORKFLOW_BUNDLE',
+        title: `Workflow Bundle: ${b.name} (${b.bundleCode})`,
+        description: b.description || `Promotion of workflow bundle to ${b.scope}`,
+        makerId: b.makerId,
+        makerName: b.makerName,
+        teamId: b.sourceTeamId,
+        teamName: b.sourceTeamName,
+        status: normalizedStatus,
+        evidenceSnapshot: b.evidenceSnapshot || {},
+        proposedChanges: {
+            bundleId: b.id,
+            bundleCode: b.bundleCode,
+            workflowId: b.workflowId,
+            workflowName: b.workflowName,
+            version: b.version,
+            scope: b.scope,
+            validationBoxIds: b.validationBoxIds,
+            dbCheckIds: b.dbCheckIds
+        },
+        checkerId: b.checkerId,
+        checkerName: b.checkerName,
+        reviewedAt: b.approvedAt,
+        rejectionReason: b.checkerFeedback,
+        createdAt: b.createdAt
+    };
+}
+/**
+ * Dedicated domain adapter for workspace setting proposals.
+ */
+export function adaptWorkspaceSetting(p) {
+    let normalizedStatus = 'PENDING';
+    if (p.status === 'APPROVED')
+        normalizedStatus = 'APPROVED';
+    else if (p.status === 'REJECTED')
+        normalizedStatus = 'REJECTED';
+    else if (p.status === 'ESCALATED_TO_TARGET_TEAM')
+        normalizedStatus = 'ESCALATED';
+    return {
+        id: p.id,
+        type: 'WORKSPACE_SETTING',
+        title: p.title || `Setting Proposal: ${p.settingKey}`,
+        description: p.justification || '',
+        makerId: p.makerId,
+        makerName: p.makerName,
+        teamId: p.teamId,
+        teamName: p.teamName,
+        status: normalizedStatus,
+        evidenceSnapshot: p.evidenceSnapshot || p.evidence_snapshot || {},
+        proposedChanges: p.proposedChanges || {},
+        currentSnapshot: p.currentSnapshot,
+        checkerId: p.checkerId || p.reviewedBy,
+        checkerName: p.checkerName || p.reviewerName,
+        reviewedAt: p.appliedAt || p.reviewedAt,
+        rejectionReason: p.checkerFeedback || p.reviewFeedback,
+        escalatedTeamId: p.escalatedTeamId,
+        escalationReason: p.escalationReason,
+        createdAt: p.createdAt
+    };
+}
 export const approvalService = {
     /**
      * Fetches unified approvals matching given filters.
@@ -35,28 +132,7 @@ export const approvalService = {
                 sql += ` ORDER BY created_at DESC LIMIT 200`;
                 const txnRes = await queryPg(sql, params);
                 txnRes.rows.forEach(r => {
-                    results.push({
-                        id: r.id,
-                        type: 'TRANSACTION_RESOLUTION',
-                        title: `Resolution: ${r.proposed_action || 'Override'} on ${r.transaction_id}`,
-                        description: r.justification_note || '',
-                        makerId: r.maker_id,
-                        makerName: r.maker_name,
-                        teamId: r.team_id,
-                        status: r.status === 'PENDING' ? 'PENDING' : r.status === 'APPROVED' ? 'APPROVED' : 'REJECTED',
-                        evidenceSnapshot: r.evidence_snapshot || {},
-                        proposedChanges: {
-                            taskId: r.task_id,
-                            transactionId: r.transaction_id,
-                            proposedAction: r.proposed_action,
-                            proposedStatus: r.proposed_status
-                        },
-                        checkerId: r.checker_id,
-                        checkerName: r.checker_name,
-                        reviewedAt: r.reviewed_at,
-                        rejectionReason: r.rejection_reason,
-                        createdAt: r.created_at
-                    });
+                    results.push(adaptResolutionProposal(r));
                 });
             }
             catch (err) {
@@ -72,38 +148,7 @@ export const approvalService = {
                     makerId: filters.makerId
                 });
                 bundles.forEach(b => {
-                    let normalizedStatus = 'PENDING';
-                    if (b.status === 'APPROVED')
-                        normalizedStatus = 'APPROVED';
-                    else if (b.status === 'REJECTED')
-                        normalizedStatus = 'REJECTED';
-                    results.push({
-                        id: b.id,
-                        type: 'WORKFLOW_BUNDLE',
-                        title: `Workflow Bundle: ${b.name} (${b.bundleCode})`,
-                        description: b.description || `Promotion of workflow bundle to ${b.scope}`,
-                        makerId: b.makerId,
-                        makerName: b.makerName,
-                        teamId: b.sourceTeamId,
-                        teamName: b.sourceTeamName,
-                        status: normalizedStatus,
-                        evidenceSnapshot: b.evidenceSnapshot || {},
-                        proposedChanges: {
-                            bundleId: b.id,
-                            bundleCode: b.bundleCode,
-                            workflowId: b.workflowId,
-                            workflowName: b.workflowName,
-                            version: b.version,
-                            scope: b.scope,
-                            validationBoxIds: b.validationBoxIds,
-                            dbCheckIds: b.dbCheckIds
-                        },
-                        checkerId: b.checkerId,
-                        checkerName: b.checkerName,
-                        reviewedAt: b.approvedAt,
-                        rejectionReason: b.checkerFeedback,
-                        createdAt: b.createdAt
-                    });
+                    results.push(adaptWorkflowBundle(b));
                 });
             }
             catch (err) {
@@ -117,34 +162,7 @@ export const approvalService = {
                 proposals.forEach(p => {
                     if (filters.makerId && p.makerId !== filters.makerId)
                         return;
-                    let normalizedStatus = 'PENDING';
-                    if (p.status === 'APPROVED')
-                        normalizedStatus = 'APPROVED';
-                    else if (p.status === 'REJECTED')
-                        normalizedStatus = 'REJECTED';
-                    else if (p.status === 'ESCALATED_TO_TARGET_TEAM')
-                        normalizedStatus = 'ESCALATED';
-                    results.push({
-                        id: p.id,
-                        type: 'WORKSPACE_SETTING',
-                        title: p.title || `Setting Proposal: ${p.settingKey}`,
-                        description: p.justification || '',
-                        makerId: p.makerId,
-                        makerName: p.makerName,
-                        teamId: p.teamId,
-                        teamName: p.teamName,
-                        status: normalizedStatus,
-                        evidenceSnapshot: p.evidenceSnapshot || p.evidence_snapshot || {},
-                        proposedChanges: p.proposedChanges || {},
-                        currentSnapshot: p.currentSnapshot,
-                        checkerId: p.checkerId || p.reviewedBy,
-                        checkerName: p.checkerName || p.reviewerName,
-                        reviewedAt: p.appliedAt || p.reviewedAt,
-                        rejectionReason: p.checkerFeedback || p.reviewFeedback,
-                        escalatedTeamId: p.escalatedTeamId,
-                        escalationReason: p.escalationReason,
-                        createdAt: p.createdAt
-                    });
+                    results.push(adaptWorkspaceSetting(p));
                 });
             }
             catch (err) {
@@ -174,29 +192,7 @@ export const approvalService = {
         try {
             const res = await queryPg(`SELECT * FROM resolution_approval_requests WHERE id = $1`, [id]);
             if (res.rows.length > 0) {
-                const r = res.rows[0];
-                return {
-                    id: r.id,
-                    type: 'TRANSACTION_RESOLUTION',
-                    title: `Resolution: ${r.proposed_action || 'Override'} on ${r.transaction_id}`,
-                    description: r.justification_note || '',
-                    makerId: r.maker_id,
-                    makerName: r.maker_name,
-                    teamId: r.team_id,
-                    status: r.status === 'PENDING' ? 'PENDING' : r.status === 'APPROVED' ? 'APPROVED' : 'REJECTED',
-                    evidenceSnapshot: r.evidence_snapshot || {},
-                    proposedChanges: {
-                        taskId: r.task_id,
-                        transactionId: r.transaction_id,
-                        proposedAction: r.proposed_action,
-                        proposedStatus: r.proposed_status
-                    },
-                    checkerId: r.checker_id,
-                    checkerName: r.checker_name,
-                    reviewedAt: r.reviewed_at,
-                    rejectionReason: r.rejection_reason,
-                    createdAt: r.created_at
-                };
+                return adaptResolutionProposal(res.rows[0]);
             }
         }
         catch {
@@ -205,34 +201,7 @@ export const approvalService = {
         try {
             const p = await postgresRepo.getWorkspaceSettingProposalById(id);
             if (p) {
-                let normalizedStatus = 'PENDING';
-                if (p.status === 'APPROVED')
-                    normalizedStatus = 'APPROVED';
-                else if (p.status === 'REJECTED')
-                    normalizedStatus = 'REJECTED';
-                else if (p.status === 'ESCALATED_TO_TARGET_TEAM')
-                    normalizedStatus = 'ESCALATED';
-                return {
-                    id: p.id,
-                    type: 'WORKSPACE_SETTING',
-                    title: p.title || `Setting Proposal: ${p.settingKey}`,
-                    description: p.justification || '',
-                    makerId: p.makerId,
-                    makerName: p.makerName,
-                    teamId: p.teamId,
-                    teamName: p.teamName,
-                    status: normalizedStatus,
-                    evidenceSnapshot: p.evidenceSnapshot || p.evidence_snapshot || {},
-                    proposedChanges: p.proposedChanges || {},
-                    currentSnapshot: p.currentSnapshot,
-                    checkerId: p.checkerId || p.reviewedBy,
-                    checkerName: p.checkerName || p.reviewerName,
-                    reviewedAt: p.appliedAt || p.reviewedAt,
-                    rejectionReason: p.checkerFeedback || p.reviewFeedback,
-                    escalatedTeamId: p.escalatedTeamId,
-                    escalationReason: p.escalationReason,
-                    createdAt: p.createdAt
-                };
+                return adaptWorkspaceSetting(p);
             }
         }
         catch {
@@ -242,38 +211,7 @@ export const approvalService = {
         try {
             const b = await workflowBundleService.getBundleById(id);
             if (b) {
-                let normalizedStatus = 'PENDING';
-                if (b.status === 'APPROVED')
-                    normalizedStatus = 'APPROVED';
-                else if (b.status === 'REJECTED')
-                    normalizedStatus = 'REJECTED';
-                return {
-                    id: b.id,
-                    type: 'WORKFLOW_BUNDLE',
-                    title: `Workflow Bundle: ${b.name} (${b.bundleCode})`,
-                    description: b.description || `Promotion of workflow bundle to ${b.scope}`,
-                    makerId: b.makerId,
-                    makerName: b.makerName,
-                    teamId: b.sourceTeamId,
-                    teamName: b.sourceTeamName,
-                    status: normalizedStatus,
-                    evidenceSnapshot: b.evidenceSnapshot || {},
-                    proposedChanges: {
-                        bundleId: b.id,
-                        bundleCode: b.bundleCode,
-                        workflowId: b.workflowId,
-                        workflowName: b.workflowName,
-                        version: b.version,
-                        scope: b.scope,
-                        validationBoxIds: b.validationBoxIds,
-                        dbCheckIds: b.dbCheckIds
-                    },
-                    checkerId: b.checkerId,
-                    checkerName: b.checkerName,
-                    reviewedAt: b.approvedAt,
-                    rejectionReason: b.checkerFeedback,
-                    createdAt: b.createdAt
-                };
+                return adaptWorkflowBundle(b);
             }
         }
         catch {
@@ -293,6 +231,19 @@ export const approvalService = {
             if (!input.taskId || !input.transactionId) {
                 throw new Error('Transaction resolutions require taskId and transactionId.');
             }
+            if (!input.teamId || !input.teamId.trim()) {
+                throw new Error('Transaction resolutions require teamId.');
+            }
+            if (!input.makerName || !input.makerName.trim()) {
+                throw new Error('Transaction resolutions require makerName.');
+            }
+            if (!input.proposedAction || !input.proposedAction.trim()) {
+                throw new Error('Transaction resolutions require proposedAction.');
+            }
+            const resolvedAction = input.proposedAction.trim();
+            const resolvedStatus = (input.proposedStatus && input.proposedStatus.trim()) ||
+                (resolvedAction === 'WRITE_OFF' ? 'WRITTEN_OFF' :
+                    resolvedAction === 'MANUAL_REVERSAL' ? 'MANUALLY_REVERSED' : 'VERIFIED_MATCH');
             const id = `res-req-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
             const snapshotJson = JSON.stringify(input.evidenceSnapshot || {});
             const sql = `
@@ -307,11 +258,11 @@ export const approvalService = {
                 id,
                 input.taskId,
                 input.transactionId,
-                input.teamId || 'default-team',
+                input.teamId.trim(),
                 input.makerId,
-                input.makerName || 'Maker Operator',
-                input.proposedAction || 'FORCE_MATCH',
-                input.proposedStatus || 'VERIFIED_MATCH',
+                input.makerName.trim(),
+                resolvedAction,
+                resolvedStatus,
                 input.justification,
                 snapshotJson,
                 nowIso
@@ -329,24 +280,7 @@ export const approvalService = {
             catch (err) {
                 console.warn(`[approvalService] Could not lock transaction status: ${err.message}`);
             }
-            const item = {
-                id: row.id,
-                type: 'TRANSACTION_RESOLUTION',
-                title: `Resolution: ${row.proposed_action} on ${row.transaction_id}`,
-                description: row.justification_note,
-                makerId: row.maker_id,
-                makerName: row.maker_name,
-                teamId: row.team_id,
-                status: 'PENDING',
-                evidenceSnapshot: row.evidence_snapshot || {},
-                proposedChanges: {
-                    taskId: row.task_id,
-                    transactionId: row.transaction_id,
-                    proposedAction: row.proposed_action,
-                    proposedStatus: row.proposed_status
-                },
-                createdAt: row.created_at
-            };
+            const item = adaptResolutionProposal(row);
             eventService.broadcastEvent('approval_proposal:created', item);
             return item;
         }
@@ -355,26 +289,8 @@ export const approvalService = {
                 throw new Error('bundleId is required to propose a workflow bundle promotion.');
             }
             const bundle = await workflowBundleService.proposePromotion(input.bundleId, input.targetScope || 'TEAM', input.makerId, input.makerName || input.makerId);
-            const item = {
-                id: bundle.id,
-                type: 'WORKFLOW_BUNDLE',
-                title: `Workflow Bundle: ${bundle.name} (${bundle.bundleCode})`,
-                description: input.justification,
-                makerId: bundle.makerId,
-                makerName: bundle.makerName,
-                teamId: bundle.sourceTeamId,
-                teamName: bundle.sourceTeamName,
-                status: 'PENDING',
-                evidenceSnapshot: bundle.evidenceSnapshot || {},
-                proposedChanges: {
-                    bundleId: bundle.id,
-                    bundleCode: bundle.bundleCode,
-                    workflowId: bundle.workflowId,
-                    version: bundle.version,
-                    scope: bundle.scope
-                },
-                createdAt: bundle.updatedAt
-            };
+            const item = adaptWorkflowBundle(bundle);
+            item.description = input.justification;
             eventService.broadcastEvent('approval_proposal:created', item);
             return item;
         }
@@ -406,21 +322,10 @@ export const approvalService = {
                     // Non-blocking
                 }
             }
-            const item = {
-                id: proposal.id,
-                type: 'WORKSPACE_SETTING',
-                title: proposal.title,
-                description: proposal.justification,
-                makerId: proposal.makerId,
-                makerName: proposal.makerName,
-                teamId: proposal.teamId,
-                teamName: proposal.teamName,
-                status: 'PENDING',
-                evidenceSnapshot: input.evidenceSnapshot || {},
-                proposedChanges: proposal.proposedChanges,
-                currentSnapshot: proposal.currentSnapshot,
-                createdAt: proposal.createdAt
-            };
+            const item = adaptWorkspaceSetting(proposal);
+            if (input.evidenceSnapshot) {
+                item.evidenceSnapshot = input.evidenceSnapshot;
+            }
             eventService.broadcastEvent('approval_proposal:created', item);
             return item;
         }
@@ -433,33 +338,16 @@ export const approvalService = {
         if (!input.id || !input.checkerId || !input.action) {
             throw new Error('Proposal ID, Checker ID, and Action (APPROVE/REJECT) are required.');
         }
+        if (!input.checkerName || !input.checkerName.trim()) {
+            throw new Error('Missing required field: checkerName is mandatory for reviewing proposal.');
+        }
+        if (input.action === 'REJECT' && (!input.reason || !input.reason.trim())) {
+            throw new Error('Missing required field: reason is mandatory when rejecting a proposal.');
+        }
         // Try workflow bundle review first if ID indicates a bundle
         if (input.id.startsWith('bundle-')) {
-            const bundle = await workflowBundleService.reviewPromotion(input.id, input.checkerId, input.checkerName || 'Checker Supervisor', input.action, input.reason);
-            const item = {
-                id: bundle.id,
-                type: 'WORKFLOW_BUNDLE',
-                title: `Workflow Bundle: ${bundle.name} (${bundle.bundleCode})`,
-                description: bundle.description || '',
-                makerId: bundle.makerId,
-                makerName: bundle.makerName,
-                teamId: bundle.sourceTeamId,
-                teamName: bundle.sourceTeamName,
-                status: bundle.status === 'APPROVED' ? 'APPROVED' : 'REJECTED',
-                evidenceSnapshot: bundle.evidenceSnapshot || {},
-                proposedChanges: {
-                    bundleId: bundle.id,
-                    bundleCode: bundle.bundleCode,
-                    workflowId: bundle.workflowId,
-                    version: bundle.version,
-                    scope: bundle.scope
-                },
-                checkerId: bundle.checkerId,
-                checkerName: bundle.checkerName,
-                reviewedAt: bundle.approvedAt,
-                rejectionReason: bundle.checkerFeedback,
-                createdAt: bundle.createdAt
-            };
+            const bundle = await workflowBundleService.reviewPromotion(input.id, input.checkerId, input.checkerName.trim(), input.action, input.reason);
+            const item = adaptWorkflowBundle(bundle);
             return item;
         }
         // Try transaction resolution next
@@ -487,8 +375,8 @@ export const approvalService = {
                 const updateRes = await queryPg(updateSql, [
                     newStatus,
                     input.checkerId,
-                    input.checkerName || 'Checker Supervisor',
-                    isApprove ? null : (input.reason || 'Rejected by supervisor'),
+                    input.checkerName.trim(),
+                    isApprove ? null : input.reason.trim(),
                     input.id
                 ]);
                 const updatedRow = updateRes.rows[0];
@@ -502,7 +390,7 @@ export const approvalService = {
                  status_flag_text = $2,
                  status_flag_color = 'emerald',
                  updated_at = NOW()
-             WHERE task_id = $3 AND transaction_id = $4;`, [targetStatus, `Approved by ${input.checkerName}`, proposal.task_id, proposal.transaction_id]);
+             WHERE task_id = $3 AND transaction_id = $4;`, [targetStatus, `Approved by ${input.checkerName.trim()}`, proposal.task_id, proposal.transaction_id]);
                 }
                 else {
                     await queryPg(`UPDATE investigation_transactions 
@@ -511,31 +399,10 @@ export const approvalService = {
                  status_flag_text = $1,
                  status_flag_color = 'rose',
                  updated_at = NOW()
-             WHERE task_id = $2 AND transaction_id = $3;`, [`Rejected: ${input.reason || 'Supervisor Rejected'}`, proposal.task_id, proposal.transaction_id]);
+             WHERE task_id = $2 AND transaction_id = $3;`, [`Rejected: ${input.reason.trim()}`, proposal.task_id, proposal.transaction_id]);
                 }
                 await queryPg('COMMIT;');
-                const item = {
-                    id: updatedRow.id,
-                    type: 'TRANSACTION_RESOLUTION',
-                    title: `Resolution: ${updatedRow.proposed_action} on ${updatedRow.transaction_id}`,
-                    description: updatedRow.justification_note,
-                    makerId: updatedRow.maker_id,
-                    makerName: updatedRow.maker_name,
-                    teamId: updatedRow.team_id,
-                    status: newStatus,
-                    evidenceSnapshot: updatedRow.evidence_snapshot || {},
-                    proposedChanges: {
-                        taskId: updatedRow.task_id,
-                        transactionId: updatedRow.transaction_id,
-                        proposedAction: updatedRow.proposed_action,
-                        proposedStatus: updatedRow.proposed_status
-                    },
-                    checkerId: updatedRow.checker_id,
-                    checkerName: updatedRow.checker_name,
-                    reviewedAt: updatedRow.reviewed_at,
-                    rejectionReason: updatedRow.rejection_reason,
-                    createdAt: updatedRow.created_at
-                };
+                const item = adaptResolutionProposal(updatedRow);
                 eventService.broadcastEvent('approval_proposal:reviewed', item);
                 return item;
             }
@@ -553,26 +420,8 @@ export const approvalService = {
         if (existingSetting.makerId === input.checkerId) {
             throw new Error(`Anti-Self-Approval Violation: Maker '${existingSetting.makerName}' cannot approve their own setting proposal.`);
         }
-        const updatedSetting = await postgresRepo.reviewWorkspaceSettingProposal(input.id, input.checkerId, input.checkerName || 'Checker Supervisor', input.action, input.reason);
-        const item = {
-            id: updatedSetting.id,
-            type: 'WORKSPACE_SETTING',
-            title: updatedSetting.title,
-            description: updatedSetting.justification,
-            makerId: updatedSetting.makerId,
-            makerName: updatedSetting.makerName,
-            teamId: updatedSetting.teamId,
-            teamName: updatedSetting.teamName,
-            status: updatedSetting.status === 'APPROVED' ? 'APPROVED' : 'REJECTED',
-            evidenceSnapshot: updatedSetting.evidenceSnapshot || updatedSetting.evidence_snapshot || {},
-            proposedChanges: updatedSetting.proposedChanges,
-            currentSnapshot: updatedSetting.currentSnapshot,
-            checkerId: updatedSetting.checkerId || updatedSetting.reviewedBy,
-            checkerName: updatedSetting.checkerName || updatedSetting.reviewerName,
-            reviewedAt: updatedSetting.appliedAt || updatedSetting.reviewedAt || new Date().toISOString(),
-            rejectionReason: updatedSetting.checkerFeedback || updatedSetting.reviewFeedback,
-            createdAt: updatedSetting.createdAt
-        };
+        const updatedSetting = await postgresRepo.reviewWorkspaceSettingProposal(input.id, input.checkerId, input.checkerName.trim(), input.action, input.reason);
+        const item = adaptWorkspaceSetting(updatedSetting);
         eventService.broadcastEvent('approval_proposal:reviewed', item);
         return item;
     },

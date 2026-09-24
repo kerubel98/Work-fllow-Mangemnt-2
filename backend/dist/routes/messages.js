@@ -167,3 +167,209 @@ messagesRouter.post('/configs/personal', async (req, res) => {
         return res.status(500).json({ error: err.message });
     }
 });
+/**
+ * ========================================================
+ * Provider Connection & Active Fetch Management Endpoints
+ * ========================================================
+ */
+// GET /api/messages/providers - List configured providers
+messagesRouter.get('/providers', async (req, res) => {
+    try {
+        const { stagingService } = await import('../services/messaging/stagingService.js');
+        const teamId = req.query.teamId;
+        const userId = req.query.userId;
+        const providers = await stagingService.getProviderConnections(teamId, userId);
+        return res.json(providers);
+    }
+    catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+});
+// POST /api/messages/providers - Create or update provider connection
+messagesRouter.post('/providers', async (req, res) => {
+    try {
+        const { stagingService } = await import('../services/messaging/stagingService.js');
+        const { channel, displayName, teamId, userId, config, status, createdBy } = req.body;
+        if (!channel) {
+            return res.status(400).json({ error: 'channel is required.' });
+        }
+        const saved = await stagingService.saveProviderConnection({
+            channel,
+            displayName,
+            teamId,
+            userId,
+            config,
+            status,
+            createdBy
+        });
+        return res.status(201).json(saved);
+    }
+    catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+});
+// POST /api/messages/providers/:id/test - Test provider connection credentials
+messagesRouter.post('/providers/:id/test', async (req, res) => {
+    try {
+        const { stagingService } = await import('../services/messaging/stagingService.js');
+        const result = await stagingService.testProviderConnection(req.params.id);
+        return res.json(result);
+    }
+    catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+});
+// POST /api/messages/providers/:id/fetch - Trigger on-demand message fetch
+messagesRouter.post('/providers/:id/fetch', async (req, res) => {
+    try {
+        const { stagingService } = await import('../services/messaging/stagingService.js');
+        const result = await stagingService.fetchProviderMessages(req.params.id);
+        return res.json({ success: true, ...result });
+    }
+    catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+});
+// POST /api/messages/oauth2/test - Direct test of OAuth2 credentials & token acquisition
+messagesRouter.post('/oauth2/test', async (req, res) => {
+    try {
+        const { oauth2Service } = await import('../services/messaging/oauth2Service.js');
+        const { config, channel } = req.body;
+        if (!config) {
+            return res.status(400).json({ error: 'config is required.' });
+        }
+        const result = await oauth2Service.testOAuth2Credentials(config, channel || 'email');
+        return res.json(result);
+    }
+    catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+});
+/**
+ * ========================================================
+ * External Requests Staging Queue & Maker-Checker Endpoints
+ * ========================================================
+ */
+// GET /api/messages/staging - List staged external requests with filters
+messagesRouter.get('/staging', async (req, res) => {
+    try {
+        const { stagingService } = await import('../services/messaging/stagingService.js');
+        const teamId = req.query.teamId;
+        const assignedUserId = req.query.assignedUserId;
+        const status = req.query.status;
+        const urgency = req.query.urgency;
+        const limit = req.query.limit ? parseInt(req.query.limit, 10) : 50;
+        const staged = await stagingService.getStagedMessages({
+            teamId,
+            assignedUserId,
+            status,
+            urgency,
+            limit
+        });
+        return res.json(staged);
+    }
+    catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+});
+// GET /api/messages/staging/:id - Single staged item inspection
+messagesRouter.get('/staging/:id', async (req, res) => {
+    try {
+        const { stagingService } = await import('../services/messaging/stagingService.js');
+        const item = await stagingService.getStagedMessageById(req.params.id);
+        if (!item) {
+            return res.status(404).json({ error: 'Staged message not found.' });
+        }
+        return res.json(item);
+    }
+    catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+});
+// POST /api/messages/staging/:id/propose - Maker proposes task conversion
+messagesRouter.post('/staging/:id/propose', async (req, res) => {
+    try {
+        const { stagingService } = await import('../services/messaging/stagingService.js');
+        const { makerId, makerName, title, teamId, priority, notes } = req.body;
+        if (!makerId) {
+            return res.status(400).json({ error: 'makerId is required to propose task conversion.' });
+        }
+        const updated = await stagingService.proposeTaskConversion(req.params.id, { id: makerId, name: makerName || 'Operational Maker' }, { title, teamId, priority, notes });
+        return res.json({ success: true, staged: updated });
+    }
+    catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+});
+// POST /api/messages/staging/:id/approve - Checker approves task conversion (Anti-Self-Approval enforced)
+messagesRouter.post('/staging/:id/approve', async (req, res) => {
+    try {
+        const { stagingService } = await import('../services/messaging/stagingService.js');
+        const { checkerId, checkerName, reviewNotes } = req.body;
+        if (!checkerId) {
+            return res.status(400).json({ error: 'checkerId is required.' });
+        }
+        const result = await stagingService.approveAndConvertTask(req.params.id, { id: checkerId, name: checkerName || 'Operational Supervisor' }, reviewNotes);
+        return res.json({ success: true, ...result });
+    }
+    catch (err) {
+        if (err.message.includes('Anti-Self-Approval')) {
+            return res.status(403).json({ error: err.message });
+        }
+        return res.status(500).json({ error: err.message });
+    }
+});
+// POST /api/messages/staging/:id/reject - Reject staged request
+messagesRouter.post('/staging/:id/reject', async (req, res) => {
+    try {
+        const { stagingService } = await import('../services/messaging/stagingService.js');
+        const { actorId, actorName, reason } = req.body;
+        const updated = await stagingService.rejectStagedMessage(req.params.id, { id: actorId || 'sys', name: actorName || 'Reviewer' }, reason || 'Rejected during triage');
+        return res.json({ success: true, staged: updated });
+    }
+    catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+});
+// POST /api/messages/staging/:id/create-task - Direct conversion or approval
+messagesRouter.post('/staging/:id/create-task', async (req, res) => {
+    try {
+        const { stagingService } = await import('../services/messaging/stagingService.js');
+        const { actorId, actorName, notes } = req.body;
+        const result = await stagingService.approveAndConvertTask(req.params.id, { id: actorId || 'usr-supervisor', name: actorName || 'Lead Operator' }, notes);
+        return res.json({ success: true, ...result });
+    }
+    catch (err) {
+        if (err.message.includes('Anti-Self-Approval')) {
+            return res.status(403).json({ error: err.message });
+        }
+        return res.status(500).json({ error: err.message });
+    }
+});
+// POST /api/messages/staging/:id/escalate - Escalate to another team
+messagesRouter.post('/staging/:id/escalate', async (req, res) => {
+    try {
+        const { stagingService } = await import('../services/messaging/stagingService.js');
+        const { targetTeamId, actorId, actorName, reason } = req.body;
+        if (!targetTeamId) {
+            return res.status(400).json({ error: 'targetTeamId is required.' });
+        }
+        const updated = await stagingService.escalateStagedMessage(req.params.id, targetTeamId, { id: actorId || 'operator', name: actorName || 'Lead' }, reason || 'Escalated from triage queue');
+        return res.json({ success: true, staged: updated });
+    }
+    catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+});
+// GET /api/messages/summary or /api/external-requests/summary - Summary dashboard metrics
+messagesRouter.get('/summary', async (req, res) => {
+    try {
+        const { stagingService } = await import('../services/messaging/stagingService.js');
+        const teamId = req.query.teamId;
+        const summary = await stagingService.getExternalRequestSummary(teamId);
+        return res.json(summary);
+    }
+    catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+});

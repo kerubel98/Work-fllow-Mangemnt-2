@@ -13,6 +13,14 @@ export const workflowBundleService = {
         if (!input.name || !input.workflowId || !input.sourceTeamId || !input.makerId) {
             throw new Error('name, workflowId, sourceTeamId, and makerId are required to create a workflow bundle.');
         }
+        const version = input.version || '1.0.0';
+        if (!/^\d+\.\d+\.\d+/.test(version)) {
+            throw new Error(`Invalid semantic version format: '${version}'. Expected format X.Y.Z.`);
+        }
+        const scope = (input.scope || 'TEAM').toUpperCase();
+        if (!['PERSONAL', 'TEAM', 'GLOBAL_ENTERPRISE'].includes(scope)) {
+            throw new Error(`Invalid bundle scope: '${scope}'. Must be PERSONAL, TEAM, or GLOBAL_ENTERPRISE.`);
+        }
         // 1. Fetch Workflow definition
         const wfRes = await queryPg(`SELECT * FROM database_validation_workflows WHERE id = $1`, [input.workflowId]);
         if (wfRes.rows.length === 0) {
@@ -38,17 +46,20 @@ export const workflowBundleService = {
             workflow: {
                 id: wf.id,
                 name: wf.name,
-                description: wf.description,
-                config: wf.config || {},
+                stages: wf.stages || [],
+                steps: wf.steps || [],
                 nodes: wf.nodes || [],
-                edges: wf.edges || []
+                connections: wf.connections || []
             },
             validationBoxes: boxes.map(b => ({
                 id: b.id,
                 name: b.name,
                 boxType: b.box_type,
-                config: b.config,
-                requiredColumns: b.required_columns
+                category: b.category,
+                checkStep: b.check_step,
+                searchParameters: b.search_parameters,
+                matchKeyInput: b.match_key_input,
+                matchKeyExternal: b.match_key_external
             })),
             dbChecks: dbChecks.map(c => ({
                 id: c.id,
@@ -60,8 +71,6 @@ export const workflowBundleService = {
         };
         const id = `bundle-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
         const bundleCode = `WB-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).substring(2, 6).toUpperCase()}`;
-        const version = input.version || '1.0.0';
-        const scope = input.scope || 'TEAM';
         const hashtagBindings = input.hashtagBindings || [];
         const insertSql = `
       INSERT INTO workflow_bundles (

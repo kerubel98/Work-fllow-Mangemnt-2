@@ -142,13 +142,45 @@ describe('Backend, Governance, and Dashboard Refactor Verification Suite', () =>
             const dummyRecords = [
                 { transaction_id: 'TXN-SBX-01', amount: 150.00, terminal_id: 'TERM-01' }
             ];
-            // Retrieve first available workflow
             const { repo } = await import('../../store/repository.js');
-            const workflows = await repo.getWorkflows();
-            if (workflows.length > 0) {
-                const wfId = workflows[0].id;
+            const testWfId = `wf-sbx-test-${Date.now()}`;
+            await repo.createWorkflow({
+                id: testWfId,
+                name: 'Sandbox Simulation Test Flow',
+                category: 'Simulation',
+                targetDbId: 'db-test',
+                targetTable: 'transactions',
+                stages: [
+                    {
+                        id: 'sbx-stage-1',
+                        name: 'Validation Stage',
+                        targetDbId: 'db-test',
+                        targetDataSource: 'transactions',
+                        order: 1,
+                        enabled: true
+                    }
+                ],
+                steps: [
+                    {
+                        id: 'sbx-step-1',
+                        name: 'Sandbox Step',
+                        checkType: 'EXISTENCE_CHECK',
+                        sourceField: 'transaction_id',
+                        targetField: 'transaction_id',
+                        stepNumber: 1,
+                        targetDbId: 'db-test',
+                        targetTable: 'transactions',
+                        dependencyCondition: 'ALWAYS',
+                        onErrorAction: 'STOP',
+                        onPassAction: 'CONTINUE',
+                        onFailAction: 'STOP'
+                    }
+                ],
+                createdAt: new Date().toISOString()
+            });
+            try {
                 const res = await sandboxExecutionService.simulateWorkflow({
-                    workflowId: wfId,
+                    workflowId: testWfId,
                     records: dummyRecords,
                     executedBy: 'unit_tester'
                 });
@@ -160,6 +192,11 @@ describe('Backend, Governance, and Dashboard Refactor Verification Suite', () =>
                     expect(res.records[0]._isDiagnosticOnly).toBe(true);
                     expect(res.records[0]._executionMode).toBe('SANDBOX_SIMULATION');
                 }
+            }
+            finally {
+                const { queryPg } = await import('../../config/postgres.js');
+                await queryPg(`DELETE FROM task_workflow_executions WHERE workflow_id = $1;`, [testWfId]);
+                await queryPg(`DELETE FROM database_validation_workflows WHERE id = $1;`, [testWfId]);
             }
         });
     });

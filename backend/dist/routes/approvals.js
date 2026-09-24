@@ -74,6 +74,56 @@ approvalsRouter.post('/propose', async (req, res) => {
         return res.status(400).json({ error: err.message });
     }
 });
+// POST /api/approvals/transactions/:id/approve - Approve financial transaction override
+approvalsRouter.post('/transactions/:id/approve', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { checkerId, checkerName, checkerTeamId, reason } = req.body;
+        if (!checkerId) {
+            return res.status(400).json({ error: 'checkerId is required.' });
+        }
+        const reviewed = await approvalService.reviewProposal({
+            id,
+            checkerId,
+            checkerName: checkerName || 'Checker Supervisor',
+            checkerTeamId,
+            action: 'APPROVE',
+            reason
+        });
+        return res.json(reviewed);
+    }
+    catch (err) {
+        if (err.message && err.message.includes('Anti-Self-Approval')) {
+            return res.status(403).json({ error: err.message });
+        }
+        return res.status(400).json({ error: err.message });
+    }
+});
+// POST /api/approvals/transactions/:id/reject - Reject financial transaction override
+approvalsRouter.post('/transactions/:id/reject', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { checkerId, checkerName, checkerTeamId, reason } = req.body;
+        if (!checkerId) {
+            return res.status(400).json({ error: 'checkerId is required.' });
+        }
+        const reviewed = await approvalService.reviewProposal({
+            id,
+            checkerId,
+            checkerName: checkerName || 'Checker Supervisor',
+            checkerTeamId,
+            action: 'REJECT',
+            reason
+        });
+        return res.json(reviewed);
+    }
+    catch (err) {
+        if (err.message && err.message.includes('Anti-Self-Approval')) {
+            return res.status(403).json({ error: err.message });
+        }
+        return res.status(400).json({ error: err.message });
+    }
+});
 // POST /api/approvals/:id/review - Checker Review (APPROVE / REJECT)
 approvalsRouter.post('/:id/review', async (req, res) => {
     try {

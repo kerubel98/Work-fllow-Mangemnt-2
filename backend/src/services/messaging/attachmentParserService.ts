@@ -233,13 +233,13 @@ export class AttachmentParserService {
     let category = 'GENERAL_INQUIRY';
     let suggestedTeamId = 'team-settlement-01';
 
-    if (lower.includes('chargeback') || lower.includes('dispute') || lower.includes('card fraud')) {
-      category = 'CHARGEBACK_DISPUTE';
-      suggestedTeamId = 'team-cards-01';
-      score += 0.15;
-    } else if (lower.includes('reconciliation') || lower.includes('settlement exception') || rowCount > 0 || lower.includes('clearing')) {
+    if (rowCount > 0 || lower.includes('reconciliation') || lower.includes('settlement exception') || lower.includes('clearing') || lower.includes('ledger')) {
       category = 'RECONCILIATION_EXCEPTION';
       suggestedTeamId = 'team-settlement-01';
+      score += 0.2;
+    } else if (lower.includes('chargeback') || lower.includes('dispute') || lower.includes('card fraud')) {
+      category = 'CHARGEBACK_DISPUTE';
+      suggestedTeamId = 'team-cards-01';
       score += 0.15;
     } else if (lower.includes('payment failure') || lower.includes('gateway timeout') || lower.includes('declined')) {
       category = 'PAYMENT_FAILURE';
@@ -254,8 +254,9 @@ export class AttachmentParserService {
     // 3. Entity Extraction via Regex
     const parsedFields: ExtractedRequestPayload['parsedFields'] = {};
 
-    // Case / Claim Reference (e.g. #ISS-105, CASE-9281, DISP-1029, RRN: 1029482910)
-    const caseMatch = text.match(/(#?(?:ISS|CASE|DISP|CLAIM|REF|RRN)[-_]?[0-9a-zA-Z]{3,24})/i);
+    // Case / Claim Reference (e.g. #ISS-105, CASE-9281, DISP-10924, RRN-2026-99)
+    // Strictly requires hyphen/underscore or digits to prevent matching words like "dispute"
+    const caseMatch = text.match(/(#?(?:ISS|CASE|DISP|CLAIM|REF|RRN)[-_][0-9a-zA-Z]{2,24}|#?(?:ISS|CASE|DISP|CLAIM|REF|RRN)[0-9]{2,24})/i);
     if (caseMatch) {
       parsedFields.caseReference = caseMatch[1].toUpperCase();
       score += 0.1;

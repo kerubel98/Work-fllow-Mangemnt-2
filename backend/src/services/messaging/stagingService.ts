@@ -280,9 +280,10 @@ export class StagingService {
     }
 
     // Anti-Self-Approval Check (Rule 7)
-    if (staged.maker_id && staged.maker_id === checker.id) {
+    const effectiveMakerId = staged.makerId || (staged as any).maker_id;
+    if (effectiveMakerId && effectiveMakerId === checker.id) {
       throw new Error(
-        `Anti-Self-Approval violation: Checker '${checker.name}' cannot approve their own submission (Maker: '${staged.maker_id}'). Four-Eyes principle required.`
+        `Anti-Self-Approval violation: Checker '${checker.name}' cannot approve their own submission (Maker: '${effectiveMakerId}'). Four-Eyes principle required.`
       );
     }
 
@@ -297,7 +298,7 @@ export class StagingService {
       description: `Origin: ${staged.channel.toUpperCase()} from ${staged.senderName || staged.senderAddress} (${staged.senderAddress}).\n\nOriginal Request Body:\n${staged.textBody}\n\nReview Notes:\n${reviewNotes || staged.reviewNotes || 'Approved for operational handling.'}`,
       status: 'Open',
       priority: staged.urgency === 'critical' ? 'Critical' : (staged.urgency === 'high' ? 'High' : 'Medium'),
-      creatorId: staged.maker_id || checker.id,
+      creatorId: staged.makerId || checker.id,
       creatorName: checker.name,
       createdAt: new Date().toISOString(),
       type: staged.attachments && staged.attachments.length > 0 ? 'file' : 'single',
@@ -311,7 +312,7 @@ export class StagingService {
           id: `msg-${Date.now()}`,
           senderId: checker.id,
           senderName: `${checker.name} (Checker Approval)`,
-          senderRole: 'supervisor',
+          senderRole: 'managerial',
           text: `Task converted from ${staged.channel.toUpperCase()} request #${staged.id}. Approved with notes: "${reviewNotes || 'Verified'}"`,
           timestamp: new Date().toISOString()
         }
@@ -576,7 +577,7 @@ export class StagingService {
     let errorTrace: string | undefined;
 
     try {
-      const rawMessages = await connector.fetchNewMessages(provider.config || {}, provider.last_fetch_at);
+      const rawMessages = await connector.fetchNewMessages(provider.config || {}, provider.last_fetch_at, id);
       messagesFound = rawMessages.length;
 
       for (const raw of rawMessages) {
