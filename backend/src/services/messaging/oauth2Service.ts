@@ -10,6 +10,7 @@ export type OAuth2GrantType = 'client_credentials' | 'refresh_token' | 'authoriz
 export interface OAuth2Config {
   authType?: 'OAUTH2' | 'BASIC' | 'API_KEY';
   providerPreset?: 'MICROSOFT_365' | 'GOOGLE_WORKSPACE' | 'ZOHO' | 'META' | 'CUSTOM';
+  preset?: 'MICROSOFT_365' | 'GOOGLE_WORKSPACE' | 'ZOHO' | 'META' | 'CUSTOM';
   zohoRegion?: 'COM' | 'EU' | 'IN' | 'AU' | 'JP' | 'CA';
   grantType?: 'client_credentials' | 'refresh_token' | 'authorization_code';
   tenantId?: string;
@@ -39,8 +40,20 @@ export class OAuth2Service {
    */
   resolveTokenUrl(config: OAuth2Config): string {
     if (config.tokenUrl) return config.tokenUrl;
+    const preset = config.providerPreset || config.preset;
 
-    if (config.providerPreset === 'ZOHO') {
+    // Auto-detect Zoho if preset is ZOHO, or if clientId starts with 1000., or if tenantId/scope/user mentions zoho
+    const isZoho = preset === 'ZOHO'
+      || (config.clientId && config.clientId.startsWith('1000.'))
+      || (config.tenantId && config.tenantId.toLowerCase().includes('zoho'))
+      || (config.scope && config.scope.toLowerCase().includes('zohomail'))
+      || (config.userEmail && config.userEmail.toLowerCase().includes('zoho'));
+
+    if (isZoho) {
+      if (config.tenantId && config.tenantId.includes('accounts.zoho')) {
+        const cleanTenant = config.tenantId.replace(/\/oauth\/v2\/token\/?$/, '').replace(/^https?:\/\//, '');
+        return `https://${cleanTenant}/oauth/v2/token`;
+      }
       const reg = config.zohoRegion || 'COM';
       const domain = reg === 'EU' ? 'accounts.zoho.eu'
                    : reg === 'IN' ? 'accounts.zoho.in'
@@ -51,20 +64,20 @@ export class OAuth2Service {
       return `https://${domain}/oauth/v2/token`;
     }
 
-    if (config.providerPreset === 'GOOGLE_WORKSPACE') {
+    if (preset === 'GOOGLE_WORKSPACE') {
       return 'https://oauth2.googleapis.com/token';
     }
 
-    if (config.providerPreset === 'META') {
+    if (preset === 'META') {
       return 'https://graph.facebook.com/v19.0/oauth/access_token';
     }
 
-    if (config.providerPreset === 'MICROSOFT_365') {
+    if (preset === 'MICROSOFT_365') {
       const tenant = config.tenantId || 'common';
       return `https://login.microsoftonline.com/${tenant}/oauth2/v2.0/token`;
     }
 
-    if (config.tenantId) {
+    if (config.tenantId && !config.tenantId.includes('zoho')) {
       return `https://login.microsoftonline.com/${config.tenantId}/oauth2/v2.0/token`;
     }
 
@@ -76,20 +89,21 @@ export class OAuth2Service {
    */
   resolveDefaultScope(config: OAuth2Config, channel: 'email' | 'teams' | 'whatsapp' | 'telegram'): string {
     if (config.scope) return config.scope;
+    const preset = config.providerPreset || config.preset;
 
-    if (config.providerPreset === 'ZOHO') {
+    if (preset === 'ZOHO' || (config.clientId && config.clientId.startsWith('1000.'))) {
       return 'ZohoMail.messages.ALL,ZohoMail.accounts.ALL';
     }
 
-    if (channel === 'email' && config.providerPreset === 'MICROSOFT_365') {
+    if (channel === 'email' && preset === 'MICROSOFT_365') {
       return 'https://outlook.office365.com/.default';
     }
 
-    if (channel === 'email' && config.providerPreset === 'GOOGLE_WORKSPACE') {
+    if (channel === 'email' && preset === 'GOOGLE_WORKSPACE') {
       return 'https://mail.google.com/';
     }
 
-    if (channel === 'teams' || config.providerPreset === 'MICROSOFT_365') {
+    if (channel === 'teams' || preset === 'MICROSOFT_365') {
       return 'https://graph.microsoft.com/.default';
     }
 
@@ -107,15 +121,17 @@ export class OAuth2Service {
   }> {
     const tokenUrl = this.resolveTokenUrl(config);
     const scope = this.resolveDefaultScope(config, channel);
+    const clientId = config.clientId?.trim();
+    const clientSecret = config.clientSecret?.trim();
 
-    if (!config.clientId || !config.clientSecret) {
+    if (!clientId || !clientSecret) {
       throw new Error('OAuth2 Client Credentials Grant requires both clientId and clientSecret.');
     }
 
     const bodyParams = new URLSearchParams();
     bodyParams.append('grant_type', 'client_credentials');
-    bodyParams.append('client_id', config.clientId);
-    bodyParams.append('client_secret', config.clientSecret);
+    bodyParams.append('client_id', clientId);
+    bodyParams.append('client_secret', clientSecret);
     bodyParams.append('scope', scope);
 
     const response = await fetch(tokenUrl, {
@@ -161,16 +177,23 @@ export class OAuth2Service {
     expiresIn: number;
     tokenExpiry: number;
   }> {
-    if (!config.refreshToken) {
+    const refreshToken = config.refreshToken?.trim();
+    const clientId = config.clientId?.trim();
+    const clientSecret = config.clientSecret?.trim();
+
+    if (!refreshToken) {
       throw new Error('OAuth2 Refresh Token Grant requires refreshToken.');
+    }
+    if (!clientId || !clientSecret) {
+      throw new Error('OAuth2 Refresh Token Grant requires both clientId and clientSecret.');
     }
 
     const tokenUrl = this.resolveTokenUrl(config);
     const bodyParams = new URLSearchParams();
     bodyParams.append('grant_type', 'refresh_token');
-    bodyParams.append('refresh_token', config.refreshToken);
-    if (config.clientId) bodyParams.append('client_id', config.clientId);
-    if (config.clientSecret) bodyParams.append('client_secret', config.clientSecret);
+    bodyParams.append('client_id', clientId);
+    bodyParams.append('client_secret', clientSecret);
+    bodyParams.append('refresh_token', refreshToken);
     if (config.scope) bodyParams.append('scope', config.scope);
 
     const response = await fetch(tokenUrl, {
@@ -200,7 +223,7 @@ export class OAuth2Service {
 
     return {
       accessToken: data.access_token,
-      refreshToken: data.refresh_token || config.refreshToken,
+      refreshToken: data.refresh_token || refreshToken,
       expiresIn,
       tokenExpiry: Date.now() + expiresIn * 1000
     };
@@ -216,16 +239,23 @@ export class OAuth2Service {
     tokenExpiry: number;
     scope?: string;
   }> {
-    if (!config.code) {
+    const code = config.code?.trim();
+    const clientId = config.clientId?.trim();
+    const clientSecret = config.clientSecret?.trim();
+
+    if (!code) {
       throw new Error('OAuth2 Authorization Code Grant requires code (grant token).');
+    }
+    if (!clientId || !clientSecret) {
+      throw new Error('OAuth2 requires both clientId and clientSecret.');
     }
 
     const tokenUrl = this.resolveTokenUrl(config);
     const bodyParams = new URLSearchParams();
     bodyParams.append('grant_type', 'authorization_code');
-    bodyParams.append('code', config.code);
-    if (config.clientId) bodyParams.append('client_id', config.clientId);
-    if (config.clientSecret) bodyParams.append('client_secret', config.clientSecret);
+    bodyParams.append('client_id', clientId);
+    bodyParams.append('client_secret', clientSecret);
+    bodyParams.append('code', code);
     if (config.scope) bodyParams.append('scope', config.scope);
 
     const response = await fetch(tokenUrl, {

@@ -63,19 +63,151 @@ export class EmailProviderConnector implements MessageProviderConnector {
   }
 
   async fetchNewMessages(config: Record<string, any>, lastFetchAt?: string, providerId?: string): Promise<any[]> {
-    // If OAuth2 is enabled, ensure we have a valid non-expired access token
-    if (config.authType === 'OAUTH2' || (config.clientId && config.clientSecret)) {
+    const isOAuth2 = config.authType === 'OAUTH2' || (config.clientId && config.clientSecret);
+
+    if (isOAuth2) {
       try {
         const accessToken = await oauth2Service.getValidAccessToken(providerId || null, config as OAuth2Config, 'email');
-        const user = config.user || config.username || config.email || 'shared-inbox@bank.com';
-        const xoauth2Token = oauth2Service.buildXOAuth2Token(user, accessToken);
-        // xoauth2Token is available for SASL XOAUTH2 IMAP handshake
+        const preset = config.providerPreset || config.preset;
+        const isZoho = preset === 'ZOHO'
+          || (config.clientId && String(config.clientId).startsWith('1000.'))
+          || (config.tenantId && String(config.tenantId).toLowerCase().includes('zoho'))
+          || (config.scope && String(config.scope).toLowerCase().includes('zohomail'))
+          || (config.userEmail && String(config.userEmail).toLowerCase().includes('zoho'));
+
+        // 1. Live Zoho Mail REST API Fetch
+        if (isZoho) {
+          const reg = config.zohoRegion || 'COM';
+          const mailDomain = reg === 'EU' ? 'mail.zoho.eu'
+                           : reg === 'IN' ? 'mail.zoho.in'
+                           : reg === 'AU' ? 'mail.zoho.com.au'
+                           : reg === 'JP' ? 'mail.zoho.jp'
+                           : reg === 'CA' ? 'mail.zohocloud.ca'
+                           : 'mail.zoho.com';
+          const baseUrl = `https://${mailDomain}/api`;
+
+          // A. Retrieve Zoho Mail accounts
+          const accRes = await fetch(`${baseUrl}/accounts`, {
+            headers: {
+              'Authorization': `Zoho-oauthtoken ${accessToken}`,
+              'Accept': 'application/json'
+            }
+          });
+
+          if (!accRes.ok) {
+            const errText = await accRes.text();
+            throw new Error(`Zoho Mail API returned HTTP ${accRes.status}: ${errText}`);
+          }
+
+          const accData = await accRes.json() as any;
+          const accounts = accData?.data || [];
+          if (accounts.length === 0) {
+            console.warn(`[EmailProviderConnector] No Zoho Mail accounts found under authenticated credentials.`);
+            return [];
+          }
+
+          const targetEmail = (config.userEmail || config.user || '').toLowerCase();
+          const account = accounts.find((a: any) => 
+            targetEmail && (a.primaryEmailAddress?.toLowerCase() === targetEmail || a.accountName?.toLowerCase() === targetEmail)
+          ) || accounts[0];
+
+          const accountId = account.accountId;
+
+          // B. Retrieve Inbox messages
+          const msgRes = await fetch(`${baseUrl}/accounts/${accountId}/messages/view?limit=25`, {
+            headers: {
+              'Authorization': `Zoho-oauthtoken ${accessToken}`,
+              'Accept': 'application/json'
+            }
+          });
+
+          if (!msgRes.ok) {
+            const errText = await msgRes.text();
+            throw new Error(`Zoho Mail view messages error (${msgRes.status}): ${errText}`);
+          }
+
+          const msgData = await msgRes.json() as any;
+          const rawList = msgData?.data || [];
+          const fetchedMessages: any[] = [];
+
+          for (const msg of rawList) {
+            const msgTime = Number(msg.receivedTime || Date.now());
+            if (lastFetchAt && msgTime <= new Date(lastFetchAt).getTime()) {
+              continue; // Skip already ingested messages
+            }
+
+            let textContent = msg.summary || msg.snippet || '';
+            let attachments: any[] = [];
+
+            // Retrieve attachment metadata if message has attachments
+            if (msg.hasAttachment === '1' || msg.hasAttachment === 1 || msg.hasAttachment === true) {
+              try {
+                const attRes = await fetch(`${baseUrl}/accounts/${accountId}/messages/${msg.messageId}/attachmentinfo`, {
+                  headers: { 'Authorization': `Zoho-oauthtoken ${accessToken}` }
+                });
+                if (attRes.ok) {
+                  const attData = await attRes.json() as any;
+                  const attList = attData?.data?.attachments || attData?.data || [];
+                  attachments = attList.map((a: any, i: number) => ({
+                    filename: a.attachmentName || a.fileName || a.name || `attachment-${i}`,
+                    mimeType: a.contentType || 'application/octet-stream',
+                    size: Number(a.attachmentSize || a.size || 0),
+                    attachmentId: a.attachmentId
+                  }));
+                }
+              } catch (attErr: any) {
+                console.warn(`[EmailProviderConnector] Attachment inspection warning for ${msg.messageId}:`, attErr.message);
+              }
+            }
+
+            fetchedMessages.push({
+              from: msg.fromAddress || msg.sender,
+              senderName: msg.sender || msg.fromAddress,
+              sourceMessageId: msg.messageId,
+              subject: msg.subject || 'Zoho Inbound Operational Request',
+              text: textContent,
+              timestamp: new Date(msgTime).toISOString(),
+              attachments,
+              rawPayload: msg
+            });
+          }
+
+          console.log(`[EmailProviderConnector] Successfully fetched ${fetchedMessages.length} message(s) from Zoho Mail account ${accountId}`);
+          return fetchedMessages;
+        }
+
+        // 2. Microsoft 365 Graph API
+        if (preset === 'MICROSOFT_365') {
+          const user = config.userEmail || config.user || 'me';
+          const endpoint = user === 'me'
+            ? 'https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages?$top=25&$select=id,from,subject,bodyPreview,body,hasAttachments,receivedDateTime'
+            : `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(user)}/mailFolders/inbox/messages?$top=25&$select=id,from,subject,bodyPreview,body,hasAttachments,receivedDateTime`;
+
+          const graphRes = await fetch(endpoint, {
+            headers: { 'Authorization': `Bearer ${accessToken}`, 'Accept': 'application/json' }
+          });
+
+          if (graphRes.ok) {
+            const graphData = await graphRes.json() as any;
+            const messages = graphData?.value || [];
+            return messages.map((m: any) => ({
+              from: m.from?.emailAddress?.address || 'unknown@domain.com',
+              senderName: m.from?.emailAddress?.name,
+              sourceMessageId: m.id,
+              subject: m.subject,
+              text: m.body?.content || m.bodyPreview || '',
+              timestamp: m.receivedDateTime,
+              rawPayload: m
+            }));
+          }
+        }
       } catch (oauthErr: any) {
-        console.warn(`[EmailProviderConnector] OAuth2 token acquisition notice: ${oauthErr.message}`);
+        console.error(`[EmailProviderConnector] Live fetch failed: ${oauthErr.message}`);
+        throw oauthErr;
       }
     }
 
-    // If provider has configured simulated or webhook polling queue:
+    // 3. Fallback to mock inbox queue if configured
     const incomingInboxQueue: any[] = config.mockInbox || [];
     if (incomingInboxQueue.length > 0) {
       return incomingInboxQueue.map(item => ({
@@ -84,7 +216,6 @@ export class EmailProviderConnector implements MessageProviderConnector {
       }));
     }
 
-    // Fallback: return any messages staged in provider config inbox
     return [];
   }
 
