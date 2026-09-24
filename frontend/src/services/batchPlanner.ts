@@ -12,24 +12,41 @@ export const DEFAULT_BATCH_POLICY: BatchPolicy = {
   maxExecutionTimeMs: 30000
 };
 
-/**
- * Creates a deterministic, configurable partition of transactions into:
- * 1. Sequential InvestigationBatchPlan units (Input Batches)
- * 2. Parameterized QueryChunkPlan units (Query Chunks) within each batch
- *
- * Enforces the strict rule that Input Batch Size != Query Chunk Size.
- */
-export function createBatchPlan(
-  transactionIds: string[],
-  policy: Partial<BatchPolicy> = {}
-): InvestigationBatchPlan[] {
-  const activePolicy: BatchPolicy = {
+export function validateBatchPolicy(policy: Partial<BatchPolicy> = {}): BatchPolicy {
+  const merged: BatchPolicy = {
     ...DEFAULT_BATCH_POLICY,
     ...policy
   };
 
-  const maxRowsPerBatch = Math.max(1, activePolicy.maxRowsPerBatch);
-  const maxQueryKeys = Math.max(1, activePolicy.maxQueryKeys);
+  if (merged.maxRowsPerBatch <= 0) {
+    throw new Error(`[BatchPolicyError] maxRowsPerBatch must be positive. Received: ${merged.maxRowsPerBatch}`);
+  }
+  if (merged.maxQueryKeys <= 0) {
+    throw new Error(`[BatchPolicyError] maxQueryKeys must be positive. Received: ${merged.maxQueryKeys}`);
+  }
+  if (merged.maxQueryKeys > 15000) {
+    throw new Error(
+      `[BatchPolicyError] maxQueryKeys (${merged.maxQueryKeys}) exceeds safe PostgreSQL query parameter limit (< 15,000 for tuple matching).`
+    );
+  }
+  if (merged.maxQueryKeys > merged.maxRowsPerBatch) {
+    merged.maxQueryKeys = merged.maxRowsPerBatch;
+  }
+
+  return merged;
+}
+
+export function createBatchPlan(
+  transactionIds: string[],
+  policy: Partial<BatchPolicy> = {}
+): InvestigationBatchPlan[] {
+  if (!Array.isArray(transactionIds) || transactionIds.length === 0) {
+    return [];
+  }
+
+  const activePolicy = validateBatchPolicy(policy);
+  const maxRowsPerBatch = activePolicy.maxRowsPerBatch;
+  const maxQueryKeys = activePolicy.maxQueryKeys;
 
   const batches: InvestigationBatchPlan[] = [];
   const totalRows = transactionIds.length;
@@ -40,7 +57,6 @@ export function createBatchPlan(
     const batchTransactionIds = transactionIds.slice(bStart, bEnd);
     const batchId = `batch-${String(batchSequence).padStart(3, '0')}`;
 
-    // Divide this batch's transaction IDs into query chunks
     const queryChunks: QueryChunkPlan[] = [];
     let chunkSequence = 1;
 
@@ -61,6 +77,7 @@ export function createBatchPlan(
     batches.push({
       batchId,
       sequence: batchSequence,
+      rowCount: batchTransactionIds.length,
       transactionIds: batchTransactionIds,
       queryChunks
     });

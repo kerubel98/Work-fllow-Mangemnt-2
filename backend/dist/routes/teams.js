@@ -3,6 +3,7 @@ import { repo } from '../store/repository.js';
 import { eventService } from '../services/events.js';
 import { queryPg, isPostgresConnected } from '../config/postgres.js';
 import { resolveUserAdminCapabilities } from '../utils/capabilityHelper.js';
+import { analyticsService } from '../services/analyticsService.js';
 export const teamsRouter = Router();
 // ================= TEAMS =================
 teamsRouter.get('/', async (req, res) => {
@@ -717,42 +718,8 @@ teamsRouter.post('/grants', async (req, res) => {
 teamsRouter.get('/kpis', async (req, res) => {
     try {
         const teamId = req.query.teamId || 'team-cards';
-        if (isPostgresConnected) {
-            const [pendingRes, approvedRes, rejectedRes] = await Promise.all([
-                queryPg(`SELECT COUNT(*) FROM resolution_approval_requests WHERE team_id = $1 AND status = 'PENDING'`, [teamId]),
-                queryPg(`SELECT COUNT(*) FROM resolution_approval_requests WHERE team_id = $1 AND status = 'APPROVED'`, [teamId]),
-                queryPg(`SELECT COUNT(*) FROM resolution_approval_requests WHERE team_id = $1 AND status = 'REJECTED'`, [teamId])
-            ]);
-            const pendingCount = parseInt(pendingRes.rows[0]?.count || '0', 10);
-            const approvedCount = parseInt(approvedRes.rows[0]?.count || '0', 10);
-            const rejectedCount = parseInt(rejectedRes.rows[0]?.count || '0', 10);
-            const totalResolved = approvedCount + rejectedCount;
-            const clearanceRate = (totalResolved + pendingCount) > 0
-                ? Math.round((approvedCount / Math.max(1, totalResolved + pendingCount)) * 100)
-                : 100;
-            return res.json({
-                teamId,
-                inflow: {
-                    totalIngestedFiles: 42,
-                    assignedTasksCount: 18,
-                    openDiscrepanciesCount: 12,
-                    pendingResolutionRequests: pendingCount
-                },
-                outflow: {
-                    approvedResolutionsCount: approvedCount,
-                    rejectedResolutionsCount: rejectedCount,
-                    totalResolvedCount: totalResolved,
-                    makerCheckerClearanceRate: clearanceRate,
-                    slaComplianceRate: 94.5,
-                    avgResolutionTimeHours: 2.4
-                }
-            });
-        }
-        return res.json({
-            teamId,
-            inflow: { totalIngestedFiles: 10, assignedTasksCount: 5, openDiscrepanciesCount: 3, pendingResolutionRequests: 1 },
-            outflow: { approvedResolutionsCount: 8, rejectedResolutionsCount: 1, totalResolvedCount: 9, makerCheckerClearanceRate: 88, slaComplianceRate: 92, avgResolutionTimeHours: 3.1 }
-        });
+        const kpis = await analyticsService.getTeamKpis(teamId);
+        return res.json(kpis);
     }
     catch (err) {
         return res.status(500).json({ error: err.message });

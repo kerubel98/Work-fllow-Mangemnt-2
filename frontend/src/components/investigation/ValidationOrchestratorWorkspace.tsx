@@ -114,8 +114,6 @@ export function getWorkflowConfiguredParamsPresentInRow(
           registerParam(op);
         }
       }
-      registerParam(step.sourceField);
-      registerParam(step.canonicalField);
     }
   }
 

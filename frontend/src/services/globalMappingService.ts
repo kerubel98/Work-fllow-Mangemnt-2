@@ -48,17 +48,27 @@ export const DEFAULT_GLOBAL_STANDARD_FIELDS: GlobalTransactionSchemaField[] = []
 
 export const DEFAULT_DATABASE_TABLE_MAPPINGS: Record<string, DbTableMappingConfig> = {};
 
+// NON-AUTHORITATIVE OFFLINE CACHE KEYS (PostgreSQL global_standard_directory and database_table_mappings are the sole authority)
 const STORAGE_KEY = 'global_mapping_schema_config_v2';
-const CENTRAL_TABLE_STORAGE_KEY = 'central_uploaded_transactions_repo_v2';
+const CENTRAL_TABLE_STORAGE_KEY = 'central_transaction_repo_v2';
 
 export class GlobalMappingService {
   private static instance: GlobalMappingService;
   private config: GlobalMappingConfig;
   private centralTable: CentralUploadedTransactionRepositoryTable | null = null;
+  public isHydrated: boolean = false;
 
   private constructor() {
+    // Initialize synchronously with offline draft cache to avoid rendering blank screens
     this.config = this.loadConfig();
     this.centralTable = this.loadCentralTable();
+
+    // Trigger authoritative background hydration from PostgreSQL database
+    if (typeof window !== 'undefined') {
+      this.hydrateFromBackend().catch(err => {
+        console.warn('[GlobalMappingService] Background PostgreSQL hydration warning:', err.message);
+      });
+    }
   }
 
   public static getInstance(): GlobalMappingService {
@@ -68,6 +78,10 @@ export class GlobalMappingService {
     return GlobalMappingService.instance;
   }
 
+  /**
+   * Loads cached configuration as an initial non-authoritative fallback.
+   * True source of truth resides in PostgreSQL database.
+   */
   private loadConfig(): GlobalMappingConfig {
     try {
       const saved = localStorage.getItem(STORAGE_KEY);
@@ -101,7 +115,7 @@ export class GlobalMappingService {
         }
       }
     } catch (e) {
-      console.warn('Failed to load global mapping config from localStorage, using defaults:', e);
+      console.warn('Failed to load global mapping config from offline cache, using defaults:', e);
     }
 
     return {
@@ -111,6 +125,53 @@ export class GlobalMappingService {
       standardFields: [],
       tableMappings: { ...DEFAULT_DATABASE_TABLE_MAPPINGS }
     };
+  }
+
+  /**
+   * Hydrates Global Mapping Schema & Table Mappings directly from PostgreSQL database (Authoritative Source of Truth)
+   */
+  public async hydrateFromBackend(): Promise<GlobalMappingConfig> {
+    try {
+      const [schemaRes, tableMappingsRes, dirRes] = await Promise.allSettled([
+        api.getGlobalSchemaConfig(),
+        api.getTableMappings(),
+        api.getGlobalStandardDirectory()
+      ]);
+
+      let fields: GlobalTransactionSchemaField[] = this.config.standardFields;
+      if (dirRes.status === 'fulfilled' && Array.isArray(dirRes.value) && dirRes.value.length > 0) {
+        fields = dirRes.value;
+      } else if (schemaRes.status === 'fulfilled' && schemaRes.value?.standardFields) {
+        fields = schemaRes.value.standardFields;
+      }
+
+      let mappings = this.config.tableMappings;
+      if (tableMappingsRes.status === 'fulfilled' && tableMappingsRes.value && typeof tableMappingsRes.value === 'object') {
+        mappings = { ...this.config.tableMappings, ...tableMappingsRes.value };
+      } else if (schemaRes.status === 'fulfilled' && schemaRes.value?.tableMappings) {
+        mappings = { ...this.config.tableMappings, ...schemaRes.value.tableMappings };
+      }
+
+      this.config = {
+        ...this.config,
+        version: (schemaRes.status === 'fulfilled' && schemaRes.value?.version) ? schemaRes.value.version : this.config.version,
+        standardFields: fields,
+        tableMappings: mappings,
+        updatedAt: new Date().toISOString()
+      };
+
+      // Persist to non-authoritative offline cache
+      try {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(this.config));
+      } catch (err) {
+        // non-blocking
+      }
+      this.isHydrated = true;
+      return this.config;
+    } catch (err: any) {
+      console.warn('[GlobalMappingService] Error hydrating from PostgreSQL authoritative backend, using offline cache:', err.message);
+      return this.config;
+    }
   }
 
   public getConfig(): GlobalMappingConfig {
@@ -125,8 +186,13 @@ export class GlobalMappingService {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(this.config));
     } catch (e) {
-      console.error('Failed to save global mapping config:', e);
+      console.error('Failed to save global mapping config to offline cache:', e);
     }
+
+    // Authoritative asynchronous persist to PostgreSQL
+    api.saveGlobalSchemaConfig(this.config).catch(err => {
+      console.warn('[GlobalMappingService] Could not persist schema config to PostgreSQL:', err.message);
+    });
   }
 
   public resetToDefaults(username: string = 'admin'): GlobalMappingConfig {
@@ -139,7 +205,7 @@ export class GlobalMappingService {
     };
     this.saveConfig(freshConfig);
     // Also rebuild central table based on standard fields
-    this.buildCentralRepositoryTable({ tableName: 'central_uploaded_transactions', username, populateExisting: true });
+    this.buildCentralRepositoryTable({ tableName: 'central_transaction_repository', username, populateExisting: true });
     return freshConfig;
   }
 
@@ -195,7 +261,7 @@ export class GlobalMappingService {
   /**
    * Generates the Formal Model Representation of the Global Mapping Schema
    */
-  public getSchemaModel(tableName: string = 'central_uploaded_transactions'): GlobalMappingSchemaModel {
+  public getSchemaModel(tableName: string = 'central_transaction_repository'): GlobalMappingSchemaModel {
     const fields = this.getStandardFields();
     const modelFields: SchemaModelFieldDef[] = fields.map(f => {
       const isPk = f.key === 'transaction_id';
@@ -258,7 +324,7 @@ export class GlobalMappingService {
    * Generates production-ready SQL DDL statements for creating the Central Repository Table
    */
   public generateSqlDdl(
-    tableName: string = 'central_uploaded_transactions', 
+    tableName: string = 'central_transaction_repository', 
     dialect: 'PostgreSQL' | 'Oracle' | 'MySQL' | 'Generic' = 'PostgreSQL'
   ): string {
     const fields = this.getStandardFields();
@@ -325,7 +391,7 @@ export class GlobalMappingService {
   /**
    * Generates JSON Schema Draft-07 representation
    */
-  public generateJsonSchema(tableName: string = 'central_uploaded_transactions'): Record<string, any> {
+  public generateJsonSchema(tableName: string = 'central_transaction_repository'): Record<string, any> {
     const fields = this.getStandardFields();
     const properties: Record<string, any> = {};
     const requiredKeys: string[] = [];
@@ -364,7 +430,7 @@ export class GlobalMappingService {
   /**
    * Generates Drizzle / ORM Model code representation
    */
-  public generateOrmModel(tableName: string = 'central_uploaded_transactions'): string {
+  public generateOrmModel(tableName: string = 'central_transaction_repository'): string {
     const fields = this.getStandardFields();
     const colLines: string[] = [];
 
@@ -422,11 +488,11 @@ export class GlobalMappingService {
     }
 
     // Generate initial table using current schema model
-    const model = this.getSchemaModel('central_uploaded_transactions');
+    const model = this.getSchemaModel('central_transaction_repository');
     const initialRecords = this.harvestInitialUploadedRecords();
 
     const initialTable: CentralUploadedTransactionRepositoryTable = {
-      tableName: 'central_uploaded_transactions',
+      tableName: 'central_transaction_repository',
       dbId: 'mongoatlas',
       dbName: 'Application Working Database (MongoDB Atlas / Operational DB)',
       schemaVersion: this.config.version,
@@ -441,7 +507,7 @@ export class GlobalMappingService {
         {
           id: `ddl-${Date.now()}-init`,
           action: 'CREATE_TABLE',
-          ddlStatement: `CREATE TABLE central_uploaded_transactions (${model.fields.map(f => `${f.key} ${f.sqlDataType}`).join(', ')});`,
+          ddlStatement: `CREATE TABLE central_transaction_repository (${model.fields.map(f => `${f.key} ${f.sqlDataType}`).join(', ')});`,
           timestamp: new Date().toISOString(),
           executedBy: 'system_auto_provision',
           status: 'SUCCESS',
@@ -513,7 +579,7 @@ export class GlobalMappingService {
     populateExisting?: boolean;
     columnsOverride?: SchemaModelFieldDef[];
   }): CentralUploadedTransactionRepositoryTable {
-    const tableName = options?.tableName || 'central_uploaded_transactions';
+    const tableName = options?.tableName || 'central_transaction_repository';
     const dbId = options?.dbId || 'app-internal-mongodb';
     const username = options?.username || 'admin';
     const model = this.getSchemaModel(tableName);
@@ -884,6 +950,11 @@ export class GlobalMappingService {
       ...this.config,
       updatedBy: username,
       tableMappings: updatedMappings
+    });
+
+    // Authoritative persist to PostgreSQL backend
+    api.saveTableMapping({ dbId, tableName, dbName, columns, isCustom: true }).catch(err => {
+      console.warn('[GlobalMappingService] Error persisting table mapping to PostgreSQL:', err.message);
     });
   }
 

@@ -37,7 +37,7 @@ interface IssueDetailViewProps {
   onCreateHashtagPreset: (newPreset: HashtagPreset) => void;
   onSendChatMessage: (issueId: string, messageText: string) => void;
   onUpdateCurrentUser?: (user: User) => void;
-  onChangeTab?: (tab: string) => void;
+  onChangeTab?: (tab: string, issueId?: string) => void;
   onWorkspaceSubViewChange?: (subView: 'sandbox' | 'investigation' | 'open_case') => void;
   initialSelectedIssueId?: string | null;
   activeMode?: 'my_tasks' | 'workspace' | 'hashtags' | 'create_task' | 'create_hashtag' | 'open_case' | 'txn_settings' | 'setting';
@@ -69,7 +69,7 @@ export default function IssueDetailView({
     activeMode === 'open_case' ? 'workspace' : (activeMode === 'txn_settings' || activeMode === 'setting') ? 'setting' : (activeMode as any) || 'my_tasks'
   );
   const [workspaceSubView, setWorkspaceSubView] = useState<'sandbox' | 'investigation' | 'open_case'>(
-    activeMode === 'open_case' ? 'open_case' : (initialSelectedIssueId ? 'investigation' : 'sandbox')
+    activeMode === 'open_case' ? 'open_case' : 'investigation'
   );
 
   useEffect(() => {
@@ -88,11 +88,7 @@ export default function IssueDetailView({
       } else {
         setCurrentMode(activeMode as any);
         if (activeMode === 'workspace') {
-          if (initialSelectedIssueId) {
-            setWorkspaceSubView('investigation');
-          } else {
-            setWorkspaceSubView('sandbox');
-          }
+          setWorkspaceSubView(prev => prev === 'open_case' ? 'open_case' : 'investigation');
         }
       }
     }
@@ -108,6 +104,7 @@ export default function IssueDetailView({
   useEffect(() => {
     if (initialSelectedIssueId && issues.some(i => i.id === initialSelectedIssueId)) {
       setSelectedIssueId(initialSelectedIssueId);
+      setWorkspaceSubView('investigation');
     }
   }, [initialSelectedIssueId, issues]);
 
@@ -277,7 +274,7 @@ export default function IssueDetailView({
   // DEDICATED WORKSPACE SQL QUERY SANDBOX ENGINE & STATE
   // =========================================================================
   const [sandboxSelectedDbId, setSandboxSelectedDbId] = useState<string>(() => {
-    return (databases && databases.length > 0) ? databases[0].id : (systems && systems.length > 0 ? systems[0].id : 'db-1');
+    return (databases && databases.length > 0) ? databases[0].id : (systems && systems.length > 0 ? systems[0].id : '');
   });
   const [sandboxEnv, setSandboxEnv] = useState<'production' | 'testing'>('production');
   const [sandboxAvailableTables, setSandboxAvailableTables] = useState<string[]>([]);
@@ -1431,10 +1428,10 @@ export default function IssueDetailView({
       });
     }
 
-    setWorkspaceSubView('workspace');
+    setWorkspaceSubView('investigation');
     setShowOpenCaseModal(false);
     setCurrentMode('workspace');
-    if (onChangeTab) onChangeTab('workspace');
+    if (onChangeTab) onChangeTab('workspace', generatedTaskId);
 
     const alertMsg = `Successfully opened case "${createTitle.trim()}"! Attached file "${createFileName || 'batch_transactions.csv'}", mapped using template "${templateName}", and applied category ${createHashtag}.`;
     setCaseSuccessAlert(alertMsg);
@@ -1542,7 +1539,7 @@ export default function IssueDetailView({
       // Initialize Investigation External DB Search parameters with default connected databases
       const defaultDbs = (databases && databases.length > 0) 
         ? databases.map(d => d.id) 
-        : (systems && systems.length > 0 ? [systems[0].id] : ['db-1']);
+        : (systems && systems.length > 0 ? [systems[0].id] : []);
       setInvSelectedDbIds(defaultDbs.slice(0, 3));
       setInvEnv('production');
       setInvTable('transactions_master');
@@ -1796,7 +1793,7 @@ export default function IssueDetailView({
         userId: currentUser.id,
         username: currentUser.username,
         userRole: currentUser.role,
-        dbId: sandboxSelectedDbId || 'db-1',
+        dbId: sandboxSelectedDbId || databases[0]?.id || '',
         dbName: opTable,
         query: opQuery
       }).catch(() => {});
@@ -2060,7 +2057,7 @@ export default function IssueDetailView({
           systemId: sys.id,
           systemName: sys.name,
           environment: 'production',
-          tableName: sandboxTable || 'sv_fin_tab',
+          tableName: sandboxTable || sys?.allowedTables?.[0] || '',
           query: customSql,
           requesterId: currentUser.id,
           requesterName: currentUser.username,
@@ -2560,7 +2557,7 @@ export default function IssueDetailView({
                               setSelectedIssueId(issue.id);
                               setCurrentMode('workspace');
                               setWorkspaceSubView('investigation');
-                              if (onChangeTab) onChangeTab('workspace');
+                              if (onChangeTab) onChangeTab('workspace', issue.id);
                             }}
                             className="hover:underline flex items-center gap-1 cursor-pointer"
                           >
@@ -2568,8 +2565,17 @@ export default function IssueDetailView({
                             <ChevronRight size={12} className="text-blue-500 opacity-0 group-hover:opacity-100 transition-opacity" />
                           </button>
                         </td>
-                        <td className="py-3.5 px-4 max-w-xs">
-                          <div className="font-semibold text-slate-800 truncate mb-0.5">{issue.title}</div>
+                        <td 
+                          className="py-3.5 px-4 max-w-xs cursor-pointer group/title"
+                          onClick={() => {
+                            setSelectedIssueId(issue.id);
+                            setCurrentMode('workspace');
+                            setWorkspaceSubView('investigation');
+                            if (onChangeTab) onChangeTab('workspace', issue.id);
+                          }}
+                          title="Open Task in Investigation Workspace"
+                        >
+                          <div className="font-semibold text-slate-800 group-hover/title:text-blue-600 truncate mb-0.5 transition-colors">{issue.title}</div>
                           <div className="text-[11px] text-slate-500 truncate">{issue.description}</div>
                         </td>
                         <td className="py-3.5 px-4">
@@ -2653,12 +2659,12 @@ export default function IssueDetailView({
                                 setSelectedIssueId(issue.id);
                                 setCurrentMode('workspace');
                                 setWorkspaceSubView('investigation');
-                                if (onChangeTab) onChangeTab('workspace');
+                                if (onChangeTab) onChangeTab('workspace', issue.id);
                               }}
                               className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg text-xs transition-all shadow-xs flex items-center space-x-1 cursor-pointer"
                               title="Open in investigation workspace"
                             >
-                              <Terminal size={12} />
+                              <DatabaseZap size={12} />
                               <span>Investigate</span>
                             </button>
                             <button
@@ -2881,13 +2887,13 @@ export default function IssueDetailView({
               <button
                 type="button"
                 id="btn-workspace-open-case-nav"
-                onClick={() => setWorkspaceSubView(workspaceSubView === 'open_case' ? 'sandbox' : 'open_case')}
+                onClick={() => setWorkspaceSubView(workspaceSubView === 'open_case' ? 'investigation' : 'open_case')}
                 className={`px-2.5 py-1 text-xs font-semibold rounded-lg flex items-center gap-1 transition-all cursor-pointer ${
                   workspaceSubView === 'open_case'
                     ? 'bg-emerald-600 text-white shadow-xs font-bold'
                     : 'text-slate-600 hover:text-slate-900 hover:bg-white'
                 }`}
-                title={workspaceSubView === 'open_case' ? 'Back to Sandbox' : 'Open New Case'}
+                title={workspaceSubView === 'open_case' ? 'Back to Investigation' : 'Open New Case'}
               >
                 {workspaceSubView === 'open_case' ? (
                   <>
@@ -2933,7 +2939,7 @@ export default function IssueDetailView({
                 </div>
                 <button
                   type="button"
-                  onClick={() => setWorkspaceSubView('workspace')}
+                  onClick={() => setWorkspaceSubView('investigation')}
                   className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-lg transition-all cursor-pointer flex items-center space-x-1"
                 >
                   <ArrowLeft size={14} />
@@ -3214,10 +3220,10 @@ export default function IssueDetailView({
                 <div className="flex items-center justify-between pt-4 border-t border-slate-100">
                   <button
                     type="button"
-                    onClick={() => setWorkspaceSubView('sandbox')}
+                    onClick={() => setWorkspaceSubView('investigation')}
                     className="px-6 py-3 border border-slate-200 text-slate-600 hover:bg-slate-50 text-xs font-bold rounded-xl transition-all cursor-pointer"
                   >
-                    Cancel / Back to Sandbox
+                    Cancel / Back to Investigation
                   </button>
 
                   <button
@@ -3979,7 +3985,8 @@ export default function IssueDetailView({
                               onClick={() => {
                                 setSelectedIssueId(issue.id);
                                 setCurrentMode('workspace');
-                                if (onChangeTab) onChangeTab('workspace');
+                                setWorkspaceSubView('investigation');
+                                if (onChangeTab) onChangeTab('workspace', issue.id);
                               }}
                               className="hover:underline flex items-center gap-1 cursor-pointer"
                             >
@@ -3987,8 +3994,17 @@ export default function IssueDetailView({
                               <ChevronRight size={12} className="text-blue-500 opacity-0 group-hover:opacity-100 transition-opacity" />
                             </button>
                           </td>
-                          <td className="py-3.5 px-4 max-w-xs">
-                            <div className="font-semibold text-slate-800 truncate mb-0.5">{issue.title}</div>
+                          <td 
+                            className="py-3.5 px-4 max-w-xs cursor-pointer group/title"
+                            onClick={() => {
+                              setSelectedIssueId(issue.id);
+                              setCurrentMode('workspace');
+                              setWorkspaceSubView('investigation');
+                              if (onChangeTab) onChangeTab('workspace', issue.id);
+                            }}
+                            title="Open Task in Investigation Workspace"
+                          >
+                            <div className="font-semibold text-slate-800 group-hover/title:text-blue-600 truncate mb-0.5 transition-colors">{issue.title}</div>
                             <div className="text-[11px] text-slate-500 truncate">{issue.description}</div>
                           </td>
                           <td className="py-3.5 px-4 whitespace-nowrap">
@@ -4015,11 +4031,12 @@ export default function IssueDetailView({
                               onClick={() => {
                                 setSelectedIssueId(issue.id);
                                 setCurrentMode('workspace');
-                                if (onChangeTab) onChangeTab('workspace');
+                                setWorkspaceSubView('investigation');
+                                if (onChangeTab) onChangeTab('workspace', issue.id);
                               }}
-                              className="px-3 py-1.5 bg-slate-100 hover:bg-blue-600 hover:text-white text-slate-700 font-semibold rounded-lg text-xs transition-all cursor-pointer border border-slate-200"
+                              className="px-3 py-1.5 bg-blue-50 hover:bg-blue-600 hover:text-white text-blue-700 font-semibold rounded-lg text-xs transition-all cursor-pointer border border-blue-200"
                             >
-                              Open Task
+                              Open in Investigation
                             </button>
                           </td>
                         </tr>

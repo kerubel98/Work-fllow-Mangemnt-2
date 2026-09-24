@@ -3,7 +3,12 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { ParentIssueAggregateStatus, TransactionInvestigationStatus } from '../types.js';
+import {
+  ParentIssueAggregateStatus,
+  TransactionInvestigationStatus,
+  CaseLifecycleStatus,
+  ValidationVerdict
+} from '../types.js';
 
 export interface TransactionStatusItem {
   transactionId?: string;
@@ -16,9 +21,95 @@ export interface TransactionStatusItem {
   status?: string;
 }
 
+export interface RuleExecutionAggregateMetrics {
+  totalEvaluated: number;
+  passCount: number;
+  failCount: number;
+  errorCount: number;
+  pausedCount: number;
+  skippedCount: number;
+  overallVerdict: ValidationVerdict | 'UNTESTED';
+}
+
 /**
- * Calculates the parent Issue or TeamTask status strictly through aggregate evaluation.
+ * Calculates the rule execution verdicts strictly separated from case lifecycle.
+ * Follows AGENTS.md Rule 2: Validation Result != Pipeline Action != Lifecycle.
+ */
+export function aggregateExecutionVerdicts(
+  transactions: TransactionStatusItem[]
+): RuleExecutionAggregateMetrics {
+  if (!transactions || transactions.length === 0) {
+    return {
+      totalEvaluated: 0,
+      passCount: 0,
+      failCount: 0,
+      errorCount: 0,
+      pausedCount: 0,
+      skippedCount: 0,
+      overallVerdict: 'UNTESTED'
+    };
+  }
+
+  let passCount = 0;
+  let failCount = 0;
+  let errorCount = 0;
+  let pausedCount = 0;
+  let skippedCount = 0;
+
+  for (const t of transactions) {
+    const rawVerdict = (
+      t._validation_status ||
+      t.finalResult ||
+      t.final_result ||
+      t.validationStatus ||
+      ''
+    ).trim().toUpperCase();
+
+    if (rawVerdict === 'PASS' || rawVerdict === 'PASSED' || rawVerdict === 'SUCCESS') {
+      passCount++;
+    } else if (rawVerdict === 'FAIL' || rawVerdict === 'FAILED' || rawVerdict.includes('FAIL')) {
+      failCount++;
+    } else if (rawVerdict === 'ERROR' || rawVerdict === 'EXCEPTION') {
+      errorCount++;
+    } else if (rawVerdict === 'PAUSED_DB_OFFLINE') {
+      pausedCount++;
+    } else if (rawVerdict === 'SKIPPED') {
+      skippedCount++;
+    }
+  }
+
+  const totalEvaluated = passCount + failCount + errorCount + pausedCount + skippedCount;
+  let overallVerdict: ValidationVerdict | 'UNTESTED' = 'UNTESTED';
+
+  if (totalEvaluated > 0) {
+    if (errorCount > 0) {
+      overallVerdict = 'ERROR';
+    } else if (pausedCount > 0) {
+      overallVerdict = 'PAUSED_DB_OFFLINE';
+    } else if (failCount > 0) {
+      overallVerdict = 'FAIL';
+    } else if (passCount > 0) {
+      overallVerdict = 'PASS';
+    } else {
+      overallVerdict = 'SKIPPED';
+    }
+  }
+
+  return {
+    totalEvaluated,
+    passCount,
+    failCount,
+    errorCount,
+    pausedCount,
+    skippedCount,
+    overallVerdict
+  };
+}
+
+/**
+ * Calculates the parent Issue or TeamTask status strictly through aggregate evaluation of transaction investigation states.
  * Prohibits individual transactions from directly mutating the parent status.
+ * Follows AGENTS.md Rule 3: Lifecycle Separation.
  */
 export function aggregateParentIssueStatus(
   transactions: TransactionStatusItem[]
@@ -43,43 +134,48 @@ export function aggregateParentIssueStatus(
   let pendingCount = 0;
 
   for (const t of transactions) {
-    const rawVal = (
-      t.investigationStatus ||
-      t.investigation_status ||
-      t._validation_status ||
-      t.validationStatus ||
-      t.finalResult ||
-      t.final_result ||
-      t.status ||
-      ''
-    );
-    const status = String(rawVal).trim().toUpperCase();
+    // 1. Prioritize explicit transaction investigation lifecycle state
+    const explicitLifecycle = (t.investigationStatus || t.investigation_status || '').trim().toUpperCase();
+    
+    // 2. Fall back to status if no explicit investigation lifecycle
+    const fallbackStatus = (t.status || '').trim().toUpperCase();
+
+    // 3. Fall back to raw verdict only if nothing else is available
+    const rawVerdict = (t._validation_status || t.finalResult || t.final_result || '').trim().toUpperCase();
+
+    const effectiveStatus = explicitLifecycle || fallbackStatus || rawVerdict;
 
     if (
-      status === 'VERIFIED_MATCH' ||
-      status === 'RECONCILED' ||
-      status === 'PASS' ||
-      status === 'PASSED' ||
-      status === 'SUCCESS'
+      effectiveStatus === 'VERIFIED_MATCH' ||
+      effectiveStatus === 'RECONCILED' ||
+      effectiveStatus === 'FORCE_MATCHED' ||
+      (explicitLifecycle === '' && (effectiveStatus === 'PASS' || effectiveStatus === 'PASSED' || effectiveStatus === 'SUCCESS'))
     ) {
       reconciledCount++;
-    } else if (status === 'CLOSED') {
+    } else if (
+      effectiveStatus === 'CLOSED' ||
+      effectiveStatus === 'CLOSED_RESOLVED' ||
+      effectiveStatus === 'CLOSED_UNRESOLVED'
+    ) {
       closedCount++;
     } else if (
-      status === 'FLAGGED_DISCREPANCY' ||
-      status === 'FLAGGED' ||
-      status === 'FAIL' ||
-      status === 'FAILED' ||
-      status === 'DISCREPANCY' ||
-      status === 'ERROR' ||
-      status === 'NOT_FOUND_IN_TARGET_DB' ||
-      status.includes('FAIL')
+      effectiveStatus === 'FLAGGED_DISCREPANCY' ||
+      effectiveStatus === 'FLAGGED' ||
+      effectiveStatus === 'PENDING_CHECKER_REVIEW' ||
+      effectiveStatus === 'MANUALLY_REVERSED' ||
+      effectiveStatus === 'WRITTEN_OFF' ||
+      effectiveStatus === 'FAIL' ||
+      effectiveStatus === 'FAILED' ||
+      effectiveStatus === 'DISCREPANCY' ||
+      effectiveStatus === 'ERROR' ||
+      effectiveStatus === 'NOT_FOUND_IN_TARGET_DB' ||
+      effectiveStatus.includes('FAIL')
     ) {
       flaggedCount++;
     } else if (
-      status === 'IN_PROGRESS' ||
-      status === 'INVESTIGATING' ||
-      status === 'PAUSED_DB_OFFLINE'
+      effectiveStatus === 'IN_PROGRESS' ||
+      effectiveStatus === 'INVESTIGATING' ||
+      effectiveStatus === 'PAUSED_DB_OFFLINE'
     ) {
       investigatingCount++;
     } else {
@@ -91,11 +187,11 @@ export function aggregateParentIssueStatus(
   const totalTransactions = transactions.length;
   const completedCleanCount = reconciledCount + closedCount;
 
-  let issueStatus: 'OPEN' | 'IN_PROGRESS' | 'ACTION_REQUIRED' | 'RESOLVED' | 'CLOSED';
+  let issueStatus: CaseLifecycleStatus;
   let summaryText: string;
 
   if (flaggedCount > 0) {
-    // If even one transaction is FLAGGED or FAIL, parent demands action
+    // If even one transaction is FLAGGED or has discrepancy, parent demands action
     issueStatus = 'ACTION_REQUIRED';
     summaryText = `${flaggedCount} transaction(s) flagged for manual review / discrepancy.`;
   } else if (investigatingCount > 0) {

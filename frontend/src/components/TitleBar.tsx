@@ -26,7 +26,7 @@ export default function TitleBar({
   onlineCount, 
   activeNavigation = 'workspace', 
   activeTeamName,
-  workspaceSubView = 'sandbox'
+  workspaceSubView = 'investigation'
 }: TitleBarProps) {
   // Determine badge color for the role in dark theme
   const getRoleBadgeClass = (role: string) => {

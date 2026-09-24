@@ -113,7 +113,7 @@ export default function DatabaseCrossVerificationPanel({
   }, [availableColumns]);
 
   // Query Parameter Mapping State
-  const [selectedDbId, setSelectedDbId] = useState<string>(databases[0]?.id || 'db-1');
+  const [selectedDbId, setSelectedDbId] = useState<string>(databases[0]?.id || '');
   const [secondaryDbId, setSecondaryDbId] = useState<string | null>(databases[1]?.id || null);
   const [enableSecondaryDb, setEnableSecondaryDb] = useState<boolean>(false);
 

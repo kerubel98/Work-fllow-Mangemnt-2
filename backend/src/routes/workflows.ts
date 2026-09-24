@@ -89,8 +89,8 @@ workflowsRouter.post('/', async (req: Request, res: Response) => {
           description: st?.description || '',
           order: st?.order !== undefined ? st.order : idx + 1,
           enabled: st?.enabled !== undefined ? st.enabled : true,
-          targetDbId: st?.targetDbId || data.targetDbId || 'db-1',
-          targetDataSource: st?.targetDataSource || data.targetTable || 'transactions',
+          targetDbId: st?.targetDbId || data.targetDbId || '',
+          targetDataSource: st?.targetDataSource || data.targetTable || '',
           businessMeaning: st?.businessMeaning,
           createdAt: new Date().toISOString()
         }))
@@ -101,15 +101,15 @@ workflowsRouter.post('/', async (req: Request, res: Response) => {
             description: 'Default business stage',
             order: 1,
             enabled: true,
-            targetDbId: data.targetDbId || 'db-1',
-            targetDataSource: data.targetTable || 'transactions',
+            targetDbId: data.targetDbId || '',
+            targetDataSource: data.targetTable || '',
             businessMeaning: 'Primary Ingress'
           }
         ];
 
     const defaultStageId = stages[0]?.id || `stage-${workflowId}-1`;
-    const defaultTargetDb = stages[0]?.targetDbId || data.targetDbId || 'db-1';
-    const defaultDataSource = stages[0]?.targetDataSource || data.targetTable || 'transactions';
+    const defaultTargetDb = stages[0]?.targetDbId || data.targetDbId || '';
+    const defaultDataSource = stages[0]?.targetDataSource || data.targetTable || '';
 
     const rawSteps = Array.isArray(data.steps) ? data.steps.filter(Boolean) : [];
     const steps: ValidationCheckStep[] = rawSteps.length > 0
@@ -231,8 +231,8 @@ workflowsRouter.post('/:id/query-extractions', async (req: Request, res: Respons
       id: extractionData.id || `qe-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
       workflowId: req.params.id,
       stageId: extractionData.stageId || '',
-      targetDbId: extractionData.targetDbId || 'db-1',
-      targetDataSource: extractionData.targetDataSource || 'transactions',
+      targetDbId: extractionData.targetDbId || '',
+      targetDataSource: extractionData.targetDataSource || '',
       selectedColumns: extractionData.selectedColumns || [],
       keyMappings: extractionData.keyMappings || [{ inputField: 'transaction_id', sourceField: 'transaction_id', required: true }],
       filters: extractionData.filters || [],

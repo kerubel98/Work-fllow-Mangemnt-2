@@ -55,8 +55,8 @@ export const QuerySandbox: React.FC<QuerySandboxProps> = ({
     return stages.find(s => s.id === selectedStageId) || stages[0];
   }, [stages, selectedStageId]);
 
-  const [targetDbId, setTargetDbId] = useState<string>(activeStage?.targetDbId || 'db-1');
-  const [targetDataSource, setTargetDataSource] = useState<string>(activeStage?.targetDataSource || 'transactions');
+  const [targetDbId, setTargetDbId] = useState<string>(activeStage?.targetDbId || databaseConnections[0]?.id || '');
+  const [targetDataSource, setTargetDataSource] = useState<string>(activeStage?.targetDataSource || '');
   const [keyField, setKeyField] = useState<string>('transaction_id');
   const [inputKeyField, setInputKeyField] = useState<string>('transaction_id');
 
@@ -89,10 +89,10 @@ export const QuerySandbox: React.FC<QuerySandboxProps> = ({
   // Synchronize with activeStage change
   useEffect(() => {
     if (activeStage) {
-      setTargetDbId(activeStage.targetDbId || 'db-1');
-      setTargetDataSource(activeStage.targetDataSource || 'transactions');
+      setTargetDbId(activeStage.targetDbId || databaseConnections[0]?.id || '');
+      setTargetDataSource(activeStage.targetDataSource || '');
     }
-  }, [activeStage]);
+  }, [activeStage, databaseConnections]);
 
   // Fetch available tables when targetDbId changes
   useEffect(() => {
@@ -393,7 +393,7 @@ export const QuerySandbox: React.FC<QuerySandboxProps> = ({
                 </option>
               ))
             ) : (
-              <option value="db-1">Primary Transaction Store (PostgreSQL)</option>
+              <option value="" disabled>No connections configured</option>
             )}
           </select>
         </div>
@@ -419,7 +419,7 @@ export const QuerySandbox: React.FC<QuerySandboxProps> = ({
               type="text"
               value={targetDataSource}
               onChange={(e) => setTargetDataSource(e.target.value)}
-              placeholder="e.g. auth_log_tab"
+              placeholder="e.g. transactions"
               className="w-full bg-white border border-slate-300 rounded-lg p-1.5 font-mono text-xs focus:ring-1 focus:ring-emerald-600"
             />
           )}

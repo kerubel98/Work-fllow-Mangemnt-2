@@ -6,9 +6,8 @@
 
 import mysql from 'mysql2/promise';
 import pg from 'pg';
-import mongoose from 'mongoose';
 import { DatabaseConnection } from '../types.js';
-import { isMongoConnected } from '../config/db.js';
+import { isMongoConnected, mongoose } from '../config/db.js';
 
 export interface ColumnMetadata {
   name: string;

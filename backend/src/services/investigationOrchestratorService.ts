@@ -50,9 +50,41 @@ export const investigationOrchestratorService = {
       throw new Error(`Workflow with ID '${workflowId}' not found.`);
     }
 
+    // Hydrate steps with searchParameters from validation_boxes if missing
+    try {
+      const allBoxes = await repo.getValidationBoxes();
+      if (workflow.steps && Array.isArray(workflow.steps)) {
+        for (const step of workflow.steps) {
+          if (!Array.isArray(step.searchParameters) || step.searchParameters.length === 0) {
+            const stage = (workflow.stages || []).find(s => s.id === step.stageId);
+            const box = allBoxes.find(b =>
+              b.id === (step as any).boxId ||
+              b.id === step.id ||
+              ((stage as any)?.ruleBlockIds && Array.isArray((stage as any).ruleBlockIds) && (stage as any).ruleBlockIds.includes(b.id)) ||
+              (b.name && step.name && b.name.trim().toLowerCase() === step.name.trim().toLowerCase())
+            );
+            if (box && Array.isArray(box.searchParameters) && box.searchParameters.length > 0) {
+              step.searchParameters = JSON.parse(JSON.stringify(box.searchParameters));
+              if (!Array.isArray(step.requiredParams) || step.requiredParams.length === 0) {
+                step.requiredParams = box.searchParameters
+                  .filter((p: any) => p.required !== false)
+                  .map((p: any) => p.inputField || p.targetColumn)
+                  .filter(Boolean);
+              }
+              console.log(`[WorkflowEngine] Auto-hydrated ${step.searchParameters?.length || 0} searchParameters for step '${step.name}' from validation box '${box.name}' (${box.id})`);
+            }
+          }
+        }
+      }
+    } catch (hydrateErr: any) {
+      console.warn('[WorkflowEngine] Warning while hydrating validation boxes:', hydrateErr.message);
+    }
+
     // Discover ALL parameters configured by the user across this workflow's validation boxes
-    // (searchParameters[].inputField, requiredParams, optionalParams, sourceField, canonicalField).
+    // (searchParameters[].inputField, requiredParams, optionalParams).
     // Never fall back to hardcoded field names (e.g. transaction_id, retrieval_ref_num).
+    // NOTE: step.sourceField and step.canonicalField are evaluation/reporting fields against
+    // returned external data and must NEVER be treated as database search parameters.
     const configuredWorkflowParams: string[] = [];
     const seenParamNames = new Set<string>();
     const registerParam = (p?: string) => {
@@ -78,8 +110,6 @@ export const investigationOrchestratorService = {
         if (Array.isArray(step.optionalParams)) {
           for (const op of step.optionalParams) registerParam(op);
         }
-        registerParam(step.sourceField);
-        registerParam(step.canonicalField);
       }
     }
     registerParam(inputKeyField);

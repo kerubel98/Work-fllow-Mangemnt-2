@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { DatabaseColumnConfiguration, WorkspaceSettingProposal, TeamEscalationTarget, TeamAdminPrivileges } from '../types';
+import { DatabaseColumnConfiguration, WorkspaceSettingProposal, TeamEscalationTarget, TeamAdminPrivileges, WorkflowBundle } from '../types';
 
 const API_BASE_URL = '/api';
 
@@ -967,7 +967,302 @@ export const api = {
     fetchApi<WorkspaceSettingProposal>(`/settings/proposals/${encodeURIComponent(id)}/escalate`, {
       method: 'POST',
       body: JSON.stringify({ targetTeamId, reason, escalatedBy, escalatedByName })
-    })
+    }),
+
+  // ================= Composite Workflow Bundles (Operational Governance) =================
+  getWorkflowBundles: (params?: { teamId?: string; scope?: string; status?: string; makerId?: string }) => {
+    const query = new URLSearchParams();
+    if (params?.teamId) query.append('teamId', params.teamId);
+    if (params?.scope) query.append('scope', params.scope);
+    if (params?.status) query.append('status', params.status);
+    if (params?.makerId) query.append('makerId', params.makerId);
+    const qs = query.toString();
+    return fetchApi<WorkflowBundle[]>(`/workflow-bundles${qs ? `?${qs}` : ''}`);
+  },
+
+  getWorkflowBundleById: (id: string) =>
+    fetchApi<WorkflowBundle>(`/workflow-bundles/${encodeURIComponent(id)}`),
+
+  createWorkflowBundle: (bundleData: {
+    name: string;
+    description?: string;
+    version?: string;
+    scope?: string;
+    workflowId: string;
+    validationBoxIds?: string[];
+    dbCheckIds?: string[];
+    sourceTeamId: string;
+    makerId: string;
+    makerName?: string;
+    hashtagBindings?: string[];
+  }) =>
+    fetchApi<WorkflowBundle>('/workflow-bundles', {
+      method: 'POST',
+      body: JSON.stringify(bundleData)
+    }),
+
+  proposeWorkflowBundlePromotion: (id: string, targetScope: string, makerId: string, makerName?: string) =>
+    fetchApi<WorkflowBundle>(`/workflow-bundles/${encodeURIComponent(id)}/propose`, {
+      method: 'POST',
+      body: JSON.stringify({ targetScope, makerId, makerName })
+    }),
+
+  reviewWorkflowBundlePromotion: (id: string, action: 'APPROVE' | 'REJECT', checkerId: string, checkerName?: string, feedback?: string) =>
+    fetchApi<WorkflowBundle>(`/workflow-bundles/${encodeURIComponent(id)}/review`, {
+      method: 'POST',
+      body: JSON.stringify({ action, checkerId, checkerName, feedback })
+    }),
+
+  // ================= Domain-Segregated Approvals (Operational Authority Center) =================
+  getApprovals: (params?: { teamId?: string; status?: string; makerId?: string; type?: string }) => {
+    const query = new URLSearchParams();
+    if (params?.teamId) query.append('teamId', params.teamId);
+    if (params?.status) query.append('status', params.status);
+    if (params?.makerId) query.append('makerId', params.makerId);
+    if (params?.type) query.append('type', params.type);
+    const qs = query.toString();
+    return fetchApi<any[]>(`/approvals${qs ? `?${qs}` : ''}`);
+  },
+
+  getTransactionApprovals: (params?: { teamId?: string; status?: string; makerId?: string }) => {
+    const query = new URLSearchParams();
+    if (params?.teamId) query.append('teamId', params.teamId);
+    if (params?.status) query.append('status', params.status);
+    if (params?.makerId) query.append('makerId', params.makerId);
+    const qs = query.toString();
+    return fetchApi<any[]>(`/approvals/transactions${qs ? `?${qs}` : ''}`);
+  },
+
+  approveTransactionResolution: (id: string, checkerId: string, checkerName?: string, notes?: string) =>
+    fetchApi<any>(`/approvals/transactions/${encodeURIComponent(id)}/approve`, {
+      method: 'POST',
+      body: JSON.stringify({ checkerId, checkerName, notes })
+    }),
+
+  rejectTransactionResolution: (id: string, checkerId: string, checkerName?: string, notes?: string) =>
+    fetchApi<any>(`/approvals/transactions/${encodeURIComponent(id)}/reject`, {
+      method: 'POST',
+      body: JSON.stringify({ checkerId, checkerName, notes })
+    }),
+
+  getWorkflowBundleApprovals: (params?: { teamId?: string; status?: string; makerId?: string }) => {
+    const query = new URLSearchParams();
+    if (params?.teamId) query.append('teamId', params.teamId);
+    if (params?.status) query.append('status', params.status);
+    if (params?.makerId) query.append('makerId', params.makerId);
+    const qs = query.toString();
+    return fetchApi<any[]>(`/approvals/workflow-bundles${qs ? `?${qs}` : ''}`);
+  },
+
+  reviewApproval: (id: string, action: 'APPROVE' | 'REJECT', checkerId: string, checkerName?: string, reason?: string) =>
+    fetchApi<any>(`/approvals/${encodeURIComponent(id)}/review`, {
+      method: 'POST',
+      body: JSON.stringify({ action, checkerId, checkerName, reason })
+    }),
+
+  submitApprovalProposal: (proposalData: any) =>
+    fetchApi<any>('/approvals/propose', {
+      method: 'POST',
+      body: JSON.stringify(proposalData)
+    }),
+
+  // ================= Messaging Integration & External Channels =================
+  getTeamChannelConfigs: (teamId: string) =>
+    fetchApi<any[]>(`/messages/configs/team/${encodeURIComponent(teamId)}`),
+
+  saveTeamChannelConfig: (config: any) =>
+    fetchApi<any>('/messages/configs/team', {
+      method: 'POST',
+      body: JSON.stringify(config)
+    }),
+
+  getPersonalChannelConfigs: (userId: string) =>
+    fetchApi<any[]>(`/messages/configs/personal/${encodeURIComponent(userId)}`),
+
+  savePersonalChannelConfig: (config: any) =>
+    fetchApi<any>('/messages/configs/personal', {
+      method: 'POST',
+      body: JSON.stringify(config)
+    }),
+
+  simulateInboundMessage: (payload: {
+    channel: 'email' | 'teams' | 'whatsapp' | 'telegram';
+    senderAddress: string;
+    senderName?: string;
+    text: string;
+    linkedIssueId?: string;
+    attachments?: any[];
+  }) =>
+    fetchApi<{ success: boolean; result: any }>('/messages/simulator/send', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    }),
+
+  getIncomingMessages: (params?: { teamId?: string; issueId?: string; limit?: number }) => {
+    const query = new URLSearchParams();
+    if (params?.teamId) query.append('teamId', params.teamId);
+    if (params?.issueId) query.append('issueId', params.issueId);
+    if (params?.limit) query.append('limit', String(params.limit));
+    const qs = query.toString();
+    return fetchApi<any[]>(`/messages/inbox${qs ? `?${qs}` : ''}`);
+  },
+
+  getOutgoingMessages: (params?: { issueId?: string; limit?: number }) => {
+    const query = new URLSearchParams();
+    if (params?.issueId) query.append('issueId', params.issueId);
+    if (params?.limit) query.append('limit', String(params.limit));
+    const qs = query.toString();
+    return fetchApi<any[]>(`/messages/outbox${qs ? `?${qs}` : ''}`);
+  },
+
+  // Staged External Requests & Provider Connections
+  getMessageProviders: (params?: { teamId?: string; userId?: string }) => {
+    const query = new URLSearchParams();
+    if (params?.teamId) query.append('teamId', params.teamId);
+    if (params?.userId) query.append('userId', params.userId);
+    const qs = query.toString();
+    return fetchApi<any[]>(`/messages/providers${qs ? `?${qs}` : ''}`);
+  },
+
+  createMessageProvider: (payload: any) =>
+    fetchApi<any>('/messages/providers', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    }),
+
+  testMessageProvider: (id: string) =>
+    fetchApi<{ success: boolean; message: string; details?: any }>(`/messages/providers/${encodeURIComponent(id)}/test`, {
+      method: 'POST'
+    }),
+
+  fetchProviderMessages: (id: string) =>
+    fetchApi<{ success: boolean; stagedCount: number; job: any }>(`/messages/providers/${encodeURIComponent(id)}/fetch`, {
+      method: 'POST'
+    }),
+
+  getStagedMessages: (params?: { teamId?: string; assignedUserId?: string; status?: string; urgency?: string; limit?: number }) => {
+    const query = new URLSearchParams();
+    if (params?.teamId) query.append('teamId', params.teamId);
+    if (params?.assignedUserId) query.append('assignedUserId', params.assignedUserId);
+    if (params?.status) query.append('status', params.status);
+    if (params?.urgency) query.append('urgency', params.urgency);
+    if (params?.limit) query.append('limit', String(params.limit));
+    const qs = query.toString();
+    return fetchApi<any[]>(`/messages/staging${qs ? `?${qs}` : ''}`);
+  },
+
+  getStagedMessageById: (id: string) =>
+    fetchApi<any>(`/messages/staging/${encodeURIComponent(id)}`),
+
+  proposeStagedMessageConversion: (id: string, payload: { makerId: string; makerName?: string; title?: string; teamId?: string; priority?: string; notes?: string }) =>
+    fetchApi<any>(`/messages/staging/${encodeURIComponent(id)}/propose`, {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    }),
+
+  approveStagedMessage: (id: string, payload: { checkerId: string; checkerName?: string; reviewNotes?: string }) =>
+    fetchApi<any>(`/messages/staging/${encodeURIComponent(id)}/approve`, {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    }),
+
+  rejectStagedMessage: (id: string, payload: { actorId?: string; actorName?: string; reason?: string }) =>
+    fetchApi<any>(`/messages/staging/${encodeURIComponent(id)}/reject`, {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    }),
+
+  createTaskFromStagedMessage: (id: string, payload?: { actorId?: string; actorName?: string; notes?: string }) =>
+    fetchApi<any>(`/messages/staging/${encodeURIComponent(id)}/create-task`, {
+      method: 'POST',
+      body: JSON.stringify(payload || {})
+    }),
+
+  escalateStagedMessage: (id: string, payload: { targetTeamId: string; actorId?: string; actorName?: string; reason?: string }) =>
+    fetchApi<any>(`/messages/staging/${encodeURIComponent(id)}/escalate`, {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    }),
+
+  getExternalRequestSummary: (teamId?: string) => {
+    const query = new URLSearchParams();
+    if (teamId) query.append('teamId', teamId);
+    const qs = query.toString();
+    return fetchApi<any>(`/external-requests/summary${qs ? `?${qs}` : ''}`);
+  },
+
+  // Operational Asset Sharing & Verification
+  shareOperationalAsset: (payload: {
+    assetType: 'WORKFLOW' | 'VALIDATION_BOX' | 'DB_CONFIG';
+    assetId: string;
+    targetType: 'INDIVIDUAL' | 'TEAM' | 'CHAT_ROOM';
+    targetId: string;
+    targetName?: string;
+    message?: string;
+  }) =>
+    fetchApi<{ success: boolean; message: string; share: any }>('/assets/share', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    }),
+
+  adoptOperationalAsset: (assetType: string, assetId: string, customName?: string) =>
+    fetchApi<{ success: boolean; message: string; newAssetId: string; asset: any }>(
+      `/assets/${encodeURIComponent(assetType.toLowerCase())}/${encodeURIComponent(assetId)}/adopt`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ customName })
+      }
+    ),
+
+  testOperationalAsset: (assetType: string, assetId: string, sampleLimit = 10) =>
+    fetchApi<{ success: boolean; testResult: any }>(
+      `/assets/${encodeURIComponent(assetType.toLowerCase())}/${encodeURIComponent(assetId)}/test`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ sampleLimit })
+      }
+    ),
+
+  approveOperationalAsset: (assetType: string, assetId: string, feedback?: string) =>
+    fetchApi<{ success: boolean; message: string; asset: any }>(
+      `/assets/${encodeURIComponent(assetType.toLowerCase())}/${encodeURIComponent(assetId)}/approve`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ feedback })
+      }
+    ),
+
+  declineOperationalAsset: (assetType: string, assetId: string, feedback: string) =>
+    fetchApi<{ success: boolean; message: string; asset: any }>(
+      `/assets/${encodeURIComponent(assetType.toLowerCase())}/${encodeURIComponent(assetId)}/decline`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ feedback })
+      }
+    ),
+
+  unlockOperationalAsset: (assetType: string, assetId: string) =>
+    fetchApi<{ success: boolean; message: string }>(
+      `/assets/${encodeURIComponent(assetType.toLowerCase())}/${encodeURIComponent(assetId)}/unlock`,
+      {
+        method: 'POST'
+      }
+    ),
+
+  getTeamStagedAssets: (teamId: string) =>
+    fetchApi<{
+      success: boolean;
+      validationBoxes: any[];
+      workflows: any[];
+      dbConfigs: any[];
+    }>(`/assets/team-staged/${encodeURIComponent(teamId)}`),
+
+  getDirectShares: (userId?: string) =>
+    fetchApi<{ success: boolean; shares: any[] }>(
+      `/assets/direct-shares${userId ? `?userId=${encodeURIComponent(userId)}` : ''}`
+    )
 };
+
+
 
 

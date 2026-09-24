@@ -543,7 +543,7 @@ export default function DatabaseValidationSettings({
       description: 'Define external processing stage parameters and data source mapping',
       order: nextOrder,
       enabled: true,
-      targetDbId: databases[0]?.id || 'db-1',
+      targetDbId: databases[0]?.id || '',
       targetDataSource: 'transactions',
       businessMeaning: 'Operational Lifecycle Stage'
     };

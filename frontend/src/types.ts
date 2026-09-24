@@ -3,7 +3,18 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-export type UserRole = 'admin' | 'user' | 'technical' | 'operational' | 'superadmin' | 'administrator';
+export type UserRole =
+  | 'admin'
+  | 'user'
+  | 'technical'
+  | 'operational'
+  | 'maker'
+  | 'checker'
+  | 'supervisor'
+  | 'superadmin'
+  | 'administrator'
+  | 'team_admin'
+  | 'manager';
 
 export interface User {
   id: string;
@@ -67,6 +78,10 @@ export interface TeamAdminPrivileges {
   canManageColumnMapping?: boolean;
   canManageUsers?: boolean;
   canManageSystems?: boolean;
+  canReviewApprovals?: boolean;
+  canProposeMakerActions?: boolean;
+  canApproveMakerActions?: boolean;
+  canManageOperationalGovernance?: boolean;
 }
 
 export interface UserAdminCapabilities {
@@ -79,6 +94,10 @@ export interface UserAdminCapabilities {
   canManageColumnMapping: boolean;
   canManageUsers: boolean;
   canManageSystems: boolean;
+  canReviewApprovals: boolean;
+  canProposeMakerActions: boolean;
+  canApproveMakerActions: boolean;
+  canManageOperationalGovernance: boolean;
 }
 
 export interface Team {
@@ -249,6 +268,8 @@ export interface Issue {
   visibility?: 'TEAM_PUBLIC' | 'PERSONAL_PRIVATE';
   processType?: SolutionProcessType;
   workflowId?: string;
+  workflowName?: string;
+  workflowStatus?: 'DRAFT' | 'PENDING_CHECKER_TEST' | 'APPROVED' | 'DECLINED';
   acceptedScriptProposalId?: string;
   initialSnapshot?: Record<string, any>[];
 }
@@ -1150,6 +1171,33 @@ export interface InvestigationBatch {
   errorDetail?: string;
   retryCount?: number;
 }
+// 1. What a validation rule discovers (Rule Verdict)
+export type ValidationResultStatus = 'PASS' | 'FAIL' | 'ERROR' | 'SKIPPED' | 'NOT_EVALUATED' | 'PAUSED_DB_OFFLINE';
+export type ValidationVerdict = ValidationResultStatus;
+
+// 2. What the workflow execution engine does next (Pipeline Action)
+export type PipelineAction = 'CONTINUE' | 'STOP' | 'CLOSE' | 'FLAG' | 'REPORT';
+
+// 3. Parent Task / Case lifecycle in the workspace (Case Lifecycle)
+export type CaseLifecycleStatus = 'OPEN' | 'INVESTIGATING' | 'IN_PROGRESS' | 'ACTION_REQUIRED' | 'RESOLVED' | 'CLOSED';
+
+// 4. Financial Transaction investigation and Maker-Checker resolution state
+export type TransactionInvestigationStatus =
+  | 'PENDING'
+  | 'INVESTIGATING'
+  | 'RECONCILED'
+  | 'FLAGGED'
+  | 'CLOSED'
+  | 'UNINVESTIGATED'
+  | 'IN_PROGRESS'
+  | 'VERIFIED_MATCH'
+  | 'FLAGGED_DISCREPANCY'
+  | 'PENDING_CHECKER_REVIEW'
+  | 'FORCE_MATCHED'
+  | 'MANUALLY_REVERSED'
+  | 'WRITTEN_OFF'
+  | 'CLOSED_RESOLVED'
+  | 'CLOSED_UNRESOLVED';
 
 export interface InvestigationTransaction {
   id: string;
@@ -1483,6 +1531,44 @@ export interface TeamEscalationTarget {
   targetTeamDescription?: string;
   managerId?: string;
   managerName?: string;
+}
+
+// ==========================================
+// COMPOSITE WORKFLOW BUNDLES (OPERATIONAL GOVERNANCE)
+// ==========================================
+
+export type WorkflowBundleScope = 'PERSONAL' | 'TEAM' | 'GLOBAL_ENTERPRISE';
+
+export type WorkflowBundleStatus = 
+  | 'DRAFT' 
+  | 'PENDING_CHECKER_REVIEW' 
+  | 'APPROVED' 
+  | 'REJECTED';
+
+export interface WorkflowBundle {
+  id: string;
+  bundleCode: string;
+  name: string;
+  description?: string;
+  version: string;
+  scope: WorkflowBundleScope;
+  workflowId: string;
+  workflowName?: string;
+  validationBoxIds: string[];
+  dbCheckIds: string[];
+  sourceTeamId: string;
+  sourceTeamName?: string;
+  status: WorkflowBundleStatus;
+  makerId: string;
+  makerName: string;
+  checkerId?: string;
+  checkerName?: string;
+  checkerFeedback?: string;
+  evidenceSnapshot?: Record<string, any>;
+  hashtagBindings?: string[];
+  createdAt: string;
+  approvedAt?: string;
+  updatedAt: string;
 }
 
 

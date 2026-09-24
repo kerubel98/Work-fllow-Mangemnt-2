@@ -1,9 +1,49 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { investigationOrchestratorService } from '../investigationOrchestratorService.js';
+import { repo } from '../../store/repository.js';
+import { queryPg } from '../../config/postgres.js';
 
 describe('External Database Existence Check Governance', () => {
+  const testWorkflowId = `wf-test-notfound-${Date.now()}`;
+
+  beforeAll(async () => {
+    await repo.createWorkflow({
+      id: testWorkflowId,
+      name: 'Test Existence Check Workflow',
+      category: 'Reconciliation',
+      targetDbId: 'db-1789318844365',
+      targetTable: 'transactions',
+      stages: [],
+      steps: [
+        {
+          id: 'step-ex-1',
+          name: 'Existence Check',
+          checkType: 'EXISTENCE_CHECK',
+          sourceField: 'terminal_id',
+          targetField: 'terminal_id',
+          stepNumber: 1,
+          targetDbId: 'db-1789318844365',
+          targetTable: 'transactions',
+          dependencyCondition: 'ALWAYS',
+          onErrorAction: 'STOP',
+          onPassAction: 'CONTINUE',
+          onFailAction: 'STOP'
+        }
+      ],
+      createdAt: new Date().toISOString()
+    });
+  });
+
+  afterAll(async () => {
+    try {
+      await queryPg(`DELETE FROM task_workflow_executions WHERE workflow_id = $1;`, [testWorkflowId]);
+      await queryPg(`DELETE FROM database_validation_workflows WHERE id = $1;`, [testWorkflowId]);
+    } catch (e: any) {
+      // ignore
+    }
+  });
+
   it('strictly flags records as FAIL when not found in external target database', async () => {
-    // Custom Workflow 5 targets LocalFTP.transactions with parameters terminal_id, refnum, reqamt, fe_utrnno
     const testRecords = [
       {
         terminal_id: 'NON_EXISTENT_TERM_9999',
@@ -16,7 +56,7 @@ describe('External Database Existence Check Governance', () => {
     ];
 
     const result = await investigationOrchestratorService.executeUniversalWorkflow({
-      workflowId: 'wf-1789852589770',
+      workflowId: testWorkflowId,
       records: testRecords,
       sourceType: 'INVESTIGATION_PANEL',
       sourceId: 'TASK-TEST-NOTFOUND-01',

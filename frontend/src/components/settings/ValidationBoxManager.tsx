@@ -20,18 +20,21 @@ import {
   Check,
   X,
   AlertCircle,
-  AlertTriangle
+  AlertTriangle,
+  Share2
 } from 'lucide-react';
 import { api } from '../../api/client';
 import { ValidationBox, ValidationBoxType, DatabaseConnection, DatabaseColumnConfiguration } from '../../types';
 import { globalMappingService } from '../../services/globalMappingService';
 import { showSystemAlert } from '../common/MessageModal';
+import { ShareAssetModal } from '../common/ShareAssetModal';
+import { AssetStatusBadge } from '../common/AssetStatusBadge';
 
 interface ValidationBoxManagerProps {
   currentUser?: any;
 }
 
-export const ValidationBoxManager: React.FC<ValidationBoxManagerProps> = () => {
+export const ValidationBoxManager: React.FC<ValidationBoxManagerProps> = ({ currentUser }) => {
   const [boxes, setBoxes] = useState<ValidationBox[]>([]);
   const [databases, setDatabases] = useState<DatabaseConnection[]>([]);
   const [loading, setLoading] = useState(true);
@@ -39,6 +42,10 @@ export const ValidationBoxManager: React.FC<ValidationBoxManagerProps> = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingBox, setEditingBox] = useState<ValidationBox | null>(null);
+  const [isShareModalOpen, setIsShareModalOpen] = useState(false);
+  const [sharingBox, setSharingBox] = useState<ValidationBox | null>(null);
+  const [viewMode, setViewMode] = useState<'library' | 'focus'>('library');
+  const [selectedBoxId, setSelectedBoxId] = useState<string | null>(null);
 
   // Form state
   const [boxType, setBoxType] = useState<ValidationBoxType>('INGESTION_SEARCH');
@@ -48,7 +55,7 @@ export const ValidationBoxManager: React.FC<ValidationBoxManagerProps> = () => {
   const [targetDbId, setTargetDbId] = useState('');
   const [targetTable, setTargetTable] = useState('');
   const [searchParams, setSearchParams] = useState<{ inputField: string; targetColumn: string; required: boolean }[]>([
-    { inputField: 'transactionId', targetColumn: 'tran_id', required: true }
+    { inputField: 'reference_number', targetColumn: 'reference_number', required: true }
   ]);
 
   // Condition check & Dual-Source state
@@ -210,8 +217,12 @@ export const ValidationBoxManager: React.FC<ValidationBoxManagerProps> = () => {
         api.getDatabases(),
         globalMappingService.fetchConfigFromBackend()
       ]);
-      setBoxes(vBoxes || []);
+      const safeBoxes = vBoxes || [];
+      setBoxes(safeBoxes);
       setDatabases(dbs || []);
+      if (!selectedBoxId && safeBoxes.length > 0) {
+        setSelectedBoxId(safeBoxes[0].id);
+      }
       if (dbs && dbs.length > 0 && !targetDbId) {
         setTargetDbId(dbs[0].id);
         const tbls = dbs[0].availableTables || dbs[0].allowedTables || [];
@@ -629,15 +640,25 @@ export const ValidationBoxManager: React.FC<ValidationBoxManagerProps> = () => {
 
   const filteredBoxes = boxes.filter(b => {
     const matchesType = selectedTypeFilter === 'ALL' || b.boxType === selectedTypeFilter;
-    const matchesSearch = b.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      (b.category && b.category.toLowerCase().includes(searchQuery.toLowerCase())) ||
-      (b.targetTable && b.targetTable.toLowerCase().includes(searchQuery.toLowerCase()));
+    const query = searchQuery.trim().toLowerCase();
+    const matchesSearch = !query ||
+      b.name.toLowerCase().includes(query) ||
+      (b.category && b.category.toLowerCase().includes(query)) ||
+      (b.targetTable && b.targetTable.toLowerCase().includes(query));
     return matchesType && matchesSearch;
   });
 
+  const selectedBox = boxes.find(b => b.id === selectedBoxId) || filteredBoxes[0] || null;
+  const navItems = [
+    { key: 'ALL', label: 'All Boxes', count: boxes.length },
+    { key: 'INGESTION_SEARCH', label: 'Search', count: boxes.filter(b => b.boxType === 'INGESTION_SEARCH').length },
+    { key: 'RECONCILIATION', label: 'Reconciliation', count: boxes.filter(b => b.boxType === 'RECONCILIATION').length },
+    { key: 'CONDITION_CHECK', label: 'Condition', count: boxes.filter(b => b.boxType === 'CONDITION_CHECK').length },
+    { key: 'REPORT', label: 'Report', count: boxes.filter(b => b.boxType === 'REPORT').length }
+  ] as const;
+
   return (
     <div className="space-y-6">
-      {/* Header Banner */}
       <div className="bg-white border border-slate-200/90 rounded-2xl p-2.5 sm:p-3 text-slate-800 shadow-xs flex items-center justify-between gap-2 overflow-x-auto no-scrollbar" id="val-box-header">
         <div className="flex items-center gap-2 shrink-0">
           <div className="p-1.5 bg-blue-50 text-[#155DFC] rounded-lg border border-blue-200/60 shrink-0">
@@ -651,606 +672,415 @@ export const ValidationBoxManager: React.FC<ValidationBoxManagerProps> = () => {
           </div>
         </div>
 
-        <div className="flex items-center gap-1.5 shrink-0" id="val-box-actions-row">
-          <button
-            type="button"
-            onClick={() => handleOpenCreateModal('INGESTION_SEARCH')}
-            className="flex items-center gap-1.5 px-2.5 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 rounded-lg font-semibold text-xs transition-colors border border-emerald-200/80 shadow-2xs shrink-0 whitespace-nowrap cursor-pointer"
-          >
+        <div className="flex items-center gap-2 shrink-0" id="val-box-actions-row">
+          <div className="inline-flex rounded-lg border border-slate-200 bg-slate-100 p-0.5">
+            <button
+              type="button"
+              onClick={() => setViewMode('library')}
+              className={`px-2.5 py-1 rounded-md text-[10px] font-bold transition ${viewMode === 'library' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}
+            >
+              Library
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode('focus')}
+              className={`px-2.5 py-1 rounded-md text-[10px] font-bold transition ${viewMode === 'focus' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}
+            >
+              Focus
+            </button>
+          </div>
+
+          <button type="button" onClick={() => handleOpenCreateModal('INGESTION_SEARCH')} className="flex items-center gap-1.5 px-2.5 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 rounded-lg font-semibold text-xs transition-colors border border-emerald-200/80 shadow-2xs shrink-0 whitespace-nowrap cursor-pointer">
             <Database className="w-3.5 h-3.5" />
             <span>+ Search Box</span>
           </button>
-          <button
-            type="button"
-            onClick={() => handleOpenCreateModal('RECONCILIATION')}
-            className="flex items-center gap-1.5 px-2.5 py-1.5 bg-cyan-50 hover:bg-cyan-100 text-cyan-700 rounded-lg font-semibold text-xs transition-colors border border-cyan-200/80 shadow-2xs shrink-0 whitespace-nowrap cursor-pointer"
-          >
+          <button type="button" onClick={() => handleOpenCreateModal('RECONCILIATION')} className="flex items-center gap-1.5 px-2.5 py-1.5 bg-cyan-50 hover:bg-cyan-100 text-cyan-700 rounded-lg font-semibold text-xs transition-colors border border-cyan-200/80 shadow-2xs shrink-0 whitespace-nowrap cursor-pointer">
             <Layers className="w-3.5 h-3.5" />
             <span>+ Reconciliation Box</span>
           </button>
-          <button
-            type="button"
-            onClick={() => handleOpenCreateModal('CONDITION_CHECK')}
-            className="flex items-center gap-1.5 px-2.5 py-1.5 bg-blue-50 hover:bg-blue-100 text-[#155DFC] rounded-lg font-semibold text-xs transition-colors border border-blue-200/80 shadow-2xs shrink-0 whitespace-nowrap cursor-pointer"
-          >
+          <button type="button" onClick={() => handleOpenCreateModal('CONDITION_CHECK')} className="flex items-center gap-1.5 px-2.5 py-1.5 bg-blue-50 hover:bg-blue-100 text-[#155DFC] rounded-lg font-semibold text-xs transition-colors border border-blue-200/80 shadow-2xs shrink-0 whitespace-nowrap cursor-pointer">
             <CheckCircle2 className="w-3.5 h-3.5" />
             <span>+ Condition Check</span>
           </button>
-          <button
-            type="button"
-            onClick={() => handleOpenCreateModal('REPORT')}
-            className="flex items-center gap-1.5 px-2.5 py-1.5 bg-purple-50 hover:bg-purple-100 text-purple-700 rounded-lg font-semibold text-xs transition-colors border border-purple-200/80 shadow-2xs shrink-0 whitespace-nowrap cursor-pointer"
-          >
+          <button type="button" onClick={() => handleOpenCreateModal('REPORT')} className="flex items-center gap-1.5 px-2.5 py-1.5 bg-purple-50 hover:bg-purple-100 text-purple-700 rounded-lg font-semibold text-xs transition-colors border border-purple-200/80 shadow-2xs shrink-0 whitespace-nowrap cursor-pointer">
             <Cpu className="w-3.5 h-3.5" />
             <span>+ Report Box</span>
           </button>
-          {/* Danger: Clear all validation run history globally */}
-          <button
-            type="button"
-            onClick={handleClearAllHistory}
-            disabled={isClearingAll}
-            className="flex items-center gap-1.5 px-2.5 py-1.5 bg-rose-50 hover:bg-rose-100 disabled:opacity-50 text-rose-700 rounded-lg font-semibold text-xs transition-colors border border-rose-200/80 shrink-0 whitespace-nowrap cursor-pointer"
-            title="Permanently clear all validation check history across all tasks (cannot be undone)"
-          >
+          <button type="button" onClick={handleClearAllHistory} disabled={isClearingAll} className="flex items-center gap-1.5 px-2.5 py-1.5 bg-rose-50 hover:bg-rose-100 disabled:opacity-50 text-rose-700 rounded-lg font-semibold text-xs transition-colors border border-rose-200/80 shrink-0 whitespace-nowrap cursor-pointer" title="Permanently clear all validation check history across all tasks (cannot be undone)">
             <Trash2 className="w-3.5 h-3.5" />
             <span>{isClearingAll ? 'Clearing...' : 'Clear History'}</span>
           </button>
         </div>
       </div>
 
-      {/* Filter & Search Toolbar */}
-      <div className="flex flex-wrap items-center justify-between gap-3 bg-white p-3.5 border border-slate-200 rounded-xl shadow-xs">
-        <div className="flex flex-wrap items-center gap-1.5">
-          <button
-            type="button"
-            onClick={() => setSelectedTypeFilter('ALL')}
-            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
-              selectedTypeFilter === 'ALL'
-                ? 'bg-slate-900 text-white shadow-xs font-bold'
-                : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
-            }`}
-          >
-            All Boxes ({boxes.length})
-          </button>
-          <button
-            type="button"
-            onClick={() => setSelectedTypeFilter('INGESTION_SEARCH')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
-              selectedTypeFilter === 'INGESTION_SEARCH'
-                ? 'bg-emerald-600 text-white shadow-xs font-bold'
-                : 'text-slate-600 hover:text-emerald-700 hover:bg-emerald-50'
-            }`}
-          >
-            <Database className="w-3.5 h-3.5" />
-            Search ({boxes.filter(b => b.boxType === 'INGESTION_SEARCH').length})
-          </button>
-          <button
-            type="button"
-            onClick={() => setSelectedTypeFilter('RECONCILIATION')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
-              selectedTypeFilter === 'RECONCILIATION'
-                ? 'bg-cyan-600 text-white shadow-xs font-bold'
-                : 'text-slate-600 hover:text-cyan-700 hover:bg-cyan-50'
-            }`}
-          >
-            <Layers className="w-3.5 h-3.5" />
-            Reconciliation ({boxes.filter(b => b.boxType === 'RECONCILIATION').length})
-          </button>
-          <button
-            type="button"
-            onClick={() => setSelectedTypeFilter('CONDITION_CHECK')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
-              selectedTypeFilter === 'CONDITION_CHECK'
-                ? 'bg-blue-600 text-white shadow-xs font-bold'
-                : 'text-slate-600 hover:text-blue-700 hover:bg-blue-50'
-            }`}
-          >
-            <CheckCircle2 className="w-3.5 h-3.5" />
-            Condition ({boxes.filter(b => b.boxType === 'CONDITION_CHECK').length})
-          </button>
-          <button
-            type="button"
-            onClick={() => setSelectedTypeFilter('REPORT')}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
-              selectedTypeFilter === 'REPORT'
-                ? 'bg-purple-600 text-white shadow-xs font-bold'
-                : 'text-slate-600 hover:text-purple-700 hover:bg-purple-50'
-            }`}
-          >
-            <Cpu className="w-3.5 h-3.5" />
-            Report ({boxes.filter(b => b.boxType === 'REPORT').length})
-          </button>
-        </div>
-
-        <div className="relative min-w-[240px]">
-          <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-          <input
-            type="text"
-            placeholder="Search validation boxes..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full bg-slate-50 border border-slate-200 rounded-lg pl-9 pr-4 py-1.5 text-xs text-slate-900 placeholder-slate-400 focus:bg-white focus:outline-none focus:ring-1 focus:ring-blue-500"
-          />
-        </div>
-      </div>
-
-      {/* Grid of Validation Boxes */}
-      {loading ? (
-        <div className="py-16 text-center text-slate-400 animate-pulse font-medium">Loading validation boxes...</div>
-      ) : filteredBoxes.length === 0 ? (
-        <div className="p-12 text-center border border-dashed border-slate-200 rounded-xl bg-slate-50/50">
-          <Boxes className="w-12 h-12 text-slate-400 mx-auto mb-3" />
-          <h3 className="text-base font-bold text-slate-800 mb-1">No Validation Boxes found</h3>
-          <p className="text-xs text-slate-500 max-w-md mx-auto mb-4">
-            Build standalone rule blocks to separate external querying from integrity checks before linking them in the Workflow Studio.
-          </p>
-          <div className="flex justify-center gap-2 flex-wrap">
-            <button
-              type="button"
-              onClick={() => handleOpenCreateModal('INGESTION_SEARCH')}
-              className="px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-lg text-xs font-bold transition-colors cursor-pointer"
-            >
-              + Add Search Box
-            </button>
-            <button
-              type="button"
-              onClick={() => handleOpenCreateModal('CONDITION_CHECK')}
-              className="px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-lg text-xs font-bold transition-colors cursor-pointer"
-            >
-              + Add Condition Check
-            </button>
-            <button
-              type="button"
-              onClick={() => handleOpenCreateModal('RECONCILIATION')}
-              className="px-3 py-1.5 bg-cyan-50 hover:bg-cyan-100 text-cyan-700 border border-cyan-200 rounded-lg text-xs font-bold transition-colors cursor-pointer"
-            >
-              + Add Reconciliation Box
-            </button>
-            <button
-              type="button"
-              onClick={() => handleOpenCreateModal('REPORT')}
-              className="px-3 py-1.5 bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200 rounded-lg text-xs font-bold transition-colors cursor-pointer"
-            >
-              + Add Report Box
-            </button>
+      <div className="grid grid-cols-1 xl:grid-cols-[220px_minmax(0,1fr)_320px] gap-4">
+        <aside className="bg-white border border-slate-200 rounded-xl p-2.5 h-fit">
+          <div className="mb-2 flex items-center justify-between">
+            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Categories</span>
+            <span className="text-[10px] text-slate-400">{boxes.length} boxes</span>
           </div>
-        </div>
-      ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {filteredBoxes.map((box) => {
-            const getTypeMeta = () => {
-              switch (box.boxType) {
-                case 'INGESTION_SEARCH':
-                  return {
-                    label: 'Search & Ingest',
-                    icon: Database,
-                    iconBg: 'bg-emerald-50 border-emerald-200',
-                    iconColor: 'text-emerald-700',
-                    badge: 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                  };
-                case 'RECONCILIATION':
-                  return {
-                    label: 'Reconciliation',
-                    icon: Layers,
-                    iconBg: 'bg-cyan-50 border-cyan-200',
-                    iconColor: 'text-cyan-700',
-                    badge: 'bg-cyan-50 text-cyan-700 border-cyan-200'
-                  };
-                case 'REPORT':
-                  return {
-                    label: 'Report Output',
-                    icon: Cpu,
-                    iconBg: 'bg-purple-50 border-purple-200',
-                    iconColor: 'text-purple-700',
-                    badge: 'bg-purple-50 text-purple-700 border-purple-200'
-                  };
-                case 'CONDITION_CHECK':
-                default:
-                  return {
-                    label: 'Condition Check',
-                    icon: CheckCircle2,
-                    iconBg: 'bg-blue-50 border-blue-200',
-                    iconColor: 'text-blue-700',
-                    badge: 'bg-blue-50 text-blue-700 border-blue-200'
-                  };
-              }
-            };
-            const meta = getTypeMeta();
-            const Icon = meta.icon;
+          <div className="space-y-1.5">
+            {navItems.map(item => {
+              const active = selectedTypeFilter === item.key || (item.key === 'ALL' && selectedTypeFilter === 'ALL');
+              return (
+                <button
+                  key={item.key}
+                  type="button"
+                  onClick={() => setSelectedTypeFilter(item.key as ValidationBoxType | 'ALL')}
+                  className={`w-full flex items-center justify-between rounded-lg px-2.5 py-2 text-left transition ${active ? 'bg-slate-900 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'}`}
+                >
+                  <span className="text-xs font-semibold">{item.label}</span>
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${active ? 'bg-white/10 text-white' : 'bg-slate-100 text-slate-500'}`}>
+                    {item.count}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </aside>
 
-            return (
-              <div
-                key={box.id}
-                className="group relative bg-white hover:bg-slate-50/50 border border-slate-200 hover:border-slate-300 rounded-xl p-4 flex flex-col justify-between transition-all duration-200 shadow-xs hover:shadow-md"
-              >
-                <div>
-                  {/* Header: Icon + Title + Category + Actions */}
-                  <div className="flex items-start justify-between gap-3 mb-2.5">
-                    <div className="flex items-center gap-2.5 min-w-0">
-                      <div className={`p-2 rounded-lg shrink-0 border ${meta.iconBg}`}>
-                        <Icon className={`w-4 h-4 ${meta.iconColor}`} />
-                      </div>
-                      <div className="min-w-0">
-                        <h3 className="font-bold text-slate-900 text-sm truncate group-hover:text-blue-600 transition-colors" title={box.name}>
-                          {box.name}
-                        </h3>
-                        <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
-                          <span className={`text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.2 rounded border ${meta.badge}`}>
-                            {meta.label}
-                          </span>
-                          {(box.columnConfigurationIds && box.columnConfigurationIds.length > 0) && (
-                            <span className="text-[10px] text-indigo-700 bg-indigo-50 border border-indigo-200 px-1.5 py-0.2 rounded font-bold font-mono">
-                              {box.columnConfigurationIds.length} Table Rules
-                            </span>
-                          )}
-                          {box.category && (
-                            <span className="text-[10px] text-slate-600 bg-slate-100 border border-slate-200 px-1.5 py-0.2 rounded font-medium">
-                              {box.category}
-                            </span>
-                          )}
+        <div className="space-y-4">
+          <div className="flex flex-wrap items-center justify-between gap-3 bg-white p-3.5 border border-slate-200 rounded-xl shadow-xs">
+            <div className="flex items-center gap-2 text-[10px] uppercase tracking-wider text-slate-500 font-bold">
+              <span className="px-2 py-1 rounded bg-slate-100 border border-slate-200">{viewMode === 'library' ? 'Library' : 'Focus'} mode</span>
+              <span>{filteredBoxes.length} visible</span>
+            </div>
+
+            <div className="relative min-w-[240px]">
+              <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input
+                type="text"
+                placeholder="Search validation boxes..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="w-full bg-slate-50 border border-slate-200 rounded-lg pl-9 pr-4 py-1.5 text-xs text-slate-900 placeholder-slate-400 focus:bg-white focus:outline-none focus:ring-1 focus:ring-blue-500"
+              />
+            </div>
+          </div>
+
+          {loading ? (
+            <div className="py-16 text-center text-slate-400 animate-pulse font-medium">Loading validation boxes...</div>
+          ) : filteredBoxes.length === 0 ? (
+            <div className="p-12 text-center border border-dashed border-slate-200 rounded-xl bg-slate-50/50">
+              <Boxes className="w-12 h-12 text-slate-400 mx-auto mb-3" />
+              <h3 className="text-base font-bold text-slate-800 mb-1">No Validation Boxes found</h3>
+              <p className="text-xs text-slate-500 max-w-md mx-auto mb-4">
+                Build standalone rule blocks to separate external querying from integrity checks before linking them in the Workflow Studio.
+              </p>
+              <div className="flex justify-center gap-2 flex-wrap">
+                <button type="button" onClick={() => handleOpenCreateModal('INGESTION_SEARCH')} className="px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-lg text-xs font-bold transition-colors cursor-pointer">+ Add Search Box</button>
+                <button type="button" onClick={() => handleOpenCreateModal('CONDITION_CHECK')} className="px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-lg text-xs font-bold transition-colors cursor-pointer">+ Add Condition Check</button>
+                <button type="button" onClick={() => handleOpenCreateModal('RECONCILIATION')} className="px-3 py-1.5 bg-cyan-50 hover:bg-cyan-100 text-cyan-700 border border-cyan-200 rounded-lg text-xs font-bold transition-colors cursor-pointer">+ Add Reconciliation Box</button>
+                <button type="button" onClick={() => handleOpenCreateModal('REPORT')} className="px-3 py-1.5 bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200 rounded-lg text-xs font-bold transition-colors cursor-pointer">+ Add Report Box</button>
+              </div>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {filteredBoxes.map((box) => {
+                const getTypeMeta = () => {
+                  switch (box.boxType) {
+                    case 'INGESTION_SEARCH':
+                      return { label: 'Search & Ingest', icon: Database, iconBg: 'bg-emerald-50 border-emerald-200', iconColor: 'text-emerald-700', badge: 'bg-emerald-50 text-emerald-700 border-emerald-200' };
+                    case 'RECONCILIATION':
+                      return { label: 'Reconciliation', icon: Layers, iconBg: 'bg-cyan-50 border-cyan-200', iconColor: 'text-cyan-700', badge: 'bg-cyan-50 text-cyan-700 border-cyan-200' };
+                    case 'REPORT':
+                      return { label: 'Report Output', icon: Cpu, iconBg: 'bg-purple-50 border-purple-200', iconColor: 'text-purple-700', badge: 'bg-purple-50 text-purple-700 border-purple-200' };
+                    case 'CONDITION_CHECK':
+                    default:
+                      return { label: 'Condition Check', icon: CheckCircle2, iconBg: 'bg-blue-50 border-blue-200', iconColor: 'text-blue-700', badge: 'bg-blue-50 text-blue-700 border-blue-200' };
+                  }
+                };
+                const meta = getTypeMeta();
+                const Icon = meta.icon;
+                const isSelected = selectedBox?.id === box.id;
+
+                return (
+                  <div
+                    key={box.id}
+                    role="button"
+                    tabIndex={0}
+                    onClick={() => setSelectedBoxId(box.id)}
+                    onKeyDown={(event) => {
+                      if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        setSelectedBoxId(box.id);
+                      }
+                    }}
+                    className={`group relative w-full text-left bg-white border rounded-xl p-4 flex flex-col justify-between transition-all duration-200 shadow-xs hover:shadow-md cursor-pointer ${isSelected ? 'border-blue-300 ring-2 ring-blue-100 bg-blue-50/30' : 'border-slate-200 hover:border-slate-300'}`}
+                  >
+                    <div>
+                      <div className="flex items-start justify-between gap-3 mb-2.5">
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <div className={`p-2 rounded-lg shrink-0 border ${meta.iconBg}`}>
+                            <Icon className={`w-4 h-4 ${meta.iconColor}`} />
+                          </div>
+                          <div className="min-w-0">
+                            <h3 className="font-bold text-slate-900 text-sm truncate group-hover:text-blue-600 transition-colors" title={box.name}>{box.name}</h3>
+                            <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                              <span className={`text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.2 rounded border ${meta.badge}`}>{meta.label}</span>
+                              {box.category && <span className="text-[10px] text-slate-600 bg-slate-100 border border-slate-200 px-1.5 py-0.2 rounded font-medium">{box.category}</span>}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-0.5">
+                          <button type="button" onClick={(e) => { e.stopPropagation(); setSharingBox(box); setIsShareModalOpen(true); }} className="p-1.5 text-slate-400 hover:text-blue-600 rounded-lg hover:bg-blue-50 transition-colors cursor-pointer" title="Share Validation Box">
+                            <Share2 className="w-3.5 h-3.5" />
+                          </button>
+                          <button type="button" onClick={(e) => { e.stopPropagation(); handleOpenEditModal(box); }} className="p-1.5 text-slate-400 hover:text-blue-600 rounded-lg hover:bg-blue-50 transition-colors cursor-pointer" title="Edit Box">
+                            <Edit3 className="w-3.5 h-3.5" />
+                          </button>
+                          <button type="button" onClick={(e) => { e.stopPropagation(); handleDeleteBox(box.id, box.name); }} className="p-1.5 text-slate-400 hover:text-rose-600 rounded-lg hover:bg-rose-50 transition-colors cursor-pointer" title="Delete Box">
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
                         </div>
                       </div>
-                    </div>
 
-                    <div className="flex items-center gap-0.5">
-                      <button
-                        type="button"
-                        onClick={() => handleOpenEditModal(box)}
-                        className="p-1.5 text-slate-400 hover:text-blue-600 rounded-lg hover:bg-blue-50 transition-colors cursor-pointer"
-                        title="Edit Box"
-                      >
-                        <Edit3 className="w-3.5 h-3.5" />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleDeleteBox(box.id, box.name)}
-                        className="p-1.5 text-slate-400 hover:text-rose-600 rounded-lg hover:bg-rose-50 transition-colors cursor-pointer"
-                        title="Delete Box"
-                      >
-                        <Trash2 className="w-3.5 h-3.5" />
-                      </button>
-                    </div>
-                  </div>
+                      {box.description && <p className="text-xs text-slate-500 line-clamp-2 mb-3 leading-relaxed">{box.description}</p>}
 
-                  {/* Description */}
-                  {box.description && (
-                    <p className="text-xs text-slate-500 line-clamp-2 mb-3 leading-relaxed">
-                      {box.description}
-                    </p>
-                  )}
-
-                  {/* Dedicated Target Data Structure Bar */}
-                  <div className="flex items-center justify-between text-xs p-2 bg-slate-50 rounded-lg border border-slate-100 mb-3">
-                    <span className="text-slate-600 flex items-center gap-1.5 truncate">
-                      <Server className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                      <span className="font-semibold text-slate-800 truncate max-w-[130px]">
-                        {databases.find(d => d.id === box.targetDbId)?.name || 'Database'}
-                      </span>
-                    </span>
-                    <span className="text-blue-700 font-mono text-[11px] font-bold bg-white px-2 py-0.5 rounded border border-slate-200 truncate max-w-[150px] flex items-center gap-1">
-                      <Table className="w-3 h-3 text-slate-400 shrink-0" />
-                      <span className="truncate">{box.targetTable || 'target_table'}</span>
-                    </span>
-                  </div>
-
-                  {/* 1. Ingestion Search Card Body */}
-                  {box.boxType === 'INGESTION_SEARCH' && (
-                    <div className="space-y-2 mb-3">
-                      <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 flex items-center justify-between">
-                        <span>Search Parameters</span>
-                        <span className="font-mono text-slate-500">{box.searchParameters?.length || 0} active</span>
+                      <div className="flex items-center justify-between text-xs p-2 bg-slate-50 rounded-lg border border-slate-100 mb-3">
+                        <span className="text-slate-600 flex items-center gap-1.5 truncate">
+                          <Server className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                          <span className="font-semibold text-slate-800 truncate max-w-[130px]">{databases.find(d => d.id === box.targetDbId)?.name || 'Database'}</span>
+                        </span>
+                        <span className="text-blue-700 font-mono text-[11px] font-bold bg-white px-2 py-0.5 rounded border border-slate-200 truncate max-w-[150px] flex items-center gap-1">
+                          <Table className="w-3 h-3 text-slate-400 shrink-0" />
+                          <span className="truncate">{box.targetTable || 'target_table'}</span>
+                        </span>
                       </div>
-                      {box.searchParameters && box.searchParameters.length > 0 ? (
-                        <div className="flex flex-wrap gap-1.5">
-                          {box.searchParameters.slice(0, 3).map((p, idx) => (
-                            <span
-                              key={idx}
-                              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-slate-50 text-slate-700 border border-slate-200 text-[11px] font-mono"
-                              title={`${p.inputField} -> ${p.targetColumn}`}
-                            >
-                              <span className="text-slate-500">{p.inputField}</span>
-                              <ArrowRight className="w-2.5 h-2.5 text-slate-400" />
-                              <span className="font-bold text-slate-800">{p.targetColumn}</span>
-                              {p.required && <span className="text-rose-500 text-[9px] font-bold">*</span>}
-                            </span>
-                          ))}
-                          {box.searchParameters.length > 3 && (
-                            <span className="px-1.5 py-0.5 rounded-md bg-slate-100 text-slate-600 border border-slate-200 text-[10px] font-mono">
-                              +{box.searchParameters.length - 3} more
-                            </span>
-                          )}
+
+                      {box.boxType === 'INGESTION_SEARCH' && (
+                        <div className="space-y-2 mb-3">
+                          <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 flex items-center justify-between">
+                            <span>Search Parameters</span>
+                            <span className="font-mono text-slate-500">{box.searchParameters?.length || 0} active</span>
+                          </div>
+                          {box.searchParameters && box.searchParameters.length > 0 ? (
+                            <div className="flex flex-wrap gap-1.5">
+                              {box.searchParameters.slice(0, 3).map((p, idx) => (
+                                <span key={idx} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-slate-50 text-slate-700 border border-slate-200 text-[11px] font-mono" title={`${p.inputField} -> ${p.targetColumn}`}>
+                                  <span className="text-slate-500">{p.inputField}</span>
+                                  <ArrowRight className="w-2.5 h-2.5 text-slate-400" />
+                                  <span className="font-bold text-slate-800">{p.targetColumn}</span>
+                                  {p.required && <span className="text-rose-500 text-[9px] font-bold">*</span>}
+                                </span>
+                              ))}
+                              {box.searchParameters.length > 3 && <span className="px-1.5 py-0.5 rounded-md bg-slate-100 text-slate-600 border border-slate-200 text-[10px] font-mono">+{box.searchParameters.length - 3} more</span>}
+                            </div>
+                          ) : <span className="text-xs text-slate-400 italic">No parameters configured</span>}
                         </div>
-                      ) : (
-                        <span className="text-xs text-slate-400 italic">No parameters configured</span>
                       )}
                     </div>
-                  )}
 
-                  {/* 2. Condition Check Card Body */}
-                  {box.boxType === 'CONDITION_CHECK' && (
-                    <div className="space-y-2 mb-3">
-                      <div className="bg-slate-50 border border-slate-100 rounded-lg p-2.5">
-                        <div className="text-[10px] uppercase font-bold text-slate-400 tracking-wider mb-1 flex items-center justify-between">
-                          <span>Rule Condition</span>
-                          {box.dualSourceCondition && (
-                            <span className="text-[9px] bg-blue-100 text-blue-800 px-1.5 py-0.2 rounded font-mono font-bold">Dual-Source</span>
-                          )}
-                        </div>
-                        {box.dualSourceCondition ? (
-                          <div className="space-y-1 font-mono text-xs">
-                            <div className="flex items-center gap-1.5 flex-wrap">
-                              <span className="text-blue-700 font-bold bg-white px-1.5 py-0.5 rounded border border-slate-200">
-                                {box.dualSourceCondition.sourceA.origin}:{box.dualSourceCondition.sourceA.field}
-                              </span>
-                              <span className="text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded font-bold text-[11px]">
-                                {box.dualSourceCondition.comparator === 'EQUALS' ? '==' : box.dualSourceCondition.comparator}
-                              </span>
-                              <span className="text-slate-800 font-bold bg-white px-1.5 py-0.5 rounded border border-slate-200">
-                                {box.dualSourceCondition.sourceB.origin}:{box.dualSourceCondition.sourceB.field}
-                              </span>
-                            </div>
-                            {box.dualSourceCondition.toleranceMargin !== undefined && box.dualSourceCondition.toleranceMargin > 0 && (
-                              <div className="text-[10px] text-slate-500">
-                                Tolerance: <span className="font-bold text-slate-700">±{box.dualSourceCondition.toleranceMargin}</span>
-                              </div>
-                            )}
-                          </div>
-                        ) : (
-                          <div className="flex items-center gap-1.5 font-mono text-xs flex-wrap">
-                            <span className="text-blue-700 font-bold bg-white px-1.5 py-0.5 rounded border border-slate-200">
-                              {box.checkStep?.canonicalField || box.checkStep?.sourceField || 'amount'}
-                            </span>
-                            <span className="text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded font-bold text-[11px]">
-                              {box.checkStep?.operator === 'EQUALS' ? '==' : (box.checkStep?.operator || '==')}
-                            </span>
-                            <span className="text-slate-800 font-bold bg-white px-1.5 py-0.5 rounded border border-slate-200">
-                              {box.checkStep?.expectedValue || 'match'}
-                            </span>
-                          </div>
-                        )}
-                      </div>
-
-                      <div className="flex items-center justify-between text-[11px] text-slate-500 pt-0.5">
-                        <span>Outcomes:</span>
-                        <div className="flex items-center gap-1.5 text-xs font-semibold">
-                          <span className={`${
-                            box.checkStep?.actionOnSuccess === 'STOP' || box.checkStep?.onPassAction === 'STOP'
-                              ? 'text-rose-700 bg-rose-50 border border-rose-200'
-                              : 'text-emerald-700 bg-emerald-50 border border-emerald-200'
-                          } px-1.5 py-0.5 rounded text-[10px] font-bold`}>
-                            Pass: {box.checkStep?.actionOnSuccess || box.checkStep?.onPassAction || 'CONTINUE'}
-                          </span>
-                          <span className={`${
-                            (box.checkStep?.actionOnFailure === 'CONTINUE' || box.checkStep?.onFailAction === 'CONTINUE')
-                              ? 'text-blue-700 bg-blue-50 border border-blue-200'
-                              : 'text-rose-700 bg-rose-50 border border-rose-200'
-                          } px-1.5 py-0.5 rounded text-[10px] font-bold`}>
-                            Fail: {box.checkStep?.actionOnFailure || box.checkStep?.onFailAction || 'FLAG'}
-                          </span>
-                        </div>
-                      </div>
+                    <div className="pt-2.5 border-t border-slate-100 flex items-center justify-between gap-2">
+                      <AssetStatusBadge status={(box as any).status || 'DRAFT'} isLocked={Boolean((box as any).is_locked)} />
+                      <button type="button" onClick={(e) => { e.stopPropagation(); handleOpenTestDrawer(box); }} className="flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-lg bg-slate-50 hover:bg-slate-100 text-slate-700 hover:text-slate-900 text-xs font-semibold border border-slate-200 hover:border-slate-300 transition cursor-pointer">
+                        <Play className="w-3.5 h-3.5 text-emerald-600 fill-emerald-600/20" /> Test
+                      </button>
                     </div>
-                  )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
 
-                  {/* 3. Reconciliation Card Body */}
-                  {box.boxType === 'RECONCILIATION' && (
-                    <div className="space-y-2 mb-3">
-                      <div className="bg-slate-50 border border-slate-100 rounded-lg p-2.5 space-y-1.5">
-                        <div className="text-[10px] uppercase font-bold text-slate-400 tracking-wider flex items-center justify-between">
-                          <span>Reconciliation Keys</span>
-                          <span className="text-[9px] bg-cyan-100 text-cyan-800 px-1.5 py-0.2 rounded font-mono font-bold">
-                            {box.multiRowPolicy || 'COMPOSITE_BUNDLE'}
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-1.5 font-mono text-xs text-slate-800">
-                          <span className="bg-white border border-slate-200 px-1.5 py-0.5 rounded text-slate-700 font-bold">
-                            {box.matchKeyInput || 'transaction_id'}
-                          </span>
-                          <ArrowRight className="w-3 h-3 text-cyan-600 shrink-0" />
-                          <span className="bg-white border border-slate-200 px-1.5 py-0.5 rounded text-cyan-800 font-bold">
-                            {box.matchKeyExternal || 'tran_id'}
-                          </span>
-                        </div>
-                        {box.groupConfig && (
-                          <div className="text-[10px] text-slate-500 flex items-center gap-1 pt-1 border-t border-slate-200/60">
-                            <Layers className="w-3 h-3 text-cyan-600" />
-                            <span>Group ID: <strong className="font-mono text-slate-700">{box.groupConfig.groupIdField || 'group_id'}</strong></span>
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* 4. Report Card Body */}
-                  {box.boxType === 'REPORT' && (
-                    <div className="space-y-2 mb-3">
-                      <div className="bg-slate-50 border border-slate-100 rounded-lg p-2.5 space-y-1.5">
-                        <div className="text-[10px] uppercase font-bold text-slate-400 tracking-wider flex items-center justify-between">
-                          <span>Report Projection</span>
-                          <span className="font-mono text-purple-700 text-[10px] font-bold bg-purple-50 px-1.5 py-0.2 rounded border border-purple-200">
-                            {box.outputColumns?.length || 0} output cols
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-1.5 text-xs text-slate-700">
-                          <span className="text-slate-400 text-[11px]">Status Column:</span>
-                          <span className="font-mono text-purple-800 font-bold bg-white border border-slate-200 px-1.5 py-0.5 rounded text-[11px]">
-                            {box.statusBinding?.targetField || 'reconciliation_status'}
-                          </span>
-                        </div>
-                        {box.outputColumns && box.outputColumns.length > 0 && (
-                          <div className="flex flex-wrap gap-1 pt-1 border-t border-slate-200/60">
-                            {box.outputColumns.slice(0, 3).map((col, i) => (
-                              <span key={i} className="text-[10px] font-mono bg-white border border-slate-200 px-1.5 py-0.2 rounded text-slate-600">
-                                {col.headerAlias || col.field}
-                              </span>
-                            ))}
-                            {box.outputColumns.length > 3 && (
-                              <span className="text-[10px] font-mono bg-slate-100 text-slate-500 px-1 rounded">
-                                +{box.outputColumns.length - 3}
-                              </span>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  )}
+        <aside className="bg-white border border-slate-200 rounded-xl p-4 h-fit">
+          {selectedBox ? (
+            <div className="space-y-4">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="p-2 rounded-lg bg-blue-50 text-blue-700 border border-blue-200">
+                    {selectedBox.boxType === 'INGESTION_SEARCH' ? <Database className="w-4 h-4" /> : selectedBox.boxType === 'RECONCILIATION' ? <Layers className="w-4 h-4" /> : selectedBox.boxType === 'REPORT' ? <Cpu className="w-4 h-4" /> : <CheckCircle2 className="w-4 h-4" />}
+                  </div>
+                  <div>
+                    <div className="text-[10px] uppercase tracking-wider font-bold text-slate-500">Validation box</div>
+                    <div className="text-sm font-bold text-slate-900">{selectedBox.name}</div>
+                  </div>
                 </div>
+                <AssetStatusBadge status={(selectedBox as any).status || 'DRAFT'} isLocked={Boolean((selectedBox as any).is_locked)} />
+              </div>
 
-                {/* Footer with Test Run button */}
-                <div className="pt-2.5 border-t border-slate-100">
-                  <button
-                    type="button"
-                    onClick={() => handleOpenTestDrawer(box)}
-                    className="w-full flex items-center justify-center gap-1.5 py-1.5 rounded-lg bg-slate-50 hover:bg-slate-100 text-slate-700 hover:text-slate-900 text-xs font-semibold border border-slate-200 hover:border-slate-300 transition cursor-pointer"
-                  >
-                    <Play className="w-3.5 h-3.5 text-emerald-600 fill-emerald-600/20" /> Test Block
-                  </button>
+              <div className="rounded-lg bg-slate-50 border border-slate-200 p-3 text-xs text-slate-600">
+                <div className="font-semibold text-slate-800 mb-1">Summary</div>
+                <p>{selectedBox.description || 'No description configured for this validation box.'}</p>
+              </div>
+
+              <div className="space-y-2 text-xs">
+                <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                  <span className="text-slate-500">Database</span>
+                  <span className="font-semibold text-slate-800">{databases.find(d => d.id === selectedBox.targetDbId)?.name || selectedBox.targetDbId || 'Not set'}</span>
+                </div>
+                <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                  <span className="text-slate-500">Table</span>
+                  <span className="font-mono font-semibold text-slate-800">{selectedBox.targetTable || 'Not set'}</span>
+                </div>
+                <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                  <span className="text-slate-500">Type</span>
+                  <span className="font-semibold text-slate-800">{selectedBox.boxType}</span>
+                </div>
+                <div className="flex items-center justify-between pb-1">
+                  <span className="text-slate-500">Parameters</span>
+                  <span className="font-semibold text-slate-800">{selectedBox.searchParameters?.length || selectedBox.outputColumns?.length || 0}</span>
                 </div>
               </div>
-            );
-          })}
-        </div>
-      )}
+
+              <div className="space-y-2 pt-2 border-t border-slate-200">
+                <button type="button" onClick={() => handleOpenEditModal(selectedBox)} className="w-full px-3 py-2 text-xs font-semibold bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-lg transition cursor-pointer">Edit box</button>
+                <button type="button" onClick={() => { setSharingBox(selectedBox); setIsShareModalOpen(true); }} className="w-full px-3 py-2 text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 rounded-lg transition cursor-pointer">Share box</button>
+                <button type="button" onClick={() => handleOpenTestDrawer(selectedBox)} className="w-full px-3 py-2 text-xs font-semibold bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-lg transition cursor-pointer">Run test</button>
+                <button type="button" onClick={() => handleDeleteBox(selectedBox.id, selectedBox.name)} className="w-full px-3 py-2 text-xs font-semibold bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-lg transition cursor-pointer">Delete box</button>
+              </div>
+            </div>
+          ) : (
+            <div className="p-6 text-center text-slate-400 text-xs">Select a validation box to inspect it here.</div>
+          )}
+        </aside>
+      </div>
 
       {/* Modal: Create/Edit Validation Box */}
       {isModalOpen && (
-        <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto">
-          <div className="bg-slate-900 border border-slate-800 rounded-xl w-full max-w-2xl overflow-hidden shadow-2xl my-8">
-            <div className="flex items-center justify-between px-6 py-4 border-b border-slate-800">
+        <div className="fixed inset-0 z-50 bg-slate-950/35 backdrop-blur-[2px] flex items-center justify-center p-4 overflow-hidden">
+          <div className="bg-white border border-slate-200 rounded-2xl w-full max-w-5xl max-h-[92vh] overflow-hidden shadow-[0_18px_45px_rgba(15,23,42,0.12)] my-2 flex flex-col">
+            <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200 bg-slate-50/80 shrink-0">
               <div className="flex items-center gap-2.5">
-                <Boxes className="w-5 h-5 text-blue-400" />
-                <h3 className="font-bold text-white text-lg">
-                  {editingBox ? 'Edit Validation Box' : 'Create New Validation Box'}
-                </h3>
+                <div className="p-2 rounded-xl bg-blue-50 text-blue-600 border border-blue-200">
+                  <Boxes className="w-4 h-4" />
+                </div>
+                <div>
+                  <div className="text-[10px] font-bold uppercase tracking-[0.16em] text-slate-500">Validation builder</div>
+                  <h3 className="font-bold text-slate-900 text-lg leading-tight">
+                    {editingBox ? 'Edit Validation Box' : 'Create New Validation Box'}
+                  </h3>
+                </div>
               </div>
               <button
                 onClick={() => setIsModalOpen(false)}
-                className="text-slate-400 hover:text-white"
+                className="p-2 text-slate-500 hover:text-slate-800 rounded-lg hover:bg-slate-200/80 transition-colors"
               >
-                <X className="w-5 h-5" />
+                <X className="w-4 h-4" />
               </button>
             </div>
 
-            <form onSubmit={handleSaveBox} className="p-6 space-y-5">
+            <form onSubmit={handleSaveBox} className="p-5 sm:p-6 space-y-6 overflow-y-auto overscroll-contain max-h-[calc(92vh-72px)]">
               {/* Type Switcher */}
               <div>
-                <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
+                <label className="block text-[11px] font-bold uppercase tracking-[0.18em] text-slate-500 mb-2">
                   Block Type
                 </label>
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-2 bg-slate-950 p-1 rounded-xl border border-slate-800">
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-2 bg-slate-100 p-1.5 rounded-xl border border-slate-200">
                   <button
                     type="button"
                     onClick={() => setBoxType('INGESTION_SEARCH')}
-                    className={`flex items-center justify-center gap-1.5 py-2 px-2.5 rounded-lg text-xs font-semibold transition-all ${
+                    className={`flex items-center justify-center gap-1.5 py-2.5 px-2.5 rounded-lg text-[11px] font-semibold transition-all border ${
                       boxType === 'INGESTION_SEARCH'
-                        ? 'bg-emerald-600/20 text-emerald-300 border border-emerald-500/40 shadow-sm'
-                        : 'text-slate-400 hover:text-slate-200 border border-transparent'
+                        ? 'bg-emerald-50 text-emerald-700 border-emerald-200 shadow-sm'
+                        : 'text-slate-600 hover:text-slate-900 border-transparent hover:bg-white'
                     }`}
                   >
-                    <Database className={`w-3.5 h-3.5 ${boxType === 'INGESTION_SEARCH' ? 'text-emerald-400' : 'text-slate-500'}`} />
+                    <Database className={`w-3.5 h-3.5 ${boxType === 'INGESTION_SEARCH' ? 'text-emerald-600' : 'text-slate-500'}`} />
                     <span>Search & Ingest</span>
                   </button>
 
                   <button
                     type="button"
                     onClick={() => setBoxType('CONDITION_CHECK')}
-                    className={`flex items-center justify-center gap-1.5 py-2 px-2.5 rounded-lg text-xs font-semibold transition-all ${
+                    className={`flex items-center justify-center gap-1.5 py-2.5 px-2.5 rounded-lg text-[11px] font-semibold transition-all border ${
                       boxType === 'CONDITION_CHECK'
-                        ? 'bg-blue-600/20 text-blue-300 border border-blue-500/40 shadow-sm'
-                        : 'text-slate-400 hover:text-slate-200 border border-transparent'
+                        ? 'bg-blue-50 text-blue-700 border-blue-200 shadow-sm'
+                        : 'text-slate-600 hover:text-slate-900 border-transparent hover:bg-white'
                     }`}
                   >
-                    <CheckCircle2 className={`w-3.5 h-3.5 ${boxType === 'CONDITION_CHECK' ? 'text-blue-400' : 'text-slate-500'}`} />
+                    <CheckCircle2 className={`w-3.5 h-3.5 ${boxType === 'CONDITION_CHECK' ? 'text-blue-600' : 'text-slate-500'}`} />
                     <span>Condition Check</span>
                   </button>
 
                   <button
                     type="button"
                     onClick={() => setBoxType('RECONCILIATION')}
-                    className={`flex items-center justify-center gap-1.5 py-2 px-2.5 rounded-lg text-xs font-semibold transition-all ${
+                    className={`flex items-center justify-center gap-1.5 py-2.5 px-2.5 rounded-lg text-[11px] font-semibold transition-all border ${
                       boxType === 'RECONCILIATION'
-                        ? 'bg-cyan-600/20 text-cyan-300 border border-cyan-500/40 shadow-sm'
-                        : 'text-slate-400 hover:text-slate-200 border border-transparent'
+                        ? 'bg-cyan-50 text-cyan-700 border-cyan-200 shadow-sm'
+                        : 'text-slate-600 hover:text-slate-900 border-transparent hover:bg-white'
                     }`}
                   >
-                    <Layers className={`w-3.5 h-3.5 ${boxType === 'RECONCILIATION' ? 'text-cyan-400' : 'text-slate-500'}`} />
+                    <Layers className={`w-3.5 h-3.5 ${boxType === 'RECONCILIATION' ? 'text-cyan-600' : 'text-slate-500'}`} />
                     <span>Reconciliation</span>
                   </button>
 
                   <button
                     type="button"
                     onClick={() => setBoxType('REPORT')}
-                    className={`flex items-center justify-center gap-1.5 py-2 px-2.5 rounded-lg text-xs font-semibold transition-all ${
+                    className={`flex items-center justify-center gap-1.5 py-2.5 px-2.5 rounded-lg text-[11px] font-semibold transition-all border ${
                       boxType === 'REPORT'
-                        ? 'bg-purple-600/20 text-purple-300 border border-purple-500/40 shadow-sm'
-                        : 'text-slate-400 hover:text-slate-200 border border-transparent'
+                        ? 'bg-purple-50 text-purple-700 border-purple-200 shadow-sm'
+                        : 'text-slate-600 hover:text-slate-900 border-transparent hover:bg-white'
                     }`}
                   >
-                    <Cpu className={`w-3.5 h-3.5 ${boxType === 'REPORT' ? 'text-purple-400' : 'text-slate-500'}`} />
+                    <Cpu className={`w-3.5 h-3.5 ${boxType === 'REPORT' ? 'text-purple-600' : 'text-slate-500'}`} />
                     <span>Report Output</span>
                   </button>
                 </div>
               </div>
 
               {/* General details */}
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-xs font-semibold text-slate-300 mb-1">Validation Box Name *</label>
+                  <label className="block text-xs font-semibold text-slate-600 mb-1.5">Validation Box Name *</label>
                   <input
                     type="text"
                     required
                     value={name}
                     onChange={(e) => setName(e.target.value)}
                     placeholder="e.g. CBS Auth Table Query"
-                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
+                    className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2.5 text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                   />
                 </div>
                 <div>
-                  <label className="block text-xs font-semibold text-slate-300 mb-1">Category</label>
+                  <label className="block text-xs font-semibold text-slate-600 mb-1.5">Category</label>
                   <input
                     type="text"
                     value={category}
                     onChange={(e) => setCategory(e.target.value)}
                     placeholder="e.g. Settlement, Authorization, Fraud"
-                    className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
+                    className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2.5 text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                   />
                 </div>
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-slate-300 mb-1">Description</label>
+                <label className="block text-xs font-semibold text-slate-600 mb-1.5">Description</label>
                 <textarea
                   rows={2}
                   value={description}
                   onChange={(e) => setDescription(e.target.value)}
                   placeholder="Explain what this standalone rule evaluates or queries..."
-                  className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-blue-500"
+                  className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2.5 text-sm text-slate-900 placeholder-slate-400 focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                 />
               </div>
 
               {/* Dedicated Target Data Structure: Every Box is Scoped to a Target Table */}
-              <div className="border-t border-slate-800 pt-4 space-y-3">
+              <div className="border-t border-slate-200 pt-5 space-y-3">
                 <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wider text-slate-300">
-                    <Table className="w-4 h-4 text-blue-400" />
+                  <div className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.16em] text-slate-600">
+                    <Table className="w-4 h-4 text-blue-600" />
                     <span>Dedicated Target Data Structure</span>
                   </div>
                   <span className="text-[11px] font-mono">
                     {loadingColumns ? (
-                      <span className="text-amber-400 animate-pulse">Inspecting table columns...</span>
+                      <span className="text-amber-600 animate-pulse">Inspecting table columns...</span>
                     ) : tableColumns.length > 0 ? (
-                      <span className="text-emerald-400 bg-emerald-950/60 px-2 py-0.5 rounded border border-emerald-800/40">
+                      <span className="text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
                         ✓ {tableColumns.length} columns discovered in {targetTable}
                       </span>
                     ) : targetTable ? (
-                      <span className="text-slate-400 bg-slate-800 px-2 py-0.5 rounded">Standard Schema mapped</span>
+                      <span className="text-slate-600 bg-slate-100 px-2 py-0.5 rounded border border-slate-200">Standard Schema mapped</span>
                     ) : null}
                   </span>
                 </div>
 
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                   <div>
-                    <label className="block text-xs font-semibold text-slate-300 mb-1">Target Database Engine *</label>
+                    <label className="block text-xs font-semibold text-slate-600 mb-1.5">Target Database Engine *</label>
                     <select
                       value={targetDbId}
                       onChange={(e) => {
@@ -1265,7 +1095,7 @@ export const ValidationBoxManager: React.FC<ValidationBoxManagerProps> = () => {
                           targetColumn: newDbId && newTbl ? globalMappingService.getPhysicalColumn(newDbId, newTbl, p.inputField) : p.inputField
                         })));
                       }}
-                      className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-blue-500"
+                      className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2.5 text-xs text-slate-900 focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100"
                     >
                       <option value="">-- Select Target Database --</option>
                       {databases.map((db) => (
@@ -1277,7 +1107,7 @@ export const ValidationBoxManager: React.FC<ValidationBoxManagerProps> = () => {
                   </div>
 
                   <div>
-                    <label className="block text-xs font-semibold text-slate-300 mb-1">Target Table / Collection *</label>
+                    <label className="block text-xs font-semibold text-slate-600 mb-1.5">Target Table / Collection *</label>
                     {availableTables.length > 0 ? (
                       <select
                         value={targetTable}
@@ -1289,7 +1119,7 @@ export const ValidationBoxManager: React.FC<ValidationBoxManagerProps> = () => {
                             targetColumn: targetDbId && newTbl ? globalMappingService.getPhysicalColumn(targetDbId, newTbl, p.inputField) : p.inputField
                           })));
                         }}
-                        className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-blue-500 font-mono"
+                        className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2.5 text-xs text-slate-900 focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 font-mono"
                       >
                         <option value="">-- Select Table --</option>
                         {availableTables.map((t) => (
@@ -1309,19 +1139,19 @@ export const ValidationBoxManager: React.FC<ValidationBoxManagerProps> = () => {
                           })));
                         }}
                         placeholder="e.g. auth_log, host_txns"
-                        className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-white focus:outline-none focus:border-blue-500 font-mono"
+                        className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2.5 text-xs text-slate-900 placeholder-slate-400 focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 font-mono"
                       />
                     )}
                   </div>
                 </div>
 
                 {targetDbId && targetTable && (
-                  <div className="bg-cyan-950/30 border border-cyan-800/40 rounded-lg p-2.5 flex items-center justify-between text-xs">
+                  <div className="bg-cyan-50 border border-cyan-200 rounded-xl p-2.5 flex items-center justify-between text-xs">
                     <div className="flex items-center gap-2">
-                      <Layers className="w-3.5 h-3.5 text-cyan-400" />
-                      <span className="text-slate-300">Set-Based PostgreSQL Mirror:</span>
+                      <Layers className="w-3.5 h-3.5 text-cyan-600" />
+                      <span className="text-slate-700">Set-Based PostgreSQL Mirror:</span>
                     </div>
-                    <span className="font-mono text-cyan-300 font-bold bg-cyan-950/60 px-2 py-0.5 rounded border border-cyan-700/50 text-[11px]">
+                    <span className="font-mono text-cyan-700 font-bold bg-white px-2 py-0.5 rounded border border-cyan-200 text-[11px]">
                       mirror_{(databases.find(d => d.id === targetDbId)?.name || 'db').toLowerCase().replace(/[^a-z0-9_]/g, '_')}_{targetTable.toLowerCase().replace(/[^a-z0-9_]/g, '_')}
                     </span>
                   </div>
@@ -2813,6 +2643,30 @@ export const ValidationBoxManager: React.FC<ValidationBoxManagerProps> = () => {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Visual Operational Asset Share Modal */}
+      {sharingBox && (
+        <ShareAssetModal
+          isOpen={isShareModalOpen}
+          onClose={() => {
+            setIsShareModalOpen(false);
+            setSharingBox(null);
+          }}
+          assetType="VALIDATION_BOX"
+          assetId={sharingBox.id}
+          assetTitle={sharingBox.name}
+          assetDescription={sharingBox.description}
+          previewDetails={{
+            category: sharingBox.category,
+            dbTarget: sharingBox.targetTable,
+            keys: sharingBox.searchParameters?.map((p: any) => p.inputField || p)
+          }}
+          currentUser={currentUser}
+          onShareSuccess={() => {
+            loadData();
+          }}
+        />
       )}
     </div>
   );

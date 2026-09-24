@@ -27,6 +27,15 @@ export function canAccessTab(
     case 'workspace_settings':
       return true;
 
+    // Operational Authority Center (Dual-Authorization Four-Eyes Review)
+    case 'authority_center':
+      return (
+        caps.isFullAdmin ||
+        caps.canReviewApprovals ||
+        caps.canApproveMakerActions ||
+        ['admin', 'supervisor', 'checker'].includes((user.role || '').toLowerCase())
+      );
+
     // Admin & Infrastructure Panels: requires elevated system or delegated admin capabilities
     case 'admin_panel':
       return (

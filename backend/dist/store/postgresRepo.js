@@ -378,6 +378,8 @@ export const postgresRepo = {
             uploadedFileName: r.uploaded_file_name || undefined,
             uploadedFileHeaders: parseJson(r.uploaded_file_headers, []),
             fileMapping: parseJson(r.file_mapping, {}),
+            transactionCount: r.transaction_count || 0,
+            datasetStatus: r.dataset_status || 'NONE',
             firstLevelNotes: r.first_level_notes || undefined,
             firstLevelMappedData: undefined, // Loaded on-demand via paginated task dataset!
             secondLevelNotes: r.second_level_notes || undefined,

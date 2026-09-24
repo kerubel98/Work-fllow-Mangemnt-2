@@ -111,50 +111,6 @@ export const INITIAL_PLUGINS: Plugin[] = [
 
 export const INITIAL_DBS: DatabaseConnection[] = [
   {
-    id: 'db-1',
-    name: 'Core Payment Auth DB (Prod)',
-    type: 'PostgreSQL',
-    host: 'pg-prod-auth.paymentops.internal',
-    port: 5432,
-    connectionString: 'postgresql://admin:SecretPass123!@pg-prod-auth.paymentops.internal:5432/core_payment_auth',
-    databaseName: 'core_payment_auth',
-    username: 'admin',
-    status: 'online',
-    apiEndpoint: 'https://api.paymentops.internal/db/core-auth',
-    createdByAdmin: true,
-    requiresAccessApproval: true,
-    description: 'Primary transactional ledger database storing real-time auth authorizations.',
-    systemCategory: 'CBS',
-    environmentType: 'banking',
-    lastTestedAt: new Date().toISOString(),
-    lastTestStatus: 'success',
-    pingMs: 14,
-    availableTables: [],
-    allowedTables: []
-  },
-  {
-    id: 'db-2',
-    name: 'Merchant Settlement Warehouse (Staging)',
-    type: 'Oracle',
-    host: 'ora-stage-settle.paymentops.internal',
-    port: 1521,
-    connectionString: 'oracle://settle_user:OraclePass99@ora-stage-settle.paymentops.internal:1521/ORCL_SETTLE',
-    databaseName: 'ORCL_SETTLE',
-    username: 'settle_user',
-    status: 'online',
-    apiEndpoint: 'https://api.paymentops.internal/db/settlement-stage',
-    createdByAdmin: true,
-    requiresAccessApproval: false,
-    description: 'Batch settlement and clearing warehouse environment.',
-    systemCategory: 'Switch_BE',
-    environmentType: 'switching',
-    lastTestedAt: new Date().toISOString(),
-    lastTestStatus: 'success',
-    pingMs: 28,
-    availableTables: [],
-    allowedTables: []
-  },
-  {
     id: 'db-3',
     name: 'MongoDB Operational Workflow Cluster',
     type: 'MongoDB',
@@ -172,28 +128,6 @@ export const INITIAL_DBS: DatabaseConnection[] = [
     lastTestedAt: new Date().toISOString(),
     lastTestStatus: 'success',
     pingMs: 4,
-    availableTables: [],
-    allowedTables: []
-  },
-  {
-    id: 'db-4',
-    name: 'E-Commerce Gateway DB',
-    type: 'MySQL',
-    host: 'gw-mysql-replica.prod.internal',
-    port: 3306,
-    connectionString: 'mysql://gw_user:GatewayPass2026@gw-mysql-replica.prod.internal:3306/gateway_transactions',
-    databaseName: 'gateway_transactions',
-    username: 'gw_user',
-    status: 'online',
-    apiEndpoint: 'https://api.paymentops.internal/db/gateway-db',
-    createdByAdmin: true,
-    requiresAccessApproval: false,
-    description: 'External payment gateway replica capturing web checkout sessions and merchant dispute states.',
-    systemCategory: 'Gateway',
-    environmentType: 'general',
-    lastTestedAt: new Date().toISOString(),
-    lastTestStatus: 'success',
-    pingMs: 22,
     availableTables: [],
     allowedTables: []
   }
@@ -225,6 +159,33 @@ export const INITIAL_ISSUES: Issue[] = [
         timestamp: '2026-07-24T14:32:00Z'
       }
     ]
+  },
+  {
+    id: 'ISS-102',
+    title: 'Luxury Watch transaction over-limit stuck',
+    description: 'Transaction TXN-8840 of $1250.00 shows pending state on merchant site, but user received alert of withdrawal. Need immediate first-level investigation or pending status forced decline.',
+    status: 'Open',
+    priority: 'High',
+    creatorId: 'usr-2',
+    creatorName: 'kirubel_ops',
+    createdAt: '2026-07-11T06:05:00Z',
+    type: 'single',
+    transactionId: 'TXN-8840',
+    linkedHashtag: '#STUCK_PENDING',
+    firstLevelNotes: 'Identified stuck transaction TXN-8840 for $1250.00 at LUXURY WATCH DISTRIBUTORS in PENDING status in Core Retail Banking DB.',
+    firstLevelMappedData: [
+      {
+        Transaction_ID: 'TXN-8840',
+        Card_Number: '5224********0014',
+        Amount_USD: '1250.00',
+        Currency: 'USD',
+        Merchant: 'LUXURY WATCH DISTRIBUTORS',
+        Status: 'PENDING',
+        Auth_Time: '2026-07-10T18:22:00Z',
+        DB_Origin: 'Core Retail Banking DB'
+      }
+    ],
+    chat: []
   }
 ];
 

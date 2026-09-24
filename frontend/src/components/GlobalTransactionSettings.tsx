@@ -71,7 +71,7 @@ export default function GlobalTransactionSettings({
 
   // Global Mapping Schema Model Representation
   const [schemaModel, setSchemaModel] = useState<GlobalMappingSchemaModel>(() => {
-    return globalMappingService.getSchemaModel('central_uploaded_transactions');
+    return globalMappingService.getSchemaModel('central_transaction_repository');
   });
 
   // Active Sub-Tab: 'central_model' | 'db_mappings' | 'global_standard' | 'query_tester'
@@ -204,7 +204,7 @@ export default function GlobalTransactionSettings({
         if (isMounted && cfg) {
           setMappingConfig(cfg);
           setCentralTable(globalMappingService.getCentralRepositoryTable());
-          setSchemaModel(globalMappingService.getSchemaModel('central_uploaded_transactions'));
+          setSchemaModel(globalMappingService.getSchemaModel('central_transaction_repository'));
         }
       })
       .catch(err => {
@@ -583,7 +583,7 @@ export default function GlobalTransactionSettings({
     globalMappingService.addStandardField(fieldObj, currentUser.username);
     const updatedCfg = globalMappingService.getConfig();
     const updatedTable = globalMappingService.getCentralRepositoryTable();
-    const updatedModel = globalMappingService.getSchemaModel('central_uploaded_transactions');
+    const updatedModel = globalMappingService.getSchemaModel('central_transaction_repository');
 
     setMappingConfig(updatedCfg);
     setCentralTable(updatedTable);
@@ -619,7 +619,7 @@ export default function GlobalTransactionSettings({
     if (success) {
       setMappingConfig(globalMappingService.getConfig());
       setCentralTable(globalMappingService.getCentralRepositoryTable());
-      setSchemaModel(globalMappingService.getSchemaModel('central_uploaded_transactions'));
+      setSchemaModel(globalMappingService.getSchemaModel('central_transaction_repository'));
       setSaveSuccessMsg(`Removed custom field "${key}" and synchronized Central Repository Table schema.`);
       setTimeout(() => setSaveSuccessMsg(null), 3000);
 
@@ -636,7 +636,7 @@ export default function GlobalTransactionSettings({
     const fresh = globalMappingService.resetToDefaults(currentUser.username);
     setMappingConfig(fresh);
     setCentralTable(globalMappingService.getCentralRepositoryTable());
-    setSchemaModel(globalMappingService.getSchemaModel('central_uploaded_transactions'));
+    setSchemaModel(globalMappingService.getSchemaModel('central_transaction_repository'));
     setShowResetConfirmModal(false);
     setSaveSuccessMsg('All Global Schema, Central Repository Table, and Database Mappings reset to factory App Defaults!');
     setTimeout(() => setSaveSuccessMsg(null), 5000);
@@ -654,7 +654,7 @@ export default function GlobalTransactionSettings({
       username: currentUser.username
     });
     setCentralTable(rebuilt);
-    setSchemaModel(globalMappingService.getSchemaModel('central_uploaded_transactions'));
+    setSchemaModel(globalMappingService.getSchemaModel('central_transaction_repository'));
     setSaveSuccessMsg(`Central Uploaded Transactions Repository table "${rebuilt.tableName}" rebuilt from Schema Model (${rebuilt.columns.length} columns)!`);
     setTimeout(() => setSaveSuccessMsg(null), 4000);
   };
@@ -698,7 +698,7 @@ export default function GlobalTransactionSettings({
       globalMappingService.saveConfig(parsed);
       setMappingConfig(globalMappingService.getConfig());
       setCentralTable(globalMappingService.getCentralRepositoryTable());
-      setSchemaModel(globalMappingService.getSchemaModel('central_uploaded_transactions'));
+      setSchemaModel(globalMappingService.getSchemaModel('central_transaction_repository'));
       setShowJsonModal(false);
       setSaveSuccessMsg('Successfully imported and applied Global Mapping Schema configuration!');
       setTimeout(() => setSaveSuccessMsg(null), 4000);
@@ -1123,7 +1123,7 @@ export default function GlobalTransactionSettings({
                 </span>
               </div>
               <p className="text-xs text-slate-300 max-w-4xl leading-relaxed">
-                <strong>Application Data:</strong> All users, settings, and <strong>Mapped & Uploaded Transaction Repositories</strong> (e.g. <code className="text-blue-200 font-mono">central_uploaded_transactions</code>) are stored in the Application Working Database (MongoDB on server, locally cached on desktop for maximum resource utilization).<br />
+                <strong>Application Data:</strong> All users, settings, and <strong>Mapped & Uploaded Transaction Repositories</strong> (e.g. <code className="text-blue-200 font-mono">central_transaction_repository</code>) are stored in the Application Working Database (MongoDB on server, locally cached on desktop for maximum resource utilization).<br />
                 <strong>Configured External Databases:</strong> The configured connections represent external remote banking environments (<strong>CBS</strong>) and central switching companies (<strong>Front-End Authorization Switch</strong> and <strong>Back-End Settlement Engine</strong>) that the application queries for reconciliation.
               </p>
             </div>

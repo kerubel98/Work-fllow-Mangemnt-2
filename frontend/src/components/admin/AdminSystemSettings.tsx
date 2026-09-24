@@ -25,7 +25,7 @@ export default function AdminSystemSettings({
   const [sysDesc, setSysDesc] = useState('');
   const [testDb, setTestDb] = useState('');
   const [prodDb, setProdDb] = useState('');
-  const [tables, setTables] = useState('transactions, auth_logs, merchants');
+  const [tables, setTables] = useState('');
   const [requireDml, setRequireDml] = useState(true);
 
   const handleCreateSystem = (e: React.FormEvent) => {
@@ -266,6 +266,7 @@ export default function AdminSystemSettings({
                   type="text"
                   value={tables}
                   onChange={(e) => setTables(e.target.value)}
+                  placeholder="e.g. core_transactions, settlements"
                   className="w-full text-xs p-2 bg-slate-50 border border-slate-200 rounded-lg font-mono focus:outline-none focus:ring-2 focus:ring-blue-500"
                 />
               </div>

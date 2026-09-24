@@ -1,17 +1,37 @@
-import mongoose from 'mongoose';
+// MongoDB connection stub / optional driver loader
+// Primary datastore is PostgreSQL (operational_workflow_db)
 
+let mongooseInstance: any = null;
+try {
+  // @ts-ignore
+  const m = await import('mongoose');
+  mongooseInstance = m.default || m;
+} catch {
+  // Mongoose driver is not installed; PostgreSQL is the authoritative datastore.
+}
+
+export const mongoose = mongooseInstance;
 export let isMongoConnected = false;
 export let currentMongoUri = process.env.MONGODB_URI || 'mongodb://127.0.0.1:27017/operational_workflow_db';
 export let lastConnectionError: string | null = null;
 export let lastConnectionAttempt: string | null = null;
 
 export async function connectDB(customUri?: string): Promise<{ success: boolean; message: string; uri: string; error?: string }> {
+  if (!mongoose) {
+    return {
+      success: false,
+      message: 'MongoDB driver is not installed. PostgreSQL is the active operational datastore.',
+      uri: maskMongoUri(customUri || currentMongoUri),
+      error: 'DRIVER_NOT_INSTALLED'
+    };
+  }
+
   const uriToUse = customUri || process.env.MONGODB_URI || currentMongoUri;
   currentMongoUri = uriToUse;
   lastConnectionAttempt = new Date().toISOString();
 
   try {
-    if (mongoose.connection.readyState === 1) {
+    if (mongoose.connection?.readyState === 1) {
       await mongoose.disconnect();
     }
 
@@ -34,20 +54,22 @@ export async function connectDB(customUri?: string): Promise<{ success: boolean;
     isMongoConnected = false;
     lastConnectionError = err.message || 'Unknown MongoDB connection error';
     console.warn(`⚠️ Could not connect to MongoDB instance (${lastConnectionError}).`);
-    console.warn(`ℹ️ Backend fallback: in-memory store active.`);
     return {
       success: false,
       message: `Failed to connect to MongoDB: ${lastConnectionError}`,
       uri: maskMongoUri(uriToUse),
       error: lastConnectionError || undefined
     };
-
   }
 }
 
 export async function disconnectDB(): Promise<{ success: boolean; message: string }> {
+  if (!mongoose) {
+    isMongoConnected = false;
+    return { success: true, message: 'Disconnected from MongoDB' };
+  }
   try {
-    if (mongoose.connection.readyState !== 0) {
+    if (mongoose.connection?.readyState !== 0) {
       await mongoose.disconnect();
     }
     isMongoConnected = false;
@@ -59,7 +81,25 @@ export async function disconnectDB(): Promise<{ success: boolean; message: strin
 }
 
 export async function getMongoStatus() {
-  const readyState = mongoose.connection.readyState;
+  if (!mongoose || !mongoose.connection) {
+    return {
+      isConnected: false,
+      state: 'disconnected',
+      readyState: 0,
+      databaseName: null,
+      host: null,
+      port: null,
+      currentUri: maskMongoUri(currentMongoUri),
+      rawUriConfigured: Boolean(process.env.MONGODB_URI || currentMongoUri),
+      lastAttempt: lastConnectionAttempt,
+      lastError: lastConnectionError || 'MongoDB driver not installed in PostgreSQL deployment',
+      pingMs: null,
+      collections: [],
+      modelsLoaded: []
+    };
+  }
+
+  const readyState = mongoose.connection.readyState ?? 0;
   const stateNames = ['disconnected', 'connected', 'connecting', 'disconnecting'];
   
   let pingMs: number | null = null;
@@ -73,7 +113,7 @@ export async function getMongoStatus() {
 
       const collList = await mongoose.connection.db.listCollections().toArray();
       collections = await Promise.all(
-        collList.map(async (c) => {
+        collList.map(async (c: any) => {
           try {
             const count = await mongoose.connection.db!.collection(c.name).countDocuments();
             return { name: c.name, count };
@@ -100,7 +140,7 @@ export async function getMongoStatus() {
     lastError: lastConnectionError,
     pingMs,
     collections,
-    modelsLoaded: Object.keys(mongoose.models)
+    modelsLoaded: mongoose.models ? Object.keys(mongoose.models) : []
   };
 }
 
@@ -108,4 +148,3 @@ export function maskMongoUri(uri: string): string {
   if (!uri) return '';
   return uri.replace(/(mongodb(?:\+srv)?:\/\/[^:]+:)([^@]+)(@)/, '$1******$3');
 }
-

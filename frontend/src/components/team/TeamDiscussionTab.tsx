@@ -1,27 +1,60 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Team, TeamDiscussionMessage, User } from '../../types';
+import { Team, TeamDiscussionMessage, User, Issue } from '../../types';
 import { 
   MessageSquare, Send, Pin, Tag, Sparkles, 
-  CornerDownRight, CheckCheck, Smile
+  CornerDownRight, CheckCheck, Smile, ShieldAlert, ChevronDown
 } from 'lucide-react';
 import { NoDiscussionEmptyState } from './TeamEmptyStates';
+import { EscalationRoomModal } from './EscalationRoomModal';
+import { api } from '../../api/client';
 
 interface TeamDiscussionTabProps {
   currentTeam: Team;
   messages: TeamDiscussionMessage[];
   currentUser: User;
   onSendMessage: (msg: Omit<TeamDiscussionMessage, 'id' | 'timestamp'>) => void;
+  availableTeams?: Team[];
 }
 
 export const TeamDiscussionTab: React.FC<TeamDiscussionTabProps> = ({
   currentTeam,
   messages = [],
   currentUser,
-  onSendMessage
+  onSendMessage,
+  availableTeams = []
 }) => {
   const safeMessages = Array.isArray(messages) ? messages : [];
   const [inputText, setInputText] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // Escalation Room State
+  const [showEscalationModal, setShowEscalationModal] = useState(false);
+  const [issuesList, setIssuesList] = useState<Issue[]>([]);
+  const [selectedIssue, setSelectedIssue] = useState<Issue | null>(null);
+  const [isLoadingIssues, setIsLoadingIssues] = useState(false);
+
+  // Load active issues when user opens escalation selector
+  useEffect(() => {
+    let isMounted = true;
+    const fetchIssues = async () => {
+      try {
+        setIsLoadingIssues(true);
+        const data = await api.getIssues(undefined, 'all');
+        if (isMounted && Array.isArray(data)) {
+          setIssuesList(data);
+          if (data.length > 0 && !selectedIssue) {
+            setSelectedIssue(data[0]);
+          }
+        }
+      } catch (err) {
+        console.error('Failed to fetch issues for escalation room:', err);
+      } finally {
+        if (isMounted) setIsLoadingIssues(false);
+      }
+    };
+    fetchIssues();
+    return () => { isMounted = false; };
+  }, []);
 
   // Auto-scroll to bottom on new messages
   useEffect(() => {
@@ -51,7 +84,7 @@ export const TeamDiscussionTab: React.FC<TeamDiscussionTabProps> = ({
   return (
     <div className="flex flex-col h-[calc(100vh-14rem)] min-h-[480px] bg-slate-50/50 border border-slate-200/90 rounded-2xl overflow-hidden font-sans shadow-xs" id="team-discussion-tab">
       {/* Discussion Header */}
-      <div className="bg-white border-b border-slate-200/90 px-4 py-3 flex items-center justify-between">
+      <div className="bg-white border-b border-slate-200/90 px-4 py-3 flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center space-x-2.5">
           <div className="w-8 h-8 rounded-xl bg-purple-50 text-purple-600 flex items-center justify-center font-bold">
             <MessageSquare size={16} />
@@ -64,9 +97,23 @@ export const TeamDiscussionTab: React.FC<TeamDiscussionTabProps> = ({
           </div>
         </div>
 
-        <span className="text-xs font-mono font-bold text-slate-500 px-2.5 py-1 bg-white border border-slate-200 rounded-lg">
-          {safeMessages.length} messages
-        </span>
+        <div className="flex items-center space-x-2">
+          {issuesList.length > 0 && (
+            <button
+              onClick={() => setShowEscalationModal(true)}
+              className="px-3 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-xl text-xs font-mono font-bold flex items-center space-x-1.5 transition-colors cursor-pointer shadow-2xs"
+              title="Open Incident Escalation Room for structured command resolution"
+              id="btn-open-escalation-room"
+            >
+              <ShieldAlert size={14} className="text-rose-600" />
+              <span>Escalation Room ({selectedIssue?.key || 'Active'})</span>
+            </button>
+          )}
+
+          <span className="text-xs font-mono font-bold text-slate-500 px-2.5 py-1 bg-white border border-slate-200 rounded-lg">
+            {safeMessages.length} messages
+          </span>
+        </div>
       </div>
 
       {/* Message Stream */}
@@ -140,6 +187,23 @@ export const TeamDiscussionTab: React.FC<TeamDiscussionTabProps> = ({
           <span>Send</span>
         </button>
       </form>
+
+      {/* Incident Escalation Room Modal */}
+      {showEscalationModal && selectedIssue && (
+        <EscalationRoomModal
+          isOpen={showEscalationModal}
+          onClose={() => setShowEscalationModal(false)}
+          issue={selectedIssue}
+          currentUser={currentUser}
+          currentTeam={currentTeam}
+          availableTeams={availableTeams}
+          onIssueUpdated={(updated) => {
+            setSelectedIssue(updated);
+            setIssuesList(prev => prev.map(i => i.id === updated.id ? updated : i));
+          }}
+        />
+      )}
     </div>
   );
 };
+

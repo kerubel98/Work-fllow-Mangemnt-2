@@ -35,13 +35,15 @@ import {
   AlignVerticalJustifyCenter,
   Edit2,
   Square,
-  AlertCircle,
   SlidersHorizontal,
-  Users
+  Users,
+  Share2
 } from 'lucide-react';
 import { api } from '../../api/client';
 import { globalMappingService } from '../../services/globalMappingService';
 import { showSystemAlert } from '../common/MessageModal';
+import { ShareAssetModal } from '../common/ShareAssetModal';
+import { AssetStatusBadge } from '../common/AssetStatusBadge';
 import {
   ValidationBox,
   DatabaseValidationWorkflow,
@@ -75,6 +77,7 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
   const [isSaving, setIsSaving] = useState(false);
   const [saveSuccessMsg, setSaveSuccessMsg] = useState('');
   const [extraCanvasHeight, setExtraCanvasHeight] = useState<number>(600);
+  const [showShareModal, setShowShareModal] = useState<boolean>(false);
   
   // Message Aggregation Rules State
   const [messageAggregations, setMessageAggregations] = useState<WorkflowMessageAggregationRule[]>([]);
@@ -112,6 +115,10 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
   const [canvasZoom, setCanvasZoom] = useState(1);
   const [paletteSearch, setPaletteSearch] = useState('');
   const [savedSnapshot, setSavedSnapshot] = useState<string>('');
+  const [workflowViewMode, setWorkflowViewMode] = useState<'DAG' | 'LIST'>('DAG');
+  const [leftPanelCollapsed, setLeftPanelCollapsed] = useState(false);
+  const [rightPanelCollapsed, setRightPanelCollapsed] = useState(true);
+  const [canvasTheme, setCanvasTheme] = useState<'dark' | 'light'>('dark');
 
   const canvasRef = useRef<HTMLDivElement>(null);
 
@@ -251,6 +258,10 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
     };
   }, [nodes, extraCanvasHeight]);
 
+  const orderedNodes = React.useMemo(() => {
+    return [...nodes].sort((a, b) => (a.y ?? 0) - (b.y ?? 0) || (a.x ?? 0) - (b.x ?? 0));
+  }, [nodes]);
+
   const selectWorkflow = (wf: DatabaseValidationWorkflow, availableBoxes?: ValidationBox[]) => {
     if (!wf) return;
     const boxesToUse = (availableBoxes || validationBoxes || []).filter(Boolean);
@@ -326,7 +337,11 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
           (stage.ruleBlockIds && Array.isArray(stage.ruleBlockIds) && stage.ruleBlockIds.includes(b.id)) || 
           (b.targetTable && stage.targetDataSource && b.targetTable === stage.targetDataSource)
         )) : [];
-        const box = safeBoxes.find(b => b && (b.id === (step as any)?.boxId || b.id === step?.id)) || stageBoxes[0] || (safeBoxes.length > 0 ? safeBoxes[sIdx % safeBoxes.length] : undefined);
+        const box = safeBoxes.find(b => b && (
+          b.id === (step as any)?.boxId || 
+          b.id === step?.id || 
+          (b.name && step?.name && b.name.trim().toLowerCase() === step.name.trim().toLowerCase())
+        )) || stageBoxes[0] || (safeBoxes.length > 0 ? safeBoxes[sIdx % safeBoxes.length] : undefined);
 
         const nodeId = `node-step-${step?.id || sIdx + 1}`;
         newNodes.push({
@@ -951,6 +966,7 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
 
     setSelectedNode(node);
     setSelectedConnection(null);
+    setRightPanelCollapsed(false);
 
     const rect = canvasRef.current.getBoundingClientRect();
     const scrollLeft = canvasRef.current.scrollLeft || 0;
@@ -1048,12 +1064,14 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
 
     // Open connection inspector to allow user to configure CONTINUE / STOP / REPORT
     setSelectedConnection(newConn);
+    setRightPanelCollapsed(false);
   };
 
   const handleDeleteConnection = (connId: string) => {
     setConnections(prev => prev.filter(c => c.id !== connId));
     if (selectedConnection?.id === connId) {
       setSelectedConnection(null);
+      setRightPanelCollapsed(true);
     }
   };
 
@@ -1062,6 +1080,7 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
     setConnections(prev => prev.filter(c => c.fromNodeId !== nodeId && c.toNodeId !== nodeId));
     if (selectedNode?.id === nodeId) {
       setSelectedNode(null);
+      setRightPanelCollapsed(true);
     }
   };
 
@@ -1142,6 +1161,53 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
       // Synchronize flowchart nodes into structured stages and steps for execution
       const validNodes = (nodes || []).filter(Boolean);
       const validationNodes = validNodes.filter(n => n && (n.type === 'VALIDATION_BOX' || n.type === 'RECONCILIATION' || n.type === 'REPORT'));
+      const safeBoxes = (validationBoxes || []).filter(Boolean);
+
+      // Pre-save topology & configuration checks (Risk 2 Hardening)
+      const nonTerminalNodes = validNodes.filter(n => n.type !== 'START' && n.type !== 'END');
+      if (nonTerminalNodes.length > 0) {
+        // 1. Check for external DB nodes without search parameters
+        for (const vNode of validationNodes) {
+          const box = safeBoxes.find(b => b && (
+            b.id === vNode.boxId || 
+            (b.name && vNode.name && b.name.trim().toLowerCase() === vNode.name.trim().toLowerCase())
+          ));
+          const hasTargetDb = Boolean(vNode.targetTable || box?.targetTable);
+          const hasSearchParams = Boolean(
+            (Array.isArray(box?.searchParameters) && box.searchParameters.length > 0) ||
+            (Array.isArray((vNode as any).searchParameters) && (vNode as any).searchParameters.length > 0) ||
+            (Array.isArray(box?.checkStep?.requiredParams) && box.checkStep.requiredParams.length > 0)
+          );
+          if (hasTargetDb && !hasSearchParams) {
+            showSystemAlert({
+              title: 'Validation Block Search Parameters Missing',
+              message: `Validation node "${vNode.name || vNode.id}" targets table "${vNode.targetTable || box?.targetTable}", but has no search parameters defined for database matching. Please configure search parameters in the node or Validation Box to prevent incorrect cross-record matching.`,
+              type: 'warning'
+            });
+            setIsSaving(false);
+            return;
+          }
+        }
+
+        // 2. Disconnected node check (if multiple nodes exist)
+        if (validNodes.length > 2) {
+          const connectedNodeIds = new Set<string>();
+          (connections || []).forEach(c => {
+            if (c.fromNodeId) connectedNodeIds.add(c.fromNodeId);
+            if (c.toNodeId) connectedNodeIds.add(c.toNodeId);
+          });
+          const disconnected = nonTerminalNodes.find(n => !connectedNodeIds.has(n.id));
+          if (disconnected) {
+            showSystemAlert({
+              title: 'Disconnected Node Detected',
+              message: `Node "${disconnected.name || disconnected.id}" is not connected to the pipeline flowchart. Connect all stages before saving to prevent unreachable validation paths.`,
+              type: 'warning'
+            });
+            setIsSaving(false);
+            return;
+          }
+        }
+      }
 
       const stages: ProcessingStage[] = validationNodes.map((n, idx) => ({
         id: `stage-${n.id || idx + 1}`,
@@ -1149,16 +1215,17 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
         description: String(n.description || ''),
         order: idx + 1,
         enabled: true,
-        targetDbId: String(n.targetDbId || 'db-1'),
+        targetDbId: String(n.targetDbId || ''),
         targetDataSource: String(n.targetTable || 'transactions'),
         businessMeaning: String(n.category || 'Validation Stage'),
         ruleBlockIds: n.boxId ? [String(n.boxId)] : []
       }));
 
-      const safeBoxes = (validationBoxes || []).filter(Boolean);
-
       const steps: ValidationCheckStep[] = validationNodes.map((n, idx) => {
-        const box = safeBoxes.find(b => b && b.id === n.boxId);
+        const box = safeBoxes.find(b => b && (
+          b.id === n.boxId || 
+          (b.name && n.name && b.name.trim().toLowerCase() === n.name.trim().toLowerCase())
+        ));
         let checkType: any = 'EXISTENCE_CHECK';
         const dsc = box?.dualSourceCondition || box?.checkStep?.dualSourceCondition;
 
@@ -1172,16 +1239,18 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
           checkType = box?.checkStep?.checkType || 'FIELD_COMPARATOR';
         }
 
-        // Derive sourceField and targetField dynamically from the user's configuration
-        // (searchParameters, requiredParams, dualSourceCondition, or explicit checkStep fields)
-        // NEVER hardcode fallback to 'transaction_id'.
-        const firstSearchParam = (box?.boxType === 'INGESTION_SEARCH' && Array.isArray(box.searchParameters) && box.searchParameters.length > 0)
-          ? box.searchParameters[0]
-          : null;
+        // Search parameters: Check box.searchParameters or node searchParameters regardless of boxType
+        const rawSearchParams = (Array.isArray(box?.searchParameters) && box.searchParameters.length > 0)
+          ? box.searchParameters
+          : ((n as any).searchParameters && Array.isArray((n as any).searchParameters) ? (n as any).searchParameters : []);
+
+        const firstSearchParam = rawSearchParams.length > 0 ? rawSearchParams[0] : null;
         const firstReqParam = (box?.checkStep?.requiredParams && box.checkStep.requiredParams.length > 0)
           ? box.checkStep.requiredParams[0]
           : null;
 
+        // Strict decoupling: sourceField and targetField define what is evaluated on the record;
+        // searchParameters define how records are queried in the external DB.
         const srcField = dsc?.sourceA?.field ||
           box?.checkStep?.sourceField ||
           box?.checkStep?.canonicalField ||
@@ -1211,7 +1280,7 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
           checkType,
           dualSourceCondition: dsc ? JSON.parse(JSON.stringify(dsc)) : undefined,
           toleranceMargin: Number(dsc?.toleranceMargin ?? box?.checkStep?.toleranceMargin ?? box?.checkStep?.tolerance ?? 0.00),
-          targetDbId: String(n.targetDbId || box?.targetDbId || 'db-1'),
+          targetDbId: String(n.targetDbId || box?.targetDbId || ''),
           targetTable: String(n.targetTable || box?.targetTable || 'transactions'),
           sourceField: String(srcField),
           targetField: String(tgtField),
@@ -1229,10 +1298,10 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
           reportField: (n.reportField || box?.checkStep?.sourceField) ? String(n.reportField || box?.checkStep?.sourceField) : undefined,
           dependencyCondition: (idx === 0 || (idx > 0 && validationNodes[idx - 1]?.onFailAction === 'CONTINUE')) ? 'ALWAYS' : 'IF_PREV_SUCCESS',
           requiredParams: (() => {
-            if (box?.boxType === 'INGESTION_SEARCH' && Array.isArray(box.searchParameters)) {
-              const spReqs = box.searchParameters
-                .filter(p => p.required !== false)
-                .map(p => p.inputField || p.targetColumn)
+            if (rawSearchParams.length > 0) {
+              const spReqs = rawSearchParams
+                .filter((p: any) => p && p.required !== false)
+                .map((p: any) => p.inputField || p.targetColumn)
                 .filter(Boolean)
                 .map(String);
               if (spReqs.length > 0) return spReqs;
@@ -1248,29 +1317,38 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
             }
             return (srcField ? [String(srcField)] : []);
           })(),
-          searchParameters: box?.searchParameters ? JSON.parse(JSON.stringify(box.searchParameters)) : undefined
+          searchParameters: rawSearchParams.length > 0 ? JSON.parse(JSON.stringify(rawSearchParams)) : undefined
         };
       });
 
-      // Strict sanitization: Strip non-serializable properties and break any circular references
-      const cleanNodes: FlowchartNode[] = validNodes.map((n, idx) => ({
-        id: String(n.id || `node-${idx + 1}`),
-        type: n.type,
-        boxId: n.boxId ? String(n.boxId) : undefined,
-        name: String(n.name || ''),
-        description: String(n.description || ''),
-        category: n.category ? String(n.category) : undefined,
-        x: Math.round(Number(n.x) || 0),
-        y: Math.round(Number(n.y) || 0),
-        targetDbId: n.targetDbId ? String(n.targetDbId) : undefined,
-        targetTable: n.targetTable ? String(n.targetTable) : undefined,
-        columnConfigurationIds: n.columnConfigurationIds || validationBoxes.find(b => b.id === n.boxId)?.columnConfigurationIds || [],
-        columnConfigurations: n.columnConfigurations || validationBoxes.find(b => b.id === n.boxId)?.columnConfigurations || [],
-        onPassAction: n.onPassAction || 'CONTINUE',
-        onFailAction: n.onFailAction || 'STOP',
-        reportColumnName: n.reportColumnName ? String(n.reportColumnName) : undefined,
-        reportField: n.reportField ? String(n.reportField) : undefined
-      }));
+      // Strict sanitization: Strip non-serializable properties and preserve boxId and searchParameters
+      const cleanNodes: FlowchartNode[] = validNodes.map((n, idx) => {
+        const box = safeBoxes.find(b => b && (
+          b.id === n.boxId || 
+          (b.name && n.name && b.name.trim().toLowerCase() === n.name.trim().toLowerCase())
+        ));
+        return {
+          id: String(n.id || `node-${idx + 1}`),
+          type: n.type,
+          boxId: n.boxId ? String(n.boxId) : (box?.id ? String(box.id) : undefined),
+          name: String(n.name || ''),
+          description: String(n.description || ''),
+          category: n.category ? String(n.category) : undefined,
+          x: Math.round(Number(n.x) || 0),
+          y: Math.round(Number(n.y) || 0),
+          targetDbId: n.targetDbId ? String(n.targetDbId) : (box?.targetDbId ? String(box.targetDbId) : undefined),
+          targetTable: n.targetTable ? String(n.targetTable) : (box?.targetTable ? String(box.targetTable) : undefined),
+          columnConfigurationIds: n.columnConfigurationIds || box?.columnConfigurationIds || [],
+          columnConfigurations: n.columnConfigurations || box?.columnConfigurations || [],
+          onPassAction: n.onPassAction || 'CONTINUE',
+          onFailAction: n.onFailAction || 'STOP',
+          reportColumnName: n.reportColumnName ? String(n.reportColumnName) : undefined,
+          reportField: n.reportField ? String(n.reportField) : undefined,
+          searchParameters: (n as any).searchParameters || box?.searchParameters,
+          sourceField: (n as any).sourceField || box?.checkStep?.sourceField,
+          targetField: (n as any).targetField || box?.checkStep?.targetField
+        } as any;
+      });
 
       const cleanConnections: FlowchartConnection[] = (connections || []).filter(Boolean).map((c, idx) => ({
         id: String(c.id || `conn-${idx + 1}`),
@@ -1390,8 +1468,15 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
     (b.targetTable && b.targetTable.toLowerCase().includes(paletteSearch.toLowerCase()))
   );
 
+  const canvasSurfaceClasses = canvasTheme === 'dark'
+    ? 'bg-[#060A14] border-slate-800'
+    : 'bg-slate-100 border-slate-200';
+  const canvasGridClasses = canvasTheme === 'dark'
+    ? 'bg-[radial-gradient(#334155_1px,transparent_1px)]'
+    : 'bg-[radial-gradient(#cbd5e1_1px,transparent_1px)]';
+
   return (
-    <div className="space-y-4">
+    <div className="space-y-3">
       {/* Consolidated Workflow Navigation & Controls Card */}
       <div className="bg-white border border-slate-200/90 rounded-2xl p-3 sm:p-3.5 text-slate-800 shadow-xs space-y-2.5" id="workflow-studio-header">
         <div className="flex flex-wrap items-center justify-between gap-2.5">
@@ -1429,9 +1514,16 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
             <span className="text-[10px] font-mono text-slate-500 bg-slate-100 px-2 py-0.5 rounded border border-slate-200 whitespace-nowrap">
               #{activeWorkflow?.teamId || currentUser?.teamId || 'team-cards'}
             </span>
+
+            {/* Live Status Badge */}
+            <AssetStatusBadge
+              status={(activeWorkflow as any)?.status || 'DRAFT'}
+              isLocked={Boolean((activeWorkflow as any)?.is_locked)}
+              approvedByName={(activeWorkflow as any)?.approved_by_user_name}
+            />
           </div>
 
-          {/* Actions: Save & Delete */}
+          {/* Actions: Save, Share & Delete */}
           <div className="flex items-center gap-2 shrink-0">
             {hasUnsavedChanges && (
               <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-amber-500/15 text-amber-600 border border-amber-500/30 flex items-center gap-1.5 shadow-2xs">
@@ -1453,6 +1545,18 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
               <Save size={13} />
               <span>{isSaving ? 'Saving...' : 'Save Flowchart'}</span>
             </button>
+
+            {activeWorkflow && (
+              <button
+                type="button"
+                onClick={() => setShowShareModal(true)}
+                className="px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-lg text-xs font-semibold flex items-center gap-1.5 cursor-pointer shadow-xs transition"
+                title={`Share workflow "${activeWorkflow.name}"`}
+              >
+                <Share2 size={13} className="text-blue-600" />
+                <span>Share</span>
+              </button>
+            )}
 
             {activeWorkflow && (
               <button
@@ -1488,28 +1592,31 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
       </div>
 
       {/* Main Studio Area: 3-Pane Power-User Architecture */}
-      <div className="flex flex-col xl:flex-row gap-0 bg-slate-950 rounded-2xl border border-slate-800 overflow-hidden min-h-[780px] shadow-2xl items-stretch">
-        {/* Left Pane: Palette of Workflows, Templates & Validation Blocks */}
-        <WorkflowPalette
-          workflows={workflows}
-          activeWorkflow={activeWorkflow}
-          onSelectWorkflow={(wf) => selectWorkflow(wf)}
-          onNewWorkflow={handleNewWorkflow}
-          validationBoxes={validationBoxes}
-          onAddTerminalNode={handleAddTerminalNode}
-          onAddBoxNode={handleAddBoxNode}
-          onApplyTemplate={handleApplyTemplate}
-          onOpenAggregators={() => {
-            setShowAggregatorModal(true);
-            resetRuleForm(aggregatorTab);
-          }}
-          aggregationsCount={messageAggregations.length}
-        />
+      <div className="flex flex-col xl:flex-row gap-0 bg-slate-950 rounded-2xl border border-slate-800 overflow-hidden min-h-[900px] shadow-2xl items-stretch">
+        {!leftPanelCollapsed && (
+          <div className="shrink-0">
+            <WorkflowPalette
+              workflows={workflows}
+              activeWorkflow={activeWorkflow}
+              onSelectWorkflow={(wf) => selectWorkflow(wf)}
+              onNewWorkflow={handleNewWorkflow}
+              validationBoxes={validationBoxes}
+              onAddTerminalNode={handleAddTerminalNode}
+              onAddBoxNode={handleAddBoxNode}
+              onApplyTemplate={handleApplyTemplate}
+              onOpenAggregators={() => {
+                setShowAggregatorModal(true);
+                resetRuleForm(aggregatorTab);
+              }}
+              aggregationsCount={messageAggregations.length}
+            />
+          </div>
+        )}
 
         {/* Center: Interactive Vertical Flowchart Canvas */}
-        <div className="flex-1 w-full bg-[#060A14] flex flex-col h-[820px] max-h-[85vh] min-w-0 border-r border-slate-800">
+        <div className={`relative flex-1 w-full ${canvasSurfaceClasses} flex flex-col h-[860px] max-h-[88vh] min-w-0 border ${!rightPanelCollapsed ? 'border-r border-slate-800' : 'border-slate-800'} ${canvasTheme === 'light' ? 'shadow-inner' : ''}`}>
           {/* Pre-Flight Validation Topology Bar */}
-          <div className="p-2.5 bg-slate-950/90 border-b border-slate-800">
+          <div className={`p-2.5 border-b ${canvasTheme === 'dark' ? 'bg-slate-950/90 border-slate-800' : 'bg-slate-50 border-slate-200'}`}>
             <WorkflowValidationSummary nodes={nodes} connections={connections} />
           </div>
 
@@ -1527,6 +1634,49 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
             </div>
 
             <div className="flex items-center gap-2">
+              <div className="inline-flex items-center rounded-lg border border-slate-700 bg-slate-900 p-0.5">
+                {(['DAG', 'LIST'] as const).map(mode => (
+                  <button
+                    key={mode}
+                    type="button"
+                    onClick={() => setWorkflowViewMode(mode)}
+                    className={`px-2.5 py-1 rounded-md text-[10px] font-bold transition ${workflowViewMode === mode ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-400 hover:text-white'}`}
+                  >
+                    {mode === 'DAG' ? 'DAG View' : 'List View'}
+                  </button>
+                ))}
+              </div>
+              <div className="inline-flex items-center rounded-lg border border-slate-700 bg-slate-900 p-0.5">
+                {(['dark', 'light'] as const).map(theme => (
+                  <button
+                    key={theme}
+                    type="button"
+                    onClick={() => setCanvasTheme(theme)}
+                    className={`px-2 py-1 rounded-md text-[10px] font-bold transition ${canvasTheme === theme ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-400 hover:text-white'}`}
+                    title={`Set canvas to ${theme === 'dark' ? 'dark' : 'light'} mode`}
+                  >
+                    {theme === 'dark' ? 'Dark' : 'Light'}
+                  </button>
+                ))}
+              </div>
+              <button
+                type="button"
+                onClick={() => setLeftPanelCollapsed(v => !v)}
+                className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 rounded text-xs flex items-center gap-1.5 cursor-pointer transition shadow-xs"
+                title={leftPanelCollapsed ? 'Show left panel' : 'Hide left panel'}
+              >
+                <Layers size={12} className="text-sky-400" />
+                <span>{leftPanelCollapsed ? 'Show Left' : 'Hide Left'}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setRightPanelCollapsed(v => !v)}
+                className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 rounded text-xs flex items-center gap-1.5 cursor-pointer transition shadow-xs"
+                title={rightPanelCollapsed ? 'Show right panel' : 'Hide right panel'}
+              >
+                <SlidersHorizontal size={12} className="text-violet-400" />
+                <span>{rightPanelCollapsed ? 'Show Right' : 'Hide Right'}</span>
+              </button>
               <button
                 type="button"
                 onClick={handleAutoAlignVertical}
@@ -1574,228 +1724,461 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
             </div>
           </div>
 
-          {/* SVG Connection Layer & Node Container with Infinite Scroll */}
-          <div
-            ref={canvasRef}
-            onMouseMove={handleCanvasMouseMove}
-            onMouseUp={handleCanvasMouseUp}
-            className="relative flex-1 bg-[radial-gradient(#334155_1px,transparent_1px)] [background-size:20px_20px] bg-slate-900 select-none overflow-auto p-6"
-            style={{ minHeight: '600px' }}
-          >
-            {/* Inner Sizing Wrapper: explicitly dictates scrollable width/height so scrolling is limitless */}
-            <div
-              style={{
-                width: `${canvasDimensions.width}px`,
-                height: `${canvasDimensions.height}px`,
-                position: 'relative'
-              }}
-            >
-              {/* SVG Wire Lines Layer for Vertical Bezier Curves */}
-              <svg 
-                className="absolute inset-0 pointer-events-none z-0 overflow-visible" 
-                style={{ width: `${canvasDimensions.width}px`, height: `${canvasDimensions.height}px` }}
-              >
-              <defs>
-                <marker id="arrow-emerald" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
-                  <path d="M 0 0 L 10 5 L 0 10 z" fill="#10b981" />
-                </marker>
-                <marker id="arrow-rose" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
-                  <path d="M 0 0 L 10 5 L 0 10 z" fill="#f43f5e" />
-                </marker>
-                <marker id="arrow-purple" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
-                  <path d="M 0 0 L 10 5 L 0 10 z" fill="#a855f7" />
-                </marker>
-                <marker id="arrow-blue" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
-                  <path d="M 0 0 L 10 5 L 0 10 z" fill="#38bdf8" />
-                </marker>
-              </defs>
-
-              {/* Render Existing Vertical Connections */}
-              {connections.map(conn => {
-                const fromPoint = getNodeCenter(conn.fromNodeId, conn.fromPort);
-                const toPoint = getNodeCenter(conn.toNodeId, 'input');
-
-                // Vertical Bezier curve: smoothly curves downwards from fromPoint to toPoint
-                const dy = Math.max(50, Math.abs(toPoint.y - fromPoint.y) * 0.5);
-                const path = `M ${fromPoint.x} ${fromPoint.y} C ${fromPoint.x} ${fromPoint.y + dy}, ${toPoint.x} ${toPoint.y - dy}, ${toPoint.x} ${toPoint.y}`;
-
-                const midX = (fromPoint.x + toPoint.x) / 2;
-                const midY = (fromPoint.y + toPoint.y) / 2;
-
-                const isReport = conn.action === 'REPORT';
-                const isStop = conn.action === 'STOP';
-                const strokeColor = isReport ? '#a855f7' : isStop ? '#f43f5e' : '#10b981';
-                const markerId = isReport ? 'url(#arrow-purple)' : isStop ? 'url(#arrow-rose)' : 'url(#arrow-emerald)';
-
-                return (
-                  <g key={conn.id} className="pointer-events-auto cursor-pointer group" onClick={() => {
-                    setSelectedConnection(conn);
-                    setSelectedNode(null);
-                  }}>
-                    {/* Background hit area for easier clicking */}
-                    <path
-                      d={path}
-                      fill="none"
-                      stroke="transparent"
-                      strokeWidth="18"
-                    />
-                    {/* Visible Vertical Wire Line */}
-                    <path
-                      d={path}
-                      fill="none"
-                      stroke={strokeColor}
-                      strokeWidth={isReport ? '3' : '2.5'}
-                      strokeDasharray={isReport ? '5 3' : 'none'}
-                      markerEnd={markerId}
-                      className="group-hover:stroke-white transition"
-                    />
-                    {/* Action badge on wire */}
-                    <foreignObject x={midX - 48} y={midY - 14} width="96" height="28">
-                      <div className={`px-2 py-0.5 rounded text-[10px] font-bold font-mono text-center shadow-md border truncate ${
-                        isReport ? 'bg-purple-950 text-purple-200 border-purple-400' :
-                        isStop ? 'bg-rose-950 text-rose-200 border-rose-500' :
-                        'bg-emerald-950 text-emerald-200 border-emerald-500'
-                      }`}>
-                        {conn.label || conn.action}
-                      </div>
-                    </foreignObject>
-                  </g>
-                );
-              })}
-
-              {/* In-Progress Drawn Wire (Vertical flow) */}
-              {wireSource && (
-                <path
-                  d={`M ${wireSource.startX} ${wireSource.startY} C ${wireSource.startX} ${wireSource.startY + 50}, ${mousePos.x} ${mousePos.y - 50}, ${mousePos.x} ${mousePos.y}`}
-                  fill="none"
-                  stroke="#38bdf8"
-                  strokeWidth="2.5"
-                  strokeDasharray="5 3"
-                  markerEnd="url(#arrow-blue)"
-                />
-              )}
-            </svg>
-
-            {nodes.length === 0 && (
-              <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-auto">
-                <div className="bg-slate-800/90 border border-slate-700 rounded-2xl p-8 max-w-md text-center shadow-2xl backdrop-blur-xs">
-                  <div className="w-12 h-12 rounded-xl bg-slate-700/80 text-emerald-400 flex items-center justify-center mx-auto mb-3">
-                    <GitFork size={24} />
+          {workflowViewMode === 'LIST' ? (
+            <div className="relative flex-1 bg-slate-900 select-none overflow-auto p-6">
+              <div className="max-w-5xl mx-auto space-y-4">
+                <div className="rounded-2xl border border-slate-800 bg-slate-950/80 shadow-xl">
+                  <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800">
+                    <div>
+                      <h3 className="text-sm font-semibold text-white">Workflow Overview</h3>
+                      <p className="text-[11px] text-slate-400">Operational sequence with pass / fail routing.</p>
+                    </div>
+                    <span className="px-2 py-1 rounded-full border border-slate-700 bg-slate-900 text-[10px] font-mono text-slate-300">
+                      {orderedNodes.length} Steps
+                    </span>
                   </div>
-                  <h3 className="text-sm font-bold text-white mb-1">No Flowchart Pipeline Configured</h3>
-                  <p className="text-xs text-slate-400 mb-5">
-                    There are no active flowchart workflows. Create a new pipeline or drag blocks from the left palette to begin.
-                  </p>
-                  <button
-                    type="button"
-                    onClick={handleCreateNewFlowchart}
-                    className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-lg shadow-sm transition inline-flex items-center gap-2 cursor-pointer"
-                  >
-                    <Plus size={14} />
-                    <span>Create New Flowchart Pipeline</span>
-                  </button>
+
+                  <div className="divide-y divide-slate-800">
+                    {orderedNodes.length === 0 ? (
+                      <div className="p-10 text-center text-slate-400 text-xs">
+                        No workflow steps yet. Add a node from the left palette to start the pipeline.
+                      </div>
+                    ) : (
+                      orderedNodes.map((node, index) => {
+                        const typeLabel = node.type === 'START' ? 'Start' : node.type === 'END' ? 'End' : node.type === 'VALIDATION_BOX' ? 'Validation' : node.type === 'RECONCILIATION' ? 'Reconciliation' : node.type === 'REPORT' ? 'Report' : 'Decision';
+                        const outputSummary = `${node.onPassAction || 'CONTINUE'} / ${node.onFailAction || 'STOP'}`;
+
+                        return (
+                          <button
+                            key={node.id}
+                            type="button"
+                            onClick={() => {
+                              setSelectedNode(node);
+                              setSelectedConnection(null);
+                            }}
+                            className="w-full text-left px-4 py-3 transition hover:bg-slate-900/80"
+                          >
+                            <div className="flex items-center gap-4">
+                              <div className="w-8 h-8 rounded-lg border border-slate-700 bg-slate-900 text-[10px] font-bold text-slate-300 flex items-center justify-center">{index + 1}</div>
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center gap-2 flex-wrap">
+                                  <span className="text-sm font-semibold text-white truncate">{node.name}</span>
+                                  <span className="px-2 py-0.5 rounded bg-slate-800 border border-slate-700 text-[10px] font-mono text-slate-300">{typeLabel}</span>
+                                </div>
+                                <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-slate-400">
+                                  {node.targetTable && <span className="font-mono text-emerald-300">{node.targetTable}</span>}
+                                  {(node.columnConfigurationIds?.length || node.columnConfigurations?.length) ? (
+                                    <span className="px-1.5 py-0.5 rounded border border-emerald-500/40 bg-emerald-950/60 text-emerald-300 text-[10px] font-mono">
+                                      {node.columnConfigurationIds?.length || node.columnConfigurations?.length} rules
+                                    </span>
+                                  ) : null}
+                                  {node.reportColumnName && (
+                                    <span className="px-1.5 py-0.5 rounded border border-violet-500/40 bg-violet-950/60 text-violet-300 text-[10px] font-mono">
+                                      Col: {node.reportColumnName}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                              <div className="text-right">
+                                <div className="text-[10px] font-mono text-slate-400">Output</div>
+                                <div className="mt-1 text-[10px] font-bold text-slate-200">{outputSummary}</div>
+                              </div>
+                            </div>
+                          </button>
+                        );
+                      })
+                    )}
+                  </div>
                 </div>
               </div>
-            )}
+            </div>
+          ) : (
+            <div
+              ref={canvasRef}
+              onMouseMove={handleCanvasMouseMove}
+              onMouseUp={handleCanvasMouseUp}
+              className={`relative flex-1 ${canvasGridClasses} [background-size:20px_20px] select-none overflow-auto p-6 ${canvasTheme === 'dark' ? 'bg-slate-900' : 'bg-slate-100'}`}
+              style={{ minHeight: '600px' }}
+            >
+              {/* Inner Sizing Wrapper: explicitly dictates scrollable width/height so scrolling is limitless */}
+              <div
+                style={{
+                  width: `${canvasDimensions.width}px`,
+                  height: `${canvasDimensions.height}px`,
+                  position: 'relative'
+                }}
+              >
+                {/* SVG Wire Lines Layer for Vertical Bezier Curves */}
+                <svg 
+                  className="absolute inset-0 pointer-events-none z-0 overflow-visible" 
+                  style={{ width: `${canvasDimensions.width}px`, height: `${canvasDimensions.height}px` }}
+                >
+                <defs>
+                  <marker id="arrow-emerald" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+                    <path d="M 0 0 L 10 5 L 0 10 z" fill="#10b981" />
+                  </marker>
+                  <marker id="arrow-rose" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+                    <path d="M 0 0 L 10 5 L 0 10 z" fill="#f43f5e" />
+                  </marker>
+                  <marker id="arrow-purple" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+                    <path d="M 0 0 L 10 5 L 0 10 z" fill="#a855f7" />
+                  </marker>
+                  <marker id="arrow-blue" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+                    <path d="M 0 0 L 10 5 L 0 10 z" fill="#38bdf8" />
+                  </marker>
+                </defs>
 
-            {/* Draggable Vertical Node Components */}
-            {nodes.map(node => {
-              const isStart = node.type === 'START';
-              const isEnd = node.type === 'END';
-              const isSearch = isNodeSearchBox(node);
-              const hasReportColumn = Boolean(node.reportColumnName);
+                {/* Render Existing Vertical Connections */}
+                {connections.map(conn => {
+                  const fromPoint = getNodeCenter(conn.fromNodeId, conn.fromPort);
+                  const toPoint = getNodeCenter(conn.toNodeId, 'input');
 
-              // 1. TERMINAL NODES (START / END) - Flowchart Stadium Oval
-              if (isStart || isEnd) {
-                return (
-                  <div
-                    key={node.id}
-                    style={{ transform: `translate(${node.x}px, ${node.y}px)` }}
-                    onMouseDown={(e) => handleNodeMouseDown(e, node.id)}
-                    className={`absolute w-[220px] h-[60px] rounded-full select-none z-10 transition-shadow shadow-xl flex items-center justify-between px-4 border-2 cursor-grab active:cursor-grabbing ${
-                      isStart
-                        ? 'bg-gradient-to-r from-emerald-950 via-emerald-900 to-emerald-950 border-emerald-400 text-white'
-                        : 'bg-gradient-to-r from-slate-900 via-slate-800 to-slate-900 border-slate-500 text-white'
-                    }`}
-                  >
-                    {/* Top Input Port (End only) */}
-                    {isEnd && (
+                  // Vertical Bezier curve: smoothly curves downwards from fromPoint to toPoint
+                  const dy = Math.max(50, Math.abs(toPoint.y - fromPoint.y) * 0.5);
+                  const path = `M ${fromPoint.x} ${fromPoint.y} C ${fromPoint.x} ${fromPoint.y + dy}, ${toPoint.x} ${toPoint.y - dy}, ${toPoint.x} ${toPoint.y}`;
+
+                  const midX = (fromPoint.x + toPoint.x) / 2;
+                  const midY = (fromPoint.y + toPoint.y) / 2;
+
+                  const isReport = conn.action === 'REPORT';
+                  const isStop = conn.action === 'STOP';
+                  const strokeColor = isReport ? '#a855f7' : isStop ? '#f43f5e' : '#10b981';
+                  const markerId = isReport ? 'url(#arrow-purple)' : isStop ? 'url(#arrow-rose)' : 'url(#arrow-emerald)';
+
+                  return (
+                    <g key={conn.id} className="pointer-events-auto cursor-pointer group" onClick={() => {
+                      setSelectedConnection(conn);
+                      setSelectedNode(null);
+                    }}>
+                      {/* Background hit area for easier clicking */}
+                      <path
+                        d={path}
+                        fill="none"
+                        stroke="transparent"
+                        strokeWidth="18"
+                      />
+                      {/* Visible Vertical Wire Line */}
+                      <path
+                        d={path}
+                        fill="none"
+                        stroke={strokeColor}
+                        strokeWidth={isReport ? '3' : '2.5'}
+                        strokeDasharray={isReport ? '5 3' : 'none'}
+                        markerEnd={markerId}
+                        className="group-hover:stroke-white transition"
+                      />
+                      {/* Action badge on wire */}
+                      <foreignObject x={midX - 48} y={midY - 14} width="96" height="28">
+                        <div className={`px-2 py-0.5 rounded text-[10px] font-bold font-mono text-center shadow-md border truncate ${
+                          isReport ? 'bg-purple-950 text-purple-200 border-purple-400' :
+                          isStop ? 'bg-rose-950 text-rose-200 border-rose-500' :
+                          'bg-emerald-950 text-emerald-200 border-emerald-500'
+                        }`}>
+                          {conn.label || conn.action}
+                        </div>
+                      </foreignObject>
+                    </g>
+                  );
+                })}
+
+                {/* In-Progress Drawn Wire (Vertical flow) */}
+                {wireSource && (
+                  <path
+                    d={`M ${wireSource.startX} ${wireSource.startY} C ${wireSource.startX} ${wireSource.startY + 50}, ${mousePos.x} ${mousePos.y - 50}, ${mousePos.x} ${mousePos.y}`}
+                    fill="none"
+                    stroke="#38bdf8"
+                    strokeWidth="2.5"
+                    strokeDasharray="5 3"
+                    markerEnd="url(#arrow-blue)"
+                  />
+                )}
+              </svg>
+
+              {nodes.length === 0 && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-auto">
+                  <div className="bg-slate-800/90 border border-slate-700 rounded-2xl p-8 max-w-md text-center shadow-2xl backdrop-blur-xs">
+                    <div className="w-12 h-12 rounded-xl bg-slate-700/80 text-emerald-400 flex items-center justify-center mx-auto mb-3">
+                      <GitFork size={24} />
+                    </div>
+                    <h3 className="text-sm font-bold text-white mb-1">No Flowchart Pipeline Configured</h3>
+                    <p className="text-xs text-slate-400 mb-5">
+                      There are no active flowchart workflows. Create a new pipeline or drag blocks from the left palette to begin.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={handleCreateNewFlowchart}
+                      className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-lg shadow-sm transition inline-flex items-center gap-2 cursor-pointer"
+                    >
+                      <Plus size={14} />
+                      <span>Create New Flowchart Pipeline</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {/* Draggable Vertical Node Components */}
+              {nodes.map(node => {
+                const isStart = node.type === 'START';
+                const isEnd = node.type === 'END';
+                const isSearch = isNodeSearchBox(node);
+                const hasReportColumn = Boolean(node.reportColumnName);
+
+                // 1. TERMINAL NODES (START / END) - Flowchart Stadium Oval
+                if (isStart || isEnd) {
+                  return (
+                    <div
+                      key={node.id}
+                      style={{ transform: `translate(${node.x}px, ${node.y}px)` }}
+                      onMouseDown={(e) => handleNodeMouseDown(e, node.id)}
+                      className={`absolute w-[220px] h-[60px] rounded-full select-none z-10 transition-shadow shadow-xl flex items-center justify-between px-4 border-2 cursor-grab active:cursor-grabbing ${
+                        isStart
+                          ? 'bg-gradient-to-r from-emerald-950 via-emerald-900 to-emerald-950 border-emerald-400 text-white'
+                          : 'bg-gradient-to-r from-slate-900 via-slate-800 to-slate-900 border-slate-500 text-white'
+                      }`}
+                    >
+                      {/* Top Input Port (End only) */}
+                      {isEnd && (
+                        <div
+                          title="Input Port (Drop wire here)"
+                          onMouseUp={(e) => handleCompleteWire(e, node.id)}
+                          className="absolute -top-3 left-1/2 -translate-x-1/2 w-6 h-6 rounded-full bg-slate-800 border-2 border-slate-300 hover:border-purple-400 hover:scale-125 flex items-center justify-center transition cursor-pointer z-20 shadow-md"
+                        >
+                          <div className="w-2 h-2 rounded-full bg-white"></div>
+                        </div>
+                      )}
+
+                      <div className="flex items-center gap-2 min-w-0">
+                        {isStart ? (
+                          <div className="w-3 h-3 rounded-full bg-emerald-400 animate-pulse shrink-0"></div>
+                        ) : (
+                          <ShieldCheck size={16} className="text-slate-400 shrink-0" />
+                        )}
+                        <div className="min-w-0">
+                          <div className="text-[9px] font-mono font-bold uppercase tracking-wider text-emerald-300">
+                            {isStart ? 'TERMINAL START' : 'TERMINAL END'}
+                          </div>
+                          <h4 className="font-bold text-xs truncate">{node.name}</h4>
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDeleteNode(node.id);
+                        }}
+                        className="p-1 hover:bg-rose-500/20 rounded-full text-slate-400 hover:text-rose-400 transition"
+                        title="Remove Terminal"
+                      >
+                        <Trash2 size={12} />
+                      </button>
+
+                      {/* Bottom Output Port (Start only) */}
+                      {isStart && (
+                        <div
+                          title="Drag downwards to connect start of pipeline"
+                          onMouseDown={(e) => handleStartWire(e, node.id, 'output')}
+                          className="absolute -bottom-3 left-1/2 -translate-x-1/2 w-6 h-6 rounded-full bg-emerald-600 border-2 border-white hover:scale-125 flex items-center justify-center transition cursor-crosshair z-20 shadow-md"
+                        >
+                          <ArrowDown size={11} className="text-white" />
+                        </div>
+                      )}
+                    </div>
+                  );
+                }
+
+                // 2. SEARCH & INGESTION BOX - Flowchart RECTANGLE (Process Block)
+                if (isSearch) {
+                  return (
+                    <div
+                      key={node.id}
+                      style={{ transform: `translate(${node.x}px, ${node.y}px)` }}
+                      onMouseDown={(e) => handleNodeMouseDown(e, node.id)}
+                      className="absolute w-[260px] min-h-[140px] rounded-lg select-none z-10 bg-slate-900/95 backdrop-blur-sm border-2 border-emerald-500/80 hover:border-emerald-400 shadow-2xl text-white flex flex-col justify-between transition-shadow cursor-grab active:cursor-grabbing group"
+                    >
+                      {/* Top Input Port */}
                       <div
                         title="Input Port (Drop wire here)"
                         onMouseUp={(e) => handleCompleteWire(e, node.id)}
-                        className="absolute -top-3 left-1/2 -translate-x-1/2 w-6 h-6 rounded-full bg-slate-800 border-2 border-slate-300 hover:border-purple-400 hover:scale-125 flex items-center justify-center transition cursor-pointer z-20 shadow-md"
+                        className="absolute -top-3 left-1/2 -translate-x-1/2 w-6 h-6 rounded-full bg-slate-800 border-2 border-emerald-400 hover:border-white hover:scale-125 flex items-center justify-center transition cursor-pointer z-20 shadow-md"
                       >
-                        <div className="w-2 h-2 rounded-full bg-white"></div>
+                        <div className="w-2 h-2 rounded-full bg-emerald-300"></div>
                       </div>
-                    )}
 
-                    <div className="flex items-center gap-2 min-w-0">
-                      {isStart ? (
-                        <div className="w-3 h-3 rounded-full bg-emerald-400 animate-pulse shrink-0"></div>
-                      ) : (
-                        <ShieldCheck size={16} className="text-slate-400 shrink-0" />
-                      )}
-                      <div className="min-w-0">
-                        <div className="text-[9px] font-mono font-bold uppercase tracking-wider text-emerald-300">
-                          {isStart ? 'TERMINAL START' : 'TERMINAL END'}
+                      {/* Rectangle Header */}
+                      <div className="p-2.5 pb-2 border-b border-emerald-500/20 bg-emerald-950/40 flex items-center justify-between rounded-t-md">
+                        <div className="flex items-center gap-1.5 truncate">
+                          <Database size={13} className="text-emerald-400 shrink-0" />
+                          <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-emerald-300 truncate">
+                            SEARCH & INGEST
+                          </span>
                         </div>
-                        <h4 className="font-bold text-xs truncate">{node.name}</h4>
+                        <div className="flex items-center gap-1">
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setSelectedNode(node);
+                            }}
+                            className="p-1 hover:bg-white/10 rounded text-slate-400 hover:text-white transition"
+                            title="Configure Block"
+                          >
+                            <Sliders size={12} />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDeleteNode(node.id);
+                            }}
+                            className="p-1 hover:bg-rose-500/20 rounded text-slate-400 hover:text-rose-400 transition"
+                            title="Remove Block"
+                          >
+                            <Trash2 size={12} />
+                          </button>
+                        </div>
+                      </div>
+
+                      {/* Rectangle Body */}
+                      <div className="p-3 space-y-1.5 text-xs">
+                        <h3 className="font-bold text-slate-100 text-xs tracking-tight line-clamp-1">
+                          {node.name}
+                        </h3>
+                        {node.targetTable && (
+                          <div className="flex items-center gap-1 text-[10px] text-emerald-400 font-mono">
+                            <span className="text-slate-500">Target:</span>
+                            <span className="bg-emerald-950/80 px-1.5 py-0.2 rounded border border-emerald-800/40 font-semibold truncate">
+                              {node.targetTable}
+                            </span>
+                          </div>
+                        )}
+                        {((node.columnConfigurationIds && node.columnConfigurationIds.length > 0) || (node.columnConfigurations && node.columnConfigurations.length > 0)) && (
+                          <div className="flex items-center gap-1 text-[10px] text-emerald-400 font-mono">
+                            <span className="bg-emerald-950/80 px-1.5 py-0.2 rounded border border-emerald-500/40 font-semibold truncate flex items-center gap-1">
+                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                              {node.columnConfigurationIds?.length || node.columnConfigurations?.length} Table Rules
+                            </span>
+                          </div>
+                        )}
+                        <p className="text-[10px] text-slate-400 line-clamp-2 leading-relaxed">
+                          {node.description || 'Database query & parameter mapping'}
+                        </p>
+
+                        {hasReportColumn && (
+                          <div className="p-1 bg-purple-950/80 border border-purple-500/40 rounded flex items-center justify-between gap-1 text-[9px]">
+                            <span className="text-purple-300 font-bold truncate flex items-center gap-1 font-mono">
+                              <FileSpreadsheet size={10} className="text-purple-400" />
+                              <span>Col: "{node.reportColumnName}"</span>
+                            </span>
+                            <span className="px-1 py-0.2 rounded bg-purple-700 text-white font-mono text-[8px] font-bold">
+                              GRID
+                            </span>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Rectangle Bottom Egress Ports */}
+                      <div className="p-2 border-t border-emerald-500/20 flex items-center justify-between text-[10px] font-mono bg-emerald-950/20 rounded-b-md">
+                        <button
+                          type="button"
+                          title="Drag downwards on PASS"
+                          onMouseDown={(e) => handleStartWire(e, node.id, 'pass')}
+                          className="px-2.5 py-1 rounded-md bg-emerald-950/90 text-emerald-300 border border-emerald-500 hover:bg-emerald-800 hover:scale-105 flex items-center gap-1 cursor-crosshair transition shadow-xs"
+                        >
+                          <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></div>
+                          <span>PASS ➔</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          title="Drag downwards on FAIL"
+                          onMouseDown={(e) => handleStartWire(e, node.id, 'fail')}
+                          className="px-2.5 py-1 rounded-md bg-rose-950/90 text-rose-300 border border-rose-500 hover:bg-rose-800 hover:scale-105 flex items-center gap-1 cursor-crosshair transition shadow-xs"
+                        >
+                          <div className="w-1.5 h-1.5 rounded-full bg-rose-400"></div>
+                          <span>FAIL ✕</span>
+                        </button>
                       </div>
                     </div>
+                  );
+                }
 
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        handleDeleteNode(node.id);
-                      }}
-                      className="p-1 hover:bg-rose-500/20 rounded-full text-slate-400 hover:text-rose-400 transition"
-                      title="Remove Terminal"
-                    >
-                      <Trash2 size={12} />
-                    </button>
-
-                    {/* Bottom Output Port (Start only) */}
-                    {isStart && (
-                      <div
-                        title="Drag downwards to connect start of pipeline"
-                        onMouseDown={(e) => handleStartWire(e, node.id, 'output')}
-                        className="absolute -bottom-3 left-1/2 -translate-x-1/2 w-6 h-6 rounded-full bg-emerald-600 border-2 border-white hover:scale-125 flex items-center justify-center transition cursor-crosshair z-20 shadow-md"
-                      >
-                        <ArrowDown size={11} className="text-white" />
-                      </div>
-                    )}
-                  </div>
-                );
-              }
-
-              // 2. SEARCH & INGESTION BOX - Flowchart RECTANGLE (Process Block)
-              if (isSearch) {
+                // 3. CONDITION CHECK BOX - Flowchart RHOMBUS / DIAMOND (Decision Block)
                 return (
                   <div
                     key={node.id}
                     style={{ transform: `translate(${node.x}px, ${node.y}px)` }}
                     onMouseDown={(e) => handleNodeMouseDown(e, node.id)}
-                    className="absolute w-[260px] min-h-[140px] rounded-lg select-none z-10 bg-slate-900/95 backdrop-blur-sm border-2 border-emerald-500/80 hover:border-emerald-400 shadow-2xl text-white flex flex-col justify-between transition-shadow cursor-grab active:cursor-grabbing group"
+                    className="absolute w-[240px] h-[210px] select-none z-10 flex flex-col items-center justify-center cursor-grab active:cursor-grabbing group"
                   >
-                    {/* Top Input Port */}
+                    {/* SVG Rhombus Background */}
+                    <svg className="absolute inset-0 w-full h-full pointer-events-none drop-shadow-2xl" viewBox="0 0 240 210">
+                      <polygon
+                        points="120,6 234,105 120,204 6,105"
+                        fill="#0b1329"
+                        stroke="#3b82f6"
+                        strokeWidth="2.5"
+                        strokeLinejoin="round"
+                      />
+                      <polygon
+                        points="120,14 224,105 120,196 16,105"
+                        fill="none"
+                        stroke="#1d4ed8"
+                        strokeWidth="1"
+                        strokeOpacity="0.35"
+                        strokeDasharray="4 2"
+                      />
+                    </svg>
+
+                    {/* Top Input Port (Top Diamond Vertex) */}
                     <div
                       title="Input Port (Drop wire here)"
                       onMouseUp={(e) => handleCompleteWire(e, node.id)}
-                      className="absolute -top-3 left-1/2 -translate-x-1/2 w-6 h-6 rounded-full bg-slate-800 border-2 border-emerald-400 hover:border-white hover:scale-125 flex items-center justify-center transition cursor-pointer z-20 shadow-md"
+                      className="absolute -top-2.5 left-1/2 -translate-x-1/2 w-6 h-6 rounded-full bg-slate-900 border-2 border-blue-400 hover:border-white hover:scale-125 flex items-center justify-center transition cursor-pointer z-30 shadow-md"
                     >
-                      <div className="w-2 h-2 rounded-full bg-emerald-300"></div>
+                      <div className="w-2 h-2 rounded-full bg-blue-300"></div>
                     </div>
 
-                    {/* Rectangle Header */}
-                    <div className="p-2.5 pb-2 border-b border-emerald-500/20 bg-emerald-950/40 flex items-center justify-between rounded-t-md">
-                      <div className="flex items-center gap-1.5 truncate">
-                        <Database size={13} className="text-emerald-400 shrink-0" />
-                        <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-emerald-300 truncate">
-                          SEARCH & INGEST
-                        </span>
+                    {/* Centered Rhombus Content */}
+                    <div className="w-[154px] z-10 text-center space-y-1 my-auto">
+                      <div className="flex items-center justify-center gap-1 text-[9px] font-bold font-mono uppercase tracking-wider text-blue-300 bg-blue-950/80 px-2 py-0.5 rounded-full border border-blue-500/40 w-fit mx-auto shadow-xs">
+                        <CheckCircle2 size={10} className="text-blue-400" />
+                        <span>DECISION</span>
                       </div>
-                      <div className="flex items-center gap-1">
+
+                      <h3 className="font-bold text-white text-xs tracking-tight truncate max-w-[150px] mx-auto" title={node.name}>
+                        {node.name}
+                      </h3>
+
+                      <p className="text-[10px] text-blue-200 font-mono truncate px-1.5 py-0.5 bg-slate-950/90 rounded border border-blue-900/60 max-w-[150px] mx-auto">
+                        {node.description || 'Condition check'}
+                      </p>
+
+                      {node.onPassAction === 'STOP' && (
+                        <span className="inline-block text-[8px] font-mono font-bold text-rose-300 bg-rose-950/90 px-1.5 py-0.2 rounded border border-rose-500/50">
+                          Pass ➔ STOP
+                        </span>
+                      )}
+
+                      {node.onFailAction === 'CONTINUE' && (
+                        <span className="inline-block text-[8px] font-mono font-bold text-amber-300 bg-amber-950/90 px-1.5 py-0.2 rounded border border-amber-500/50">
+                          Fail ➔ CONTINUE
+                        </span>
+                      )}
+
+                      {hasReportColumn && (
+                        <span className="inline-block text-[8px] font-mono text-purple-300 bg-purple-950/80 px-1 py-0.2 rounded border border-purple-500/40">
+                          Col: {node.reportColumnName}
+                        </span>
+                      )}
+
+                      {((node.columnConfigurationIds && node.columnConfigurationIds.length > 0) || (node.columnConfigurations && node.columnConfigurations.length > 0)) && (
+                        <span className="inline-block text-[8px] font-mono font-bold text-emerald-300 bg-emerald-950/80 px-1.5 py-0.2 rounded border border-emerald-500/40">
+                          {node.columnConfigurationIds?.length || node.columnConfigurations?.length} Table Rules
+                        </span>
+                      )}
+
+                      <div className="flex items-center justify-center gap-1 pt-0.5">
                         <button
                           type="button"
                           onClick={(e) => {
@@ -1803,9 +2186,9 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
                             setSelectedNode(node);
                           }}
                           className="p-1 hover:bg-white/10 rounded text-slate-400 hover:text-white transition"
-                          title="Configure Block"
+                          title="Configure Check"
                         >
-                          <Sliders size={12} />
+                          <Sliders size={11} />
                         </button>
                         <button
                           type="button"
@@ -1814,238 +2197,83 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
                             handleDeleteNode(node.id);
                           }}
                           className="p-1 hover:bg-rose-500/20 rounded text-slate-400 hover:text-rose-400 transition"
-                          title="Remove Block"
+                          title="Remove Check"
                         >
-                          <Trash2 size={12} />
+                          <Trash2 size={11} />
                         </button>
                       </div>
                     </div>
 
-                    {/* Rectangle Body */}
-                    <div className="p-3 space-y-1.5 text-xs">
-                      <h3 className="font-bold text-slate-100 text-xs tracking-tight line-clamp-1">
-                        {node.name}
-                      </h3>
-                      {node.targetTable && (
-                        <div className="flex items-center gap-1 text-[10px] text-emerald-400 font-mono">
-                          <span className="text-slate-500">Target:</span>
-                          <span className="bg-emerald-950/80 px-1.5 py-0.2 rounded border border-emerald-800/40 font-semibold truncate">
-                            {node.targetTable}
-                          </span>
-                        </div>
-                      )}
-                      {((node.columnConfigurationIds && node.columnConfigurationIds.length > 0) || (node.columnConfigurations && node.columnConfigurations.length > 0)) && (
-                        <div className="flex items-center gap-1 text-[10px] text-emerald-400 font-mono">
-                          <span className="bg-emerald-950/80 px-1.5 py-0.2 rounded border border-emerald-500/40 font-semibold truncate flex items-center gap-1">
-                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
-                            {node.columnConfigurationIds?.length || node.columnConfigurations?.length} Table Rules
-                          </span>
-                        </div>
-                      )}
-                      <p className="text-[10px] text-slate-400 line-clamp-2 leading-relaxed">
-                        {node.description || 'Database query & parameter mapping'}
-                      </p>
+                    {/* Bottom Ports for Decision Rhombus: PASS on left, FAIL on right */}
+                    <button
+                      type="button"
+                      title={`Drag downwards on PASS (Configured: ${node.onPassAction || 'CONTINUE'})`}
+                      style={{ left: '20px', bottom: '12px' }}
+                      onMouseDown={(e) => handleStartWire(e, node.id, 'pass')}
+                      className={`absolute z-20 px-2 py-0.5 rounded-md text-[9px] font-mono font-bold shadow-md transition flex items-center gap-1 cursor-crosshair hover:scale-105 ${
+                        node.onPassAction === 'STOP'
+                          ? 'bg-rose-950/95 text-rose-300 border border-rose-500 hover:bg-rose-800'
+                          : 'bg-emerald-950/95 text-emerald-300 border border-emerald-500 hover:bg-emerald-800'
+                      }`}
+                    >
+                      <div className={`w-1.5 h-1.5 rounded-full ${node.onPassAction === 'STOP' ? 'bg-rose-400' : 'bg-emerald-400 animate-pulse'}`}></div>
+                      <span>PASS {node.onPassAction === 'STOP' ? '✕' : '➔'}</span>
+                    </button>
 
-                      {hasReportColumn && (
-                        <div className="p-1 bg-purple-950/80 border border-purple-500/40 rounded flex items-center justify-between gap-1 text-[9px]">
-                          <span className="text-purple-300 font-bold truncate flex items-center gap-1 font-mono">
-                            <FileSpreadsheet size={10} className="text-purple-400" />
-                            <span>Col: "{node.reportColumnName}"</span>
-                          </span>
-                          <span className="px-1 py-0.2 rounded bg-purple-700 text-white font-mono text-[8px] font-bold">
-                            GRID
-                          </span>
-                        </div>
-                      )}
-                    </div>
-
-                    {/* Rectangle Bottom Egress Ports */}
-                    <div className="p-2 border-t border-emerald-500/20 flex items-center justify-between text-[10px] font-mono bg-emerald-950/20 rounded-b-md">
-                      <button
-                        type="button"
-                        title="Drag downwards on PASS"
-                        onMouseDown={(e) => handleStartWire(e, node.id, 'pass')}
-                        className="px-2.5 py-1 rounded-md bg-emerald-950/90 text-emerald-300 border border-emerald-500 hover:bg-emerald-800 hover:scale-105 flex items-center gap-1 cursor-crosshair transition shadow-xs"
-                      >
-                        <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></div>
-                        <span>PASS ➔</span>
-                      </button>
-
-                      <button
-                        type="button"
-                        title="Drag downwards on FAIL"
-                        onMouseDown={(e) => handleStartWire(e, node.id, 'fail')}
-                        className="px-2.5 py-1 rounded-md bg-rose-950/90 text-rose-300 border border-rose-500 hover:bg-rose-800 hover:scale-105 flex items-center gap-1 cursor-crosshair transition shadow-xs"
-                      >
-                        <div className="w-1.5 h-1.5 rounded-full bg-rose-400"></div>
-                        <span>FAIL ✕</span>
-                      </button>
-                    </div>
+                    <button
+                      type="button"
+                      title={`Drag downwards on FAIL (Configured: ${node.onFailAction || 'STOP'})`}
+                      style={{ right: '20px', bottom: '12px' }}
+                      onMouseDown={(e) => handleStartWire(e, node.id, 'fail')}
+                      className={`absolute z-20 px-2 py-0.5 rounded-md text-[9px] font-mono font-bold shadow-md transition flex items-center gap-1 cursor-crosshair hover:scale-105 ${
+                        node.onFailAction === 'CONTINUE'
+                          ? 'bg-amber-950/95 text-amber-300 border border-amber-500 hover:bg-amber-800'
+                          : 'bg-rose-950/95 text-rose-300 border border-rose-500 hover:bg-rose-800'
+                      }`}
+                    >
+                      <div className={`w-1.5 h-1.5 rounded-full ${node.onFailAction === 'CONTINUE' ? 'bg-amber-400' : 'bg-rose-400'}`}></div>
+                      <span>FAIL {node.onFailAction === 'CONTINUE' ? '➔' : '✕'}</span>
+                    </button>
                   </div>
                 );
-              }
-
-              // 3. CONDITION CHECK BOX - Flowchart RHOMBUS / DIAMOND (Decision Block)
-              return (
-                <div
-                  key={node.id}
-                  style={{ transform: `translate(${node.x}px, ${node.y}px)` }}
-                  onMouseDown={(e) => handleNodeMouseDown(e, node.id)}
-                  className="absolute w-[240px] h-[210px] select-none z-10 flex flex-col items-center justify-center cursor-grab active:cursor-grabbing group"
-                >
-                  {/* SVG Rhombus Background */}
-                  <svg className="absolute inset-0 w-full h-full pointer-events-none drop-shadow-2xl" viewBox="0 0 240 210">
-                    <polygon
-                      points="120,6 234,105 120,204 6,105"
-                      fill="#0b1329"
-                      stroke="#3b82f6"
-                      strokeWidth="2.5"
-                      strokeLinejoin="round"
-                    />
-                    <polygon
-                      points="120,14 224,105 120,196 16,105"
-                      fill="none"
-                      stroke="#1d4ed8"
-                      strokeWidth="1"
-                      strokeOpacity="0.35"
-                      strokeDasharray="4 2"
-                    />
-                  </svg>
-
-                  {/* Top Input Port (Top Diamond Vertex) */}
-                  <div
-                    title="Input Port (Drop wire here)"
-                    onMouseUp={(e) => handleCompleteWire(e, node.id)}
-                    className="absolute -top-2.5 left-1/2 -translate-x-1/2 w-6 h-6 rounded-full bg-slate-900 border-2 border-blue-400 hover:border-white hover:scale-125 flex items-center justify-center transition cursor-pointer z-30 shadow-md"
-                  >
-                    <div className="w-2 h-2 rounded-full bg-blue-300"></div>
-                  </div>
-
-                  {/* Centered Rhombus Content */}
-                  <div className="w-[154px] z-10 text-center space-y-1 my-auto">
-                    <div className="flex items-center justify-center gap-1 text-[9px] font-bold font-mono uppercase tracking-wider text-blue-300 bg-blue-950/80 px-2 py-0.5 rounded-full border border-blue-500/40 w-fit mx-auto shadow-xs">
-                      <CheckCircle2 size={10} className="text-blue-400" />
-                      <span>DECISION</span>
-                    </div>
-
-                    <h3 className="font-bold text-white text-xs tracking-tight truncate max-w-[150px] mx-auto" title={node.name}>
-                      {node.name}
-                    </h3>
-
-                    <p className="text-[10px] text-blue-200 font-mono truncate px-1.5 py-0.5 bg-slate-950/90 rounded border border-blue-900/60 max-w-[150px] mx-auto">
-                      {node.description || 'Condition check'}
-                    </p>
-
-                    {node.onPassAction === 'STOP' && (
-                      <span className="inline-block text-[8px] font-mono font-bold text-rose-300 bg-rose-950/90 px-1.5 py-0.2 rounded border border-rose-500/50">
-                        Pass ➔ STOP
-                      </span>
-                    )}
-
-                    {node.onFailAction === 'CONTINUE' && (
-                      <span className="inline-block text-[8px] font-mono font-bold text-amber-300 bg-amber-950/90 px-1.5 py-0.2 rounded border border-amber-500/50">
-                        Fail ➔ CONTINUE
-                      </span>
-                    )}
-
-                    {hasReportColumn && (
-                      <span className="inline-block text-[8px] font-mono text-purple-300 bg-purple-950/80 px-1 py-0.2 rounded border border-purple-500/40">
-                        Col: {node.reportColumnName}
-                      </span>
-                    )}
-
-                    {((node.columnConfigurationIds && node.columnConfigurationIds.length > 0) || (node.columnConfigurations && node.columnConfigurations.length > 0)) && (
-                      <span className="inline-block text-[8px] font-mono font-bold text-emerald-300 bg-emerald-950/80 px-1.5 py-0.2 rounded border border-emerald-500/40">
-                        {node.columnConfigurationIds?.length || node.columnConfigurations?.length} Table Rules
-                      </span>
-                    )}
-
-                    <div className="flex items-center justify-center gap-1 pt-0.5">
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setSelectedNode(node);
-                        }}
-                        className="p-1 hover:bg-white/10 rounded text-slate-400 hover:text-white transition"
-                        title="Configure Check"
-                      >
-                        <Sliders size={11} />
-                      </button>
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleDeleteNode(node.id);
-                        }}
-                        className="p-1 hover:bg-rose-500/20 rounded text-slate-400 hover:text-rose-400 transition"
-                        title="Remove Check"
-                      >
-                        <Trash2 size={11} />
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Bottom Ports for Decision Rhombus: PASS on left, FAIL on right */}
-                  <button
-                    type="button"
-                    title={`Drag downwards on PASS (Configured: ${node.onPassAction || 'CONTINUE'})`}
-                    style={{ left: '20px', bottom: '12px' }}
-                    onMouseDown={(e) => handleStartWire(e, node.id, 'pass')}
-                    className={`absolute z-20 px-2 py-0.5 rounded-md text-[9px] font-mono font-bold shadow-md transition flex items-center gap-1 cursor-crosshair hover:scale-105 ${
-                      node.onPassAction === 'STOP'
-                        ? 'bg-rose-950/95 text-rose-300 border border-rose-500 hover:bg-rose-800'
-                        : 'bg-emerald-950/95 text-emerald-300 border border-emerald-500 hover:bg-emerald-800'
-                    }`}
-                  >
-                    <div className={`w-1.5 h-1.5 rounded-full ${node.onPassAction === 'STOP' ? 'bg-rose-400' : 'bg-emerald-400 animate-pulse'}`}></div>
-                    <span>PASS {node.onPassAction === 'STOP' ? '✕' : '➔'}</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    title={`Drag downwards on FAIL (Configured: ${node.onFailAction || 'STOP'})`}
-                    style={{ right: '20px', bottom: '12px' }}
-                    onMouseDown={(e) => handleStartWire(e, node.id, 'fail')}
-                    className={`absolute z-20 px-2 py-0.5 rounded-md text-[9px] font-mono font-bold shadow-md transition flex items-center gap-1 cursor-crosshair hover:scale-105 ${
-                      node.onFailAction === 'CONTINUE'
-                        ? 'bg-amber-950/95 text-amber-300 border border-amber-500 hover:bg-amber-800'
-                        : 'bg-rose-950/95 text-rose-300 border border-rose-500 hover:bg-rose-800'
-                    }`}
-                  >
-                    <div className={`w-1.5 h-1.5 rounded-full ${node.onFailAction === 'CONTINUE' ? 'bg-amber-400' : 'bg-rose-400'}`}></div>
-                    <span>FAIL {node.onFailAction === 'CONTINUE' ? '➔' : '✕'}</span>
-                  </button>
-                </div>
-              );
-            })}
+              })}
+              </div>
             </div>
-          </div>
+          )}
         </div>
 
-        {/* Right Pane: Properties & Routing Inspector Drawer */}
-        <WorkflowInspector
-          selectedNode={selectedNode}
-          onUpdateNode={(updated) => {
-            setNodes(prev => prev.map(n => n.id === updated.id ? updated : n));
-            setSelectedNode(updated);
-          }}
-          onDeleteNode={handleDeleteNode}
-          onCloseNode={() => setSelectedNode(null)}
-          selectedConnection={selectedConnection}
-          onUpdateConnection={(updated) => {
-            setConnections(prev => prev.map(c => c.id === updated.id ? updated : c));
-            if (updated.fromPort === 'fail') {
-              setNodes(prev => prev.map(n => n.id === updated.fromNodeId ? { ...n, onFailAction: updated.action } : n));
-            } else if (updated.fromPort === 'pass') {
-              setNodes(prev => prev.map(n => n.id === updated.fromNodeId ? { ...n, onPassAction: updated.action } : n));
-            }
-            setSelectedConnection(updated);
-          }}
-          onDeleteConnection={handleDeleteConnection}
-          onCloseConnection={() => setSelectedConnection(null)}
-          validationBoxes={validationBoxes}
-        />
+        {!rightPanelCollapsed && (
+          <div className="shrink-0">
+            <WorkflowInspector
+              selectedNode={selectedNode}
+              onUpdateNode={(updated) => {
+                setNodes(prev => prev.map(n => n.id === updated.id ? updated : n));
+                setSelectedNode(updated);
+              }}
+              onDeleteNode={handleDeleteNode}
+              onCloseNode={() => {
+                setSelectedNode(null);
+                setRightPanelCollapsed(true);
+              }}
+              selectedConnection={selectedConnection}
+              onUpdateConnection={(updated) => {
+                setConnections(prev => prev.map(c => c.id === updated.id ? updated : c));
+                if (updated.fromPort === 'fail') {
+                  setNodes(prev => prev.map(n => n.id === updated.fromNodeId ? { ...n, onFailAction: updated.action } : n));
+                } else if (updated.fromPort === 'pass') {
+                  setNodes(prev => prev.map(n => n.id === updated.fromNodeId ? { ...n, onPassAction: updated.action } : n));
+                }
+                setSelectedConnection(updated);
+              }}
+              onDeleteConnection={handleDeleteConnection}
+              onCloseConnection={() => {
+                setSelectedConnection(null);
+                setRightPanelCollapsed(true);
+              }}
+              validationBoxes={validationBoxes}
+            />
+          </div>
+        )}
       </div>
 
             {/* Workflow Message Aggregator Modal */}
@@ -2482,6 +2710,27 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
             </div>
           </div>
         </div>
+      )}
+
+      {/* Visual Operational Asset Share Modal */}
+      {activeWorkflow && (
+        <ShareAssetModal
+          isOpen={showShareModal}
+          onClose={() => setShowShareModal(false)}
+          assetType="WORKFLOW"
+          assetId={activeWorkflow.id}
+          assetTitle={workflowName || activeWorkflow.name}
+          assetDescription={workflowDescription || activeWorkflow.description}
+          previewDetails={{
+            category: workflowCategory || activeWorkflow.category,
+            stepCount: nodes.length
+          }}
+          currentUser={currentUser}
+          onShareSuccess={() => {
+            setSaveSuccessMsg('Workflow successfully shared!');
+            setTimeout(() => setSaveSuccessMsg(''), 4000);
+          }}
+        />
       )}
     </div>
   );

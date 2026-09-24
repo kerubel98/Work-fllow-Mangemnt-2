@@ -836,3 +836,17 @@ backend/src/
 ## 29. Final Concluding Deliverable Summary
 
 The current application context report has been generated and saved to `CURRENT_PROJECT_CONTEXT.md` in the workspace root.
+
+---
+
+## 30. Production Governance Segregation & Composite Workflow Bundles (Migration 018)
+
+- **Migration**: `018_workflow_bundles_and_governance_segregation.sql` introduces the `workflow_bundles` table to manage composite operational bundles (DAG Flow + Validation Boxes + DB Table Mappings) with versioning, scoping (`PERSONAL`, `TEAM`, `GLOBAL_ENTERPRISE`), and Anti-Self-Approval constraint (`chk_bundle_anti_self_approval`).
+- **Domain Segregation**: De-unified the approval model into dedicated, risk-appropriate operational feeds:
+  - `GET /api/approvals/transactions`: High-risk financial ledger overrides (`FORCE_MATCH`, `WRITE_OFF`, `MANUAL_REVERSAL`) under strict Four-Eyes review (`makerId !== checkerId`).
+  - `GET /api/approvals/workflow-bundles`: Composite workflow promotion reviews across scopes.
+- **Service Layer**: Implemented `workflowBundleService.ts` for atomic snapshotting of workflow DAGs and linked validation boxes/DB mappings into `evidence_snapshot`.
+- **UI Consolidation**:
+  - Re-skinned `GovernanceScreen.tsx` into the **Operational Authority & Dual Authorization Center** featuring dedicated tabs for Financial Resolutions and Workflow Bundles with interactive evidence/manifest inspectors and Anti-Self-Approval enforcement banners, fully wrapped in `<ErrorBoundary>`.
+  - Streamlined `WorkspaceSettings.tsx` and `WorkspaceGovernanceTab.tsx` by removing the redundant proposal queue and linking directly to the centralized Authority Center.
+- **Verification**: 100% pass rate across test suites (`workflowBundleAndGovernanceRefactor.test.ts`, `governanceAndAnalyticsRefactor.test.ts`, `messageIntegrationArchitecture.test.ts`), with clean TypeScript compilation and Vite build (`0` errors).

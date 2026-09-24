@@ -8,7 +8,7 @@ import {
   User, Team, TeamTask, TeamInsight, TeamDiscussionMessage, 
   TeamRelationship, TeamRelationshipType,
   WorkspaceSettingProposal, SettingProposalType, SettingProposalStatus, TeamEscalationTarget,
-  DatabaseConnection, AllowedQueryType, MemberPrivilege, TeamAdminPrivileges
+  DatabaseConnection, AllowedQueryType, MemberPrivilege, TeamAdminPrivileges, WorkflowBundle
 } from '../types';
 import { api } from '../api/client';
 import { 
@@ -19,7 +19,7 @@ import {
   Network, GitFork, ArrowUpRight, ArrowDownLeft, Share2, Layers,
   Globe, Lock, FileCode, RefreshCw, GitPullRequest, ExternalLink, Sliders,
   PanelLeftClose, PanelLeftOpen, Settings, Database, Key, Server,
-  BookOpen, Copy, CheckCheck, Search, HardDrive, HelpCircle, FolderPlus, Activity, Table, Shield
+  BookOpen, Copy, CheckCheck, Search, HardDrive, HelpCircle, FolderPlus, Activity, Table, Shield, Boxes
 } from 'lucide-react';
 
 import { TeamHeader } from './team/TeamHeader';
@@ -28,8 +28,10 @@ import { TeamMembersTab } from './team/TeamMembersTab';
 import { TeamTasksTab } from './team/TeamTasksTab';
 import { TeamDiscussionTab } from './team/TeamDiscussionTab';
 import { TeamResourcesTab } from './team/TeamResourcesTab';
+import { TeamChannelsTab } from './team/TeamChannelsTab';
+import { TeamStagedAssetsConsole } from './team/TeamStagedAssetsConsole';
 
-export type TeamSettingsSubTab = 'approvals' | 'grants' | 'ai-strategy' | 'relationships' | 'db-access' | 'delegated-admin';
+export type TeamSettingsSubTab = 'bundles' | 'approvals' | 'grants' | 'ai-strategy' | 'relationships' | 'db-access' | 'delegated-admin' | 'channels';
 export type ResourceSubTab = 'system-resources' | 'library' | 'insights';
 
 interface TeamWorkspaceProps {
@@ -137,7 +139,7 @@ export default function TeamWorkspace({
   );
 
   const [teamSettingsSubTab, setTeamSettingsSubTab] = useState<TeamSettingsSubTab>(
-    isInitialSettingsSubTab ? (initialActiveTab as TeamSettingsSubTab) : 'approvals'
+    isInitialSettingsSubTab ? (initialActiveTab as TeamSettingsSubTab) : 'bundles'
   );
 
   const isGlobalAdmin = 
@@ -759,6 +761,12 @@ export default function TeamWorkspace({
   // Task filter
   const [taskFilterStatus, setTaskFilterStatus] = useState<string>('All');
 
+  // Workflow Bundles & Team Operational Assets (Layer 2 Governance)
+  const [teamBundles, setTeamBundles] = useState<WorkflowBundle[]>([]);
+  const [isLoadingBundles, setIsLoadingBundles] = useState(false);
+  const [promotingBundleId, setPromotingBundleId] = useState<string | null>(null);
+  const [bundleActionMsg, setBundleActionMsg] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
   // Maker-Checker & Team Governance State
   const [pendingResolutions, setPendingResolutions] = useState<any[]>([]);
   const [teamKpis, setTeamKpis] = useState<any>(null);
@@ -920,15 +928,16 @@ export default function TeamWorkspace({
     }
   };
 
-  // Fetch Team Governance Data
+  // Fetch Team Governance & Workflow Bundle Data
   const loadGovernanceData = React.useCallback(async () => {
     try {
-      const [resPending, resKpis, resGrants, resAi, resSettings] = await Promise.all([
+      const [resPending, resKpis, resGrants, resAi, resSettings, resBundles] = await Promise.all([
         fetch(`/api/resolutions/pending?teamId=${currentTeamId || 'team-cards'}`).then(r => r.json()).catch(() => []),
         fetch(`/api/teams/kpis?teamId=${currentTeamId || 'team-cards'}`).then(r => r.json()).catch(() => null),
         fetch(`/api/teams/grants?teamId=${currentTeamId || 'team-cards'}`).then(r => r.json()).catch(() => []),
         fetch('/api/teams/ai-objectives').then(r => r.json()).catch(() => []),
-        api.getWorkspaceSettingProposals({ teamId: currentTeamId || undefined }).catch(() => [])
+        api.getWorkspaceSettingProposals({ teamId: currentTeamId || undefined }).catch(() => []),
+        api.getWorkflowBundles({ teamId: currentTeamId || undefined }).catch(() => [])
       ]);
 
       if (Array.isArray(resPending)) setPendingResolutions(resPending);
@@ -936,6 +945,7 @@ export default function TeamWorkspace({
       if (Array.isArray(resGrants)) setVisibilityGrants(resGrants);
       if (Array.isArray(resAi)) setAiObjectives(resAi);
       if (Array.isArray(resSettings)) setSettingProposals(resSettings);
+      if (Array.isArray(resBundles)) setTeamBundles(resBundles);
     } catch (err: any) {
       console.warn('Failed to load team governance data:', err);
     }
@@ -944,6 +954,27 @@ export default function TeamWorkspace({
   React.useEffect(() => {
     loadGovernanceData();
   }, [loadGovernanceData]);
+
+  const handlePromoteBundle = async (bundle: WorkflowBundle) => {
+    if (!confirm(`Submit Maker request to promote bundle "${bundle.name}" (${bundle.bundleCode}) to Enterprise scope? This will route to the Operational Authority Center for Checker authorization.`)) {
+      return;
+    }
+    setPromotingBundleId(bundle.id);
+    try {
+      await api.proposeWorkflowBundlePromotion(bundle.id, 'GLOBAL_ENTERPRISE', currentUser.id, currentUser.name || currentUser.username);
+      setBundleActionMsg({
+        type: 'success',
+        text: `Bundle ${bundle.bundleCode} submitted for Enterprise promotion! Awaiting Checker review in Authority Center.`
+      });
+      setTimeout(() => setBundleActionMsg(null), 4000);
+      await loadGovernanceData();
+    } catch (err: any) {
+      setBundleActionMsg({ type: 'error', text: err.message || 'Failed to submit bundle for promotion.' });
+      setTimeout(() => setBundleActionMsg(null), 4000);
+    } finally {
+      setPromotingBundleId(null);
+    }
+  };
 
   // Handler for reviewing a Maker-Checker proposal (Checker Approval/Rejection)
   const handleReviewProposal = async (requestId: string, action: 'APPROVE' | 'REJECT') => {
@@ -1432,6 +1463,7 @@ export default function TeamWorkspace({
                     messages={teamMessages}
                     currentUser={currentUser}
                     onSendMessage={onSendMessage}
+                    availableTeams={visibleTeams}
                   />
                 )}
 
@@ -1488,10 +1520,10 @@ export default function TeamWorkspace({
           <div className="flex items-center gap-1 p-1 bg-slate-100/90 border border-slate-200 rounded-2xl overflow-x-auto no-scrollbar shadow-2xs" id="team-settings-subnav">
             {[
               {
-                id: 'approvals' as TeamSettingsSubTab,
-                label: 'Approvals',
-                icon: ShieldCheck,
-                count: pendingResolutions.length + settingProposals.filter(p => p.status === 'PENDING_TEAM_APPROVAL' || p.status === 'ESCALATED_TO_TARGET_TEAM').length
+                id: 'bundles' as TeamSettingsSubTab,
+                label: 'Staged Assets & Verification',
+                icon: Boxes,
+                count: teamBundles.length
               },
               {
                 id: 'grants' as TeamSettingsSubTab,
@@ -1517,6 +1549,12 @@ export default function TeamWorkspace({
                 icon: Database,
                 count: currentTeam?.allowedDbIds?.length || 0
               },
+              {
+                id: 'channels' as TeamSettingsSubTab,
+                label: 'Channels & Webhooks',
+                icon: MessageSquare,
+                count: 0
+              },
               ...(isGlobalAdmin ? [{
                 id: 'delegated-admin' as TeamSettingsSubTab,
                 label: 'Admin Privileges',
@@ -1524,7 +1562,8 @@ export default function TeamWorkspace({
                 count: (currentTeam?.adminPrivileges?.canManageConnections ? 1 : 0) + (currentTeam?.adminPrivileges?.canManageColumnMapping ? 1 : 0)
               }] : [])
             ].map(subTab => {
-              const currentActiveSubTab = (activeTab === 'team_settings' ? teamSettingsSubTab : (['approvals', 'grants', 'ai-strategy', 'relationships', 'db-access', 'delegated-admin'].includes(activeTab) ? activeTab : 'approvals'));
+              const currentActiveSubTab = (activeTab === 'team_settings' ? teamSettingsSubTab : (['bundles', 'approvals', 'grants', 'ai-strategy', 'relationships', 'db-access', 'delegated-admin', 'channels'].includes(activeTab) ? (activeTab === 'approvals' ? 'bundles' : activeTab) : 'bundles'));
+
               const isSubActive = currentActiveSubTab === subTab.id;
               const SubIcon = subTab.icon;
               return (
@@ -1556,385 +1595,170 @@ export default function TeamWorkspace({
             })}
           </div>
 
-          {/* SUBTAB 1: APPROVALS */}
-          {((activeTab === 'team_settings' ? teamSettingsSubTab : activeTab) === 'approvals') && (
-        <div className="space-y-5 font-mono text-xs">
-          <div className="bg-purple-50/70 border border-purple-200/80 rounded-2xl p-5 text-slate-800 space-y-2 shadow-xs">
-            <div className="flex items-center space-x-3">
-              <div className="p-2.5 bg-purple-100 text-purple-700 border border-purple-200 rounded-xl">
-                <ShieldCheck size={22} />
-              </div>
-              <div>
-                <div className="flex items-center space-x-2">
-                  <h3 className="text-sm font-bold tracking-tight text-purple-950 uppercase">
-                    Maker-Checker Operational Approval Queue
-                  </h3>
-                  <span className="text-[9px] bg-purple-100 text-purple-800 border border-purple-200 px-2 py-0.5 rounded-full font-bold">
-                    Four-Eyes Principle
-                  </span>
-                </div>
-                <p className="text-[11px] text-purple-800/80 font-sans mt-0.5">
-                  Dual authorization review queue for discrepancy overrides and workspace configuration proposals. Anti-self-approval enforced.
-                </p>
-              </div>
-            </div>
-          </div>
-
-          <div className="bg-white border border-slate-200/80 rounded-2xl p-6 shadow-sm space-y-5">
-            {/* Subtab navigation */}
-            <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-3 border-b border-slate-200 pb-4">
-              <div className="flex items-center space-x-2">
-                <button
-                  type="button"
-                  onClick={() => setApprovalsSubTab('resolutions')}
-                  className={`px-3 py-1.5 rounded-xl font-bold transition flex items-center space-x-1.5 cursor-pointer ${
-                    approvalsSubTab === 'resolutions'
-                      ? 'bg-purple-900 text-white shadow-2xs'
-                      : 'bg-slate-100 text-slate-600 hover:text-slate-900'
-                  }`}
-                >
-                  <ShieldCheck size={14} />
-                  <span>Transaction Resolutions</span>
-                  <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-purple-800 text-purple-200 font-mono">
-                    {pendingResolutions.length}
-                  </span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setApprovalsSubTab('settings')}
-                  className={`px-3 py-1.5 rounded-xl font-bold transition flex items-center space-x-1.5 cursor-pointer ${
-                    approvalsSubTab === 'settings'
-                      ? 'bg-[#155DFC] text-white shadow-2xs'
-                      : 'bg-slate-100 text-slate-600 hover:text-slate-900'
-                  }`}
-                >
-                  <Sliders size={14} />
-                  <span>Workspace Setting Proposals</span>
-                  <span className="px-1.5 py-0.2 rounded-full text-[10px] bg-blue-900 text-blue-200 font-mono">
-                    {settingProposals.filter(p => p.status === 'PENDING_TEAM_APPROVAL' || p.status === 'ESCALATED_TO_TARGET_TEAM').length}
-                  </span>
-                </button>
-              </div>
-
-              {approvalsSubTab === 'settings' && (
-                <div className="flex items-center space-x-2">
-                  {/* Status filter */}
-                  <div className="flex items-center space-x-1 bg-slate-100 p-1 rounded-xl text-[10px] font-mono">
-                    {['ALL', 'PENDING_TEAM_APPROVAL', 'ESCALATED_TO_TARGET_TEAM', 'APPROVED', 'REJECTED'].map(st => (
-                      <button
-                        key={st}
-                        onClick={() => setSettingStatusFilter(st)}
-                        className={`px-2 py-0.5 rounded-lg transition-colors cursor-pointer ${
-                          settingStatusFilter === st
-                            ? 'bg-white text-blue-700 font-bold shadow-2xs'
-                            : 'text-slate-600 hover:text-slate-900'
-                        }`}
-                      >
-                        {st === 'PENDING_TEAM_APPROVAL' ? 'Pending' :
-                         st === 'ESCALATED_TO_TARGET_TEAM' ? 'Escalated' :
-                         st === 'ALL' ? 'All' : st}
-                      </button>
-                    ))}
+          {/* SUBTAB 1: WORKFLOW BUNDLES & COMPOSITE ASSETS (Layer 2 Governance) */}
+          {((activeTab === 'team_settings' ? teamSettingsSubTab : activeTab) === 'bundles' || (activeTab === 'team_settings' ? teamSettingsSubTab : activeTab) === 'approvals') && (
+            <div className="space-y-5 font-mono text-xs" id="team-bundles-container">
+              {/* Header Banner */}
+              <div className="bg-blue-50/70 border border-blue-200/80 rounded-2xl p-5 text-slate-800 space-y-2 shadow-xs">
+                <div className="flex items-center space-x-3">
+                  <div className="p-2.5 bg-blue-100 text-[#155DFC] border border-blue-200 rounded-xl">
+                    <Boxes size={22} />
                   </div>
+                  <div>
+                    <div className="flex items-center space-x-2">
+                      <h3 className="text-sm font-bold tracking-tight text-blue-950 uppercase">
+                        Team Workflow Bundles &amp; Composite Assets
+                      </h3>
+                      <span className="text-[9px] bg-blue-100 text-blue-800 border border-blue-200 px-2 py-0.5 rounded-full font-bold">
+                        Layer 2 Governance
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-blue-800/80 font-sans mt-0.5">
+                      Deterministic operational bundles linking Flowchart DAGs, Validation Boxes, and DB Table Mappings. Multi-tier promotion adheres to Maker-Checker dual authorization.
+                    </p>
+                  </div>
+                </div>
+              </div>
 
-                  <button
-                    type="button"
-                    onClick={() => setShowCreateProposalModal(true)}
-                    className="px-3 py-1.5 bg-[#155DFC] hover:bg-[#155DFC]/90 text-white font-bold rounded-xl flex items-center space-x-1.5 transition shadow-2xs cursor-pointer text-xs"
-                  >
-                    <Plus size={14} />
-                    <span>New Setting Proposal</span>
-                  </button>
+              {/* Hands-On Checker Testing & Staged Assets Console */}
+              {currentTeam && (
+                <TeamStagedAssetsConsole
+                  currentTeam={currentTeam}
+                  currentUser={currentUser}
+                />
+              )}
+
+              {bundleActionMsg && (
+                <div className={`p-3 rounded-xl border text-xs font-mono font-medium flex items-center space-x-2 ${
+                  bundleActionMsg.type === 'success' ? 'bg-emerald-50 text-emerald-800 border-emerald-200' : 'bg-rose-50 text-rose-800 border-rose-200'
+                }`}>
+                  {bundleActionMsg.type === 'success' ? <CheckCircle2 size={16} /> : <AlertCircle size={16} />}
+                  <span>{bundleActionMsg.text}</span>
                 </div>
               )}
-            </div>
 
-            {/* SUB-VIEW 1: TRANSACTION RESOLUTIONS */}
-            {approvalsSubTab === 'resolutions' && (
-              <div className="space-y-4">
-                <h4 className="font-bold text-slate-800 uppercase tracking-wider text-xs flex items-center gap-2">
-                  <ShieldCheck className="text-purple-600" size={16} />
-                  <span>Pending Discrepancy Resolution Proposals ({pendingResolutions.length})</span>
-                </h4>
+              {/* Workflow Bundles Grid */}
+              <div className="bg-white border border-slate-200/80 rounded-2xl p-6 shadow-sm space-y-4">
+                <div className="flex items-center justify-between border-b border-slate-200 pb-3">
+                  <div className="flex items-center space-x-2">
+                    <span className="font-bold text-slate-800 text-sm">Published Team Bundles</span>
+                    <span className="px-2 py-0.5 rounded-full text-[10px] bg-blue-100 text-blue-800 font-bold">
+                      {teamBundles.length} Bundles
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => loadGovernanceData()}
+                    className="p-1.5 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-lg transition cursor-pointer"
+                    title="Refresh Bundles"
+                  >
+                    <RefreshCw size={14} />
+                  </button>
+                </div>
 
-                {pendingResolutions.length === 0 ? (
-                  <div className="p-10 text-center bg-slate-50 border border-slate-200 rounded-xl space-y-2">
-                    <ShieldCheck size={36} className="mx-auto text-slate-300" />
-                    <h5 className="font-bold text-slate-700">No pending resolution requests</h5>
-                    <p className="text-[11px] text-slate-500 font-sans">All transaction resolution proposals have been reviewed and processed.</p>
+                {teamBundles.length === 0 ? (
+                  <div className="text-center py-10 space-y-3 bg-slate-50/50 rounded-xl border border-dashed border-slate-200 p-6">
+                    <div className="w-12 h-12 rounded-2xl bg-blue-50 border border-blue-200 flex items-center justify-center text-[#155DFC] mx-auto shadow-xs">
+                      <Boxes size={24} />
+                    </div>
+                    <div className="space-y-1">
+                      <h4 className="font-bold text-slate-800 text-sm">No Workflow Bundles Configured Yet</h4>
+                      <p className="text-xs text-slate-500 max-w-md mx-auto font-sans">
+                        Assemble your Flowchart DAGs and attached Validation Boxes into versioned bundles in Workflow Studio to enable team deployment and enterprise promotion.
+                      </p>
+                    </div>
                   </div>
                 ) : (
-                  <div className="space-y-4">
-                    {pendingResolutions.map((proposal) => {
-                      const isSelfMaker = proposal.makerId === currentUser.id;
-                      return (
-                        <div key={proposal.id} className="p-4 bg-slate-50 border border-purple-200 rounded-xl space-y-3">
-                          <div className="flex items-center justify-between border-b border-slate-200 pb-2">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {teamBundles.map(bundle => (
+                      <div 
+                        key={bundle.id}
+                        className="bg-slate-50/80 border border-slate-200/90 rounded-2xl p-4 space-y-3 hover:border-blue-300 transition-all shadow-2xs"
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div>
                             <div className="flex items-center space-x-2">
-                              <span className="px-2 py-0.5 bg-purple-100 text-purple-800 font-bold rounded text-[10px]">
-                                {proposal.proposedAction}
+                              <span className="px-2 py-0.5 bg-blue-100 text-blue-900 border border-blue-200 font-mono font-bold text-[10px] rounded-md">
+                                {bundle.bundleCode}
                               </span>
-                              <span className="text-slate-800 font-bold">Task: {proposal.taskId}</span>
-                              <span className="text-slate-500 text-[10px]">Txn: {proposal.transactionId}</span>
+                              <span className="text-[10px] font-mono text-slate-500 font-bold">
+                                v{bundle.version}
+                              </span>
                             </div>
-                            <span className="text-slate-400 text-[10px]">
-                              Submitted: {new Date(proposal.createdAt).toLocaleString()}
+                            <h4 className="font-bold text-slate-900 text-sm mt-1">{bundle.name}</h4>
+                            {bundle.description && (
+                              <p className="text-[11px] text-slate-600 font-sans mt-0.5 line-clamp-2">
+                                {bundle.description}
+                              </p>
+                            )}
+                          </div>
+                          <span className={`px-2 py-0.5 rounded-full text-[9px] font-bold shrink-0 ${
+                            bundle.status === 'APPROVED' ? 'bg-emerald-100 text-emerald-800 border border-emerald-200' :
+                            bundle.status === 'PENDING_CHECKER_REVIEW' ? 'bg-amber-100 text-amber-800 border border-amber-200' :
+                            bundle.status === 'REJECTED' ? 'bg-rose-100 text-rose-800 border border-rose-200' :
+                            'bg-slate-200 text-slate-700'
+                          }`}>
+                            {bundle.status}
+                          </span>
+                        </div>
+
+                        {/* Bundle Metadata Pills */}
+                        <div className="flex flex-wrap gap-2 text-[10px] font-mono text-slate-600">
+                          <span className="px-2 py-0.5 bg-white border border-slate-200 rounded-md">
+                            Scope: <strong className="text-slate-800">{bundle.scope}</strong>
+                          </span>
+                          <span className="px-2 py-0.5 bg-white border border-slate-200 rounded-md">
+                            Boxes: <strong className="text-slate-800">{bundle.validationBoxIds?.length || 0}</strong>
+                          </span>
+                          <span className="px-2 py-0.5 bg-white border border-slate-200 rounded-md">
+                            DB Checks: <strong className="text-slate-800">{bundle.dbCheckIds?.length || 0}</strong>
+                          </span>
+                          <span className="px-2 py-0.5 bg-white border border-slate-200 rounded-md">
+                            Maker: <strong className="text-slate-800">{bundle.makerName}</strong>
+                          </span>
+                        </div>
+
+                        {/* Promotion Actions */}
+                        <div className="pt-2 border-t border-slate-200/80 flex items-center justify-between gap-2">
+                          <div className="text-[10px] text-slate-500 font-mono">
+                            {bundle.status === 'APPROVED' && bundle.checkerName && (
+                              <span>Authorized by {bundle.checkerName}</span>
+                            )}
+                          </div>
+
+                          {bundle.scope !== 'GLOBAL_ENTERPRISE' && bundle.status !== 'PENDING_CHECKER_REVIEW' && (
+                            <button
+                              type="button"
+                              disabled={promotingBundleId === bundle.id}
+                              onClick={() => handlePromoteBundle(bundle)}
+                              className="px-3 py-1 bg-[#155DFC] hover:bg-blue-600 text-white rounded-xl text-xs font-bold font-mono transition cursor-pointer flex items-center space-x-1 shadow-2xs disabled:opacity-50"
+                            >
+                              <ArrowUpRight size={13} />
+                              <span>{promotingBundleId === bundle.id ? 'Submitting...' : 'Promote to Enterprise'}</span>
+                            </button>
+                          )}
+
+                          {bundle.status === 'PENDING_CHECKER_REVIEW' && (
+                            <span className="text-[10px] text-amber-700 font-mono font-bold flex items-center space-x-1">
+                              <Clock size={12} />
+                              <span>Pending Checker in Authority Center</span>
                             </span>
-                          </div>
+                          )}
 
-                          <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-slate-700">
-                            <div>
-                              <span className="text-[10px] text-slate-500 uppercase font-bold block">Maker Analyst</span>
-                              <span className="font-bold text-slate-900">@{proposal.makerName}</span>
-                            </div>
-                            <div>
-                              <span className="text-[10px] text-slate-500 uppercase font-bold block">Proposed Status</span>
-                              <span className="font-bold text-emerald-700">{proposal.proposedStatus}</span>
-                            </div>
-                          </div>
-
-                          <div className="bg-white p-3 rounded-lg border border-slate-200 text-slate-800">
-                            <span className="text-[10px] text-slate-400 font-bold uppercase block mb-1">Justification Note</span>
-                            <p className="text-xs font-sans whitespace-pre-wrap">{proposal.justificationNote}</p>
-                          </div>
-
-                          {/* Anti-Self-Approval Enforcement Warning */}
-                          {isSelfMaker ? (
-                            <div className="p-2.5 bg-amber-50 border border-amber-200 rounded-lg text-amber-900 text-[11px] flex items-center gap-2">
-                              <AlertCircle size={14} className="text-amber-600 shrink-0" />
-                              <span>Anti-Self-Approval Enforcement: You are the Maker of this proposal and cannot approve your own submission.</span>
-                            </div>
-                          ) : (
-                            <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 pt-2 border-t border-slate-200">
-                              <input
-                                type="text"
-                                placeholder="Optional feedback / rejection reason..."
-                                value={reviewReason[proposal.id] || ''}
-                                onChange={(e) => setReviewReason(prev => ({ ...prev, [proposal.id]: e.target.value }))}
-                                className="flex-1 px-3 py-1.5 bg-white border border-slate-300 rounded-lg text-xs font-sans"
-                              />
-                              <div className="flex items-center space-x-2 shrink-0">
-                                <button
-                                  onClick={() => handleReviewProposal(proposal.id, 'REJECT')}
-                                  className="px-3 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-800 border border-rose-300 rounded-lg font-bold transition cursor-pointer"
-                                >
-                                  Reject Proposal
-                                </button>
-                                <button
-                                  onClick={() => handleReviewProposal(proposal.id, 'APPROVE')}
-                                  className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-bold transition shadow-2xs cursor-pointer flex items-center space-x-1"
-                                >
-                                  <CheckCircle2 size={13} />
-                                  <span>Approve & Commit</span>
-                                </button>
-                              </div>
-                            </div>
+                          {bundle.scope === 'GLOBAL_ENTERPRISE' && bundle.status === 'APPROVED' && (
+                            <span className="text-[10px] text-emerald-700 font-mono font-bold flex items-center space-x-1">
+                              <ShieldCheck size={12} />
+                              <span>Enterprise Active</span>
+                            </span>
                           )}
                         </div>
-                      );
-                    })}
+                      </div>
+                    ))}
                   </div>
                 )}
               </div>
-            )}
-
-            {/* SUB-VIEW 2: WORKSPACE SETTING PROPOSALS */}
-            {approvalsSubTab === 'settings' && (
-              <div className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <h4 className="font-bold text-slate-800 uppercase tracking-wider text-xs flex items-center gap-2">
-                    <Sliders className="text-blue-600" size={16} />
-                    <span>Workspace Setting Proposals & Escalations</span>
-                  </h4>
-                  <span className="text-[11px] text-slate-500 font-mono">
-                    Team: {currentTeam?.name || currentTeamId || 'All'}
-                  </span>
-                </div>
-
-                {(() => {
-                  const filtered = settingProposals.filter(p => {
-                    if (settingStatusFilter === 'ALL') return true;
-                    return p.status === settingStatusFilter;
-                  });
-
-                  if (filtered.length === 0) {
-                    return (
-                      <div className="p-10 text-center bg-slate-50 border border-slate-200 rounded-xl space-y-2">
-                        <Sliders size={36} className="mx-auto text-slate-300" />
-                        <h5 className="font-bold text-slate-700">No workspace setting proposals found</h5>
-                        <p className="text-[11px] text-slate-500 font-sans">
-                          Team members can propose changes to workspace settings, table mappings, or validation workflows for team review.
-                        </p>
-                      </div>
-                    );
-                  }
-
-                  return (
-                    <div className="space-y-4">
-                      {filtered.map((proposal) => {
-                        const isSelfMaker = proposal.makerId === currentUser.id;
-                        const isPending = proposal.status === 'PENDING_TEAM_APPROVAL' || proposal.status === 'ESCALATED_TO_TARGET_TEAM';
-                        const isEscalated = proposal.status === 'ESCALATED_TO_TARGET_TEAM';
-
-                        return (
-                          <div 
-                            key={proposal.id} 
-                            className={`p-4 rounded-xl border space-y-3 transition-all ${
-                              isEscalated
-                                ? 'bg-purple-50/40 border-purple-200 shadow-2xs'
-                                : proposal.status === 'APPROVED'
-                                ? 'bg-emerald-50/20 border-emerald-200'
-                                : proposal.status === 'REJECTED'
-                                ? 'bg-rose-50/20 border-rose-200'
-                                : 'bg-slate-50 border-slate-200'
-                            }`}
-                          >
-                            {/* Proposal Header */}
-                            <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-2.5">
-                              <div className="flex items-center space-x-2 flex-wrap gap-y-1">
-                                <span className="px-2 py-0.5 bg-blue-100 text-blue-800 font-bold rounded text-[10px]">
-                                  {proposal.settingType}
-                                </span>
-                                <span className="font-bold text-slate-900">{proposal.title}</span>
-                                <span className="text-[10px] text-slate-500 bg-white border border-slate-200 px-1.5 py-0.5 rounded">
-                                  Key: {proposal.settingKey}
-                                </span>
-                              </div>
-
-                              <div className="flex items-center space-x-2">
-                                <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase flex items-center space-x-1 ${
-                                  proposal.status === 'PENDING_TEAM_APPROVAL' ? 'bg-amber-100 text-amber-800 border border-amber-300' :
-                                  proposal.status === 'ESCALATED_TO_TARGET_TEAM' ? 'bg-purple-100 text-purple-800 border border-purple-300' :
-                                  proposal.status === 'APPROVED' ? 'bg-emerald-100 text-emerald-800 border border-emerald-300' :
-                                  'bg-rose-100 text-rose-800 border border-rose-300'
-                                }`}>
-                                  {proposal.status === 'ESCALATED_TO_TARGET_TEAM' && <ArrowUpRight size={11} />}
-                                  <span>{proposal.status.replace(/_/g, ' ')}</span>
-                                </span>
-
-                                <span className="text-slate-400 text-[10px]">
-                                  {new Date(proposal.createdAt).toLocaleDateString()}
-                                </span>
-                              </div>
-                            </div>
-
-                            {/* Maker & Target Info */}
-                            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 text-slate-700 text-[11px]">
-                              <div>
-                                <span className="text-[10px] text-slate-500 uppercase font-bold block">Maker Analyst</span>
-                                <span className="font-bold text-slate-900">@{proposal.makerName}</span>
-                                <span className="text-[10px] text-slate-400 block font-sans">Team: {proposal.teamName || proposal.teamId}</span>
-                              </div>
-
-                              {isEscalated && (
-                                <div className="p-2 bg-purple-100/60 border border-purple-200 rounded-lg sm:col-span-2 space-y-0.5">
-                                  <span className="text-[10px] text-purple-900 uppercase font-bold flex items-center gap-1">
-                                    <ArrowUpRight size={12} />
-                                    <span>Escalation Matrix Target: {proposal.escalatedTeamName || proposal.escalatedTeamId}</span>
-                                  </span>
-                                  <p className="text-[10px] text-purple-800 font-sans">
-                                    Escalated by @{proposal.escalatedByName || proposal.escalatedById}: "{proposal.escalationReason || 'Forwarded to supervisor unit'}"
-                                  </p>
-                                </div>
-                              )}
-
-                              {proposal.checkerName && (
-                                <div>
-                                  <span className="text-[10px] text-slate-500 uppercase font-bold block">Checker Reviewer</span>
-                                  <span className="font-bold text-slate-900">@{proposal.checkerName}</span>
-                                  {proposal.checkerFeedback && (
-                                    <span className="text-[10px] text-slate-600 block font-sans italic">"{proposal.checkerFeedback}"</span>
-                                  )}
-                                </div>
-                              )}
-                            </div>
-
-                            {/* Justification */}
-                            <div className="bg-white p-3 rounded-lg border border-slate-200 text-slate-800">
-                              <span className="text-[10px] text-slate-400 font-bold uppercase block mb-1">Proposal Justification</span>
-                              <p className="text-xs font-sans leading-relaxed whitespace-pre-wrap">{proposal.justification}</p>
-                            </div>
-
-                            {/* Proposed Changes Preview */}
-                            <details className="bg-slate-900 text-slate-100 rounded-lg p-3 border border-slate-800">
-                              <summary className="text-[10px] font-bold text-slate-300 uppercase cursor-pointer hover:text-white flex items-center space-x-1">
-                                <FileCode size={12} />
-                                <span>Inspect Proposed Changes Payload (JSON)</span>
-                              </summary>
-                              <pre className="mt-2 text-[10px] font-mono text-emerald-300 overflow-x-auto p-2 bg-slate-950 rounded">
-                                {JSON.stringify(proposal.proposedChanges, null, 2)}
-                              </pre>
-                            </details>
-
-                            {/* Actions & Anti-Self-Approval Enforcement */}
-                            {isPending && (
-                              <div>
-                                {isSelfMaker ? (
-                                  <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 p-2.5 bg-amber-50 border border-amber-200 rounded-lg text-amber-900 text-[11px]">
-                                    <div className="flex items-center gap-2">
-                                      <AlertCircle size={14} className="text-amber-600 shrink-0" />
-                                      <span>Anti-Self-Approval Enforcement: You are the Maker of this setting proposal. A team Checker must review it.</span>
-                                    </div>
-                                    <button
-                                      type="button"
-                                      onClick={() => handleOpenProposalEscalation(proposal)}
-                                      className="px-3 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded font-bold transition flex items-center space-x-1 shrink-0 cursor-pointer shadow-2xs"
-                                    >
-                                      <ArrowUpRight size={12} />
-                                      <span>Escalate to Matrix Target</span>
-                                    </button>
-                                  </div>
-                                ) : (
-                                  <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-3 pt-2 border-t border-slate-200">
-                                    <input
-                                      type="text"
-                                      placeholder="Checker review feedback / notes..."
-                                      value={settingProposalFeedback[proposal.id] || ''}
-                                      onChange={(e) => setSettingProposalFeedback(prev => ({ ...prev, [proposal.id]: e.target.value }))}
-                                      className="flex-1 px-3 py-1.5 bg-white border border-slate-300 rounded-lg text-xs font-sans"
-                                    />
-                                    <div className="flex items-center space-x-2 shrink-0">
-                                      <button
-                                        type="button"
-                                        onClick={() => handleOpenProposalEscalation(proposal)}
-                                        className="px-3 py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-300 rounded-lg font-bold transition cursor-pointer flex items-center space-x-1"
-                                        title="Escalate setting proposal to a higher unit"
-                                      >
-                                        <ArrowUpRight size={13} />
-                                        <span>Escalate</span>
-                                      </button>
-                                      <button
-                                        type="button"
-                                        onClick={() => handleReviewSettingProposal(proposal.id, 'REJECT')}
-                                        className="px-3 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-800 border border-rose-300 rounded-lg font-bold transition cursor-pointer"
-                                      >
-                                        Reject
-                                      </button>
-                                      <button
-                                        type="button"
-                                        onClick={() => handleReviewSettingProposal(proposal.id, 'APPROVE')}
-                                        className="px-4 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-bold transition shadow-2xs cursor-pointer flex items-center space-x-1"
-                                      >
-                                        <CheckCircle2 size={13} />
-                                        <span>Approve & Apply</span>
-                                      </button>
-                                    </div>
-                                  </div>
-                                )}
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  );
-                })()}
-              </div>
-            )}
-          </div>
-        </div>
-      )}
+            </div>
+          )}
 
           {/* SUBTAB 2: CROSS-TEAM VISIBILITY GRANTS */}
           {((activeTab === 'team_settings' ? teamSettingsSubTab : activeTab) === 'grants') && (
@@ -2993,8 +2817,14 @@ export default function TeamWorkspace({
             </div>
           )}
 
+          {/* SUBTAB: CHANNELS & WEBHOOKS */}
+          {((activeTab === 'team_settings' ? teamSettingsSubTab : activeTab) === 'channels') && (
+            <TeamChannelsTab currentTeam={currentTeam} currentUser={currentUser} />
+          )}
+
         </div>
       )}
+
 
       {/* MODAL: ADD TASK */}
       {showAddTaskModal && (

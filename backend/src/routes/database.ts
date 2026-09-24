@@ -1,7 +1,6 @@
 import { Router, Request, Response } from 'express';
-import mongoose from 'mongoose';
 import net from 'net';
-import { isMongoConnected, getMongoStatus, connectDB, disconnectDB } from '../config/db.js';
+import { isMongoConnected, getMongoStatus, connectDB, disconnectDB, mongoose } from '../config/db.js';
 import { queryPg } from '../config/postgres.js';
 import { store } from '../store/dataStore.js';
 import { repo } from '../store/repository.js';
@@ -2598,13 +2597,16 @@ databaseRouter.get('/access-requests', async (_req: Request, res: Response) => {
 databaseRouter.post('/access-requests', async (req: Request, res: Response) => {
   try {
     const reqData: Partial<DbAccessRequest> = req.body;
+    if (!reqData.dbId) {
+      return res.status(400).json({ error: 'dbId is required for access requests' });
+    }
     const newReq: DbAccessRequest = {
       id: reqData.id || `dbreq-${Date.now()}`,
       userId: reqData.userId || 'usr-1',
       username: reqData.username || 'admin',
       userRole: reqData.userRole || 'operational',
-      dbId: reqData.dbId || 'db-1',
-      dbName: reqData.dbName || 'Core DB',
+      dbId: reqData.dbId,
+      dbName: reqData.dbName || reqData.dbId,
       requestedPrivilege: reqData.requestedPrivilege || 'SELECT',
       reason: reqData.reason || 'Operational investigation',
       status: 'pending',

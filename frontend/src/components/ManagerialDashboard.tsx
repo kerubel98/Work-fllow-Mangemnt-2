@@ -3,16 +3,18 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Issue, HashtagPreset, User, Team, IssueStatus, IssuePriority } from '../types';
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, BarChart, Bar, Cell } from 'recharts';
 import { api } from '../api/client';
+import { useGovernance } from '../context/GovernanceContext';
 import { 
   TrendingUp, CheckCircle, Shield, FileSpreadsheet, Percent, Clock, 
   Users, UserPlus, Plus, Trash2, UserX, Layers, Info, X, ShieldAlert,
   Briefcase, Check, Search, Filter, CheckSquare, ArrowUpRight, CheckCircle2,
   ListTodo, UserCheck, LayoutDashboard, SlidersHorizontal, RefreshCw, AlertCircle,
-  Tag, Target, Award, ArrowRight, GitCommit, FileCode, CheckCheck, Sparkles, Save
+  Tag, Target, Award, ArrowRight, GitCommit, FileCode, CheckCheck, Sparkles, Save,
+  Activity, CheckSquare2, Inbox
 } from 'lucide-react';
 
 interface ManagerialDashboardProps {
@@ -25,7 +27,7 @@ interface ManagerialDashboardProps {
   onUpdateTeam?: (id: string, updates: Partial<Team>) => void;
   onDeleteTeam?: (id: string) => void;
   onUpdateIssue?: (issueId: string, updatedFields: Partial<Issue>) => void;
-  onChangeTab?: (tab: string) => void;
+  onChangeTab?: (tab: string, issueId?: string) => void;
 }
 
 export default function ManagerialDashboard({ 
@@ -57,6 +59,7 @@ export default function ManagerialDashboard({
     totalTrackedTags: number;
   } | null>(null);
   const [isLoadingAnalytics, setIsLoadingAnalytics] = useState(false);
+  const [externalSummary, setExternalSummary] = useState<any | null>(null);
 
   // Manager KPI Attachment State
   const [editingKpiTag, setEditingKpiTag] = useState<string | null>(null);
@@ -66,13 +69,50 @@ export default function ManagerialDashboard({
   const [isSavingKpi, setIsSavingKpi] = useState(false);
   const [kpiSuccessMsg, setKpiSuccessMsg] = useState<string | null>(null);
 
+  // Governance Context hook (Maker-Checker Queue)
+  let governancePendingCount = 0;
+  let governanceApprovedCount = 0;
+  let governanceEscalatedCount = 0;
+  try {
+    const gov = useGovernance();
+    governancePendingCount = gov.pendingCount;
+    governanceApprovedCount = gov.approvedCount;
+    governanceEscalatedCount = gov.escalatedCount;
+  } catch {
+    // Rendered without provider
+  }
+
+  const [lastSyncedTime, setLastSyncedTime] = useState<string>(() => new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
+
+  const handleRefreshTelemetry = async () => {
+    setIsLoadingAnalytics(true);
+    try {
+      const [res, extRes] = await Promise.all([
+        api.getHashtagAnalytics().catch(() => null),
+        api.getExternalRequestSummary().catch(() => null)
+      ]);
+      if (res) setHashtagAnalyticsData(res);
+      if (extRes) setExternalSummary(extRes);
+      setLastSyncedTime(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
+    } catch (e) {
+      console.warn('Could not refresh telemetry:', e);
+    } finally {
+      setIsLoadingAnalytics(false);
+    }
+  };
+
   useEffect(() => {
     setIsLoadingAnalytics(true);
-    api.getHashtagAnalytics()
-      .then(res => {
+    Promise.all([
+      api.getHashtagAnalytics().catch(() => null),
+      api.getExternalRequestSummary().catch(() => null)
+    ])
+      .then(([res, extRes]) => {
         if (res) setHashtagAnalyticsData(res);
+        if (extRes) setExternalSummary(extRes);
+        setLastSyncedTime(new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }));
       })
-      .catch(e => console.warn('Could not load hashtag analytics:', e))
+      .catch(e => console.warn('Could not load hashtag analytics / external requests:', e))
       .finally(() => setIsLoadingAnalytics(false));
   }, []);
 
@@ -169,15 +209,46 @@ export default function ManagerialDashboard({
     return matchesScope && matchesSearch && matchesStatus && matchesPriority;
   });
 
-  // 3. Prepare Recharts time series data
-  const timeSeriesData = [
-    { day: 'Mon', Raised: 2, Resolved: 1 },
-    { day: 'Tue', Raised: 4, Resolved: 3 },
-    { day: 'Wed', Raised: 1, Resolved: 2 },
-    { day: 'Thu', Raised: 5, Resolved: 4 },
-    { day: 'Fri', Raised: 3, Resolved: 2 },
-    { day: 'Sat', Raised: openIssues + investigatingIssues, Resolved: resolvedIssues },
-  ];
+  // 3. Dynamic Recharts time series data derived from live PostgreSQL issues
+  const timeSeriesData = useMemo(() => {
+    const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    const result: { day: string; Raised: number; Resolved: number }[] = [];
+    const now = new Date();
+
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date(now);
+      d.setDate(d.getDate() - i);
+      const dateStr = d.toISOString().split('T')[0];
+      const dayName = days[d.getDay()];
+
+      const raisedOnDay = issues.filter(issue => {
+        if (!issue.createdAt) return false;
+        return issue.createdAt.startsWith(dateStr);
+      }).length;
+
+      const resolvedOnDay = issues.filter(issue => {
+        const isResolved = issue.status === 'Resolved' || issue.status === 'Closed';
+        if (!isResolved) return false;
+        const dateToCheck = (issue as any).resolvedAt || issue.updatedAt || issue.createdAt;
+        return Boolean(dateToCheck && String(dateToCheck).startsWith(dateStr));
+      }).length;
+
+      result.push({
+        day: dayName,
+        Raised: raisedOnDay,
+        Resolved: resolvedOnDay
+      });
+    }
+
+    // Fallback display if timestamps are historical: show active totals on latest day
+    const totalRaised = result.reduce((s, r) => s + r.Raised, 0);
+    if (totalRaised === 0 && issues.length > 0) {
+      result[result.length - 1].Raised = openIssues + investigatingIssues;
+      result[result.length - 1].Resolved = resolvedIssues;
+    }
+
+    return result;
+  }, [issues, openIssues, investigatingIssues, resolvedIssues]);
 
   // 4. Priority distribution data
   const priorityCount = { Low: 0, Medium: 0, High: 0, Critical: 0 };
@@ -274,20 +345,33 @@ export default function ManagerialDashboard({
               <LayoutDashboard size={18} />
             </div>
             <div>
-              <div className="flex items-center space-x-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <span className="text-[10px] font-bold uppercase tracking-widest text-blue-400 font-mono">Unified Operational Level Active</span>
-                <span className="bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[10px] px-2 py-0.5 rounded-full font-mono font-medium">
-                  Full Administrative Access
+                <span className="bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[10px] px-2 py-0.5 rounded-full font-mono font-medium flex items-center gap-1">
+                  <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></span>
+                  PostgreSQL Live
+                </span>
+                <span className="text-[10px] text-slate-400 font-mono">
+                  Synced: {lastSyncedTime}
                 </span>
               </div>
               <h2 className="text-sm font-bold text-white mt-0.5">Operational & Task Dashboard</h2>
               <p className="text-[11px] text-slate-300 mt-0.5 leading-relaxed max-w-3xl">
-                All users operate at an equal level with full privileges. Track task completion progress, monitor tasks assigned to you or created by you, manage operational teams, and execute database fixes.
+                Real-time operational control room. Monitor throughput, review pending maker-checker governance proposals, enforce dual authorization, and resolve discrepancies across hashtags.
               </p>
             </div>
           </div>
 
           <div className="flex items-center space-x-2 shrink-0">
+            <button
+              onClick={handleRefreshTelemetry}
+              disabled={isLoadingAnalytics}
+              className="px-2.5 py-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-50 text-slate-300 border border-slate-700 text-xs font-mono rounded-lg flex items-center space-x-1.5 transition-colors cursor-pointer"
+              title="Refresh live telemetry from PostgreSQL"
+            >
+              <RefreshCw size={12} className={isLoadingAnalytics ? 'animate-spin text-blue-400' : ''} />
+              <span>Refresh</span>
+            </button>
             <button
               onClick={() => setShowCreateModal(true)}
               className="px-3 py-1.5 bg-[#155DFC] hover:bg-[#155DFC]/90 text-white text-xs font-bold rounded-lg flex items-center justify-center space-x-1.5 shadow-xs transition-colors cursor-pointer"
@@ -392,144 +476,196 @@ export default function ManagerialDashboard({
 
       {activeDashboardTab === 'overview' && (
         <div className="space-y-6">
-          {/* Task Progress KPI Cards Section */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+          {/* Task Progress & Control Room KPI Cards Section */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         
         {/* Card 1: Tasks Assigned to Me */}
-        <div className="bg-white border border-slate-200/80 rounded-2xl p-5 space-y-3 shadow-sm hover:border-blue-300 transition-all">
+        <div 
+          onClick={() => setDashboardTaskScope('MY_ASSIGNED')}
+          className="bg-white border border-slate-200/80 rounded-2xl p-4.5 space-y-3 shadow-xs hover:border-blue-400 hover:shadow-sm transition-all cursor-pointer group"
+          id="card-my-assigned"
+        >
           <div className="flex justify-between items-start">
             <div className="flex items-center space-x-2.5">
-              <div className="p-2.5 bg-blue-50 text-blue-600 rounded-xl border border-blue-100">
-                <CheckSquare size={18} />
+              <div className="p-2 bg-blue-50 text-blue-600 rounded-xl border border-blue-100 group-hover:bg-blue-600 group-hover:text-white transition-colors">
+                <CheckSquare size={17} />
               </div>
               <div>
-                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider font-mono block">My Task Assignment</span>
-                <h4 className="text-sm font-bold text-slate-900">Assigned To Me</h4>
+                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider font-mono block">My Workload</span>
+                <h4 className="text-xs font-bold text-slate-900">Assigned To Me</h4>
               </div>
             </div>
-            <span className="text-xs font-bold font-mono px-2 py-0.5 rounded-full bg-blue-100 text-blue-800">
+            <span className="text-[11px] font-bold font-mono px-2 py-0.5 rounded-full bg-blue-100 text-blue-800">
               {myAssignedProgress}% Done
             </span>
           </div>
 
           <div>
-            <div className="flex justify-between items-baseline mb-1 font-mono text-xs">
-              <span className="text-slate-500 text-[11px]">Resolution Progress</span>
-              <span className="font-bold text-slate-800">{myAssignedResolved} / {myAssignedTotal} Resolved</span>
+            <div className="flex justify-between items-baseline mb-1 font-mono text-[11px]">
+              <span className="text-slate-500">Resolved Ratio</span>
+              <span className="font-bold text-slate-800">{myAssignedResolved} / {myAssignedTotal}</span>
             </div>
-            <div className="w-full bg-slate-100 h-2.5 rounded-full overflow-hidden">
+            <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden">
               <div 
-                className="bg-gradient-to-r from-blue-500 to-indigo-600 h-full rounded-full transition-all duration-500"
+                className="bg-blue-600 h-full rounded-full transition-all duration-500"
                 style={{ width: `${myAssignedProgress}%` }}
               />
             </div>
           </div>
 
-          <div className="grid grid-cols-3 gap-1.5 pt-1 text-[10px] font-mono text-center">
-            <div className="bg-amber-50 text-amber-800 border border-amber-100 p-1.5 rounded-lg">
+          <div className="grid grid-cols-3 gap-1 pt-1 text-[10px] font-mono text-center">
+            <div className="bg-amber-50 text-amber-800 border border-amber-100 py-1 rounded-md">
               <span className="block font-bold text-xs">{myAssignedOpen}</span>
-              <span className="text-slate-500">Open</span>
+              <span className="text-slate-500 text-[9px]">Open</span>
             </div>
-            <div className="bg-sky-50 text-sky-800 border border-sky-100 p-1.5 rounded-lg">
+            <div className="bg-sky-50 text-sky-800 border border-sky-100 py-1 rounded-md">
               <span className="block font-bold text-xs">{myAssignedInvestigating}</span>
-              <span className="text-slate-500">In Progress</span>
+              <span className="text-slate-500 text-[9px]">Active</span>
             </div>
-            <div className="bg-emerald-50 text-emerald-800 border border-emerald-100 p-1.5 rounded-lg">
+            <div className="bg-emerald-50 text-emerald-800 border border-emerald-100 py-1 rounded-md">
               <span className="block font-bold text-xs">{myAssignedResolved}</span>
-              <span className="text-slate-500">Resolved</span>
+              <span className="text-slate-500 text-[9px]">Done</span>
             </div>
           </div>
         </div>
 
-        {/* Card 2: Tasks Created by Me */}
-        <div className="bg-white border border-slate-200/80 rounded-2xl p-5 space-y-3 shadow-sm hover:border-emerald-300 transition-all">
+        {/* Card 2: Overall Workspace Throughput & Velocity */}
+        <div 
+          onClick={() => onChangeTab?.('workspace')}
+          className="bg-white border border-slate-200/80 rounded-2xl p-4.5 space-y-3 shadow-xs hover:border-purple-400 hover:shadow-sm transition-all cursor-pointer group"
+          id="card-workspace-velocity"
+        >
           <div className="flex justify-between items-start">
             <div className="flex items-center space-x-2.5">
-              <div className="p-2.5 bg-emerald-50 text-emerald-600 rounded-xl border border-emerald-100">
-                <UserCheck size={18} />
+              <div className="p-2 bg-purple-50 text-purple-600 rounded-xl border border-purple-100 group-hover:bg-purple-600 group-hover:text-white transition-colors">
+                <TrendingUp size={17} />
               </div>
               <div>
-                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider font-mono block">My Submitted Tasks</span>
-                <h4 className="text-sm font-bold text-slate-900">Created By Me</h4>
+                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider font-mono block">Throughput</span>
+                <h4 className="text-xs font-bold text-slate-900">Total Completion</h4>
               </div>
             </div>
-            <span className="text-xs font-bold font-mono px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800">
-              {myCreatedProgress}% Done
-            </span>
-          </div>
-
-          <div>
-            <div className="flex justify-between items-baseline mb-1 font-mono text-xs">
-              <span className="text-slate-500 text-[11px]">Resolution Progress</span>
-              <span className="font-bold text-slate-800">{myCreatedResolved} / {myCreatedTotal} Resolved</span>
-            </div>
-            <div className="w-full bg-slate-100 h-2.5 rounded-full overflow-hidden">
-              <div 
-                className="bg-gradient-to-r from-emerald-500 to-teal-600 h-full rounded-full transition-all duration-500"
-                style={{ width: `${myCreatedProgress}%` }}
-              />
-            </div>
-          </div>
-
-          <div className="grid grid-cols-3 gap-1.5 pt-1 text-[10px] font-mono text-center">
-            <div className="bg-amber-50 text-amber-800 border border-amber-100 p-1.5 rounded-lg">
-              <span className="block font-bold text-xs">{myCreatedOpen}</span>
-              <span className="text-slate-500">Open</span>
-            </div>
-            <div className="bg-sky-50 text-sky-800 border border-sky-100 p-1.5 rounded-lg">
-              <span className="block font-bold text-xs">{myCreatedInvestigating}</span>
-              <span className="text-slate-500">In Progress</span>
-            </div>
-            <div className="bg-emerald-50 text-emerald-800 border border-emerald-100 p-1.5 rounded-lg">
-              <span className="block font-bold text-xs">{myCreatedResolved}</span>
-              <span className="text-slate-500">Resolved</span>
-            </div>
-          </div>
-        </div>
-
-        {/* Card 3: Overall Workspace Completion SLA */}
-        <div className="bg-white border border-slate-200/80 rounded-2xl p-5 space-y-3 shadow-sm hover:border-purple-300 transition-all">
-          <div className="flex justify-between items-start">
-            <div className="flex items-center space-x-2.5">
-              <div className="p-2.5 bg-purple-50 text-purple-600 rounded-xl border border-purple-100">
-                <TrendingUp size={18} />
-              </div>
-              <div>
-                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider font-mono block">Workspace Velocity</span>
-                <h4 className="text-sm font-bold text-slate-900">Overall Completion Rate</h4>
-              </div>
-            </div>
-            <span className="text-xs font-bold font-mono px-2 py-0.5 rounded-full bg-purple-100 text-purple-800">
+            <span className="text-[11px] font-bold font-mono px-2 py-0.5 rounded-full bg-purple-100 text-purple-800">
               {resolutionRate}% SLA
             </span>
           </div>
 
           <div>
-            <div className="flex justify-between items-baseline mb-1 font-mono text-xs">
-              <span className="text-slate-500 text-[11px]">Total Case Completion</span>
-              <span className="font-bold text-slate-800">{resolvedIssues} / {totalIssues} Closed</span>
+            <div className="flex justify-between items-baseline mb-1 font-mono text-[11px]">
+              <span className="text-slate-500">Closed vs Total</span>
+              <span className="font-bold text-slate-800">{resolvedIssues} / {totalIssues}</span>
             </div>
-            <div className="w-full bg-slate-100 h-2.5 rounded-full overflow-hidden">
+            <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden">
               <div 
-                className="bg-gradient-to-r from-purple-500 to-violet-600 h-full rounded-full transition-all duration-500"
+                className="bg-purple-600 h-full rounded-full transition-all duration-500"
                 style={{ width: `${resolutionRate}%` }}
               />
             </div>
           </div>
 
-          <div className="grid grid-cols-3 gap-1.5 pt-1 text-[10px] font-mono text-center">
-            <div className="bg-amber-50 text-amber-800 border border-amber-100 p-1.5 rounded-lg">
+          <div className="grid grid-cols-3 gap-1 pt-1 text-[10px] font-mono text-center">
+            <div className="bg-amber-50 text-amber-800 border border-amber-100 py-1 rounded-md">
               <span className="block font-bold text-xs">{openIssues}</span>
-              <span className="text-slate-500">Open</span>
+              <span className="text-slate-500 text-[9px]">Open</span>
             </div>
-            <div className="bg-sky-50 text-sky-800 border border-sky-100 p-1.5 rounded-lg">
+            <div className="bg-sky-50 text-sky-800 border border-sky-100 py-1 rounded-md">
               <span className="block font-bold text-xs">{investigatingIssues}</span>
-              <span className="text-slate-500">In Progress</span>
+              <span className="text-slate-500 text-[9px]">Active</span>
             </div>
-            <div className="bg-emerald-50 text-emerald-800 border border-emerald-100 p-1.5 rounded-lg">
+            <div className="bg-emerald-50 text-emerald-800 border border-emerald-100 py-1 rounded-md">
               <span className="block font-bold text-xs">{resolvedIssues}</span>
-              <span className="text-slate-500">Resolved</span>
+              <span className="text-slate-500 text-[9px]">Closed</span>
             </div>
+          </div>
+        </div>
+
+        {/* Card 3: Maker-Checker Governance Queue */}
+        <div 
+          onClick={() => onChangeTab?.('governance')}
+          className="bg-white border border-slate-200/80 rounded-2xl p-4.5 space-y-3 shadow-xs hover:border-amber-400 hover:shadow-sm transition-all cursor-pointer group"
+          id="card-governance-queue"
+        >
+          <div className="flex justify-between items-start">
+            <div className="flex items-center space-x-2.5">
+              <div className="p-2 bg-amber-50 text-amber-600 rounded-xl border border-amber-100 group-hover:bg-amber-600 group-hover:text-white transition-colors">
+                <Shield size={17} />
+              </div>
+              <div>
+                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider font-mono block">Governance</span>
+                <h4 className="text-xs font-bold text-slate-900">Dual Authorization</h4>
+              </div>
+            </div>
+            <span className={`text-[11px] font-bold font-mono px-2 py-0.5 rounded-full ${
+              governancePendingCount > 0 ? 'bg-amber-100 text-amber-800 animate-pulse' : 'bg-slate-100 text-slate-600'
+            }`}>
+              {governancePendingCount} Pending
+            </span>
+          </div>
+
+          <div>
+            <div className="flex justify-between items-baseline mb-1 font-mono text-[11px]">
+              <span className="text-slate-500">Maker-Checker</span>
+              <span className="font-bold text-slate-800">{governanceApprovedCount} Approved</span>
+            </div>
+            <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden">
+              <div 
+                className="bg-amber-500 h-full rounded-full transition-all duration-500"
+                style={{ width: `${governancePendingCount > 0 ? Math.min(100, (governanceApprovedCount / (governanceApprovedCount + governancePendingCount)) * 100) : 100}%` }}
+              />
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between pt-1 text-[10px] font-mono">
+            <span className="px-2 py-0.5 bg-slate-100 text-slate-700 rounded-md font-bold">
+              Four-Eyes Rule Active
+            </span>
+            <span className="text-blue-600 font-bold group-hover:underline flex items-center gap-0.5">
+              Review <ArrowRight size={11} />
+            </span>
+          </div>
+        </div>
+
+        {/* Card 4: Hashtag Intelligence & Script Resolutions */}
+        <div 
+          onClick={() => setActiveDashboardTab('hashtags')}
+          className="bg-white border border-slate-200/80 rounded-2xl p-4.5 space-y-3 shadow-xs hover:border-emerald-400 hover:shadow-sm transition-all cursor-pointer group"
+          id="card-hashtag-intelligence"
+        >
+          <div className="flex justify-between items-start">
+            <div className="flex items-center space-x-2.5">
+              <div className="p-2 bg-emerald-50 text-emerald-600 rounded-xl border border-emerald-100 group-hover:bg-emerald-600 group-hover:text-white transition-colors">
+                <Tag size={17} />
+              </div>
+              <div>
+                <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider font-mono block">Hashtags</span>
+                <h4 className="text-xs font-bold text-slate-900">Tracked Operations</h4>
+              </div>
+            </div>
+            <span className="text-[11px] font-bold font-mono px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800">
+              {hashtags.length} Tags
+            </span>
+          </div>
+
+          <div>
+            <div className="flex justify-between items-baseline mb-1 font-mono text-[11px]">
+              <span className="text-slate-500">Unresolved Scripts</span>
+              <span className="font-bold text-slate-800">{(hashtagAnalyticsData?.issuesAwaitingSolution || []).length} Pending</span>
+            </div>
+            <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden">
+              <div 
+                className="bg-emerald-500 h-full rounded-full transition-all duration-500"
+                style={{ width: `${Math.max(15, Math.min(100, hashtags.length * 15))}%` }}
+              />
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between pt-1 text-[10px] font-mono">
+            <span className="text-slate-500">
+              {executedFixes.length} Fixes Executed
+            </span>
+            <span className="text-emerald-700 font-bold group-hover:underline flex items-center gap-0.5">
+              Explore <ArrowRight size={11} />
+            </span>
           </div>
         </div>
 
@@ -675,7 +811,7 @@ export default function ManagerialDashboard({
                       {/* Task ID */}
                       <td className="px-3.5 py-3">
                         <button
-                          onClick={() => onChangeTab && onChangeTab('workspace')}
+                          onClick={() => onChangeTab && onChangeTab('workspace', task.id)}
                           className="font-bold text-blue-600 hover:underline flex items-center space-x-1 cursor-pointer"
                           title="Open Task in Workspace"
                         >
@@ -775,7 +911,7 @@ export default function ManagerialDashboard({
 
                           {onChangeTab && (
                             <button
-                              onClick={() => onChangeTab('workspace')}
+                              onClick={() => onChangeTab('workspace', task.id)}
                               className="p-1 text-slate-400 hover:text-blue-600 hover:bg-slate-100 rounded transition-colors cursor-pointer"
                               title="Open full case detail"
                             >
@@ -1418,7 +1554,7 @@ export default function ManagerialDashboard({
                       <tr key={task.id} className="hover:bg-amber-50/40 transition-colors">
                         <td className="px-3.5 py-3">
                           <button
-                            onClick={() => onChangeTab && onChangeTab('workspace')}
+                            onClick={() => onChangeTab && onChangeTab('workspace', task.id)}
                             className="font-bold text-blue-600 hover:underline flex items-center space-x-1 cursor-pointer"
                           >
                             <span>{task.id}</span>
@@ -1468,7 +1604,7 @@ export default function ManagerialDashboard({
                         </td>
                         <td className="px-3.5 py-3 text-right">
                           <button
-                            onClick={() => onChangeTab && onChangeTab('workspace')}
+                            onClick={() => onChangeTab && onChangeTab('workspace', task.id)}
                             className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-lg inline-flex items-center space-x-1.5 transition-colors cursor-pointer shadow-xs"
                           >
                             <span>Propose in Chat</span>

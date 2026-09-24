@@ -7,6 +7,7 @@ import {
   PanelLeftClose, PanelLeftOpen, Server
 } from 'lucide-react';
 import { canAccessTab, isAuthorizedTabForUser } from '../utils/navigationPermissions';
+import { useGovernance } from '../context/GovernanceContext';
 export { isAuthorizedTabForUser };
 
 interface SideNavProps {
@@ -19,6 +20,7 @@ interface SideNavProps {
   onCreateTeamClick?: () => void;
   notifications?: AppNotification[];
   unreadDirectMessageCount?: number;
+  pendingProposalsCount?: number;
   onMarkNotificationAsRead?: (id: string) => void;
   onMarkAllNotificationsAsRead?: () => void;
   onClearNotifications?: () => void;
@@ -35,11 +37,21 @@ export default function SideNav({
   onCreateTeamClick,
   notifications = [],
   unreadDirectMessageCount = 0,
+  pendingProposalsCount = 0,
   onMarkNotificationAsRead,
   onMarkAllNotificationsAsRead,
   onClearNotifications,
   onNotificationClick,
 }: SideNavProps) {
+  let contextPendingCount = 0;
+  try {
+    const gov = useGovernance();
+    contextPendingCount = gov.pendingCount;
+  } catch {
+    contextPendingCount = 0;
+  }
+  const effectivePendingProposalsCount = pendingProposalsCount || contextPendingCount;
+
   const [showNotificationPanel, setShowNotificationPanel] = useState(false);
   const [activeFilter, setActiveFilter] = useState<'all' | 'unread' | 'chat' | 'task_assigned' | 'team_added' | 'system'>('all');
 
@@ -295,6 +307,43 @@ export default function SideNav({
             </button>
           )}
 
+          {/* WORKSPACE PREFERENCES */}
+          {checkAuthorized('workspace_settings') && (
+            isCollapsed ? (
+              <button
+                onClick={() => {
+                  setShowNotificationPanel(false);
+                  onSelectNavigation('workspace_settings');
+                }}
+                className={`flex items-center justify-center w-9 h-9 mx-auto rounded-lg text-xs font-semibold tracking-wide transition-all cursor-pointer ${
+                  (activeNavigation === 'workspace_settings' || activeNavigation === 'setting') && !showNotificationPanel
+                    ? 'bg-[#155DFC] text-white shadow-xs font-bold'
+                    : 'text-slate-400 hover:text-white hover:bg-slate-800/80'
+                }`}
+                id="nav-workspace-settings"
+                title="Workspace Preferences"
+              >
+                <Sliders size={16} />
+              </button>
+            ) : (
+              <button
+                onClick={() => {
+                  setShowNotificationPanel(false);
+                  onSelectNavigation('workspace_settings');
+                }}
+                className={`w-full flex items-center space-x-2.5 px-2.5 py-1.5 rounded-lg text-xs font-medium tracking-wide transition-all cursor-pointer ${
+                  (activeNavigation === 'workspace_settings' || activeNavigation === 'setting') && !showNotificationPanel
+                    ? 'bg-[#155DFC] text-white shadow-xs font-bold'
+                    : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
+                }`}
+                id="nav-workspace-settings"
+              >
+                <Sliders size={14} />
+                <span>Preferences</span>
+              </button>
+            )
+          )}
+
           {/* TEAM & COLLABORATION SECTION */}
           {(checkAuthorized('team_workspace') || checkAuthorized('direct_chat')) && (
             isCollapsed ? (
@@ -443,6 +492,8 @@ export default function SideNav({
               </div>
             )
           )}
+
+
 
           {/* 5. System Administration Section Header & Sub-Items (Strictly Admin) */}
           {(checkAuthorized('admin_panel') || checkAuthorized('user_admin') || checkAuthorized('system_settings') || checkAuthorized('admin_team_resources')) && (

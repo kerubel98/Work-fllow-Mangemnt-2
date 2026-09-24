@@ -11,7 +11,7 @@ import {
 } from './types';
 import { 
   INITIAL_USERS, INITIAL_HASHTAGS, INITIAL_PLUGINS, 
-  INITIAL_DBS, TRANSACTION_ARCHIVE, INITIAL_ISSUES, INITIAL_SYSTEMS, INITIAL_TEAMS,
+  INITIAL_DBS, INITIAL_ISSUES, INITIAL_SYSTEMS, INITIAL_TEAMS,
   INITIAL_TEAM_TASKS, INITIAL_TEAM_INSIGHTS, INITIAL_TEAM_MESSAGES, INITIAL_NOTIFICATIONS, INITIAL_DIRECT_MESSAGES
 } from './mockData';
 import { api } from './api/client';
@@ -36,6 +36,8 @@ const AdminPanel = lazy(() => import('./components/AdminPanel'));
 const WorkspaceSettings = lazy(() => import('./components/WorkspaceSettings'));
 const SystemSettings = lazy(() => import('./components/settings/SystemSettings'));
 const AdminTeamResourcesMonitor = lazy(() => import('./components/AdminTeamResourcesMonitor'));
+import { GovernanceProvider } from './context/GovernanceContext';
+import { GlobalMappingService } from './services/globalMappingService';
 
 function PanelLoadingSkeleton() {
   return (
@@ -85,65 +87,54 @@ export default function App() {
     setCreateTeamSignal(prev => prev + 1);
   };
 
-  const [queryApprovals, setQueryApprovals] = usePersistentState<QueryApprovalRequest[]>('it_query_approvals', [
-    {
-      id: 'qreq-1',
-      systemId: 'sys-2',
-      systemName: 'Back End Settlement Engine',
-      environment: 'production',
-      tableName: 'sv_fin_tab',
-      query: "UPDATE sv_fin_tab SET settlement_status = 'RECONCILED' WHERE ext_ref = 'TXN-9021';",
-      requesterId: 'usr-3',
-      requesterName: 'tech_sarah',
-      requesterRole: 'technical',
-      status: 'pending',
-      requestDate: '2026-07-11T08:15:00Z',
-      issueId: 'ISS-101',
-      issueTitle: 'Duplicate auth charges on Amazon cardholders'
-    }
-  ]);
+  const [queryApprovals, setQueryApprovals] = usePersistentState<QueryApprovalRequest[]>('it_query_approvals', []);
 
-  const [dbAccessRequests, setDbAccessRequests] = usePersistentState<DbAccessRequest[]>('it_db_access_requests', [
-    {
-      id: 'dbreq-1',
-      userId: 'usr-2',
-      username: 'ops_john',
-      userRole: 'operational',
-      dbId: 'db-1',
-      dbName: 'Core Retail Banking DB',
-      requestedPrivilege: 'SELECT',
-      reason: 'Need read access for checking card discrepancy settlement records',
-      status: 'pending',
-      requestDate: '2026-07-24T10:15:00Z'
-    }
-  ]);
+  const [dbAccessRequests, setDbAccessRequests] = usePersistentState<DbAccessRequest[]>('it_db_access_requests', []);
 
-  const [connectionUsageLogs, setConnectionUsageLogs] = usePersistentState<ConnectionUsageLog[]>('it_connection_usage_logs', [
-    {
-      id: 'log-1',
-      userId: 'usr-2',
-      username: 'ops_john',
-      userRole: 'operational',
-      dbId: 'db-1',
-      dbName: 'Core Retail Banking DB',
-      queryType: 'SELECT',
-      queryText: 'SELECT id, ext_ref, amt, status FROM sv_fin_tab WHERE txn_date >= CURRENT_DATE - 1 LIMIT 50;',
-      timestamp: '2026-07-24T10:30:00Z',
-      durationMs: 42,
-      status: 'success'
-    }
-  ]);
+  const [connectionUsageLogs, setConnectionUsageLogs] = usePersistentState<ConnectionUsageLog[]>('it_connection_usage_logs', []);
 
-  const [transactions] = useState<Transaction[]>(TRANSACTION_ARCHIVE);
+  const [transactions] = useState<Transaction[]>([]);
 
   // Helper State to link a transaction directly into the issue creator
   const [activeTransactionForLinking, setActiveTransactionForLinking] = useState<Transaction | null>(null);
 
   // Active view navigation
-  const [activeNavigation, setActiveNavigation] = useState<string>('workspace');
-  const [workspaceSubView, setWorkspaceSubView] = useState<'sandbox' | 'investigation' | 'open_case'>('sandbox');
+  const [activeNavigation, setActiveNavigation] = useState<string>(() => {
+    try {
+      const hash = window.location.hash.replace(/^#\/?/, '');
+      if (hash && hash !== 'governance') return hash;
+      const params = new URLSearchParams(window.location.search);
+      const tab = params.get('tab');
+      if (tab && tab !== 'governance') return tab;
+    } catch {}
+    return 'workspace';
+  });
+
+  useEffect(() => {
+    const handleHash = () => {
+      const hash = window.location.hash.replace(/^#\/?/, '');
+      if (hash) {
+        if (hash === 'governance') setActiveNavigation('workspace');
+        else setActiveNavigation(hash);
+      }
+    };
+    window.addEventListener('hashchange', handleHash);
+    return () => window.removeEventListener('hashchange', handleHash);
+  }, []);
+
+  const [workspaceSubView, setWorkspaceSubView] = useState<'sandbox' | 'investigation' | 'open_case'>('investigation');
   const [adminPanelSubTab, setAdminPanelSubTab] = useState<'analytics' | 'connection_settings' | 'user_admin' | 'systems' | 'plugins'>('analytics');
   const [systemSettingsTab, setSystemSettingsTab] = useState<'dictionary' | 'connections' | 'environment'>('dictionary');
+
+  const handleTabChange = (tab: string, targetIssueId?: string) => {
+    if (targetIssueId) {
+      setDeepLinkIssueId(targetIssueId);
+    }
+    if (tab === 'workspace') {
+      setWorkspaceSubView('investigation');
+    }
+    setActiveNavigation(tab);
+  };
 
   const handleSelectNavigation = (tab: string, subTab?: any) => {
     if (tab === 'system_settings') {
@@ -233,6 +224,11 @@ export default function App() {
               api.getQueryLogs(),
               api.getPlugins()
             ]);
+
+            // Authoritatively hydrate Global Mapping schema and database mappings from PostgreSQL
+            GlobalMappingService.getInstance().hydrateFromBackend().catch(e => {
+              console.warn('[App] GlobalMappingService background hydration error:', e);
+            });
 
             if (!isMounted) return;
 
@@ -986,7 +982,11 @@ export default function App() {
           onRegisterUser={handleRegisterUser} 
         />
       ) : (
-        <div className="flex-grow flex flex-col lg:flex-row" id="app-desktop-workspace">
+        <GovernanceProvider 
+          currentUser={effectiveUser || currentUser!} 
+          userTeamId={teams.find(t => t.memberIds.includes((effectiveUser || currentUser)?.id))?.id}
+        >
+          <div className="flex-grow flex flex-col lg:flex-row" id="app-desktop-workspace">
           
           {/* Left Vertical Native Sidebar Component */}
           <SideNav 
@@ -1026,7 +1026,7 @@ export default function App() {
                   onCreateIssue={handleCreateIssue}
                   onCreateHashtagPreset={handleCreateHashtagPreset} 
                   onSendChatMessage={handleSendChatMessage} 
-                  onChangeTab={setActiveNavigation}
+                  onChangeTab={handleTabChange}
                   onWorkspaceSubViewChange={setWorkspaceSubView}
                   initialSelectedIssueId={deepLinkIssueId}
                   activeMode={
@@ -1120,7 +1120,7 @@ export default function App() {
                 onUpdateTeam={handleUpdateTeam}
                 onDeleteTeam={handleDeleteTeam}
                 onUpdateIssue={handleUpdateIssue}
-                onChangeTab={setActiveNavigation}
+                onChangeTab={handleTabChange}
               />
             )}
 
@@ -1182,6 +1182,7 @@ export default function App() {
               />
             )}
 
+
             {(activeNavigation === 'workspace_settings' || activeNavigation === 'setting') && (
               <ErrorBoundary fallbackTitle="Workspace Settings Error" fallbackMessage="Could not display workspace settings. You can retry or reset local settings.">
                 <WorkspaceSettings
@@ -1189,6 +1190,7 @@ export default function App() {
                   teams={teams}
                   databases={databases}
                   onNavigateToWorkspace={() => setActiveNavigation('workspace')}
+                  onNavigateToAuthorityCenter={() => setActiveNavigation('authority_center')}
                 />
               </ErrorBoundary>
             )}
@@ -1267,6 +1269,7 @@ export default function App() {
           </main>
 
         </div>
+        </GovernanceProvider>
       )}
       <MessageModal />
     </div>

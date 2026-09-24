@@ -5,6 +5,8 @@ import {
   Check, Table, Server, Key, ExternalLink, Code2, Layers, Search
 } from 'lucide-react';
 import { NoResourcesEmptyState } from './TeamEmptyStates';
+import { TeamStagedAssetsConsole } from './TeamStagedAssetsConsole';
+import { Boxes, ShieldCheck } from 'lucide-react';
 
 interface LibraryTemplate {
   id: string;
@@ -40,7 +42,7 @@ export const TeamResourcesTab: React.FC<TeamResourcesTabProps> = ({
 }) => {
   const safeDatabases = Array.isArray(teamDatabases) ? teamDatabases : [];
   const safeTemplates = Array.isArray(libraryTemplates) ? libraryTemplates : [];
-  const [subView, setSubView] = useState<'databases' | 'library'>('databases');
+  const [subView, setSubView] = useState<'databases' | 'library' | 'staged'>('databases');
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
 
@@ -98,6 +100,15 @@ export const TeamResourcesTab: React.FC<TeamResourcesTabProps> = ({
               }`}
             >
               Query Library ({safeTemplates.length})
+            </button>
+            <button
+              type="button"
+              onClick={() => setSubView('staged')}
+              className={`px-3 py-1 rounded-lg font-bold transition-all cursor-pointer ${
+                subView === 'staged' ? 'bg-white text-slate-900 shadow-2xs' : 'text-slate-500 hover:text-slate-800'
+              }`}
+            >
+              Staged Assets &amp; Verification
             </button>
           </div>
 
@@ -252,6 +263,11 @@ export const TeamResourcesTab: React.FC<TeamResourcesTabProps> = ({
             })}
           </div>
         )
+      )}
+
+      {/* Sub-View: Staged Assets & Verification */}
+      {subView === 'staged' && (
+        <TeamStagedAssetsConsole currentTeam={currentTeam} currentUser={currentUser} />
       )}
     </div>
   );

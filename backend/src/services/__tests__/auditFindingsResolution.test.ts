@@ -3,6 +3,8 @@ import { evaluateRuleCondition, executeWorkflowForTransaction } from '../investi
 import { ruleSqlCompiler } from '../ruleSqlCompiler.js';
 import { investigationOrchestratorService } from '../investigationOrchestratorService.js';
 import { ValidationCheckStep, DatabaseValidationWorkflow } from '../../types.js';
+import { repo } from '../../store/repository.js';
+import { queryPg } from '../../config/postgres.js';
 
 const createStep = (overrides: Partial<ValidationCheckStep>): ValidationCheckStep => ({
   id: 'step-default',
@@ -236,20 +238,42 @@ describe('Audit Findings Resolution Suite', () => {
 
   describe('Finding 2 & 3: Universal Workflow Configuration Rigor', () => {
     it('throws Configuration Error when workflow has no determinable primary key', async () => {
-      // Records with only underscore internal columns and no matching parameters
-      const unresolvableRecords = [
-        { _internal_row: 1, _created_at: '2026-01-01' }
-      ];
+      const testWfId = `wf-test-err-${Date.now()}`;
+      await repo.createWorkflow({
+        id: testWfId,
+        name: 'Test Rigor Workflow',
+        targetDbId: 'db-test',
+        targetTable: 'transactions',
+        stages: [],
+        steps: [
+          createStep({
+            id: 'step-rigor-1',
+            checkType: 'EXISTENCE_CHECK',
+            sourceField: 'terminal_id',
+            targetField: 'terminal_id'
+          })
+        ],
+        createdAt: new Date().toISOString()
+      });
 
-      await expect(
-        investigationOrchestratorService.executeUniversalWorkflow({
-          workflowId: 'wf-1789852589770',
-          records: unresolvableRecords,
-          sourceType: 'INVESTIGATION_PANEL',
-          sourceId: 'task-test-err',
-          forceRerun: true
-        })
-      ).rejects.toThrow('Configuration Error: Unable to determine primary key');
+      try {
+        // Records with only underscore internal columns and no matching parameters
+        const unresolvableRecords = [
+          { _internal_row: 1, _created_at: '2026-01-01' }
+        ];
+
+        await expect(
+          investigationOrchestratorService.executeUniversalWorkflow({
+            workflowId: testWfId,
+            records: unresolvableRecords,
+            sourceType: 'INVESTIGATION_PANEL',
+            sourceId: 'task-test-err',
+            forceRerun: true
+          })
+        ).rejects.toThrow('Configuration Error: Unable to determine primary key');
+      } finally {
+        await queryPg(`DELETE FROM database_validation_workflows WHERE id = $1;`, [testWfId]);
+      }
     });
   });
 });

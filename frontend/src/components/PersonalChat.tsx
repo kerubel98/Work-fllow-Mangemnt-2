@@ -10,6 +10,8 @@ import {
   CheckCheck, ShieldCheck, Sparkles, AlertCircle, ArrowLeft,
   Circle, Filter, Users, ChevronRight, Check
 } from 'lucide-react';
+import { api } from '../api/client';
+import { SharedAssetChatCard } from './chat/SharedAssetChatCard';
 
 interface PersonalChatProps {
   currentUser: User;
@@ -43,8 +45,18 @@ export default function PersonalChat({
   const [searchTerm, setSearchTerm] = useState('');
   const [roleFilter, setRoleFilter] = useState<'ALL' | UserRole>('ALL');
   const [messageInput, setMessageInput] = useState('');
+  const [directShares, setDirectShares] = useState<any[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // Fetch direct operational asset shares
+  useEffect(() => {
+    if (currentUser?.id) {
+      api.getDirectShares(currentUser.id).then(res => {
+        if (res?.shares) setDirectShares(res.shares);
+      }).catch(console.warn);
+    }
+  }, [currentUser?.id]);
 
   // Sync initialSelectedUserId when changed externally (deep linking)
   useEffect(() => {
@@ -401,6 +413,38 @@ export default function PersonalChat({
                     );
                   })
                 )}
+
+                {/* Shared Operational Assets (Workflows, Validation Boxes, DB Configs) */}
+                {directShares
+                  .filter(
+                    s => (s.senderId === currentUser.id && s.targetId === selectedUserId) ||
+                         (s.senderId === selectedUserId && s.targetId === currentUser.id)
+                  )
+                  .map(share => {
+                    const isSelf = share.senderId === currentUser.id;
+                    return (
+                      <div
+                        key={share.id}
+                        className={`flex flex-col ${isSelf ? 'items-end' : 'items-start'} my-2`}
+                      >
+                        <div className="flex items-center space-x-1.5 mb-1 text-[10px] font-mono text-slate-400">
+                          <span className="font-bold text-slate-700">
+                            {isSelf ? 'You (Shared Asset)' : `@${share.senderName} (Shared Asset)`}
+                          </span>
+                          <span>•</span>
+                          <span>{share.createdAt ? new Date(share.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}</span>
+                        </div>
+                        <SharedAssetChatCard
+                          shareId={share.id}
+                          assetType={share.assetType}
+                          assetId={share.assetId}
+                          senderName={share.senderName}
+                          message={share.message}
+                          visualPayload={share.visualPayload || {}}
+                        />
+                      </div>
+                    );
+                  })}
                 <div ref={messagesEndRef} />
               </div>
 

@@ -12,11 +12,14 @@ import {
 } from '../types';
 import { createBatchPlan, DEFAULT_BATCH_POLICY } from './batchPlanner';
 import { resolveRequiredColumnsForWorkflow } from './requiredFieldResolver';
+import { resolveCanonicalKey, validateDatasetKeys } from './canonicalKeyResolver';
 
 export interface PlanInvestigationOptions {
   transactionKeyField?: string;
   batchPolicy?: Partial<BatchPolicy>;
   planId?: string;
+  dbTableMappings?: Record<string, any>;
+  strictFailFast?: boolean;
 }
 
 export interface InvestigationPlanValidationResult {
@@ -51,14 +54,28 @@ export function planInvestigation(
     errors.push('Transaction dataset is empty or invalid.');
   }
 
-  // Determine transaction key field
-  const keyField = options.transactionKeyField || 'transaction_id';
-  const missingKeysCount = (transactions || []).filter(t => !t[keyField] && !t.id && !t.tx_id).length;
-  if (missingKeysCount > 0) {
-    warnings.push(`${missingKeysCount} transactions lack the designated key field '${keyField}'. Falling back to row index or 'id'.`);
+  // Determine transaction key field using metadata-driven canonical resolution (Rule 9)
+  const keyResolution = resolveCanonicalKey({
+    explicitKey: options.transactionKeyField,
+    workflow,
+    stage: enabledStages[0],
+    queryExtraction: queryExtractions[0],
+    transactions,
+    dbTableMappings: options.dbTableMappings,
+    strictFailFast: options.strictFailFast
+  });
+
+  const keyField = keyResolution.primaryKey;
+  if (keyResolution.warning) {
+    warnings.push(keyResolution.warning);
   }
 
-  // Extract transaction IDs
+  const keyValidation = validateDatasetKeys(transactions, keyField);
+  if (!keyValidation.isValid && keyValidation.warning) {
+    warnings.push(keyValidation.warning);
+  }
+
+  // Extract transaction IDs with resolved canonical key
   const transactionIds = (transactions || []).map((t, idx) => {
     return String(t[keyField] ?? t.id ?? t.tx_id ?? `TX-${idx + 1}`);
   });

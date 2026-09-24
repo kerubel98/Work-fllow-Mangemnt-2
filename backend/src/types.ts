@@ -666,8 +666,17 @@ export interface UploadAuditLog {
 // BUSINESS PROCESSING STAGE & STAGE-AWARE WORKFLOWS
 // ==========================================
 
+// 1. What a validation rule discovers (Rule Verdict)
 export type ValidationResultStatus = 'PASS' | 'FAIL' | 'ERROR' | 'SKIPPED' | 'NOT_EVALUATED' | 'PAUSED_DB_OFFLINE';
+export type ValidationVerdict = ValidationResultStatus;
+
+// 2. What the workflow execution engine does next (Pipeline Action)
 export type PipelineAction = 'CONTINUE' | 'STOP' | 'CLOSE' | 'FLAG' | 'REPORT';
+
+// 3. Parent Task / Case lifecycle in the workspace (Case Lifecycle)
+export type CaseLifecycleStatus = 'OPEN' | 'INVESTIGATING' | 'IN_PROGRESS' | 'ACTION_REQUIRED' | 'RESOLVED' | 'CLOSED';
+
+// 4. Financial Transaction investigation and Maker-Checker resolution state
 export type TransactionInvestigationStatus =
   | 'PENDING'
   | 'INVESTIGATING'
@@ -678,6 +687,10 @@ export type TransactionInvestigationStatus =
   | 'IN_PROGRESS'
   | 'VERIFIED_MATCH'
   | 'FLAGGED_DISCREPANCY'
+  | 'PENDING_CHECKER_REVIEW'
+  | 'FORCE_MATCHED'
+  | 'MANUALLY_REVERSED'
+  | 'WRITTEN_OFF'
   | 'CLOSED_RESOLVED'
   | 'CLOSED_UNRESOLVED';
 
@@ -1429,6 +1442,44 @@ export interface WorkspaceSettingProposal {
   escalatedAt?: string;
   appliedAt?: string;
   createdAt: string;
+  updatedAt: string;
+}
+
+// ==========================================
+// COMPOSITE WORKFLOW BUNDLES (OPERATIONAL GOVERNANCE)
+// ==========================================
+
+export type WorkflowBundleScope = 'PERSONAL' | 'TEAM' | 'GLOBAL_ENTERPRISE';
+
+export type WorkflowBundleStatus = 
+  | 'DRAFT' 
+  | 'PENDING_CHECKER_REVIEW' 
+  | 'APPROVED' 
+  | 'REJECTED';
+
+export interface WorkflowBundle {
+  id: string;
+  bundleCode: string;
+  name: string;
+  description?: string;
+  version: string;
+  scope: WorkflowBundleScope;
+  workflowId: string;
+  workflowName?: string;
+  validationBoxIds: string[];
+  dbCheckIds: string[];
+  sourceTeamId: string;
+  sourceTeamName?: string;
+  status: WorkflowBundleStatus;
+  makerId: string;
+  makerName: string;
+  checkerId?: string;
+  checkerName?: string;
+  checkerFeedback?: string;
+  evidenceSnapshot?: Record<string, any>;
+  hashtagBindings?: string[];
+  createdAt: string;
+  approvedAt?: string;
   updatedAt: string;
 }
 
