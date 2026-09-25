@@ -184,11 +184,21 @@ describe('External Request Staging, Attachment Parsing & Maker-Checker Suite', (
                 providerPreset: 'GOOGLE_WORKSPACE'
             });
             expect(googleUrl).toBe('https://oauth2.googleapis.com/token');
+            const zohoUrl = oauth2Service.resolveTokenUrl({
+                providerPreset: 'ZOHO'
+            });
+            expect(zohoUrl).toBe('https://accounts.zoho.com/oauth/v2/token');
+            const zohoEuUrl = oauth2Service.resolveTokenUrl({
+                providerPreset: 'ZOHO',
+                zohoRegion: 'EU'
+            });
+            expect(zohoEuUrl).toBe('https://accounts.zoho.eu/oauth/v2/token');
             const customUrl = oauth2Service.resolveTokenUrl({
                 providerPreset: 'CUSTOM',
                 tokenUrl: 'https://auth.partnerbank.com/v2/oauth/token'
             });
             expect(customUrl).toBe('https://auth.partnerbank.com/v2/oauth/token');
+            expect(() => oauth2Service.resolveTokenUrl({ providerPreset: 'CUSTOM' })).toThrow('OAuth2 Token URL is required');
         });
         it('resolves correct default scopes per channel and provider', () => {
             const msTeamsScope = oauth2Service.resolveDefaultScope({ providerPreset: 'MICROSOFT_365' }, 'teams');
@@ -197,6 +207,8 @@ describe('External Request Staging, Attachment Parsing & Maker-Checker Suite', (
             expect(msEmailScope).toBe('https://outlook.office365.com/.default');
             const googleEmailScope = oauth2Service.resolveDefaultScope({ providerPreset: 'GOOGLE_WORKSPACE' }, 'email');
             expect(googleEmailScope).toBe('https://mail.google.com/');
+            const zohoScope = oauth2Service.resolveDefaultScope({ providerPreset: 'ZOHO' }, 'email');
+            expect(zohoScope).toBe('ZohoMail.messages.ALL,ZohoMail.accounts.ALL');
         });
         it('generates valid SASL XOAUTH2 base64 tokens for modern IMAP/SMTP protocol', () => {
             const user = 'settlement-ops@partnerbank.com';

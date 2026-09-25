@@ -22,7 +22,7 @@ export const workflowBundleService = {
             throw new Error(`Invalid bundle scope: '${scope}'. Must be PERSONAL, TEAM, or GLOBAL_ENTERPRISE.`);
         }
         // 1. Fetch Workflow definition
-        const wfRes = await queryPg(`SELECT * FROM database_validation_workflows WHERE id = $1`, [input.workflowId]);
+        const wfRes = await queryPg(`SELECT id, name, description, stages, steps, target_db_id, target_table, category, created_at, updated_at FROM database_validation_workflows WHERE id = $1`, [input.workflowId]);
         if (wfRes.rows.length === 0) {
             throw new Error(`Referenced workflow '${input.workflowId}' does not exist.`);
         }
@@ -31,14 +31,14 @@ export const workflowBundleService = {
         const boxIds = input.validationBoxIds || [];
         let boxes = [];
         if (boxIds.length > 0) {
-            const boxRes = await queryPg(`SELECT * FROM validation_boxes WHERE id = ANY($1::varchar[])`, [boxIds]);
+            const boxRes = await queryPg(`SELECT id, name, category, box_type, target_db_id, target_table, search_parameters, check_step, description, is_public, visibility, created_at, updated_at FROM validation_boxes WHERE id = ANY($1::varchar[])`, [boxIds]);
             boxes = boxRes.rows;
         }
         // 3. Fetch Database Checks / Mappings
         const dbCheckIds = input.dbCheckIds || [];
         let dbChecks = [];
         if (dbCheckIds.length > 0) {
-            const dbRes = await queryPg(`SELECT * FROM database_table_mappings WHERE id = ANY($1::varchar[])`, [dbCheckIds]);
+            const dbRes = await queryPg(`SELECT id, db_id, db_name, table_name, columns, updated_at FROM database_table_mappings WHERE id = ANY($1::varchar[])`, [dbCheckIds]);
             dbChecks = dbRes.rows;
         }
         // 4. Generate Immutable Evidence Snapshot

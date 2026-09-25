@@ -12,7 +12,7 @@ export class AssetSharingService {
     async getAssetPayload(assetType, assetId) {
         const pool = getPostgresPool();
         if (assetType === 'VALIDATION_BOX') {
-            const { rows } = await pool.query('SELECT * FROM validation_boxes WHERE id = $1 LIMIT 1;', [assetId]);
+            const { rows } = await pool.query('SELECT id, name, category, box_type, target_db_id, target_table, search_parameters, check_step, description, is_public, visibility, created_at, updated_at FROM validation_boxes WHERE id = $1 LIMIT 1;', [assetId]);
             if (rows.length === 0)
                 return null;
             const r = rows[0];
@@ -29,7 +29,7 @@ export class AssetSharingService {
             return { asset: r, visualPayload };
         }
         if (assetType === 'WORKFLOW') {
-            const { rows } = await pool.query('SELECT * FROM database_validation_workflows WHERE id = $1 LIMIT 1;', [assetId]);
+            const { rows } = await pool.query('SELECT id, name, description, steps, stages, target_db_id, target_table, category, created_at, updated_at FROM database_validation_workflows WHERE id = $1 LIMIT 1;', [assetId]);
             if (rows.length === 0)
                 return null;
             const r = rows[0];
@@ -43,16 +43,16 @@ export class AssetSharingService {
             return { asset: r, visualPayload };
         }
         if (assetType === 'DB_CONFIG') {
-            const { rows } = await pool.query('SELECT * FROM database_table_mappings WHERE id = $1 LIMIT 1;', [assetId]);
+            const { rows } = await pool.query('SELECT id, db_id, db_name, table_name, columns, updated_at FROM database_table_mappings WHERE id = $1 LIMIT 1;', [assetId]);
             if (rows.length === 0)
                 return null;
             const r = rows[0];
             const visualPayload = {
-                title: `${r.database_name}.${r.table_name}`,
-                databaseName: r.database_name,
+                title: `${r.db_name || r.db_id}.${r.table_name}`,
+                databaseName: r.db_name || r.db_id,
                 tableName: r.table_name,
-                columnsCount: Object.keys(r.column_mappings || {}).length,
-                columnMappings: typeof r.column_mappings === 'string' ? JSON.parse(r.column_mappings) : r.column_mappings || {}
+                columnsCount: Array.isArray(r.columns) ? r.columns.length : Object.keys(r.columns || {}).length,
+                columnMappings: r.columns || {}
             };
             return { asset: r, visualPayload };
         }

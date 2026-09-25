@@ -2,10 +2,15 @@
  * @license
  * SPDX-License-Identifier: Apache-2.0
  */
-import { queryPg } from '../config/postgres.js';
+import { queryPg, getPostgresPool } from '../config/postgres.js';
 import { postgresRepo } from '../store/postgresRepo.js';
 import { eventService } from './events.js';
 import { workflowBundleService } from './workflowBundleService.js';
+const RESOLUTION_REQUEST_COLUMNS = `
+  id, task_id, transaction_id, team_id, maker_id, maker_name,
+  proposed_action, proposed_status, justification_note, evidence_snapshot,
+  checker_id, checker_name, rejection_reason, status, created_at, reviewed_at
+`;
 /**
  * Dedicated domain adapter for financial transaction resolutions.
  */
@@ -115,7 +120,7 @@ export const approvalService = {
         // 1. Transaction resolutions (Strict Financial Governance)
         if (includeTxn) {
             try {
-                let sql = `SELECT * FROM resolution_approval_requests WHERE 1=1`;
+                let sql = `SELECT ${RESOLUTION_REQUEST_COLUMNS} FROM resolution_approval_requests WHERE 1=1`;
                 const params = [];
                 if (filters.status) {
                     params.push(filters.status.toUpperCase());
@@ -190,7 +195,7 @@ export const approvalService = {
     async getApprovalById(id) {
         // Check resolution requests first
         try {
-            const res = await queryPg(`SELECT * FROM resolution_approval_requests WHERE id = $1`, [id]);
+            const res = await queryPg(`SELECT ${RESOLUTION_REQUEST_COLUMNS} FROM resolution_approval_requests WHERE id = $1`, [id]);
             if (res.rows.length > 0) {
                 return adaptResolutionProposal(res.rows[0]);
             }
@@ -351,15 +356,17 @@ export const approvalService = {
             return item;
         }
         // Try transaction resolution next
-        const txnCheck = await queryPg(`SELECT * FROM resolution_approval_requests WHERE id = $1`, [input.id]);
+        const txnCheck = await queryPg(`SELECT ${RESOLUTION_REQUEST_COLUMNS} FROM resolution_approval_requests WHERE id = $1`, [input.id]);
         if (txnCheck.rows.length > 0) {
             const proposal = txnCheck.rows[0];
             // Anti-Self-Approval Enforcement (Four-Eyes Principle)
             if (proposal.maker_id === input.checkerId) {
                 throw new Error(`Anti-Self-Approval Violation: Maker '${proposal.maker_name}' cannot approve their own submission.`);
             }
-            await queryPg('BEGIN;');
+            const pool = getPostgresPool();
+            const client = await pool.connect();
             try {
+                await client.query('BEGIN;');
                 const isApprove = input.action === 'APPROVE';
                 const newStatus = isApprove ? 'APPROVED' : 'REJECTED';
                 const updateSql = `
@@ -370,9 +377,9 @@ export const approvalService = {
               rejection_reason = $4,
               reviewed_at = NOW()
           WHERE id = $5
-          RETURNING *;
+          RETURNING ${RESOLUTION_REQUEST_COLUMNS};
         `;
-                const updateRes = await queryPg(updateSql, [
+                const updateRes = await client.query(updateSql, [
                     newStatus,
                     input.checkerId,
                     input.checkerName.trim(),
@@ -383,7 +390,7 @@ export const approvalService = {
                 // Update transaction status in PostgreSQL
                 if (isApprove) {
                     const targetStatus = proposal.proposed_status || 'VERIFIED_MATCH';
-                    await queryPg(`UPDATE investigation_transactions 
+                    await client.query(`UPDATE investigation_transactions 
              SET final_result = 'PASS',
                  final_action = 'CLOSE',
                  investigation_status = $1,
@@ -393,7 +400,7 @@ export const approvalService = {
              WHERE task_id = $3 AND transaction_id = $4;`, [targetStatus, `Approved by ${input.checkerName.trim()}`, proposal.task_id, proposal.transaction_id]);
                 }
                 else {
-                    await queryPg(`UPDATE investigation_transactions 
+                    await client.query(`UPDATE investigation_transactions 
              SET final_result = 'FAIL',
                  investigation_status = 'FLAGGED_DISCREPANCY',
                  status_flag_text = $1,
@@ -401,14 +408,17 @@ export const approvalService = {
                  updated_at = NOW()
              WHERE task_id = $2 AND transaction_id = $3;`, [`Rejected: ${input.reason.trim()}`, proposal.task_id, proposal.transaction_id]);
                 }
-                await queryPg('COMMIT;');
+                await client.query('COMMIT;');
                 const item = adaptResolutionProposal(updatedRow);
                 eventService.broadcastEvent('approval_proposal:reviewed', item);
                 return item;
             }
             catch (err) {
-                await queryPg('ROLLBACK;');
+                await client.query('ROLLBACK;').catch(() => { });
                 throw err;
+            }
+            finally {
+                client.release();
             }
         }
         // Try workspace setting proposal

@@ -10,17 +10,41 @@ export class OAuth2Service {
     resolveTokenUrl(config) {
         if (config.tokenUrl)
             return config.tokenUrl;
-        if (config.providerPreset === 'MICROSOFT_365' || config.tenantId) {
+        const preset = config.providerPreset || config.preset;
+        // Auto-detect Zoho if preset is ZOHO, or if clientId starts with 1000., or if tenantId/scope/user mentions zoho
+        const isZoho = preset === 'ZOHO'
+            || (config.clientId && config.clientId.startsWith('1000.'))
+            || (config.tenantId && config.tenantId.toLowerCase().includes('zoho'))
+            || (config.scope && config.scope.toLowerCase().includes('zohomail'))
+            || (config.userEmail && config.userEmail.toLowerCase().includes('zoho'));
+        if (isZoho) {
+            if (config.tenantId && config.tenantId.includes('accounts.zoho')) {
+                const cleanTenant = config.tenantId.replace(/\/oauth\/v2\/token\/?$/, '').replace(/^https?:\/\//, '');
+                return `https://${cleanTenant}/oauth/v2/token`;
+            }
+            const reg = config.zohoRegion || 'COM';
+            const domain = reg === 'EU' ? 'accounts.zoho.eu'
+                : reg === 'IN' ? 'accounts.zoho.in'
+                    : reg === 'AU' ? 'accounts.zoho.com.au'
+                        : reg === 'JP' ? 'accounts.zoho.jp'
+                            : reg === 'CA' ? 'accounts.zohocloud.ca'
+                                : 'accounts.zoho.com';
+            return `https://${domain}/oauth/v2/token`;
+        }
+        if (preset === 'GOOGLE_WORKSPACE') {
+            return 'https://oauth2.googleapis.com/token';
+        }
+        if (preset === 'META') {
+            return 'https://graph.facebook.com/v19.0/oauth/access_token';
+        }
+        if (preset === 'MICROSOFT_365') {
             const tenant = config.tenantId || 'common';
             return `https://login.microsoftonline.com/${tenant}/oauth2/v2.0/token`;
         }
-        if (config.providerPreset === 'GOOGLE_WORKSPACE') {
-            return 'https://oauth2.googleapis.com/token';
+        if (config.tenantId && !config.tenantId.includes('zoho')) {
+            return `https://login.microsoftonline.com/${config.tenantId}/oauth2/v2.0/token`;
         }
-        if (config.providerPreset === 'META') {
-            return 'https://graph.facebook.com/v19.0/oauth/access_token';
-        }
-        return config.tokenUrl || 'https://login.microsoftonline.com/common/oauth2/v2.0/token';
+        throw new Error('OAuth2 Token URL is required for Custom provider configuration.');
     }
     /**
      * Resolves default OAuth2 scope.
@@ -28,13 +52,17 @@ export class OAuth2Service {
     resolveDefaultScope(config, channel) {
         if (config.scope)
             return config.scope;
-        if (channel === 'email' && config.providerPreset === 'MICROSOFT_365') {
+        const preset = config.providerPreset || config.preset;
+        if (preset === 'ZOHO' || (config.clientId && config.clientId.startsWith('1000.'))) {
+            return 'ZohoMail.messages.ALL,ZohoMail.accounts.ALL';
+        }
+        if (channel === 'email' && preset === 'MICROSOFT_365') {
             return 'https://outlook.office365.com/.default';
         }
-        if (channel === 'email' && config.providerPreset === 'GOOGLE_WORKSPACE') {
+        if (channel === 'email' && preset === 'GOOGLE_WORKSPACE') {
             return 'https://mail.google.com/';
         }
-        if (channel === 'teams' || config.providerPreset === 'MICROSOFT_365') {
+        if (channel === 'teams' || preset === 'MICROSOFT_365') {
             return 'https://graph.microsoft.com/.default';
         }
         return 'https://graph.microsoft.com/.default';
@@ -45,13 +73,15 @@ export class OAuth2Service {
     async acquireTokenClientCredentials(config, channel = 'email') {
         const tokenUrl = this.resolveTokenUrl(config);
         const scope = this.resolveDefaultScope(config, channel);
-        if (!config.clientId || !config.clientSecret) {
+        const clientId = config.clientId?.trim();
+        const clientSecret = config.clientSecret?.trim();
+        if (!clientId || !clientSecret) {
             throw new Error('OAuth2 Client Credentials Grant requires both clientId and clientSecret.');
         }
         const bodyParams = new URLSearchParams();
         bodyParams.append('grant_type', 'client_credentials');
-        bodyParams.append('client_id', config.clientId);
-        bodyParams.append('client_secret', config.clientSecret);
+        bodyParams.append('client_id', clientId);
+        bodyParams.append('client_secret', clientSecret);
         bodyParams.append('scope', scope);
         const response = await fetch(tokenUrl, {
             method: 'POST',
@@ -72,6 +102,10 @@ export class OAuth2Service {
             throw new Error(`OAuth2 Token Request Failed (${response.status}): ${errMsg}`);
         }
         const data = (await response.json());
+        if (data.error) {
+            const desc = data.error_description || data.error;
+            throw new Error(`OAuth2 Token Error: ${desc}`);
+        }
         const expiresIn = data.expires_in || 3600;
         const tokenExpiry = Date.now() + expiresIn * 1000;
         return {
@@ -85,17 +119,23 @@ export class OAuth2Service {
      * Refreshes access token using Refresh Token Grant.
      */
     async acquireTokenRefreshToken(config) {
-        if (!config.refreshToken) {
+        const refreshToken = config.refreshToken?.trim();
+        const clientId = config.clientId?.trim();
+        const clientSecret = config.clientSecret?.trim();
+        if (!refreshToken) {
             throw new Error('OAuth2 Refresh Token Grant requires refreshToken.');
+        }
+        if (!clientId || !clientSecret) {
+            throw new Error('OAuth2 Refresh Token Grant requires both clientId and clientSecret.');
         }
         const tokenUrl = this.resolveTokenUrl(config);
         const bodyParams = new URLSearchParams();
         bodyParams.append('grant_type', 'refresh_token');
-        bodyParams.append('refresh_token', config.refreshToken);
-        if (config.clientId)
-            bodyParams.append('client_id', config.clientId);
-        if (config.clientSecret)
-            bodyParams.append('client_secret', config.clientSecret);
+        bodyParams.append('client_id', clientId);
+        bodyParams.append('client_secret', clientSecret);
+        bodyParams.append('refresh_token', refreshToken);
+        if (config.scope)
+            bodyParams.append('scope', config.scope);
         const response = await fetch(tokenUrl, {
             method: 'POST',
             headers: {
@@ -106,15 +146,78 @@ export class OAuth2Service {
         });
         if (!response.ok) {
             const errText = await response.text();
-            throw new Error(`OAuth2 Refresh Token Failed (${response.status}): ${errText}`);
+            let parsedErr = null;
+            try {
+                parsedErr = JSON.parse(errText);
+            }
+            catch { }
+            const errMsg = parsedErr?.error_description || parsedErr?.error || errText || `HTTP ${response.status}`;
+            throw new Error(`OAuth2 Refresh Token Failed (${response.status}): ${errMsg}`);
         }
         const data = (await response.json());
+        if (data.error) {
+            const desc = data.error_description || data.error;
+            throw new Error(`OAuth2 Refresh Token Error: ${desc}`);
+        }
         const expiresIn = data.expires_in || 3600;
         return {
             accessToken: data.access_token,
-            refreshToken: data.refresh_token || config.refreshToken,
+            refreshToken: data.refresh_token || refreshToken,
             expiresIn,
             tokenExpiry: Date.now() + expiresIn * 1000
+        };
+    }
+    /**
+     * Exchanges an authorization code (or Zoho Self-Client grant token) for an access token and refresh token.
+     */
+    async acquireTokenAuthorizationCode(config) {
+        const code = config.code?.trim();
+        const clientId = config.clientId?.trim();
+        const clientSecret = config.clientSecret?.trim();
+        if (!code) {
+            throw new Error('OAuth2 Authorization Code Grant requires code (grant token).');
+        }
+        if (!clientId || !clientSecret) {
+            throw new Error('OAuth2 requires both clientId and clientSecret.');
+        }
+        const tokenUrl = this.resolveTokenUrl(config);
+        const bodyParams = new URLSearchParams();
+        bodyParams.append('grant_type', 'authorization_code');
+        bodyParams.append('client_id', clientId);
+        bodyParams.append('client_secret', clientSecret);
+        bodyParams.append('code', code);
+        if (config.scope)
+            bodyParams.append('scope', config.scope);
+        const response = await fetch(tokenUrl, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+                'Accept': 'application/json'
+            },
+            body: bodyParams.toString()
+        });
+        if (!response.ok) {
+            const errText = await response.text();
+            let parsedErr = null;
+            try {
+                parsedErr = JSON.parse(errText);
+            }
+            catch { }
+            const errMsg = parsedErr?.error_description || parsedErr?.error || errText || `HTTP ${response.status}`;
+            throw new Error(`OAuth2 Authorization Code Failed (${response.status}): ${errMsg}`);
+        }
+        const data = (await response.json());
+        if (data.error) {
+            const desc = data.error_description || data.error;
+            throw new Error(`OAuth2 Code Exchange Error: ${desc}`);
+        }
+        const expiresIn = data.expires_in || 3600;
+        return {
+            accessToken: data.access_token,
+            refreshToken: data.refresh_token,
+            expiresIn,
+            tokenExpiry: Date.now() + expiresIn * 1000,
+            scope: data.scope
         };
     }
     /**
@@ -127,10 +230,16 @@ export class OAuth2Service {
         if (isStillValid) {
             return config.accessToken;
         }
-        // Refresh token grant if available
+        // Refresh token grant or code exchange if available
         let tokenResult;
         if (config.refreshToken) {
             tokenResult = await this.acquireTokenRefreshToken(config);
+        }
+        else if (config.code) {
+            tokenResult = await this.acquireTokenAuthorizationCode(config);
+            if (tokenResult.refreshToken) {
+                config.refreshToken = tokenResult.refreshToken;
+            }
         }
         else {
             tokenResult = await this.acquireTokenClientCredentials(config, channel);
@@ -144,11 +253,19 @@ export class OAuth2Service {
                 const pool = getPostgresPool();
                 await pool.query(`UPDATE provider_connections
            SET config = jsonb_set(
-             jsonb_set(config, '{accessToken}', to_jsonb($1::text)),
-             '{tokenExpiry}', to_jsonb($2::bigint)
+             jsonb_set(
+               jsonb_set(config, '{accessToken}', to_jsonb($1::text)),
+               '{tokenExpiry}', to_jsonb($2::bigint)
+             ),
+             '{refreshToken}', to_jsonb($3::text)
            ),
            updated_at = NOW()
-           WHERE id = $3;`, [tokenResult.accessToken, tokenResult.tokenExpiry, providerId]);
+           WHERE id = $4;`, [
+                    tokenResult.accessToken,
+                    tokenResult.tokenExpiry,
+                    config.refreshToken || tokenResult.refreshToken || '',
+                    providerId
+                ]);
             }
             catch (dbErr) {
                 console.warn(`[OAuth2Service] Could not persist refreshed token to DB for ${providerId}:`, dbErr.message);
@@ -169,16 +286,26 @@ export class OAuth2Service {
      */
     async testOAuth2Credentials(config, channel = 'email') {
         try {
-            const result = await this.acquireTokenClientCredentials(config, channel);
+            let result;
+            if (config.code || config.grantType === 'authorization_code') {
+                result = await this.acquireTokenAuthorizationCode(config);
+            }
+            else if (config.refreshToken || config.grantType === 'refresh_token') {
+                result = await this.acquireTokenRefreshToken(config);
+            }
+            else {
+                result = await this.acquireTokenClientCredentials(config, channel);
+            }
             return {
                 success: true,
-                message: `OAuth 2.0 Modern Authentication Successful! Received access token valid for ${Math.round(result.expiresIn / 60)} minutes.`,
+                message: `OAuth 2.0 Modern Authentication Successful! Received access token valid for ${Math.round(result.expiresIn / 60)} minutes.${result.refreshToken || config.refreshToken ? ' Refresh Token verified.' : ''}`,
                 details: {
                     tokenEndpoint: this.resolveTokenUrl(config),
                     scope: result.scope || this.resolveDefaultScope(config, channel),
                     expiresIn: result.expiresIn,
                     tokenExpiryDate: new Date(result.tokenExpiry).toISOString(),
-                    tokenPrefix: result.accessToken.substring(0, 10) + '...'
+                    tokenPrefix: result.accessToken.substring(0, 10) + '...',
+                    hasRefreshToken: !!(result.refreshToken || config.refreshToken)
                 }
             };
         }
