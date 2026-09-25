@@ -692,7 +692,9 @@ export type TransactionInvestigationStatus =
   | 'MANUALLY_REVERSED'
   | 'WRITTEN_OFF'
   | 'CLOSED_RESOLVED'
-  | 'CLOSED_UNRESOLVED';
+  | 'CLOSED_UNRESOLVED'
+  | 'CIRCUIT_BREAKER_PAUSED'
+  | 'DIAGNOSTIC_BYPASSED';
 
 export interface ProcessingStage {
   id: string;

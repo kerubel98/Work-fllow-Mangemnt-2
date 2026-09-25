@@ -47,7 +47,7 @@ export const workflowBundleService = {
 
     // 1. Fetch Workflow definition
     const wfRes = await queryPg(
-      `SELECT * FROM database_validation_workflows WHERE id = $1`,
+      `SELECT id, name, description, stages, steps, target_db_id, target_table, category, created_at, updated_at FROM database_validation_workflows WHERE id = $1`,
       [input.workflowId]
     );
     if (wfRes.rows.length === 0) {
@@ -60,7 +60,7 @@ export const workflowBundleService = {
     let boxes: any[] = [];
     if (boxIds.length > 0) {
       const boxRes = await queryPg(
-        `SELECT * FROM validation_boxes WHERE id = ANY($1::varchar[])`,
+        `SELECT id, name, category, box_type, target_db_id, target_table, search_parameters, check_step, description, is_public, visibility, created_at, updated_at FROM validation_boxes WHERE id = ANY($1::varchar[])`,
         [boxIds]
       );
       boxes = boxRes.rows;
@@ -71,7 +71,7 @@ export const workflowBundleService = {
     let dbChecks: any[] = [];
     if (dbCheckIds.length > 0) {
       const dbRes = await queryPg(
-        `SELECT * FROM database_table_mappings WHERE id = ANY($1::varchar[])`,
+        `SELECT id, db_id, db_name, table_name, columns, updated_at FROM database_table_mappings WHERE id = ANY($1::varchar[])`,
         [dbCheckIds]
       );
       dbChecks = dbRes.rows;

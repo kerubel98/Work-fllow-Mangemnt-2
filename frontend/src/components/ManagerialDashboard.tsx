@@ -394,15 +394,15 @@ export default function ManagerialDashboard({
       </div>
 
       {/* Dashboard Sub-Navigation Tabs */}
-      <div className="bg-[#0F172B] border border-slate-800 rounded-xl p-1 shadow-xs flex flex-wrap items-center justify-between gap-2">
-        <div className="flex flex-wrap items-center gap-1">
+      <div className="bg-gradient-to-r from-[#0d1424] via-[#090d18] to-[#07080f] border border-white/8 rounded-xl p-1.5 shadow-sm flex flex-wrap items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center gap-1.5">
           <button
             type="button"
             onClick={() => setActiveDashboardTab('overview')}
             className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
               activeDashboardTab === 'overview'
-                ? 'bg-[#155DFC] text-white shadow-xs'
-                : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
+                ? 'bg-[#3b6cff] text-white shadow-xs'
+                : 'text-slate-300 hover:text-white hover:bg-white/5'
             }`}
           >
             <LayoutDashboard size={14} />
@@ -414,14 +414,14 @@ export default function ManagerialDashboard({
             onClick={() => setActiveDashboardTab('hashtags')}
             className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
               activeDashboardTab === 'hashtags'
-                ? 'bg-[#155DFC] text-white shadow-xs'
-                : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
+                ? 'bg-[#3b6cff] text-white shadow-xs'
+                : 'text-slate-300 hover:text-white hover:bg-white/5'
             }`}
           >
             <Tag size={14} />
             <span>Hashtag Intelligence & KPIs</span>
             <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-mono font-bold ${
-              activeDashboardTab === 'hashtags' ? 'bg-[#0F172B]/60 text-white' : 'bg-slate-800 text-slate-300'
+              activeDashboardTab === 'hashtags' ? 'bg-[#07080f]/70 text-white' : 'bg-slate-800 text-slate-300'
             }`}>
               {hashtags.length}
             </span>
@@ -432,8 +432,8 @@ export default function ManagerialDashboard({
             onClick={() => setActiveDashboardTab('unresolved_scripts')}
             className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
               activeDashboardTab === 'unresolved_scripts'
-                ? 'bg-[#155DFC] text-white shadow-xs'
-                : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
+                ? 'bg-[#3b6cff] text-white shadow-xs'
+                : 'text-slate-300 hover:text-white hover:bg-white/5'
             }`}
           >
             <AlertCircle size={14} />
@@ -452,14 +452,14 @@ export default function ManagerialDashboard({
             onClick={() => setActiveDashboardTab('teams')}
             className={`px-3 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 cursor-pointer ${
               activeDashboardTab === 'teams'
-                ? 'bg-[#155DFC] text-white shadow-xs'
-                : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
+                ? 'bg-[#3b6cff] text-white shadow-xs'
+                : 'text-slate-300 hover:text-white hover:bg-white/5'
             }`}
           >
             <Users size={14} />
             <span>Teams & Workspaces</span>
             <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-mono font-bold ${
-              activeDashboardTab === 'teams' ? 'bg-[#0F172B]/60 text-white' : 'bg-slate-800 text-slate-300'
+              activeDashboardTab === 'teams' ? 'bg-[#07080f]/70 text-white' : 'bg-slate-800 text-slate-300'
             }`}>
               {teams.length}
             </span>
@@ -482,12 +482,12 @@ export default function ManagerialDashboard({
         {/* Card 1: Tasks Assigned to Me */}
         <div 
           onClick={() => setDashboardTaskScope('MY_ASSIGNED')}
-          className="bg-white border border-slate-200/80 rounded-2xl p-4.5 space-y-3 shadow-xs hover:border-blue-400 hover:shadow-sm transition-all cursor-pointer group"
+          className="bg-white border border-slate-200/80 border-t-3 border-t-[#3b6cff] rounded-2xl p-4.5 space-y-3 shadow-[0_1px_3px_rgba(0,0,0,0.05),0_1px_8px_rgba(0,0,0,0.03)] hover:shadow-md hover:-translate-y-0.5 transition-all duration-200 cursor-pointer group"
           id="card-my-assigned"
         >
           <div className="flex justify-between items-start">
             <div className="flex items-center space-x-2.5">
-              <div className="p-2 bg-blue-50 text-blue-600 rounded-xl border border-blue-100 group-hover:bg-blue-600 group-hover:text-white transition-colors">
+              <div className="p-2 bg-blue-50 text-[#3b6cff] rounded-xl border border-blue-100 group-hover:bg-[#3b6cff] group-hover:text-white transition-colors">
                 <CheckSquare size={17} />
               </div>
               <div>
@@ -507,7 +507,7 @@ export default function ManagerialDashboard({
             </div>
             <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden">
               <div 
-                className="bg-blue-600 h-full rounded-full transition-all duration-500"
+                className="bg-[#3b6cff] h-full rounded-full transition-all duration-500"
                 style={{ width: `${myAssignedProgress}%` }}
               />
             </div>
@@ -532,7 +532,7 @@ export default function ManagerialDashboard({
         {/* Card 2: Overall Workspace Throughput & Velocity */}
         <div 
           onClick={() => onChangeTab?.('workspace')}
-          className="bg-white border border-slate-200/80 rounded-2xl p-4.5 space-y-3 shadow-xs hover:border-purple-400 hover:shadow-sm transition-all cursor-pointer group"
+          className="bg-white border border-slate-200/80 border-t-3 border-t-purple-600 rounded-2xl p-4.5 space-y-3 shadow-[0_1px_3px_rgba(0,0,0,0.05),0_1px_8px_rgba(0,0,0,0.03)] hover:shadow-md hover:-translate-y-0.5 transition-all duration-200 cursor-pointer group"
           id="card-workspace-velocity"
         >
           <div className="flex justify-between items-start">
@@ -582,7 +582,7 @@ export default function ManagerialDashboard({
         {/* Card 3: Maker-Checker Governance Queue */}
         <div 
           onClick={() => onChangeTab?.('governance')}
-          className="bg-white border border-slate-200/80 rounded-2xl p-4.5 space-y-3 shadow-xs hover:border-amber-400 hover:shadow-sm transition-all cursor-pointer group"
+          className="bg-white border border-slate-200/80 border-t-3 border-t-amber-500 rounded-2xl p-4.5 space-y-3 shadow-[0_1px_3px_rgba(0,0,0,0.05),0_1px_8px_rgba(0,0,0,0.03)] hover:shadow-md hover:-translate-y-0.5 transition-all duration-200 cursor-pointer group"
           id="card-governance-queue"
         >
           <div className="flex justify-between items-start">
@@ -619,7 +619,7 @@ export default function ManagerialDashboard({
             <span className="px-2 py-0.5 bg-slate-100 text-slate-700 rounded-md font-bold">
               Four-Eyes Rule Active
             </span>
-            <span className="text-blue-600 font-bold group-hover:underline flex items-center gap-0.5">
+            <span className="text-[#3b6cff] font-bold group-hover:underline flex items-center gap-0.5">
               Review <ArrowRight size={11} />
             </span>
           </div>
@@ -628,7 +628,7 @@ export default function ManagerialDashboard({
         {/* Card 4: Hashtag Intelligence & Script Resolutions */}
         <div 
           onClick={() => setActiveDashboardTab('hashtags')}
-          className="bg-white border border-slate-200/80 rounded-2xl p-4.5 space-y-3 shadow-xs hover:border-emerald-400 hover:shadow-sm transition-all cursor-pointer group"
+          className="bg-white border border-slate-200/80 border-t-3 border-t-emerald-500 rounded-2xl p-4.5 space-y-3 shadow-[0_1px_3px_rgba(0,0,0,0.05),0_1px_8px_rgba(0,0,0,0.03)] hover:shadow-md hover:-translate-y-0.5 transition-all duration-200 cursor-pointer group"
           id="card-hashtag-intelligence"
         >
           <div className="flex justify-between items-start">
@@ -672,12 +672,12 @@ export default function ManagerialDashboard({
         {/* Card 5: External Customer Request Intake & SLA */}
         <div 
           onClick={() => onChangeTab?.('team_workspace')}
-          className="bg-white border border-slate-200/80 rounded-2xl p-4.5 space-y-3 shadow-xs hover:border-sky-400 hover:shadow-sm transition-all cursor-pointer group"
+          className="bg-white border border-slate-200/80 border-t-3 border-t-rose-500 rounded-2xl p-4.5 space-y-3 shadow-[0_1px_3px_rgba(0,0,0,0.05),0_1px_8px_rgba(0,0,0,0.03)] hover:shadow-md hover:-translate-y-0.5 transition-all duration-200 cursor-pointer group"
           id="card-external-intake"
         >
           <div className="flex justify-between items-start">
             <div className="flex items-center space-x-2.5">
-              <div className="p-2 bg-sky-50 text-sky-600 rounded-xl border border-sky-100 group-hover:bg-sky-600 group-hover:text-white transition-colors">
+              <div className="p-2 bg-rose-50 text-rose-600 rounded-xl border border-rose-100 group-hover:bg-rose-600 group-hover:text-white transition-colors">
                 <Inbox size={17} />
               </div>
               <div>
@@ -686,7 +686,7 @@ export default function ManagerialDashboard({
               </div>
             </div>
             <span className={`text-[11px] font-bold font-mono px-2 py-0.5 rounded-full ${
-              (externalSummary?.pendingTriage || 0) > 0 ? 'bg-sky-100 text-sky-800' : 'bg-slate-100 text-slate-600'
+              (externalSummary?.pendingTriage || 0) > 0 ? 'bg-rose-100 text-rose-800' : 'bg-slate-100 text-slate-600'
             }`}>
               {externalSummary?.pendingTriage || 0} Pending
             </span>
@@ -701,7 +701,7 @@ export default function ManagerialDashboard({
             </div>
             <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden">
               <div 
-                className="bg-sky-500 h-full rounded-full transition-all duration-500"
+                className="bg-rose-500 h-full rounded-full transition-all duration-500"
                 style={{ 
                   width: `${(externalSummary?.totalInbound || 0) > 0 
                     ? Math.min(100, Math.round(((externalSummary?.convertedToTask || 0) / externalSummary.totalInbound) * 100)) 
@@ -715,7 +715,7 @@ export default function ManagerialDashboard({
             <span className={externalSummary?.slaBreachCount > 0 ? 'text-rose-600 font-bold' : 'text-slate-500'}>
               {externalSummary?.slaBreachCount || 0} SLA Breaches
             </span>
-            <span className="text-sky-600 font-bold group-hover:underline flex items-center gap-0.5">
+            <span className="text-rose-600 font-bold group-hover:underline flex items-center gap-0.5">
               Triage <ArrowRight size={11} />
             </span>
           </div>

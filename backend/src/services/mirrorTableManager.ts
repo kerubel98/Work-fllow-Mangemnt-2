@@ -17,7 +17,26 @@ export interface MirrorTableDefinition {
   createdAt: string;
 }
 
-const tableCache = new Set<string>();
+const TABLE_CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes TTL
+const tableCache = new Map<string, number>(); // tableName -> expiryTimestamp
+
+function isTableCached(name: string): boolean {
+  const expiry = tableCache.get(name);
+  if (!expiry) return false;
+  if (Date.now() > expiry) {
+    tableCache.delete(name);
+    return false;
+  }
+  return true;
+}
+
+function setTableCached(name: string): void {
+  tableCache.set(name, Date.now() + TABLE_CACHE_TTL_MS);
+}
+
+export function isPermanentMirrorTable(mirrorName: string): boolean {
+  return mirrorName.startsWith('mirror_ftp_') || mirrorName.startsWith('mirror_permanent_') || mirrorName.includes('_staging_');
+}
 
 /**
  * Maps database-specific types to standard PostgreSQL types.
@@ -65,7 +84,7 @@ export const mirrorTableManager = {
     const dbName = db ? (db.name || db.id) : 'local';
     const mirrorName = this.getMirrorTableName(dbName, tableName);
 
-    if (tableCache.has(mirrorName)) {
+    if (isTableCached(mirrorName)) {
       return mirrorName;
     }
 
@@ -86,7 +105,7 @@ export const mirrorTableManager = {
         [mirrorName]
       );
       if (checkRes.rows && checkRes.rows.length > 0) {
-        tableCache.add(mirrorName);
+        setTableCached(mirrorName);
         return mirrorName;
       }
     } catch {}
@@ -141,7 +160,7 @@ export const mirrorTableManager = {
       await queryPg(`ALTER TABLE ${mirrorName} ADD COLUMN IF NOT EXISTS _mirrored_at TIMESTAMPTZ DEFAULT NOW();`);
       await queryPg(`ALTER TABLE ${mirrorName} ADD COLUMN IF NOT EXISTS payload JSONB DEFAULT '{}'::jsonb;`);
     } catch {}
-    tableCache.add(mirrorName);
+    setTableCached(mirrorName);
     console.log(`[MirrorManager] Mirror table verified: ${mirrorName} with ${columns.length} columns.`);
     return mirrorName;
   },
@@ -271,8 +290,8 @@ export const mirrorTableManager = {
     }
 
     if (tableNames.length === 0) {
-      // Fallback: ensure default transactions mirror table for this db
-      tableNames = ['transactions'];
+      console.warn(`[MirrorManager] No tables specified or discovered for connection [${db.name}] (${db.id}). Skipping mirror provisioning.`);
+      return [];
     }
 
     for (const tbl of tableNames) {
@@ -310,8 +329,8 @@ export const mirrorTableManager = {
    * Should be called after investigation job/task completion to prevent unbounded growth.
    */
   async cleanupMirrorBatch(mirrorName: string, batchId: string): Promise<number> {
-    // Permanent FTP staged tables must never be purged
-    if (mirrorName.startsWith('mirror_ftp_')) {
+    // Permanent FTP staged and long-term staging tables must never be purged
+    if (isPermanentMirrorTable(mirrorName)) {
       return 0;
     }
     try {
@@ -333,8 +352,8 @@ export const mirrorTableManager = {
    * Prevents indefinite accumulation of transient reconciliation data.
    */
   async cleanupOldMirrorRows(mirrorName: string, maxAgeHours = 24): Promise<number> {
-    // Permanent FTP staged tables must never be purged
-    if (mirrorName.startsWith('mirror_ftp_')) {
+    // Permanent FTP staged and long-term staging tables must never be purged
+    if (isPermanentMirrorTable(mirrorName)) {
       return 0;
     }
     try {

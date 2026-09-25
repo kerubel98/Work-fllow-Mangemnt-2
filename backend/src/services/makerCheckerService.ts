@@ -4,8 +4,14 @@
  * Enforces anti-self-approval (makerId != checkerId) and team-scoped authorization.
  */
 
-import { queryPg } from '../config/postgres.js';
+import { queryPg, getPostgresPool } from '../config/postgres.js';
 import { ResolutionApprovalRequest } from '../types.js';
+
+const RESOLUTION_REQUEST_COLUMNS = `
+  id, task_id, transaction_id, team_id, maker_id, maker_name,
+  proposed_action, proposed_status, justification_note, evidence_snapshot,
+  checker_id, checker_name, rejection_reason, status, created_at, reviewed_at
+`;
 
 export interface ProposeResolutionInput {
   taskId: string;
@@ -114,11 +120,15 @@ export const makerCheckerService = {
    * Enforces Anti-Self-Approval (makerId != checkerId).
    */
   async reviewResolutionProposal(input: ReviewResolutionInput): Promise<ResolutionApprovalRequest> {
-    await queryPg('BEGIN;');
+    const pool = getPostgresPool();
+    const client = await pool.connect();
+
     try {
-      // 1. Fetch pending proposal with row-level lock
-      const fetchRes = await queryPg(
-        `SELECT * FROM resolution_approval_requests WHERE id = $1 AND status = 'PENDING' FOR UPDATE`,
+      await client.query('BEGIN;');
+
+      // 1. Fetch pending proposal with row-level lock (explicit columns projected)
+      const fetchRes = await client.query(
+        `SELECT ${RESOLUTION_REQUEST_COLUMNS} FROM resolution_approval_requests WHERE id = $1 AND status = 'PENDING' FOR UPDATE;`,
         [input.requestId]
       );
 
@@ -131,6 +141,11 @@ export const makerCheckerService = {
       // 2. Enforce Anti-Self-Approval (Maker cannot approve their own submission)
       if (proposal.maker_id === input.checkerId) {
         throw new Error(`Anti-Self-Approval Enforcement: Maker '${proposal.maker_name}' cannot approve their own proposal.`);
+      }
+
+      // 2b. Enforce Team Authorization (DESIGN-08)
+      if (input.checkerTeamId && proposal.team_id && input.checkerTeamId !== proposal.team_id) {
+        throw new Error(`Authorization Failure: Checker team '${input.checkerTeamId}' does not match proposal team '${proposal.team_id}'.`);
       }
 
       const isApprove = input.action === 'APPROVE';
@@ -152,14 +167,14 @@ export const makerCheckerService = {
             rejection_reason = $4,
             reviewed_at = NOW()
         WHERE id = $5
-        RETURNING *;
+        RETURNING ${RESOLUTION_REQUEST_COLUMNS};
       `;
 
-      const updateRes = await queryPg(updateSql, [
+      const updateRes = await client.query(updateSql, [
         newStatus,
         input.checkerId,
         input.checkerName.trim(),
-        isApprove ? null : input.rejectionReason.trim(),
+        isApprove ? null : (input.rejectionReason?.trim() || null),
         input.requestId
       ]);
 
@@ -169,7 +184,7 @@ export const makerCheckerService = {
       if (isApprove) {
         // Commit resolution
         const targetStatus = proposal.proposed_status || 'VERIFIED_MATCH';
-        await queryPg(
+        await client.query(
           `UPDATE investigation_transactions 
            SET final_result = 'PASS',
                final_action = 'CLOSE',
@@ -182,7 +197,7 @@ export const makerCheckerService = {
         );
       } else {
         // Reject & revert to FLAGGED_DISCREPANCY
-        await queryPg(
+        await client.query(
           `UPDATE investigation_transactions 
            SET final_result = 'FAIL',
                investigation_status = 'FLAGGED_DISCREPANCY',
@@ -194,7 +209,7 @@ export const makerCheckerService = {
         );
       }
 
-      await queryPg('COMMIT;');
+      await client.query('COMMIT;');
 
       return {
         id: updatedRow.id,
@@ -215,8 +230,10 @@ export const makerCheckerService = {
         reviewedAt: updatedRow.reviewed_at
       };
     } catch (err) {
-      await queryPg('ROLLBACK;');
+      await client.query('ROLLBACK;').catch(() => {});
       throw err;
+    } finally {
+      client.release();
     }
   },
 
@@ -224,7 +241,7 @@ export const makerCheckerService = {
    * Retrieves pending resolution approval requests for a specific team.
    */
   async getTeamPendingResolutions(teamId?: string): Promise<ResolutionApprovalRequest[]> {
-    let sql = `SELECT * FROM resolution_approval_requests WHERE status = 'PENDING'`;
+    let sql = `SELECT ${RESOLUTION_REQUEST_COLUMNS} FROM resolution_approval_requests WHERE status = 'PENDING'`;
     const params: any[] = [];
 
     if (teamId && teamId !== 'all') {

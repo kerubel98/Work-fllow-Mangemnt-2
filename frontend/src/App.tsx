@@ -38,15 +38,22 @@ const SystemSettings = lazy(() => import('./components/settings/SystemSettings')
 const AdminTeamResourcesMonitor = lazy(() => import('./components/AdminTeamResourcesMonitor'));
 import { GovernanceProvider } from './context/GovernanceContext';
 import { GlobalMappingService } from './services/globalMappingService';
+import { SkeletonCard, SkeletonTable } from './components/common/Skeleton';
 
 function PanelLoadingSkeleton() {
   return (
-    <div className="w-full h-96 flex flex-col items-center justify-center gap-3 p-8 bg-white/50 rounded-2xl border border-slate-200/80 animate-pulse">
-      <div className="w-9 h-9 border-3 border-purple-600 border-t-transparent rounded-full animate-spin" />
-      <span className="text-xs font-semibold text-slate-500 tracking-wide">Loading workspace view...</span>
+    <div className="w-full space-y-4 p-4 panel-enter">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <SkeletonCard />
+        <SkeletonCard />
+        <SkeletonCard />
+        <SkeletonCard />
+      </div>
+      <SkeletonTable rows={6} cols={6} />
     </div>
   );
 }
+
 
 const serializeIssues = (data: Issue[]) => {
   if (!Array.isArray(data)) return data;
@@ -1006,7 +1013,7 @@ export default function App() {
           />
 
           {/* Main Context Dynamic Panel Router */}
-          <main className="flex-grow p-2 lg:p-3 overflow-y-auto max-h-[calc(100vh-2.25rem)]">
+          <main className="flex-grow p-2 lg:p-3 overflow-y-auto max-h-[calc(100vh-2.75rem)] panel-enter">
             <Suspense fallback={<PanelLoadingSkeleton />}>
             {(activeNavigation === 'workspace' || activeNavigation === 'my_tasks' || activeNavigation === 'hashtags' || activeNavigation === 'open_case' || activeNavigation === 'create_case') && (
               <ErrorBoundary fallbackTitle="Workspace Display Error" fallbackMessage="An error occurred while loading the workspace. You can retry rendering or reset settings.">

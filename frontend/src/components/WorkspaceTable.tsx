@@ -14,6 +14,8 @@ import {
   Store, Hash, CheckCircle2, AlertCircle, X, ExternalLink, SlidersHorizontal,
   FileSpreadsheet, ArrowRightLeft, Sparkles, Copy, Check
 } from 'lucide-react';
+import { Badge } from './common/Badge';
+import { EmptyState } from './common/EmptyState';
 
 interface WorkspaceTableProps {
   currentUser?: User;
@@ -250,27 +252,12 @@ export default function WorkspaceTable({
   const renderStatusBadge = (status: string) => {
     const s = String(status || 'PENDING').toUpperCase();
     if (s.includes('AUTH') || s.includes('SETTLE') || s.includes('SUCCESS') || s.includes('CLEAR')) {
-      return (
-        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
-          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 mr-1" />
-          {s}
-        </span>
-      );
+      return <Badge variant="resolved" size="xs">{s}</Badge>;
     }
     if (s.includes('DECLIN') || s.includes('FAIL') || s.includes('REVERS') || s.includes('ERROR')) {
-      return (
-        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-50 text-rose-700 border border-rose-200">
-          <span className="w-1.5 h-1.5 rounded-full bg-rose-500 mr-1" />
-          {s}
-        </span>
-      );
+      return <Badge variant="critical" size="xs">{s}</Badge>;
     }
-    return (
-      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-200">
-        <span className="w-1.5 h-1.5 rounded-full bg-amber-500 mr-1" />
-        {s || 'PENDING'}
-      </span>
-    );
+    return <Badge variant="investigating" size="xs">{s || 'PENDING'}</Badge>;
   };
 
   // Helper for Tag Badge styling
@@ -287,14 +274,14 @@ export default function WorkspaceTable({
   return (
     <div className="space-y-3.5 font-sans">
       {/* Top Banner */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 p-3 sm:p-3.5 bg-[#0F172B] rounded-xl text-white shadow-sm border border-slate-800">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 p-3.5 bg-gradient-to-r from-[#0d1424] via-[#090d18] to-[#07080f] rounded-xl text-white shadow-sm border border-white/8">
         <div className="space-y-1">
           <div className="flex items-center space-x-2">
-            <div className="p-1.5 bg-blue-500/20 rounded-lg text-blue-400 border border-blue-500/30">
+            <div className="p-1.5 bg-[#3b6cff]/20 rounded-lg text-blue-400 border border-[#3b6cff]/30">
               <Table size={16} />
             </div>
             <h2 className="text-sm font-bold tracking-tight">Centralized Uploaded Data Master Table</h2>
-            <span className="text-[10px] bg-[#155DFC]/20 text-blue-300 border border-[#155DFC]/30 px-2 py-0.5 rounded-full font-mono font-bold">
+            <span className="text-[10px] bg-[#3b6cff]/20 text-blue-300 border border-[#3b6cff]/30 px-2 py-0.5 rounded-full font-mono font-bold">
               {records.length} Transactions Collected
             </span>
           </div>
@@ -717,7 +704,7 @@ export default function WorkspaceTable({
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs border-collapse">
               <thead>
-                <tr className="bg-slate-50/90 border-b border-slate-200 text-[11px] font-bold text-slate-600 uppercase tracking-wider font-mono">
+                <tr className="bg-slate-50/90 border-b border-slate-200 text-[10px] font-bold text-slate-500 uppercase tracking-widest font-mono">
                   {/* METADATA COLUMNS */}
                   {visibleColumns.file_name && (
                     <th className="py-3.5 px-4 min-w-[160px]">
@@ -780,16 +767,16 @@ export default function WorkspaceTable({
               <tbody className="divide-y divide-slate-100 font-sans text-slate-800">
                 {filteredRecords.length === 0 ? (
                   <tr>
-                    <td colSpan={15} className="py-16 text-center text-slate-400">
-                      <div className="w-14 h-14 rounded-2xl bg-slate-100 text-slate-400 flex items-center justify-center mx-auto mb-3">
-                        <Table size={28} />
-                      </div>
-                      <p className="font-bold text-slate-700 text-sm">No Centralized Records Found</p>
-                      <p className="text-xs text-slate-500 mt-1 max-w-md mx-auto">
-                        {searchTerm || tagFilter !== 'all' || userFilter !== 'all'
-                          ? 'No records match your active search and filter parameters.'
-                          : 'Upload a batch file when creating a task to automatically populate this centralized collection table with transformed global schema columns.'}
-                      </p>
+                    <td colSpan={15} className="py-12 px-4">
+                      <EmptyState
+                        icon={<Table size={24} className="text-slate-400" />}
+                        title="No Centralized Records Found"
+                        description={
+                          searchTerm || tagFilter !== 'all' || userFilter !== 'all'
+                            ? 'No records match your active search and filter parameters.'
+                            : 'Upload a batch file when creating a task to automatically populate this centralized collection table with transformed global schema columns.'
+                        }
+                      />
                     </td>
                   </tr>
                 ) : (
@@ -798,7 +785,7 @@ export default function WorkspaceTable({
                     const raw = rec.raw_data || {};
 
                     return (
-                      <tr key={rec.id} className="hover:bg-blue-50/40 transition-colors group">
+                      <tr key={rec.id} className="even:bg-slate-50/40 hover:bg-blue-50/30 transition-colors group">
                         {/* 1. File Name */}
                         {visibleColumns.file_name && (
                           <td className="py-3.5 px-4 font-mono font-medium text-slate-900">

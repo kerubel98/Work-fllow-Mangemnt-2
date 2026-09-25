@@ -251,8 +251,11 @@ export function resolveGroupedRows(
           }
         : sorted[0];
     } else if (policy === 'AGGREGATE_SUM') {
+      if (!aggregateSumColumns || aggregateSumColumns.length === 0) {
+        throw new Error(`[ExternalDataQuery] Configuration Error: 'aggregateSumColumns' must be explicitly configured when using duplicate resolution policy 'AGGREGATE_SUM'.`);
+      }
       const baseRow = { ...rows[0] };
-      const sumCols = aggregateSumColumns || ['amount', 'amt', 'fee', 'balance'];
+      const sumCols = aggregateSumColumns;
       for (const col of sumCols) {
         let total = 0;
         let hasCol = false;

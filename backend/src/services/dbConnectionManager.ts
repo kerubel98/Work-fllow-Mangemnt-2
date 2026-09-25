@@ -120,7 +120,7 @@ export async function testExternalDbConnection(db: DatabaseConnection): Promise<
         await mongoose.connection.db.admin().ping();
         return { success: true, message: `Connected to MongoDB [${db.name}]`, latencyMs: Date.now() - start };
       }
-      return { success: true, message: `MongoDB driver initialized for [${db.name}]`, latencyMs: Date.now() - start };
+      return { success: false, message: `MongoDB is not connected. Verify your URI and credentials for [${db.name}].`, latencyMs: Date.now() - start };
     }
 
     if (db.type === 'FTP' || db.type === 'SFTP') {
@@ -375,8 +375,11 @@ export const getTableColumns = getTableColumnsForDb;
 // Managed connection pools for external target databases
 const pgPoolCache = new Map<string, pg.Pool>();
 const mysqlPoolCache = new Map<string, mysql.Pool>();
+const POOL_MAX_IDLE_MS = 30 * 60 * 1000; // 30 minutes
+const poolLastUsed = new Map<string, number>();
 
 function getExternalPgPool(key: string, config: any): pg.Pool {
+  poolLastUsed.set(key, Date.now());
   let pool = pgPoolCache.get(key);
   if (!pool) {
     pool = new pg.Pool({
@@ -395,6 +398,7 @@ function getExternalPgPool(key: string, config: any): pg.Pool {
 }
 
 function getExternalMysqlPool(key: string, config: any): mysql.Pool {
+  poolLastUsed.set(key, Date.now());
   let pool = mysqlPoolCache.get(key);
   if (!pool) {
     pool = mysql.createPool({
@@ -413,18 +417,24 @@ function getExternalMysqlPool(key: string, config: any): mysql.Pool {
 }
 
 /**
- * Evicts and cleanly terminates cached connection pools for an external database when its credentials or endpoints are updated or deleted.
+ * Evicts and cleanly terminates cached connection pools for an external database when its credentials or endpoints are updated or deleted,
+ * or when pools have exceeded their maximum idle TTL.
  */
-export async function evictExternalDbPool(dbId: string): Promise<void> {
+export async function evictExternalDbPool(dbId?: string): Promise<void> {
+  const now = Date.now();
   for (const [key, pool] of pgPoolCache.entries()) {
-    if (key.startsWith(`${dbId}:`)) {
+    const shouldEvict = dbId ? key.startsWith(`${dbId}:`) : (now - (poolLastUsed.get(key) || 0) > POOL_MAX_IDLE_MS);
+    if (shouldEvict) {
       pgPoolCache.delete(key);
+      poolLastUsed.delete(key);
       await pool.end().catch(() => {});
     }
   }
   for (const [key, pool] of mysqlPoolCache.entries()) {
-    if (key.startsWith(`${dbId}:`)) {
+    const shouldEvict = dbId ? key.startsWith(`${dbId}:`) : (now - (poolLastUsed.get(key) || 0) > POOL_MAX_IDLE_MS);
+    if (shouldEvict) {
       mysqlPoolCache.delete(key);
+      poolLastUsed.delete(key);
       await pool.end().catch(() => {});
     }
   }

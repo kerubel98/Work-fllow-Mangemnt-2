@@ -110,6 +110,12 @@ export const investigationOrchestratorService = {
         if (Array.isArray(step.optionalParams)) {
           for (const op of step.optionalParams) registerParam(op);
         }
+        if (step.sourceField) {
+          registerParam(step.sourceField);
+        }
+        if (step.targetField) {
+          registerParam(step.targetField);
+        }
       }
     }
     registerParam(inputKeyField);
@@ -128,10 +134,15 @@ export const investigationOrchestratorService = {
       }
     }
 
-    // Determine primary keyField and full list of active parameters
-    const resolvedKey = activeParamsInFile[0] || inputKeyField || fileColumns.find(c => !c.startsWith('_'));
+    // Determine primary keyField and full list of active parameters strictly from configured parameters or explicit input key
+    const matchedInputKey = inputKeyField && fileColumns.find(c => c.toLowerCase() === inputKeyField.toLowerCase());
+    const resolvedKey = activeParamsInFile[0] || matchedInputKey;
     if (!resolvedKey) {
-      throw new Error(`[WorkflowEngine] Configuration Error: Unable to determine primary key for workflow "${workflow.name}". Please configure searchParameters on workflow steps or supply an explicit keyField.`);
+      throw new Error(
+        `[WorkflowEngine] Configuration Error: Unable to determine primary key for workflow "${workflow.name}". ` +
+        `None of the configured search parameters ([${configuredWorkflowParams.join(', ')}]) match columns in the ingested file ([${fileColumns.filter(c => !c.startsWith('_')).join(', ')}]). ` +
+        `Please configure searchParameters on your validation boxes/workflow steps or supply a valid keyField.`
+      );
     }
     const primaryKeyField = resolvedKey;
     const activeKeyFields = activeParamsInFile.length > 0 ? activeParamsInFile : [primaryKeyField];

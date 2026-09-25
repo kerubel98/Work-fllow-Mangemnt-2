@@ -13,6 +13,46 @@ export interface CompiledBlockSql {
   fullUpdateSql: string;
 }
 
+/**
+ * Validates and sanitizes custom SQL condition predicates against SQL injection,
+ * malicious subqueries, statement stacking, and destructive operations.
+ */
+export function sanitizeSqlConditionPredicate(sql: string, tablePrefix = 'm'): string {
+  if (!sql || !sql.trim()) return 'TRUE';
+
+  const trimmed = sql.trim();
+
+  // Disallow statement terminators or null bytes
+  if (/[;\0]/.test(trimmed)) {
+    throw new Error('Security Violation: Semicolons or null characters are strictly forbidden in SQL conditions.');
+  }
+
+  // Disallow line or block comments
+  if (/(--|\/\*|\*\/)/.test(trimmed)) {
+    throw new Error('Security Violation: SQL comments are strictly forbidden in SQL conditions.');
+  }
+
+  // Disallow DDL/DML, system commands, transaction controls, subqueries, and harmful functions
+  const dangerousPatterns = [
+    /\b(ALTER|CREATE|DROP|TRUNCATE|GRANT|REVOKE)\b/i,
+    /\b(INSERT|UPDATE|DELETE)\b/i,
+    /\b(COMMIT|ROLLBACK|BEGIN)\b/i,
+    /\b(UNION|INTERSECT|EXCEPT)\b/i,
+    /\b(SELECT)\b/i, // Subquery injection prevention
+    /\b(EXEC|EXECUTE)\b/i,
+    /\b(PG_SLEEP|PG_TERMINATE_BACKEND|PG_CANCEL_BACKEND|CURRENT_SETTING|SET_CONFIG)\b/i,
+    /\b(INTO|COPY|LOAD)\b/i
+  ];
+
+  for (const pattern of dangerousPatterns) {
+    if (pattern.test(trimmed)) {
+      throw new Error(`Security Violation: Unsafe SQL pattern detected in condition predicate: ${pattern.source}`);
+    }
+  }
+
+  return `(${trimmed.replace(/\{table\}/gi, tablePrefix)})`;
+}
+
 function sanitizeCol(name: string): string {
   return name.toLowerCase().replace(/[^a-z0-9_]/g, '_');
 }
@@ -186,7 +226,7 @@ export const ruleSqlCompiler = {
 
           case 'SQL_CONDITION': {
             if (rule.sqlCondition && rule.sqlCondition.trim()) {
-              baseSql = `(${rule.sqlCondition.replace(/\{table\}/gi, mirrorColPrefix)})`;
+              baseSql = sanitizeSqlConditionPredicate(rule.sqlCondition, mirrorColPrefix);
             } else {
               baseSql = 'TRUE';
             }

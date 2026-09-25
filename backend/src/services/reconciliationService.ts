@@ -2,6 +2,7 @@ import { getPostgresPool, isPostgresConnected } from '../config/postgres.js';
 import { repo } from '../store/repository.js';
 import { InvestigationTransaction, DualSourceCondition, PipelineAction } from '../types.js';
 import { resolveCanonicalKey } from './canonicalKeyResolver.js';
+import { STATUS_FLAG_COLORS, DEFAULT_PIPELINE_ACTIONS } from '../constants/statusColors.js';
 
 export interface MirrorRecord {
   recordKey: string;
@@ -91,14 +92,23 @@ export const reconciliationService = {
     if (isPostgresConnected) {
       const pool = getPostgresPool();
 
-      const keys = Array.isArray(lookupKeyField)
+      const rawKeys = Array.isArray(lookupKeyField)
         ? lookupKeyField.filter(Boolean)
         : String(lookupKeyField || '').split(',').map(s => s.trim()).filter(Boolean);
+
+      // Sanitize keys strictly to prevent JSON path and SQL injection (BUG-04)
+      const keys = rawKeys.map(k => {
+        const clean = String(k).trim().replace(/[^a-zA-Z0-9_]/g, '');
+        if (!clean) {
+          throw new Error(`[ReconciliationService] Invalid field name in lookupKeyField: "${k}"`);
+        }
+        return clean;
+      });
 
       const resolved = resolveCanonicalKey({ explicitKey: keys[0] });
       const primaryKey = resolved.primaryKey;
       const keyJoinSql = keys.length > 1
-        ? `m.record_key = (${keys.map(k => `COALESCE(t.canonical_data->>'${k.replace(/'/g, "''")}', '')`).join(" || '::' || ")})`
+        ? `m.record_key = (${keys.map(k => `COALESCE(t.canonical_data->>'${k}', '')`).join(" || '::' || ")})`
         : `m.record_key = (t.canonical_data->>$3)`;
 
       // PostgreSQL Set-based UPDATE ... FROM Join
@@ -137,9 +147,10 @@ export const reconciliationService = {
         conditionSql = `m.record_key IS NOT NULL AND (m.canonical_payload->>'${conditionCheck.field}') = $5`;
       }
 
-      const passAction = actionConfig?.onPassAction || 'CONTINUE';
-      const failAction = actionConfig?.onFailAction || 'STOP';
+      const passAction = actionConfig?.onPassAction || DEFAULT_PIPELINE_ACTIONS.ON_PASS;
+      const failAction = actionConfig?.onFailAction || DEFAULT_PIPELINE_ACTIONS.ON_FAIL;
 
+      // Diagnostic Taint Protection: do not mutate records carrying _isDiagnosticOnly (BUG-01)
       const updateSql = `
         WITH unique_task_source AS (
           SELECT DISTINCT ON (row_number) row_number, canonical_data, raw_data
@@ -150,24 +161,29 @@ export const reconciliationService = {
         UPDATE investigation_transactions it
         SET 
           final_result = CASE 
+            WHEN COALESCE((t.canonical_data->>'_isDiagnosticOnly')::boolean, (t.raw_data->>'_isDiagnosticOnly')::boolean, false) = true THEN 'PASS'
             WHEN ${conditionSql} THEN 'PASS'
             ELSE 'FAIL'
           END,
           final_action = CASE 
+            WHEN COALESCE((t.canonical_data->>'_isDiagnosticOnly')::boolean, (t.raw_data->>'_isDiagnosticOnly')::boolean, false) = true THEN 'CONTINUE'
             WHEN ${conditionSql} THEN '${passAction}'
             ELSE '${failAction}'
           END,
           investigation_status = CASE 
+            WHEN COALESCE((t.canonical_data->>'_isDiagnosticOnly')::boolean, (t.raw_data->>'_isDiagnosticOnly')::boolean, false) = true THEN 'DIAGNOSTIC_BYPASSED'
             WHEN ${conditionSql} THEN 'VERIFIED_MATCH'
             ELSE 'FLAGGED_DISCREPANCY'
           END,
           status_flag_text = CASE 
+            WHEN COALESCE((t.canonical_data->>'_isDiagnosticOnly')::boolean, (t.raw_data->>'_isDiagnosticOnly')::boolean, false) = true THEN 'Diagnostic Bypass'
             WHEN ${conditionSql} THEN 'Verified Match'
             ELSE 'External Discrepancy'
           END,
           status_flag_color = CASE 
-            WHEN ${conditionSql} THEN 'emerald'
-            ELSE 'rose'
+            WHEN COALESCE((t.canonical_data->>'_isDiagnosticOnly')::boolean, (t.raw_data->>'_isDiagnosticOnly')::boolean, false) = true THEN '${STATUS_FLAG_COLORS.DIAGNOSTIC}'
+            WHEN ${conditionSql} THEN '${STATUS_FLAG_COLORS.PASS}'
+            ELSE '${STATUS_FLAG_COLORS.FAIL}'
           END,
           updated_at = NOW()
         FROM unique_task_source t
@@ -181,7 +197,7 @@ export const reconciliationService = {
             it.transaction_id = t.row_number::text 
             OR it.transaction_id = (t.canonical_data->>'transaction_id')
             OR it.transaction_id = (t.canonical_data->>$3)
-            ${keys.length > 1 ? `OR it.transaction_id = (${keys.map(k => `COALESCE(t.canonical_data->>'${k.replace(/'/g, "''")}', '')`).join(" || '::' || ")})` : ''}
+            ${keys.length > 1 ? `OR it.transaction_id = (${keys.map(k => `COALESCE(t.canonical_data->>'${k}', '')`).join(" || '::' || ")})` : ''}
           );
       `;
 
@@ -213,29 +229,28 @@ export const reconciliationService = {
       };
     }
 
-    // Fallback: In-memory reconciliation
+    // Fallback: In-memory circuit breaker when PostgreSQL is disconnected (BUG-03)
+    // Strictly adheres to Rule: Never silently mark un-reconciled transactions as PASS
     const txs = await repo.getInvestigationTransactionsByTaskId(investigationId);
     const batchTxs = txs.filter(t => t.batchId === batchId);
-    let passes = 0;
-    let fails = 0;
+    const errorAction = actionConfig?.onErrorAction || DEFAULT_PIPELINE_ACTIONS.ON_ERROR;
 
     for (const tx of batchTxs) {
-      tx.finalResult = tx.finalResult || 'PASS';
-      tx.finalAction = tx.finalResult === 'PASS'
-        ? (actionConfig?.onPassAction || 'CONTINUE') as PipelineAction
-        : (actionConfig?.onFailAction || 'STOP') as PipelineAction;
-      tx.investigationStatus = tx.finalResult === 'PASS' ? 'VERIFIED_MATCH' : 'FLAGGED_DISCREPANCY';
+      tx.finalResult = 'PAUSED_DB_OFFLINE';
+      tx.finalAction = errorAction as PipelineAction;
+      tx.investigationStatus = 'CIRCUIT_BREAKER_PAUSED';
+      tx.statusFlagText = 'PostgreSQL Offline (Circuit Breaker)';
+      tx.statusFlagColor = STATUS_FLAG_COLORS.WARNING;
       await repo.createInvestigationTransaction(tx);
-      if (tx.finalResult === 'PASS') passes++; else fails++;
     }
 
     return {
       investigationId,
       batchId,
       totalTransactions: batchTxs.length,
-      passCount: passes,
-      failCount: fails,
-      errorCount: 0,
+      passCount: 0,
+      failCount: 0,
+      errorCount: batchTxs.length,
       durationMs: Date.now() - startTime
     };
   }

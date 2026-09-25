@@ -559,8 +559,14 @@ export function evaluateRuleCondition(
             };
           }
 
-          // In simulated/mock test scenarios, ORD-FAIL-TEST or missing values indicate absence
-          const isSimulatedMissing = String(recordVal) === 'ORD-FAIL-TEST' || record.simulatedMissing === true;
+          // In simulated/sandbox scenarios only, ORD-FAIL-TEST or missing values indicate absence
+          const isSandboxOrSimulated = Boolean(
+            record._isDiagnosticOnly ||
+            record._executionMode === 'SANDBOX_SIMULATION' ||
+            record._isSimulated === true ||
+            record.simulatedMissing === true
+          );
+          const isSimulatedMissing = isSandboxOrSimulated && (String(recordVal) === 'ORD-FAIL-TEST' || record.simulatedMissing === true);
           const allParamsPresent = configuredStepParams.length > 0
             ? configuredStepParams.every(p => {
                 const v = resolveRecordField(record, p);
@@ -975,8 +981,13 @@ export function evaluateRuleCondition(
             errorDetail: `Near "${sql.substring(0, 30)}"`
           };
         }
-        // If query tests specific record attributes
-        const isFailingPredicate = sql.includes('FAIL_FLAG') || (record.order_id === 'ORD-FAIL-TEST');
+        // If query tests specific record attributes in sandbox/simulation mode
+        const isSandboxOrSimulated = Boolean(
+          record._isDiagnosticOnly ||
+          record._executionMode === 'SANDBOX_SIMULATION' ||
+          record._isSimulated === true
+        );
+        const isFailingPredicate = isSandboxOrSimulated && (sql.includes('FAIL_FLAG') || (record.order_id === 'ORD-FAIL-TEST'));
         if (isFailingPredicate) {
           return {
             status: 'FAIL',
@@ -1100,6 +1111,8 @@ export function resolveRuleAction(
     case 'ERROR':
     case 'PAUSED_DB_OFFLINE':
       return rule.onErrorAction || 'STOP';
+    case 'SKIPPED':
+      return 'CONTINUE';
     default:
       return 'STOP';
   }
@@ -1120,6 +1133,10 @@ export function evaluateDependencyCondition(
   }
   if (previousAction === 'STOP') {
     return { shouldRun: false, shouldExecute: false, skipReason: 'Investigation pipeline was STOPPED by previous step action.' };
+  }
+  // Database offline (circuit breaker): implicit pipeline halt (DESIGN-09)
+  if (previousResult === 'PAUSED_DB_OFFLINE') {
+    return { shouldRun: false, shouldExecute: false, skipReason: 'Database offline (circuit breaker). Pipeline paused.' };
   }
 
   const dep = typeof ruleOrCondition === 'string'
