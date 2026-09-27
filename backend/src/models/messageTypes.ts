@@ -38,6 +38,16 @@ export interface MessageAttachment {
   contentType: MessageAttachmentContentType;
   ingestionStatus?: 'NONE' | 'INGESTED' | 'PENDING_MAPPING' | 'FAILED';
   rawBase64?: string;
+  parsedText?: string;
+  parsedData?: {
+    tabularRows?: Record<string, any>[];
+    sampleHeaders?: string[];
+    sampleRows?: Record<string, any>[];
+    tabularHeaders?: string[];
+    textContent?: string;
+    totalRows?: number;
+    rowCount?: number;
+  };
 }
 
 export interface MessageEnvelope {
@@ -100,6 +110,9 @@ export interface OutboundMessage {
   linkedMessageId?: string;
   attachments?: string[];
   metadata?: Record<string, any>;
+  teamId?: string;
+  conversationId?: string;
+  senderAddress?: string;
 }
 
 export interface TaskCreationPayload {
@@ -131,8 +144,8 @@ export type StagedMessageStatus =
 
 export interface ProviderConnection {
   id: string;
-  teamId?: string;
-  userId?: string;
+  teamId?: string | null;
+  userId?: string | null;
   channel: SupportedMessageChannel;
   displayName: string;
   status: 'ACTIVE' | 'PAUSED' | 'ERROR' | 'DISABLED';

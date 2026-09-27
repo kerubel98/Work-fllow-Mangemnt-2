@@ -1028,7 +1028,7 @@ databaseRouter.get('/column-configurations/:id', async (req, res) => {
 // POST /api/db/column-configurations
 databaseRouter.post('/column-configurations', async (req, res) => {
     try {
-        const { name, dbId, dbName, tableName, ruleType, description, columns, groupByColumns, aggregationRules, primaryKeyColumn, roleColumn, semanticRoles, crossRowRules, typeGroups, typeGroupColumns, valueLabels, unmappedValueAction, violationAction, severity, violationMessage, isActive, createdBy, createdByUserId, userId, userRole, teamId } = req.body;
+        const { name, dbId, dbName, tableName, ruleType, description, columns, groupByColumns, aggregationRules, primaryKeyColumn, roleColumn, semanticRoles, crossRowRules, typeGroups, typeGroupColumns, filterConditions, valueLabels, unmappedValueAction, violationAction, severity, violationMessage, isActive, createdBy, createdByUserId, userId, userRole, teamId } = req.body;
         if (!name || !name.trim())
             return res.status(400).json({ error: 'Rule name is required' });
         if (!dbId)
@@ -1078,6 +1078,7 @@ databaseRouter.post('/column-configurations', async (req, res) => {
             crossRowRules: Array.isArray(crossRowRules) ? crossRowRules : [],
             typeGroups: Array.isArray(typeGroups) ? typeGroups : [],
             typeGroupColumns: Array.isArray(typeGroupColumns) ? typeGroupColumns : [],
+            filterConditions: Array.isArray(filterConditions) ? filterConditions : [],
             valueLabels: Array.isArray(valueLabels) ? valueLabels : [],
             unmappedValueAction: unmappedValueAction || 'FLAG',
             violationAction: violationAction || 'FLAG',
@@ -1234,7 +1235,7 @@ databaseRouter.post('/column-configurations/test', async (req, res) => {
                 str = str.replace(/\D/g, '');
             return str;
         };
-        // Helper to evaluate multi-column type conditions
+        // Helper to evaluate multi-column type / filter conditions
         const evaluateTypeConditions = (row, conditions) => {
             if (!conditions || !Array.isArray(conditions) || conditions.length === 0)
                 return true;
@@ -1242,15 +1243,40 @@ databaseRouter.post('/column-configurations/test', async (req, res) => {
                 if (!cond || !cond.columnName)
                     return true;
                 const rawVal = getVal(row, cond.columnName);
-                if (rawVal === null || rawVal === undefined)
-                    return false;
-                const rowValStr = String(rawVal).trim().toLowerCase();
+                const isNullOrEmpty = rawVal === null || rawVal === undefined || String(rawVal).trim() === '' || String(rawVal).trim() === '__NULL__';
                 const condValStr = String(cond.value ?? '').trim().toLowerCase();
+                const isNullTarget = condValStr === '__null__' || condValStr === 'null' || condValStr === '';
+                const rowValStr = isNullOrEmpty ? '__null__' : String(rawVal).trim().toLowerCase();
                 switch (cond.operator) {
                     case '=':
-                        return rowValStr === condValStr;
+                    case '==':
+                        if (isNullTarget)
+                            return isNullOrEmpty;
+                        return !isNullOrEmpty && rowValStr === condValStr;
                     case '!=':
-                        return rowValStr !== condValStr;
+                        if (isNullTarget)
+                            return !isNullOrEmpty;
+                        return isNullOrEmpty || rowValStr !== condValStr;
+                    case '>': {
+                        const numRow = Number(rawVal);
+                        const numCond = Number(cond.value);
+                        return !isNaN(numRow) && !isNaN(numCond) && numRow > numCond;
+                    }
+                    case '>=': {
+                        const numRow = Number(rawVal);
+                        const numCond = Number(cond.value);
+                        return !isNaN(numRow) && !isNaN(numCond) && numRow >= numCond;
+                    }
+                    case '<': {
+                        const numRow = Number(rawVal);
+                        const numCond = Number(cond.value);
+                        return !isNaN(numRow) && !isNaN(numCond) && numRow < numCond;
+                    }
+                    case '<=': {
+                        const numRow = Number(rawVal);
+                        const numCond = Number(cond.value);
+                        return !isNaN(numRow) && !isNaN(numCond) && numRow <= numCond;
+                    }
                     case 'IN': {
                         const allowed = condValStr.split(',').map((s) => s.trim().toLowerCase());
                         return allowed.includes(rowValStr);
@@ -1302,7 +1328,11 @@ databaseRouter.post('/column-configurations/test', async (req, res) => {
             return true;
         };
         if (ruleType === 'DUPLICATE_CHECK' || ruleType === 'UNIQUE_CONSTRAINT') {
-            if (sortedCols.length === 0) {
+            const hasExplicitGroupBy = Array.isArray(config.groupByColumns) && config.groupByColumns.length > 0;
+            const groupColNames = hasExplicitGroupBy
+                ? config.groupByColumns
+                : sortedCols.map(c => c.columnName);
+            if (groupColNames.length === 0 && sortedCols.length === 0) {
                 return res.json({
                     verdict: 'FAIL',
                     totalRows: rows.length,
@@ -1310,27 +1340,50 @@ databaseRouter.post('/column-configurations/test', async (req, res) => {
                     violations: rows.map((r, idx) => ({
                         rowIndex: idx,
                         rowData: r,
-                        reason: 'In Duplicate Check, at least one column must be configured to check for duplicate value or count.',
+                        reason: 'In Duplicate Check, at least one grouping or evaluation column must be configured.',
                         matchedPriorityValues: { error: 'NO_COLUMNS_CONFIGURED' }
                     })),
                     passedCount: 0,
                     passedRows: [],
-                    details: 'At least one column must be configured to check for duplicate value or count.'
+                    details: 'At least one grouping or evaluation column must be configured.'
                 });
             }
             const countRule = (Array.isArray(config.aggregationRules) && config.aggregationRules.find((a) => a.function === 'COUNT'))
                 || { function: 'COUNT', operator: '>', value: 1 };
             const threshold = Number(countRule.value ?? 1);
             const op = String(countRule.operator || '>').trim();
+            const isExpectedEq = op === '=' || op === '==';
+            const filterConditions = Array.isArray(config.filterConditions)
+                ? config.filterConditions
+                : [];
+            const condSummary = filterConditions.length > 0
+                ? filterConditions.map((c) => `${c.columnName} ${c.operator} ${c.value ?? ''}`).join(' AND ')
+                : '';
             const isCountViolation = (count) => {
+                // Universal Invariant: In DUPLICATE_CHECK / UNIQUE_CONSTRAINT, a single occurrence (count === 1) is unique and never a duplicate.
+                if (count <= 1) {
+                    if (isExpectedEq || op === '!=') {
+                        // When threshold is 1, a count of 1 satisfies the uniqueness expectation (COUNT = 1)
+                        if (threshold === 1)
+                            return false;
+                    }
+                    if (op === '>' || op === '>=')
+                        return false;
+                }
+                // When user sets '=' or '==', they declare the expected occurrence count (e.g. COUNT = 1)
+                if (isExpectedEq) {
+                    return count !== threshold;
+                }
+                if (op === '!=') {
+                    return count === threshold;
+                }
                 if (op === '>')
                     return count > threshold;
-                if (op === '>=')
+                if (op === '>=') {
+                    if (threshold <= 1 && count <= 1)
+                        return false;
                     return count >= threshold;
-                if (op === '=')
-                    return count === threshold;
-                if (op === '!=')
-                    return count !== threshold;
+                }
                 if (op === '<')
                     return count < threshold;
                 if (op === '<=')
@@ -1339,9 +1392,10 @@ databaseRouter.post('/column-configurations/test', async (req, res) => {
             };
             const groups = new Map();
             rows.forEach((row, idx) => {
-                const keyParts = sortedCols.map(c => {
-                    const val = getVal(row, c.columnName);
-                    return `${c.columnName}=${formatColVal(val, c)}`;
+                const keyParts = groupColNames.map(colName => {
+                    const val = getVal(row, colName);
+                    const colCfg = sortedCols.find(c => c.columnName.toLowerCase() === colName.toLowerCase());
+                    return `${colName}=${formatColVal(val, colCfg)}`;
                 });
                 const compositeKey = keyParts.join(' | ');
                 const existing = groups.get(compositeKey) || [];
@@ -1349,10 +1403,15 @@ databaseRouter.post('/column-configurations/test', async (req, res) => {
                 groups.set(compositeKey, existing);
             });
             groups.forEach((indices, compositeKey) => {
-                const count = indices.length;
+                // If filter conditions are specified, evaluate and count only the matching rows within this common group!
+                const matchingIndices = filterConditions.length > 0
+                    ? indices.filter(idx => evaluateTypeConditions(rows[idx], filterConditions))
+                    : indices;
+                const count = matchingIndices.length;
                 const violating = isCountViolation(count);
                 if (violating) {
-                    indices.forEach(idx => {
+                    // Flag the matching rows that caused the duplicate / count violation
+                    matchingIndices.forEach(idx => {
                         const row = rows[idx];
                         const matchedValues = {};
                         sortedCols.forEach(c => {
@@ -1361,18 +1420,25 @@ databaseRouter.post('/column-configurations/test', async (req, res) => {
                         violations.push({
                             rowIndex: idx,
                             rowData: row,
-                            reason: `Duplicate detected across column(s) [${compositeKey}]: Occurs ${count} time(s) (threshold: COUNT ${op} ${threshold})`,
+                            reason: isExpectedEq
+                                ? `Duplicate / multiplicity violation across group [${compositeKey}]${condSummary ? ` matching [${condSummary}]` : ''}: Occurs ${count} time(s) (expected count = ${threshold})`
+                                : `Duplicate detected across group [${compositeKey}]${condSummary ? ` matching [${condSummary}]` : ''}: Occurs ${count} time(s) (threshold: COUNT ${op} ${threshold})`,
                             matchedPriorityValues: {
                                 ...matchedValues,
-                                evaluatedValue: compositeKey,
+                                groupKey: compositeKey,
+                                filterConditions: condSummary || undefined,
                                 duplicateCount: count,
-                                threshold: `COUNT ${op} ${threshold}`
+                                threshold: isExpectedEq ? `EXPECTED COUNT = ${threshold}` : `COUNT ${op} ${threshold}`
                             }
                         });
                     });
                 }
                 else {
-                    indices.forEach(idx => {
+                    // If valid, add to passedRows
+                    const passedIndices = filterConditions.length > 0 && matchingIndices.length > 0
+                        ? matchingIndices
+                        : indices;
+                    passedIndices.forEach(idx => {
                         const row = rows[idx];
                         const matchedValues = {};
                         sortedCols.forEach(c => {
@@ -1381,10 +1447,11 @@ databaseRouter.post('/column-configurations/test', async (req, res) => {
                         passedRows.push({
                             rowIndex: idx,
                             rowData: row,
-                            info: `Unique value verified across column(s) [${compositeKey}] (Count: ${count})`,
+                            info: `Unique value verified across group [${compositeKey}]${condSummary ? ` matching [${condSummary}]` : ''} (Count: ${count}${isExpectedEq ? `, matches expected COUNT = ${threshold}` : ''})`,
                             matchedPriorityValues: {
                                 ...matchedValues,
-                                evaluatedValue: compositeKey,
+                                groupKey: compositeKey,
+                                filterConditions: condSummary || undefined,
                                 occurrenceCount: count,
                                 status: 'UNIQUE'
                             }

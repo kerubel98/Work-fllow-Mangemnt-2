@@ -57,12 +57,14 @@ export function resolveRequiredColumnsForStage(stage, rules, existingExtraction)
         if (rule.sqlCondition) {
             const sqlParamMatches = rule.sqlCondition.match(/[:{]([a-zA-Z0-9_]+)[}]?/g);
             if (sqlParamMatches) {
-                const cleaned = rawMatch.replace(/[:{}]/g, '').trim();
-                if (cleaned) {
-                    if (!columnMap.has(cleaned)) {
-                        columnMap.set(cleaned, { usedByRuleIds: new Set(), required: true });
+                for (const rawMatch of sqlParamMatches) {
+                    const cleaned = rawMatch.replace(/[:{}]/g, '').trim();
+                    if (cleaned) {
+                        if (!columnMap.has(cleaned)) {
+                            columnMap.set(cleaned, { usedByRuleIds: new Set(), required: true });
+                        }
+                        columnMap.get(cleaned).usedByRuleIds.add(rule.id);
                     }
-                    columnMap.get(cleaned).usedByRuleIds.add(rule.id);
                 }
             }
         }

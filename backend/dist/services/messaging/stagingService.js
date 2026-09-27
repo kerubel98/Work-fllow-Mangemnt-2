@@ -203,7 +203,61 @@ export class StagingService {
         if (effectiveMakerId && effectiveMakerId === checker.id) {
             throw new Error(`Anti-Self-Approval violation: Checker '${checker.name}' cannot approve their own submission (Maker: '${effectiveMakerId}'). Four-Eyes principle required.`);
         }
-        // 1. Create the operational Issue
+        // 1. Extract any attachment tabular rows, headers, and metadata
+        let extractedRows = [];
+        let detectedHeaders = [];
+        if (staged.attachments && staged.attachments.length > 0) {
+            for (const att of staged.attachments) {
+                const rows = att.parsedData?.tabularRows || att.parsedData?.sampleRows;
+                if (Array.isArray(rows) && rows.length > 0) {
+                    extractedRows = extractedRows.concat(rows);
+                }
+                const headers = att.parsedData?.sampleHeaders || att.parsedData?.tabularHeaders;
+                if (Array.isArray(headers) && headers.length > 0) {
+                    detectedHeaders = Array.from(new Set([...detectedHeaders, ...headers]));
+                }
+                // If no rows parsed yet, attempt to read directly from storagePath if file exists on disk
+                if (extractedRows.length === 0 && att.storagePath) {
+                    try {
+                        const fs = await import('fs');
+                        const path = await import('path');
+                        if (fs.existsSync(att.storagePath)) {
+                            const ext = path.extname(att.filename).toLowerCase();
+                            if (ext === '.xlsx' || ext === '.xls') {
+                                const XLSX = await import('xlsx');
+                                const wb = XLSX.readFile(att.storagePath);
+                                const sheet = wb.Sheets[wb.SheetNames[0]];
+                                const data = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+                                if (data.length > 0) {
+                                    extractedRows = extractedRows.concat(data);
+                                    detectedHeaders = Array.from(new Set([...detectedHeaders, ...Object.keys(data[0])]));
+                                }
+                            }
+                            else if (ext === '.csv') {
+                                const raw = fs.readFileSync(att.storagePath, 'utf8');
+                                const lines = raw.split(/\r?\n/).filter(l => l.trim().length > 0);
+                                if (lines.length > 1) {
+                                    const delimiter = lines[0].includes('\t') ? '\t' : (lines[0].includes(';') ? ';' : ',');
+                                    const headers = lines[0].split(delimiter).map(h => h.trim().replace(/^["']|["']$/g, ''));
+                                    detectedHeaders = Array.from(new Set([...detectedHeaders, ...headers]));
+                                    for (let i = 1; i < lines.length && extractedRows.length < 500; i++) {
+                                        const cols = lines[i].split(delimiter).map(c => c.trim().replace(/^["']|["']$/g, ''));
+                                        const rowObj = {};
+                                        headers.forEach((h, idx) => {
+                                            rowObj[h] = cols[idx] ?? '';
+                                        });
+                                        extractedRows.push(rowObj);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    catch (e) {
+                        console.warn(`[StagingService] Could not parse attachment file ${att.storagePath}:`, e.message);
+                    }
+                }
+            }
+        }
         const issueId = `ISS-${Date.now().toString().slice(-6)}`;
         const effectiveTitle = staged.subject || `External ${staged.category.replace(/_/g, ' ')}`;
         const effectiveTeam = staged.teamId || 'team-settlement-01';
@@ -220,15 +274,18 @@ export class StagingService {
             teamId: effectiveTeam,
             visibility: 'TEAM_PUBLIC',
             uploadedFileName: staged.attachments?.[0]?.filename,
-            datasetStatus: staged.attachments && staged.attachments.length > 0 ? 'PENDING_MAPPING' : 'NONE',
-            transactionCount: 0,
+            uploadedFileHeaders: detectedHeaders.length > 0 ? detectedHeaders : undefined,
+            firstLevelMappedData: extractedRows.length > 0 ? extractedRows : undefined,
+            datasetStatus: extractedRows.length > 0 ? 'READY' : (staged.attachments && staged.attachments.length > 0 ? 'PENDING_MAPPING' : 'NONE'),
+            transactionCount: extractedRows.length,
+            attachments: staged.attachments || [],
             chat: [
                 {
                     id: `msg-${Date.now()}`,
                     senderId: checker.id,
                     senderName: `${checker.name} (Checker Approval)`,
                     senderRole: 'managerial',
-                    text: `Task converted from ${staged.channel.toUpperCase()} request #${staged.id}. Approved with notes: "${reviewNotes || 'Verified'}"`,
+                    text: `Task converted from ${staged.channel.toUpperCase()} request #${staged.id}. Approved with notes: "${reviewNotes || 'Verified'}". Attachments passed: ${(staged.attachments || []).map(a => a.filename).join(', ') || 'None'}.`,
                     timestamp: new Date().toISOString()
                 }
             ]
@@ -362,6 +419,27 @@ export class StagingService {
             updatedAt: r.updated_at
         }));
     }
+    async getProviderConnectionById(id) {
+        const pool = getPostgresPool();
+        const res = await pool.query(`SELECT * FROM provider_connections WHERE id = $1 LIMIT 1;`, [id]);
+        if (res.rows.length === 0)
+            return null;
+        const r = res.rows[0];
+        return {
+            id: r.id,
+            teamId: r.team_id,
+            userId: r.user_id,
+            channel: r.channel,
+            displayName: r.display_name,
+            status: r.status,
+            config: r.config || {},
+            lastFetchAt: r.last_fetch_at,
+            lastError: r.last_error,
+            createdBy: r.created_by,
+            createdAt: r.created_at,
+            updatedAt: r.updated_at
+        };
+    }
     async saveProviderConnection(data) {
         const pool = getPostgresPool();
         const id = data.id || `prov-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
@@ -405,6 +483,58 @@ export class StagingService {
             updatedAt: r.updated_at
         };
     }
+    async resolveEffectiveConfig(config) {
+        if (!config?.adminOAuth2ConnectionId) {
+            return config || {};
+        }
+        const pool = getPostgresPool();
+        const adminRes = await pool.query(`SELECT * FROM provider_connections WHERE id = $1 AND (team_id IS NULL OR config->>'isGlobal' = 'true');`, [config.adminOAuth2ConnectionId]);
+        if (adminRes.rows.length === 0) {
+            throw new Error(`Admin OAuth2 connection '${config.adminOAuth2ConnectionId}' was not found or is disabled.`);
+        }
+        const adminConfig = adminRes.rows[0].config || {};
+        return {
+            ...adminConfig,
+            ...config,
+            authType: 'OAUTH2',
+            clientId: adminConfig.clientId || config.clientId,
+            clientSecret: adminConfig.clientSecret || config.clientSecret,
+            tenantId: adminConfig.tenantId || config.tenantId,
+            tokenUrl: adminConfig.tokenUrl || config.tokenUrl,
+            scope: adminConfig.scope || config.scope,
+            providerPreset: adminConfig.providerPreset || adminConfig.preset || config.providerPreset,
+            preset: adminConfig.preset || adminConfig.providerPreset || config.preset,
+            zohoRegion: adminConfig.zohoRegion || config.zohoRegion,
+            grantType: adminConfig.grantType || config.grantType || 'client_credentials',
+            userEmail: config.userEmail || config.email || adminConfig.userEmail,
+            email: config.email || config.userEmail || adminConfig.email
+        };
+    }
+    async getAdminOAuth2Connections() {
+        const pool = getPostgresPool();
+        const res = await pool.query(`SELECT * FROM provider_connections 
+       WHERE team_id IS NULL AND (config->>'authType' = 'OAUTH2' OR config->>'isGlobal' = 'true')
+       ORDER BY created_at DESC;`);
+        return res.rows.map(r => ({
+            id: r.id,
+            teamId: r.team_id,
+            userId: r.user_id,
+            channel: r.channel,
+            displayName: r.display_name,
+            status: r.status,
+            config: r.config || {},
+            lastFetchAt: r.last_fetch_at,
+            lastError: r.last_error,
+            createdBy: r.created_by,
+            createdAt: r.created_at,
+            updatedAt: r.updated_at
+        }));
+    }
+    async deleteProviderConnection(id) {
+        const pool = getPostgresPool();
+        const res = await pool.query(`DELETE FROM provider_connections WHERE id = $1;`, [id]);
+        return (res.rowCount ?? 0) > 0;
+    }
     async testProviderConnection(id) {
         const pool = getPostgresPool();
         const res = await pool.query(`SELECT * FROM provider_connections WHERE id = $1;`, [id]);
@@ -412,7 +542,8 @@ export class StagingService {
             throw new Error(`Provider connection ${id} not found.`);
         const provider = res.rows[0];
         const connector = getProviderConnector(provider.channel);
-        const testResult = await connector.testConnection(provider.config || {});
+        const effectiveConfig = await this.resolveEffectiveConfig(provider.config || {});
+        const testResult = await connector.testConnection(effectiveConfig);
         await pool.query(`UPDATE provider_connections
        SET status = $1, last_error = $2, updated_at = NOW()
        WHERE id = $3;`, [testResult.success ? 'ACTIVE' : 'ERROR', testResult.success ? null : testResult.message, id]);
@@ -425,6 +556,7 @@ export class StagingService {
             throw new Error(`Provider connection ${id} not found.`);
         const provider = res.rows[0];
         const connector = getProviderConnector(provider.channel);
+        const effectiveConfig = await this.resolveEffectiveConfig(provider.config || {});
         const jobId = `job-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
         await pool.query(`INSERT INTO provider_fetch_jobs (id, provider_id, channel, status, started_at)
        VALUES ($1, $2, $3, 'RUNNING', NOW());`, [jobId, id, provider.channel]);
@@ -432,7 +564,7 @@ export class StagingService {
         let messagesStaged = 0;
         let errorTrace;
         try {
-            const rawMessages = await connector.fetchNewMessages(provider.config || {}, provider.last_fetch_at, id);
+            const rawMessages = await connector.fetchNewMessages(effectiveConfig, provider.last_fetch_at, id);
             messagesFound = rawMessages.length;
             for (const raw of rawMessages) {
                 const envelope = connector.normalize(raw);

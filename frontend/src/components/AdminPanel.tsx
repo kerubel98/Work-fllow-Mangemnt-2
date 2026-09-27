@@ -8,6 +8,7 @@ import AdminAnalytics from './admin/AdminAnalytics';
 import AdminUserManagement from './admin/AdminUserManagement';
 import AdminQueryApprovals from './admin/AdminQueryApprovals';
 import AdminSystemSettings from './admin/AdminSystemSettings';
+import AdminOAuth2Connections from './admin/AdminOAuth2Connections';
 import { getUserAdminCapabilities } from '../utils/adminCapabilities';
 
 interface AdminPanelProps {
@@ -74,7 +75,7 @@ export default function AdminPanel({
   const caps = getUserAdminCapabilities(currentUser, teams);
 
   // Available tabs based on capability
-  const availableTabs: Array<{ id: 'analytics' | 'user_admin' | 'systems'; label: string; icon: any }> = [];
+  const availableTabs: Array<{ id: 'analytics' | 'user_admin' | 'systems' | 'connection_settings' | 'plugins'; label: string; icon: any }> = [];
   if (caps.canViewMonitoring) {
     availableTabs.push({ id: 'analytics', label: 'System Analytics & Health', icon: BarChart2 });
   }
@@ -83,6 +84,9 @@ export default function AdminPanel({
   }
   if (caps.canManageAccessRequests || caps.isGlobalAdmin) {
     availableTabs.push({ id: 'systems', label: 'Systems & Approvals', icon: Server });
+  }
+  if (caps.canManageConnections || caps.isGlobalAdmin) {
+    availableTabs.push({ id: 'connection_settings', label: 'OAuth 2.0 & Messaging', icon: Lock });
   }
 
   const defaultTab = availableTabs[0]?.id || 'analytics';
@@ -120,7 +124,7 @@ export default function AdminPanel({
             type="button"
             onClick={() => setActiveTab('analytics')}
             className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition whitespace-nowrap ${
-              currentTab === 'analytics' || currentTab === 'connection_settings'
+              currentTab === 'analytics'
                 ? 'bg-[#155DFC] text-white shadow-xs'
                 : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
             }`}
@@ -164,10 +168,25 @@ export default function AdminPanel({
             )}
           </button>
         )}
+
+        {(caps.canManageConnections || caps.isGlobalAdmin) && (
+          <button
+            type="button"
+            onClick={() => setActiveTab('connection_settings')}
+            className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition whitespace-nowrap ${
+              currentTab === 'connection_settings'
+                ? 'bg-[#155DFC] text-white shadow-xs'
+                : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
+            }`}
+          >
+            <Lock className="w-3.5 h-3.5" />
+            <span>OAuth 2.0 & Messaging</span>
+          </button>
+        )}
       </div>
 
       {/* Sub-View Renderers */}
-      {(currentTab === 'analytics' || currentTab === 'connection_settings') && caps.canViewMonitoring && (
+      {currentTab === 'analytics' && caps.canViewMonitoring && (
         <AdminAnalytics
           users={users}
           databases={databases}
@@ -175,6 +194,10 @@ export default function AdminPanel({
           connectionUsageLogs={connectionUsageLogs}
           queryApprovals={queryApprovals}
         />
+      )}
+
+      {currentTab === 'connection_settings' && (
+        <AdminOAuth2Connections />
       )}
 
       {currentTab === 'user_admin' && caps.canManageUsers && (

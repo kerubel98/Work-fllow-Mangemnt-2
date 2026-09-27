@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { DatabaseColumnConfiguration, WorkspaceSettingProposal, TeamEscalationTarget, TeamAdminPrivileges, WorkflowBundle } from '../types';
+import { DatabaseColumnConfiguration, WorkspaceSettingProposal, TeamEscalationTarget, TeamAdminPrivileges, WorkflowBundle, MailboxResponse } from '../types';
 
 const API_BASE_URL = '/api';
 
@@ -196,6 +196,10 @@ export const api = {
     fetchApi<any>(`/issues/${issueId}/dataset`, {
       method: 'POST',
       body: JSON.stringify(data)
+    }),
+  promoteAttachmentToDataset: (issueId: string, attachmentIndex: number | string) =>
+    fetchApi<{ success: boolean; message: string; transactionCount: number; headers?: string[] }>(`/issues/${issueId}/attachments/${attachmentIndex}/promote-to-dataset`, {
+      method: 'POST'
     }),
   getTaskTransactions: (issueId: string, page = 1, limit = 50, batchId?: string) => {
     const qs = new URLSearchParams({ page: String(page), limit: String(limit) });
@@ -1141,6 +1145,23 @@ export const api = {
       body: JSON.stringify({ config, channel })
     }),
 
+  getAdminOAuth2Connections: () =>
+    fetchApi<any[]>('/messages/admin/oauth2'),
+
+  getAvailableAdminOAuth2Connections: () =>
+    fetchApi<any[]>('/messages/admin/oauth2/available'),
+
+  saveAdminOAuth2Connection: (payload: any) =>
+    fetchApi<any>('/messages/admin/oauth2', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    }),
+
+  deleteAdminOAuth2Connection: (id: string) =>
+    fetchApi<{ success: boolean }>(`/messages/admin/oauth2/${encodeURIComponent(id)}`, {
+      method: 'DELETE'
+    }),
+
   fetchProviderMessages: (id: string) =>
     fetchApi<{ success: boolean; stagedCount: number; job: any }>(`/messages/providers/${encodeURIComponent(id)}/fetch`, {
       method: 'POST'
@@ -1266,8 +1287,47 @@ export const api = {
   getDirectShares: (userId?: string) =>
     fetchApi<{ success: boolean; shares: any[] }>(
       `/assets/direct-shares${userId ? `?userId=${encodeURIComponent(userId)}` : ''}`
+    ),
+
+  // ================= Team Mailbox & Threading =================
+  getTeamMailbox: (teamId?: string, filter: string = 'all', search?: string) => {
+    const params = new URLSearchParams();
+    if (teamId) params.append('teamId', teamId);
+    if (filter) params.append('filter', filter);
+    if (search) params.append('search', search);
+    const qs = params.toString();
+    return fetchApi<MailboxResponse>(`/messages/mailbox${qs ? `?${qs}` : ''}`);
+  },
+
+  linkMessageToIssue: (messageId: string, issueId: string) =>
+    fetchApi<{ success: boolean; messageId: string; issueId: string }>(
+      `/messages/${encodeURIComponent(messageId)}/link-issue`,
+      {
+        method: 'PUT',
+        body: JSON.stringify({ issueId })
+      }
+    ),
+
+  replyToMessage: (payload: {
+    teamId?: string;
+    channel?: string;
+    to: string;
+    subject?: string;
+    textBody: string;
+    htmlBody?: string;
+    conversationId?: string;
+    threadId?: string;
+    inReplyToMessageId?: string;
+  }) =>
+    fetchApi<{ success: boolean; id: string; status: string }>(
+      '/messages/reply',
+      {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      }
     )
 };
+
 
 
 

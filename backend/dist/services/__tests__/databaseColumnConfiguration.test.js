@@ -127,6 +127,60 @@ describe('Database Column Configurations & Priority Rules Engine', () => {
         expect(passed[0].count).toBe(1);
         expect(passed[0].value).toBe('rrn=TXN-102');
     });
+    it('correctly treats COUNT = 1 as uniqueness requirement in DUPLICATE_CHECK (passes count 1, flags count > 1)', () => {
+        const dupConfigEq = {
+            ruleType: 'DUPLICATE_CHECK',
+            columns: [{ columnName: 'rrn', priority: 1, role: 'MATCH_KEY' }],
+            aggregationRules: [{ function: 'COUNT', operator: '=', value: 1 }]
+        };
+        const sampleRows = [
+            { rrn: 'TXN-201', amount: '100' },
+            { rrn: 'TXN-201', amount: '100' }, // rrn TXN-201 count = 2 (duplicate)
+            { rrn: 'TXN-202', amount: '200' } // rrn TXN-202 count = 1 (unique)
+        ];
+        const op = String(dupConfigEq.aggregationRules[0].operator || '>').trim();
+        const threshold = Number(dupConfigEq.aggregationRules[0].value ?? 1);
+        const isExpectedEq = op === '=' || op === '==';
+        const isCountViolation = (count) => {
+            if (count <= 1) {
+                if (isExpectedEq && threshold === 1)
+                    return false;
+                if (op === '>' || op === '>=')
+                    return false;
+            }
+            if (isExpectedEq)
+                return count !== threshold;
+            if (op === '>')
+                return count > threshold;
+            return count > 1;
+        };
+        const groups = new Map();
+        sampleRows.forEach((row, idx) => {
+            const k = `rrn=${row.rrn}`;
+            const l = groups.get(k) || [];
+            l.push(idx);
+            groups.set(k, l);
+        });
+        const violations = [];
+        const passed = [];
+        groups.forEach((indices, key) => {
+            const count = indices.length;
+            if (isCountViolation(count)) {
+                indices.forEach(i => violations.push({ index: i, value: key, count }));
+            }
+            else {
+                indices.forEach(i => passed.push({ index: i, value: key, count }));
+            }
+        });
+        // TXN-201 appears 2 times -> violation (duplicate)
+        expect(violations.length).toBe(2);
+        expect(violations[0].count).toBe(2);
+        expect(violations[0].value).toBe('rrn=TXN-201');
+        // TXN-202 appears 1 time -> passed cleanly as unique (not duplicate!)
+        expect(passed.length).toBe(1);
+        expect(passed[0].count).toBe(1);
+        expect(passed[0].value).toBe('rrn=TXN-202');
+    });
     it('evaluates grouping check criteria correctly', () => {
         const groupingConfig = {
             ruleType: 'GROUPING_CHECK',
@@ -624,5 +678,99 @@ describe('Database Column Configurations & Priority Rules Engine', () => {
         expect(evaluatedViolations.find(v => v.groupKey === 'journal_id=J-04')?.reason).toContain('Unclassified Group');
         // Clean up
         await repo.deleteColumnConfiguration(groupingWithTypesConfig.id);
+    });
+    it('evaluates duplicate check with common grouping column and conditional filtering to count matching values', async () => {
+        const duplicateWithGroupingAndFilterConfig = {
+            id: `cfg-dup-filter-${Date.now()}`,
+            name: 'TR_GROUP_ID Duplicate Check with Filter Condition',
+            dbId: 'db-1',
+            tableName: 'transactions',
+            ruleType: 'DUPLICATE_CHECK',
+            columns: [
+                { columnName: 'TR_GROUP_ID', priority: 1, role: 'MATCH_KEY' },
+                { columnName: 'BO_TYPE', priority: 2, role: 'DISCRIMINATOR' }
+            ],
+            groupByColumns: ['TR_GROUP_ID'],
+            filterConditions: [
+                { columnName: 'BO_TYPE', operator: '=', value: 'CMTP254' }
+            ],
+            aggregationRules: [
+                { function: 'COUNT', operator: '=', value: 1 }
+            ],
+            violationAction: 'FLAG',
+            severity: 'CRITICAL',
+            violationMessage: 'Duplicate detected for BO_TYPE=CMTP254 in transaction group',
+            isActive: true,
+            createdBy: 'vitest-suite',
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+        };
+        // 1. Verify persistence in PostgreSQL repo
+        const saved = await repo.createColumnConfiguration(duplicateWithGroupingAndFilterConfig);
+        expect(saved).toBeDefined();
+        expect(saved.filterConditions).toBeDefined();
+        expect(saved.filterConditions?.length).toBe(1);
+        expect(saved.filterConditions?.[0].columnName).toBe('BO_TYPE');
+        expect(saved.filterConditions?.[0].operator).toBe('=');
+        expect(saved.filterConditions?.[0].value).toBe('CMTP254');
+        const fetched = await repo.getColumnConfigurationById(duplicateWithGroupingAndFilterConfig.id);
+        expect(fetched).not.toBeNull();
+        expect(fetched?.filterConditions).toEqual(duplicateWithGroupingAndFilterConfig.filterConditions);
+        expect(fetched?.groupByColumns).toEqual(['TR_GROUP_ID']);
+        // 2. Test dataset:
+        // Group 1001: 1 row matching CMTP254 -> Should PASS (count = 1)
+        // Group 1002: 2 rows with same group ID, but only 1 matches CMTP254 (other is CMTP255) -> Should PASS (count = 1)
+        // Group 1003: 2 rows both matching CMTP254 -> Should FAIL (count = 2, duplicate detected!)
+        const sampleRows = [
+            { id: '1', TR_GROUP_ID: '1001', BO_TYPE: 'CMTP254', amount: '100.00' },
+            { id: '2', TR_GROUP_ID: '1002', BO_TYPE: 'CMTP254', amount: '250.00' },
+            { id: '3', TR_GROUP_ID: '1002', BO_TYPE: 'CMTP255', amount: '5.00' },
+            { id: '4', TR_GROUP_ID: '1003', BO_TYPE: 'CMTP254', amount: '400.00' },
+            { id: '5', TR_GROUP_ID: '1003', BO_TYPE: 'CMTP254', amount: '400.00' }
+        ];
+        // Evaluate logic mirroring database route implementation
+        const groups = {};
+        sampleRows.forEach(row => {
+            const gKey = duplicateWithGroupingAndFilterConfig.groupByColumns.map(col => `${col}=${row[col] ?? '__NULL__'}`).join(' | ');
+            if (!groups[gKey])
+                groups[gKey] = [];
+            groups[gKey].push(row);
+        });
+        const evaluatedViolations = [];
+        const passedGroups = [];
+        Object.entries(groups).forEach(([groupKey, groupRows]) => {
+            // Filter rows based on filterConditions
+            const matchingRows = groupRows.filter(row => {
+                return duplicateWithGroupingAndFilterConfig.filterConditions.every(cond => {
+                    const val = String(row[cond.columnName] ?? '');
+                    return val === cond.value;
+                });
+            });
+            const filteredCount = matchingRows.length;
+            // Aggregation rule is COUNT = 1 (so violation if count != 1 or count > 1)
+            const countRule = duplicateWithGroupingAndFilterConfig.aggregationRules[0];
+            const isViolation = countRule.operator === '=' ? filteredCount !== countRule.value : filteredCount > countRule.value;
+            if (isViolation) {
+                evaluatedViolations.push({
+                    groupKey,
+                    count: filteredCount,
+                    reason: `Duplicate detected across column(s) [${groupKey}]: Occurs ${filteredCount} time(s) matching filter condition (threshold: COUNT ${countRule.operator} ${countRule.value})`
+                });
+            }
+            else {
+                passedGroups.push(groupKey);
+            }
+        });
+        // Group 1001 and Group 1002 must PASS!
+        expect(passedGroups).toContain('TR_GROUP_ID=1001');
+        expect(passedGroups).toContain('TR_GROUP_ID=1002');
+        expect(passedGroups.length).toBe(2);
+        // Group 1003 must FAIL!
+        expect(evaluatedViolations.length).toBe(1);
+        expect(evaluatedViolations[0].groupKey).toBe('TR_GROUP_ID=1003');
+        expect(evaluatedViolations[0].count).toBe(2);
+        expect(evaluatedViolations[0].reason).toContain('Occurs 2 time(s)');
+        // Cleanup
+        await repo.deleteColumnConfiguration(duplicateWithGroupingAndFilterConfig.id);
     });
 });

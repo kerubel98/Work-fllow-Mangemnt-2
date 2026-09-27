@@ -17,6 +17,7 @@ export interface ValidationPayloadEnvelope {
   keyFields?: string[];
   priority?: 'HIGH' | 'NORMAL';
   forceRerun?: boolean;
+  executedBy?: string;
   options?: {
     persistMirror?: boolean;
     ttlMinutes?: number;
@@ -45,6 +46,7 @@ export interface WorkflowJobResult {
   cachedHits: number;
   durationMs: number;
   records: any[];
+  cached?: boolean;
 }
 
 class WorkflowEngineSingleton extends EventEmitter {

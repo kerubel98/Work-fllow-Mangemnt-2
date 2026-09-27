@@ -19,7 +19,8 @@ import {
   CheckCircle2, AlertTriangle, RefreshCw, FileSpreadsheet,
   Layers, SlidersHorizontal, ArrowUpDown, ChevronDown, ArrowUpAZ, ArrowDownZA,
   Sliders, ShieldAlert, CheckSquare, Square, RotateCcw, ShieldCheck, CheckCircle, Zap, Activity, GitBranch,
-  MessageSquare, History, Undo2, Send, Bookmark, AtSign, CheckCheck, FileCode, Users, Sparkles
+  MessageSquare, History, Undo2, Send, Bookmark, AtSign, CheckCheck, FileCode, Users, Sparkles,
+  Paperclip, FileText, FileDown, ExternalLink
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 
@@ -132,6 +133,16 @@ export function getWorkflowConfiguredParamsPresentInRow(
   return { presentParams: present, allConfiguredParams: configured };
 }
 
+export function isStepIdMatch(a: string, b: string): boolean {
+  if (!a || !b) return false;
+  if (a === b) return true;
+  const clean = (s: string) => String(s).replace(/^(step|node|stage|box)[-_]+/gi, '').trim().toLowerCase();
+  const cleanA = clean(a);
+  const cleanB = clean(b);
+  if (cleanA && cleanB && cleanA === cleanB) return true;
+  return a.trim().toLowerCase() === b.trim().toLowerCase();
+}
+
 interface ValidationOrchestratorWorkspaceProps {
   issues: Issue[];
   selectedIssueId: string;
@@ -198,12 +209,25 @@ export default function ValidationOrchestratorWorkspace({
     setHasExecutedValidation(false);
     setServerEvaluatedRecords(null);
     setLiveExecutionMetrics(null);
+    setCentralMasterRows([]);
+    setAvailableBatches([]);
+    setTaskWorkflowExecutions([]);
+    setManualStatusOverrides({});
+    setInspectingRow(null);
+    setActiveSheetTab('dataset');
+    setHiddenRowIds(new Set());
+    setColumnFilters({});
 
-    // Seed immediately with in-memory task data if present
+    // Seed immediately with in-memory task data or attachment records if present
     if (selectedIssue.firstLevelMappedData && selectedIssue.firstLevelMappedData.length > 0) {
       setTaskDatasetRows(selectedIssue.firstLevelMappedData);
     } else {
-      setTaskDatasetRows([]);
+      const attRows = (selectedIssue.attachments || []).flatMap((a: any) => a.parsedData?.tabularRows || a.parsedData?.sampleRows || []);
+      if (attRows.length > 0) {
+        setTaskDatasetRows(attRows);
+      } else {
+        setTaskDatasetRows([]);
+      }
     }
 
     setIsLoadingDataset(true);
@@ -267,7 +291,11 @@ export default function ValidationOrchestratorWorkspace({
                 _validation_details: resultMap[k].details,
                 _target_record: resultMap[k].targetRecord ?? resultMap[k]._target_record ?? null,
                 _target_db: resultMap[k].targetDb ?? resultMap[k]._target_db,
-                _target_table: resultMap[k].targetTable ?? resultMap[k]._target_table
+                _target_table: resultMap[k].targetTable ?? resultMap[k]._target_table,
+                auditTrail: resultMap[k].auditTrail || resultMap[k]._stage_results || [],
+                _stage_results: resultMap[k]._stage_results || resultMap[k].auditTrail || [],
+                _validation_workflow_id: latestWfId,
+                _validation_workflow_name: latestExec.workflowName || latestExec.workflow_name || matchedWf?.name
               };
             });
             setServerEvaluatedRecords(serverMap);
@@ -301,7 +329,12 @@ export default function ValidationOrchestratorWorkspace({
         } else if (selectedIssue.firstLevelMappedData && selectedIssue.firstLevelMappedData.length > 0) {
           setTaskDatasetRows(selectedIssue.firstLevelMappedData);
         } else {
-          setTaskDatasetRows([]);
+          const attRows = (selectedIssue.attachments || []).flatMap((a: any) => a.parsedData?.tabularRows || a.parsedData?.sampleRows || []);
+          if (attRows.length > 0) {
+            setTaskDatasetRows(attRows);
+          } else {
+            setTaskDatasetRows([]);
+          }
         }
       })
       .catch(err => {
@@ -309,7 +342,12 @@ export default function ValidationOrchestratorWorkspace({
         if (selectedIssue.firstLevelMappedData && selectedIssue.firstLevelMappedData.length > 0) {
           setTaskDatasetRows(selectedIssue.firstLevelMappedData);
         } else {
-          setTaskDatasetRows([]);
+          const attRows = (selectedIssue.attachments || []).flatMap((a: any) => a.parsedData?.tabularRows || a.parsedData?.sampleRows || []);
+          if (attRows.length > 0) {
+            setTaskDatasetRows(attRows);
+          } else {
+            setTaskDatasetRows([]);
+          }
         }
       })
       .finally(() => {
@@ -351,9 +389,13 @@ export default function ValidationOrchestratorWorkspace({
         });
       });
 
-      const keysToUse = onlyMappedColumns && populatedKeys.size > 0
+      let keysToUse = onlyMappedColumns && populatedKeys.size > 0
         ? Array.from(populatedKeys)
         : Object.keys(effectiveRows[0]).filter(k => !k.startsWith('_'));
+
+      if (keysToUse.length === 0 && effectiveRows.length > 0 && effectiveRows[0]) {
+        keysToUse = Object.keys(effectiveRows[0]);
+      }
 
       return keysToUse.map(key => ({
         key,
@@ -452,12 +494,17 @@ export default function ValidationOrchestratorWorkspace({
 
   // Visible columns lists (Respects default Required + Date + Financial preset)
   const visibleDatasetColumns = useMemo(() => {
-    return columnDefs.filter(c => {
+    const filtered = columnDefs.filter(c => {
       if (columnViewPreset === 'DEFAULT') {
         return isDefaultVisibleColumn(c.key) && !hiddenColumns.has(c.key);
       }
       return !hiddenColumns.has(c.key);
     });
+    // Fallback: If default filter matched 0 columns, show all unhidden columns so dataset content is always visible
+    if (filtered.length === 0 && columnDefs.length > 0) {
+      return columnDefs.filter(c => !hiddenColumns.has(c.key));
+    }
+    return filtered;
   }, [columnDefs, columnViewPreset, standardFields, hiddenColumns]);
 
   // Hidden Rows State
@@ -563,7 +610,12 @@ export default function ValidationOrchestratorWorkspace({
     }
   }, [effectiveRows, columnDefs]);
 
-  const [activeSheetTab, setActiveSheetTab] = useState<'dataset' | 'sheet1_central' | 'anomalies' | 'reconciled'>('dataset');
+  const [activeSheetTab, setActiveSheetTab] = useState<'dataset' | 'sheet1_central' | 'anomalies' | 'reconciled' | 'attachments'>('dataset');
+  const [selectedAttachmentIdx, setSelectedAttachmentIdx] = useState<number>(0);
+  const [isPromotingAttachment, setIsPromotingAttachment] = useState<boolean>(false);
+  const [attachmentSearchTerm, setAttachmentSearchTerm] = useState<string>('');
+  const [attachmentSuccessMsg, setAttachmentSuccessMsg] = useState<string | null>(null);
+  const [copiedAttachmentText, setCopiedAttachmentText] = useState<boolean>(false);
   const [currentPage, setCurrentPage] = useState<number>(1);
   const [pageSize, setPageSize] = useState<number>(50);
 
@@ -787,6 +839,73 @@ export default function ValidationOrchestratorWorkspace({
     }
   };
 
+  const handlePromoteAttachment = async (attIndex: number) => {
+    if (!selectedIssue?.id) return;
+    setIsPromotingAttachment(true);
+    setAttachmentSuccessMsg(null);
+    try {
+      const att = selectedIssue.attachments?.[attIndex];
+      const clientRows = att?.parsedData?.tabularRows || att?.parsedData?.sampleRows || [];
+      if (clientRows.length > 0) {
+        setTaskDatasetRows(clientRows);
+        onUpdateIssue(selectedIssue.id, {
+          firstLevelMappedData: clientRows,
+          uploadedFileName: att.filename,
+          transactionCount: clientRows.length,
+          datasetStatus: 'INGESTED'
+        });
+        await api.ingestTaskDataset(selectedIssue.id, {
+          rows: clientRows,
+          headers: att.parsedData?.tabularHeaders || Object.keys(clientRows[0])
+        }).catch(() => null);
+        setActiveSheetTab('dataset');
+        setAttachmentSuccessMsg(`Loaded ${clientRows.length} records into investigation dataset.`);
+        setTimeout(() => setAttachmentSuccessMsg(null), 4000);
+        return;
+      }
+
+      // Promote via server endpoint
+      const res = await api.promoteAttachmentToDataset(selectedIssue.id, attIndex);
+      if (res.success) {
+        const tRes = await api.getTaskTransactions(selectedIssue.id, 1, 5000).catch(() => null);
+        if (tRes?.rows && tRes.rows.length > 0) {
+          setTaskDatasetRows(tRes.rows);
+        }
+        onUpdateIssue(selectedIssue.id, {
+          uploadedFileName: att?.filename,
+          transactionCount: res.transactionCount,
+          datasetStatus: 'INGESTED'
+        });
+        setActiveSheetTab('dataset');
+        setAttachmentSuccessMsg(res.message);
+        setTimeout(() => setAttachmentSuccessMsg(null), 4000);
+      }
+    } catch (err: any) {
+      alert(`Could not promote attachment: ${err?.message || 'Unknown error'}`);
+    } finally {
+      setIsPromotingAttachment(false);
+    }
+  };
+
+  const handleDownloadAttachment = (att: any) => {
+    const raw = att.rawBase64 || att.base64;
+    if (!raw) {
+      alert(`Download unavailable: File is stored on server storage (${att.storagePath || 'server path'}).`);
+      return;
+    }
+    try {
+      const mime = att.mimeType || 'application/octet-stream';
+      const link = document.createElement('a');
+      link.href = `data:${mime};base64,${raw}`;
+      link.download = att.filename || 'attachment';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    } catch (e: any) {
+      alert(`Could not download file: ${e.message}`);
+    }
+  };
+
   const handleViewReversionHistory = async () => {
     if (!selectedIssue?.id) return;
     try {
@@ -923,10 +1042,13 @@ export default function ValidationOrchestratorWorkspace({
   };
 
   // Compute Orchestrated Row Results using the Centralized Shared Investigation Engine
+  // Compute Orchestrated Row Results using the Centralized Shared Investigation Engine
   const orchestratedRows: OrchestratedRow[] = useMemo(() => {
-    const isTaskValidated = hasExecutedValidation
-      || (taskWorkflowExecutions && taskWorkflowExecutions.length > 0)
-      || effectiveRows.some(r => r._validation_status && r._validation_status !== 'PENDING');
+    const isTaskValidated = Boolean(
+      hasExecutedValidation
+      || (activeWorkflow && taskWorkflowExecutions.some(x => (x.workflow_id || x.workflowId) === activeWorkflow.id))
+      || (activeWorkflow && effectiveRows.some(r => r._validation_workflow_id === activeWorkflow.id || r.canonical_data?._validation_workflow_id === activeWorkflow.id))
+    );
 
     const sampleRow = effectiveRows.length > 0 ? effectiveRows[0] : {};
     const { presentParams: wfParamsPresent } = getWorkflowConfiguredParamsPresentInRow(activeWorkflow, sampleRow);
@@ -949,7 +1071,12 @@ export default function ValidationOrchestratorWorkspace({
       return effectiveRows.map((row, rowIdx) => {
         const rowId = getRowCandidateKeys(row, rowIdx)[0] || `ROW-${rowIdx + 1}`;
         const overriddenStatus = manualStatusOverrides[rowId];
-        const rowValStatus = row._validation_status || serverEvaluatedRecords?.[rowId]?._validation_status;
+        const isThisWf = activeWorkflow && (
+          row._validation_workflow_id === activeWorkflow.id ||
+          row.canonical_data?._validation_workflow_id === activeWorkflow.id ||
+          serverEvaluatedRecords?.[rowId]?._validation_workflow_id === activeWorkflow.id
+        );
+        const rowValStatus = isThisWf ? (serverEvaluatedRecords?.[rowId]?._validation_status || row._validation_status) : null;
         let initialStatus: TransactionInvestigationStatus = overriddenStatus || 'PENDING';
         if (rowValStatus === 'PASS') initialStatus = 'RECONCILED';
         else if (rowValStatus === 'FAIL') initialStatus = 'FLAGGED';
@@ -997,25 +1124,38 @@ export default function ValidationOrchestratorWorkspace({
         }
       }
 
-      const isRowEvaluated = (serverRec && serverRec._validation_status && serverRec._validation_status !== 'PENDING')
-        || (row._validation_status && row._validation_status !== 'PENDING')
-        || (row.sourceRecord && row.sourceRecord._validation_status && row.sourceRecord._validation_status !== 'PENDING');
+      const isServerRecMatch = Boolean(
+        serverRec && serverRec._validation_status && serverRec._validation_status !== 'PENDING' &&
+        (!serverRec._validation_workflow_id || !activeWorkflow || serverRec._validation_workflow_id === activeWorkflow.id)
+      );
+      const isRowWfMatch = Boolean(
+        !activeWorkflow ||
+        row._validation_workflow_id === activeWorkflow.id ||
+        row.canonical_data?._validation_workflow_id === activeWorkflow.id ||
+        row.sourceRecord?._validation_workflow_id === activeWorkflow.id
+      );
+
+      const isRowEvaluated = isTaskValidated && (
+        isServerRecMatch ||
+        (isRowWfMatch && row._validation_status && row._validation_status !== 'PENDING') ||
+        (isRowWfMatch && row.sourceRecord && row.sourceRecord._validation_status && row.sourceRecord._validation_status !== 'PENDING')
+      );
       const hasTargetRecordExplicit = isRowEvaluated && (
-        (serverRec && '_target_record' in serverRec)
-        || ('_target_record' in row)
-        || (row.canonical_data && '_target_record' in row.canonical_data)
+        (isServerRecMatch && '_target_record' in serverRec)
+        || (isRowWfMatch && '_target_record' in row)
+        || (isRowWfMatch && row.canonical_data && '_target_record' in row.canonical_data)
       );
       const targetRecord = isRowEvaluated
-        ? (serverRec && '_target_record' in serverRec
+        ? (isServerRecMatch && '_target_record' in serverRec
             ? serverRec._target_record
-            : (row._target_record !== undefined ? row._target_record : (row.canonical_data && '_target_record' in row.canonical_data ? row.canonical_data._target_record : null)))
+            : (isRowWfMatch && row._target_record !== undefined ? row._target_record : (isRowWfMatch && row.canonical_data && '_target_record' in row.canonical_data ? row.canonical_data._target_record : null)))
         : null;
-      const targetDbName = serverRec?._target_db || row._target_db || activeWorkflow?.targetDbId || 'Target DB';
-      const targetTableName = serverRec?._target_table || row._target_table || activeWorkflow?.targetTable || 'transactions';
+      const targetDbName = (isServerRecMatch && serverRec?._target_db) || (isRowWfMatch && row._target_db) || activeWorkflow?.targetDbId || 'Target DB';
+      const targetTableName = (isServerRecMatch && serverRec?._target_table) || (isRowWfMatch && row._target_table) || activeWorkflow?.targetTable || 'transactions';
 
       return {
         ...row,
-        ...(serverRec || {}),
+        ...(isServerRecMatch ? serverRec : {}),
         ...(hasTargetRecordExplicit ? { _target_record: targetRecord } : {}),
         _target_db: targetDbName,
         _target_table: targetTableName
@@ -1040,30 +1180,43 @@ export default function ValidationOrchestratorWorkspace({
         }
       }
 
+      const isServerRecMatch = Boolean(
+        serverRec && serverRec._validation_status && serverRec._validation_status !== 'PENDING' &&
+        (!serverRec._validation_workflow_id || !activeWorkflow || serverRec._validation_workflow_id === activeWorkflow.id)
+      );
+      const isRowWfMatch = Boolean(
+        !activeWorkflow ||
+        row._validation_workflow_id === activeWorkflow.id ||
+        row.canonical_data?._validation_workflow_id === activeWorkflow.id ||
+        row.sourceRecord?._validation_workflow_id === activeWorkflow.id
+      );
+
       const summary = batchSummaries[rowId] || (rowKeyCandidates[1] ? batchSummaries[rowKeyCandidates[1]] : undefined);
-      const isRowEvaluated = (serverRec && serverRec._validation_status && serverRec._validation_status !== 'PENDING')
-        || (row._validation_status && row._validation_status !== 'PENDING')
-        || (row.canonical_data && row.canonical_data._validation_status && row.canonical_data._validation_status !== 'PENDING')
-        || (row.sourceRecord && row.sourceRecord._validation_status && row.sourceRecord._validation_status !== 'PENDING');
+      const isRowEvaluated = isTaskValidated && (
+        isServerRecMatch ||
+        (isRowWfMatch && row._validation_status && row._validation_status !== 'PENDING') ||
+        (isRowWfMatch && row.canonical_data && row.canonical_data._validation_status && row.canonical_data._validation_status !== 'PENDING') ||
+        (isRowWfMatch && row.sourceRecord && row.sourceRecord._validation_status && row.sourceRecord._validation_status !== 'PENDING')
+      );
       const hasTargetRecordExplicit = isRowEvaluated && (
-        (serverRec && '_target_record' in serverRec)
-        || ('_target_record' in row)
-        || (row.canonical_data && '_target_record' in row.canonical_data)
+        (isServerRecMatch && '_target_record' in serverRec)
+        || (isRowWfMatch && '_target_record' in row)
+        || (isRowWfMatch && row.canonical_data && '_target_record' in row.canonical_data)
       );
       const targetRecord = isRowEvaluated
-        ? (serverRec && '_target_record' in serverRec
+        ? (isServerRecMatch && '_target_record' in serverRec
             ? serverRec._target_record
-            : (row._target_record !== undefined ? row._target_record : (row.canonical_data && '_target_record' in row.canonical_data ? row.canonical_data._target_record : null)))
+            : (isRowWfMatch && row._target_record !== undefined ? row._target_record : (isRowWfMatch && row.canonical_data && '_target_record' in row.canonical_data ? row.canonical_data._target_record : null)))
         : null;
-      const targetDbName = serverRec?._target_db || row._target_db || activeWorkflow?.targetDbId || 'Target DB';
-      const targetTableName = serverRec?._target_table || row._target_table || activeWorkflow?.targetTable || 'transactions';
+      const targetDbName = (isServerRecMatch && serverRec?._target_db) || (isRowWfMatch && row._target_db) || activeWorkflow?.targetDbId || 'Target DB';
+      const targetTableName = (isServerRecMatch && serverRec?._target_table) || (isRowWfMatch && row._target_table) || activeWorkflow?.targetTable || 'transactions';
 
       let serverStatus: TransactionInvestigationStatus | undefined;
-      if (serverRec && serverRec._validation_status && serverRec._validation_status !== 'PENDING') {
+      if (isServerRecMatch) {
         if (serverRec._validation_status === 'FAIL' || (hasTargetRecordExplicit && !targetRecord)) serverStatus = 'FLAGGED';
         else if (serverRec._validation_status === 'PASS') serverStatus = 'RECONCILED';
         else if (serverRec._validation_status === 'PAUSED_DB_OFFLINE') serverStatus = 'INVESTIGATING';
-      } else if (row._validation_status && row._validation_status !== 'PENDING') {
+      } else if (isRowWfMatch && row._validation_status && row._validation_status !== 'PENDING') {
         if (row._validation_status === 'FAIL' || (hasTargetRecordExplicit && !targetRecord)) serverStatus = 'FLAGGED';
         else if (row._validation_status === 'PASS') serverStatus = 'RECONCILED';
         else if (row._validation_status === 'PAUSED_DB_OFFLINE') serverStatus = 'INVESTIGATING';
@@ -1083,9 +1236,25 @@ export default function ValidationOrchestratorWorkspace({
         rowSeverity = 'RECONCILED';
       }
 
-      // Map audit trail to stepResults for UI display
+      // Map audit trail to stepResults for UI display, strictly isolating to activeWorkflow
       const stepResults: Record<string, StepExecutionResult> = {};
-      (summary?.auditTrail || []).forEach(entry => {
+      const recordAuditTrail = (
+        (isServerRecMatch && Array.isArray(serverRec?.auditTrail) ? serverRec.auditTrail : null) ||
+        (isRowWfMatch && Array.isArray(row?.auditTrail) ? row.auditTrail : null) ||
+        (isRowWfMatch && Array.isArray(row?.canonical_data?.auditTrail) ? row.canonical_data.auditTrail : null) ||
+        (isRowWfMatch && Array.isArray(row?.sourceRecord?.auditTrail) ? row.sourceRecord.auditTrail : null) ||
+        (isServerRecMatch && Array.isArray(serverRec?._validation_details?.stageResults) ? serverRec._validation_details.stageResults : null) ||
+        (isRowWfMatch && Array.isArray(row?.canonical_data?._validation_details?.stageResults) ? row.canonical_data._validation_details.stageResults : null) ||
+        (isRowWfMatch && Array.isArray(row?.sourceRecord?._validation_details?.stageResults) ? row.sourceRecord._validation_details.stageResults : null) ||
+        (Array.isArray(summary?.auditTrail) ? summary.auditTrail : null) ||
+        []
+      );
+      recordAuditTrail.forEach((entry: any) => {
+        if (!entry || !entry.ruleId) return;
+        // Strictly filter to rules belonging to activeWorkflow to avoid mixing previous workflow steps
+        const matchesStep = activeWorkflow?.steps?.some(s => isStepIdMatch(s.id, entry.ruleId));
+        if (!matchesStep) return;
+
         stepResults[entry.ruleId] = {
           stepId: entry.ruleId,
           status: entry.validationResult === 'PASS' ? 'PASSED' : entry.validationResult === 'FAIL' ? 'FAILED' : 'WARNING',
@@ -1116,7 +1285,7 @@ export default function ValidationOrchestratorWorkspace({
       }
 
       // If batch summary audit trail was empty or server evaluated as FAIL, populate stepResults
-      const rowValStatus = serverRec?._validation_status || row._validation_status;
+      const rowValStatus = isServerRecMatch ? serverRec._validation_status : (isRowWfMatch ? row._validation_status : undefined);
       if (Object.keys(stepResults).length === 0 && rowValStatus && activeWorkflow?.steps) {
         activeWorkflow.steps.forEach(step => {
           stepResults[step.id] = {
@@ -1134,7 +1303,7 @@ export default function ValidationOrchestratorWorkspace({
 
       const mergedSource = {
         ...row,
-        ...(serverRec || {}),
+        ...(isServerRecMatch ? serverRec : {}),
         ...(targetRecord ? { _target_record: targetRecord } : {}),
         _target_db: targetDbName,
         _target_table: targetTableName
@@ -1148,9 +1317,12 @@ export default function ValidationOrchestratorWorkspace({
         _target_table: targetTableName,
         stepResults,
         overallSeverity: rowSeverity,
-        overallSummary: summary?.auditTrail.map(a => `${a.ruleName}: [${a.validationResult}] ${a.pipelineAction}`).join(' | ') || (serverRec ? `Evaluated via ${activeWorkflow?.name}: [${serverRec._validation_status}]` : rowValStatus ? `Conducted verdict: [${rowValStatus}]` : 'Passed multi-stage validation'),
+        overallSummary: summary?.auditTrail.map(a => `${a.ruleName}: [${a.validationResult}] ${a.pipelineAction}`).join(' | ') || (isServerRecMatch ? `Evaluated via ${activeWorkflow?.name}: [${serverRec._validation_status}]` : (isRowWfMatch && rowValStatus) ? `Conducted verdict: [${rowValStatus}]` : activeWorkflow ? `Ready to validate against [${activeWorkflow.name}]` : 'Passed multi-stage validation'),
         remedySql: summary?.remedySql,
-        executionSummary: summary,
+        executionSummary: {
+          ...(summary || {}),
+          auditTrail: recordAuditTrail.filter((entry: any) => activeWorkflow?.steps?.some(s => isStepIdMatch(s.id, entry.ruleId)))
+        },
         investigationStatus: finalStatus,
         isClosed,
         isHalted
@@ -1497,7 +1669,11 @@ export default function ValidationOrchestratorWorkspace({
             _validation_details: resultMap[k].details,
             _target_record: resultMap[k].targetRecord ?? resultMap[k]._target_record ?? null,
             _target_db: resultMap[k].targetDb ?? resultMap[k]._target_db,
-            _target_table: resultMap[k].targetTable ?? resultMap[k]._target_table
+            _target_table: resultMap[k].targetTable ?? resultMap[k]._target_table,
+            auditTrail: resultMap[k].auditTrail || resultMap[k]._stage_results || [],
+            _stage_results: resultMap[k]._stage_results || resultMap[k].auditTrail || [],
+            _validation_workflow_id: chosenId,
+            _validation_workflow_name: conductedExec.workflowName || conductedExec.workflow_name || chosen.name
           };
         });
         setServerEvaluatedRecords(serverMap);
@@ -1513,7 +1689,7 @@ export default function ValidationOrchestratorWorkspace({
       }
       setHasExecutedValidation(true);
     } else {
-      setServerEvaluatedRecords(null);
+      setServerEvaluatedRecords({});
       setLiveExecutionMetrics(null);
       setHasExecutedValidation(false);
       setLiveProgressMsg(`Workflow '${chosen.name}' has not yet been conducted on investigation #${selectedIssue?.id}. Click "▶ Run Validation" to evaluate.`);
@@ -1710,17 +1886,33 @@ export default function ValidationOrchestratorWorkspace({
           : `Validated in ${res.durationMs}ms: ${res.passedCount} Passed, ${res.failedCount} Failed (${res.cachedHits || 0} cached)`
       );
 
+      // 1. Immediately update local dataset rows so UI updates instantly without requiring page reload
+      if (res.records && Array.isArray(res.records) && res.records.length > 0) {
+        setTaskDatasetRows(res.records);
+      }
+
+      // 2. Immediately sync parent issue state so parent workspace and badges update instantly
       if (selectedIssue?.id) {
-        api.getTaskWorkflowExecutions(selectedIssue.id)
-          .then((wfRes: any) => setTaskWorkflowExecutions(wfRes?.executions || []))
-          .catch(() => { });
-        api.getTaskTransactions(selectedIssue.id, 1, 5000)
-          .then((tRes: any) => {
-            if (tRes && Array.isArray(tRes.rows) && tRes.rows.length > 0) {
-              setTaskDatasetRows(tRes.rows);
-            }
-          })
-          .catch(() => { });
+        onUpdateIssue(selectedIssue.id, {
+          firstLevelMappedData: res.records || effectiveRows,
+          validationStatus: res.failedCount > 0 ? 'FAIL' : 'PASS'
+        });
+      }
+
+      // 3. Refresh lookup executions and dataset from PostgreSQL in the background
+      if (selectedIssue?.id) {
+        try {
+          const [wfRes, tRes] = await Promise.all([
+            api.getTaskWorkflowExecutions(selectedIssue.id).catch(() => null),
+            api.getTaskTransactions(selectedIssue.id, 1, 5000).catch(() => null)
+          ]);
+          if (wfRes?.executions) {
+            setTaskWorkflowExecutions(wfRes.executions);
+          }
+          if (tRes?.rows && Array.isArray(tRes.rows) && tRes.rows.length > 0) {
+            setTaskDatasetRows(tRes.rows);
+          }
+        } catch { }
       }
     } catch (err: any) {
       console.warn('Backend universal execution error, falling back to preview:', err);
@@ -1827,13 +2019,6 @@ export default function ValidationOrchestratorWorkspace({
   // =========================================================================
   // WORKFLOW OUTCOME AGGREGATION & EVALUATION HELPERS
   // =========================================================================
-  const isStepIdMatch = (a: string, b: string) => {
-    if (!a || !b) return false;
-    if (a === b) return true;
-    const cleanA = a.replace(/^step[-_]/i, '').trim().toLowerCase();
-    const cleanB = b.replace(/^step[-_]/i, '').trim().toLowerCase();
-    return cleanA === cleanB;
-  };
 
   interface OutcomeEvaluation {
     status: 'PASS' | 'FAIL' | 'PENDING';
@@ -1932,29 +2117,61 @@ export default function ValidationOrchestratorWorkspace({
       }
     }
 
-    const isEvaluated = (serverRec && serverRec._validation_status && serverRec._validation_status !== 'PENDING')
-      || (row?.sourceRecord && row.sourceRecord._validation_status && row.sourceRecord._validation_status !== 'PENDING')
-      || (row?._validation_status && row._validation_status !== 'PENDING')
-      || (row?.canonical_data && row.canonical_data._validation_status && row.canonical_data._validation_status !== 'PENDING')
-      || (row?.sourceRecord?.canonical_data && row.sourceRecord.canonical_data._validation_status && row.sourceRecord.canonical_data._validation_status !== 'PENDING');
+    const isServerRecMatch = Boolean(
+      serverRec && serverRec._validation_status && serverRec._validation_status !== 'PENDING' &&
+      (!serverRec._validation_workflow_id || !workflow || serverRec._validation_workflow_id === workflow.id)
+    );
+    const isRowWfMatch = Boolean(
+      !workflow ||
+      row?._validation_workflow_id === workflow.id ||
+      row?.sourceRecord?._validation_workflow_id === workflow.id ||
+      rec._validation_workflow_id === workflow.id ||
+      rec.canonical_data?._validation_workflow_id === workflow.id
+    );
+
+    const isEvaluated = hasExecutedValidation || isServerRecMatch || (
+      isRowWfMatch && (
+        (row?.sourceRecord && row.sourceRecord._validation_status && row.sourceRecord._validation_status !== 'PENDING') ||
+        (row?._validation_status && row._validation_status !== 'PENDING') ||
+        (row?.canonical_data && row.canonical_data._validation_status && row.canonical_data._validation_status !== 'PENDING')
+      )
+    );
+
+    if (!isEvaluated) {
+      return {
+        status: 'PENDING',
+        message: 'Pending Verification',
+        failedStepCount: 0,
+        passedStepCount: 0,
+        totalStepCount: workflow.steps.length,
+        stepDetails: workflow.steps.map(s => ({
+          stepId: s.id,
+          stepName: s.name,
+          checkType: s.checkType,
+          status: 'PENDING',
+          actionTaken: 'CONTINUE',
+          detail: 'Pending verification'
+        }))
+      };
+    }
 
     const hasTargetRecordExplicit = isEvaluated && (
-      (serverRec && '_target_record' in serverRec)
-      || (row?.sourceRecord && '_target_record' in row.sourceRecord)
-      || (row && '_target_record' in row)
-      || (row?.canonical_data && '_target_record' in row.canonical_data)
-      || (row?.sourceRecord?.canonical_data && '_target_record' in row.sourceRecord.canonical_data)
+      (isServerRecMatch && '_target_record' in serverRec)
+      || (isRowWfMatch && row?.sourceRecord && '_target_record' in row.sourceRecord)
+      || (isRowWfMatch && row && '_target_record' in row)
+      || (isRowWfMatch && row?.canonical_data && '_target_record' in row.canonical_data)
+      || (isRowWfMatch && row?.sourceRecord?.canonical_data && '_target_record' in row.sourceRecord.canonical_data)
     );
     const targetRecord = isEvaluated ? (
-      serverRec?._target_record
-      ?? row?._target_record
-      ?? row?.sourceRecord?._target_record
-      ?? row?.canonical_data?._target_record
-      ?? row?.sourceRecord?.canonical_data?._target_record
+      (isServerRecMatch && serverRec?._target_record)
+      ?? (isRowWfMatch ? row?._target_record : null)
+      ?? (isRowWfMatch ? row?.sourceRecord?._target_record : null)
+      ?? (isRowWfMatch ? row?.canonical_data?._target_record : null)
+      ?? (isRowWfMatch ? row?.sourceRecord?.canonical_data?._target_record : null)
       ?? null
     ) : null;
-    const targetDbName = serverRec?._target_db || row?.sourceRecord?._target_db || row?._target_db || workflow.targetDbId || 'Target DB';
-    const targetTableName = serverRec?._target_table || row?.sourceRecord?._target_table || row?._target_table || workflow.targetTable || 'transactions';
+    const targetDbName = (isServerRecMatch && serverRec?._target_db) || (isRowWfMatch && row?.sourceRecord?._target_db) || (isRowWfMatch && row?._target_db) || workflow.targetDbId || 'Target DB';
+    const targetTableName = (isServerRecMatch && serverRec?._target_table) || (isRowWfMatch && row?.sourceRecord?._target_table) || (isRowWfMatch && row?._target_table) || workflow.targetTable || 'transactions';
 
     const results = row.stepResults || {};
     const hasAnyResults = Object.keys(results).length > 0;
@@ -2013,9 +2230,7 @@ export default function ValidationOrchestratorWorkspace({
       }
 
       // Check if this row was already evaluated in a conducted workflow from the database
-      const rowValStatus = row?.sourceRecord?._validation_status
-        || serverRec?._validation_status
-        || (row?.investigationStatus === 'RECONCILED' ? 'PASS' : row?.investigationStatus === 'FLAGGED' ? 'FAIL' : null);
+      const rowValStatus = isServerRecMatch ? serverRec._validation_status : (isRowWfMatch ? (row?.sourceRecord?._validation_status || row?._validation_status) : null);
 
       if (rowValStatus === 'PASS') {
         return {
@@ -2066,46 +2281,52 @@ export default function ValidationOrchestratorWorkspace({
       };
     }
 
+    const rowValStatus = isServerRecMatch
+      ? serverRec._validation_status
+      : (isRowWfMatch ? (row?.sourceRecord?._validation_status || row?._validation_status) : null);
+
     const failedStepCount = stepDetails.filter(s => s.status === 'FAIL').length;
     const passedStepCount = stepDetails.filter(s => s.status === 'PASS').length;
     const aggregations = workflow.messageAggregations || [];
 
-    // 1. Evaluate FAIL rules first
-    const failRules = aggregations.filter(r => r.type === 'FAIL');
-    for (const rule of failRules) {
-      const targetStepIds = rule.validationStepIds || [];
-      if (targetStepIds.length === 0) continue;
+    // 1. Evaluate FAIL rules first (only if overall workflow did NOT conclude with a PASS from a negative check branch)
+    if (rowValStatus !== 'PASS') {
+      const failRules = aggregations.filter(r => r.type === 'FAIL');
+      for (const rule of failRules) {
+        const targetStepIds = rule.validationStepIds || [];
+        if (targetStepIds.length === 0) continue;
 
-      const attachedSteps = stepDetails.filter(s =>
-        targetStepIds.some(tid => isStepIdMatch(s.stepId, tid))
-      );
-      const failedAttached = attachedSteps.filter(s => s.status === 'FAIL');
+        const attachedSteps = stepDetails.filter(s =>
+          targetStepIds.some(tid => isStepIdMatch(s.stepId, tid))
+        );
+        const failedAttached = attachedSteps.filter(s => s.status === 'FAIL');
 
-      const operator = rule.operator || 'ANY';
-      if (operator === 'ANY' && failedAttached.length > 0) {
-        return {
-          status: 'FAIL',
-          message: rule.message || rule.name,
-          matchedRuleName: rule.name,
-          severity: rule.severity || 'CRITICAL',
-          operator,
-          failedStepCount,
-          passedStepCount,
-          totalStepCount: workflow.steps.length,
-          stepDetails
-        };
-      } else if (operator === 'ALL' && failedAttached.length === targetStepIds.length && failedAttached.length > 0) {
-        return {
-          status: 'FAIL',
-          message: rule.message || rule.name,
-          matchedRuleName: rule.name,
-          severity: rule.severity || 'CRITICAL',
-          operator,
-          failedStepCount,
-          passedStepCount,
-          totalStepCount: workflow.steps.length,
-          stepDetails
-        };
+        const operator = rule.operator || 'ANY';
+        if (operator === 'ANY' && failedAttached.length > 0) {
+          return {
+            status: 'FAIL',
+            message: rule.message || rule.name,
+            matchedRuleName: rule.name,
+            severity: rule.severity || 'CRITICAL',
+            operator,
+            failedStepCount,
+            passedStepCount,
+            totalStepCount: workflow.steps.length,
+            stepDetails
+          };
+        } else if (operator === 'ALL' && failedAttached.length === targetStepIds.length && failedAttached.length > 0) {
+          return {
+            status: 'FAIL',
+            message: rule.message || rule.name,
+            matchedRuleName: rule.name,
+            severity: rule.severity || 'CRITICAL',
+            operator,
+            failedStepCount,
+            passedStepCount,
+            totalStepCount: workflow.steps.length,
+            stepDetails
+          };
+        }
       }
     }
 
@@ -2150,6 +2371,18 @@ export default function ValidationOrchestratorWorkspace({
 
     // 3. Fallback when no specific aggregation matched
     if (failedStepCount > 0) {
+      if (rowValStatus === 'PASS') {
+        return {
+          status: 'PASS',
+          message: `Passed via Negative Check Branch (${passedStepCount} Passed, ${failedStepCount} Failed)`,
+          severity: 'RECONCILED',
+          failedStepCount,
+          passedStepCount,
+          totalStepCount: workflow.steps.length,
+          stepDetails
+        };
+      }
+
       return {
         status: 'FAIL',
         message: `${failedStepCount} of ${workflow.steps.length} Checks Failed`,
@@ -2277,6 +2510,232 @@ export default function ValidationOrchestratorWorkspace({
   const visibleReportColumns = reportColumns.filter(c => !hiddenColumns.has(`report_${c.key}`));
   const visibleValidationSteps = (activeWorkflow?.steps || []).filter(s => !hiddenColumns.has(s.id));
 
+  const renderAttachmentInspector = () => {
+    const attachments = selectedIssue?.attachments || [];
+    if (attachments.length === 0) {
+      return (
+        <div className="p-16 text-center space-y-3 bg-white min-h-[500px] flex flex-col items-center justify-center font-sans">
+          <div className="w-14 h-14 bg-slate-100 rounded-2xl flex items-center justify-center text-slate-400 border border-slate-200 shadow-xs">
+            <Paperclip size={26} />
+          </div>
+          <div className="text-base font-bold text-slate-800">No Attachments for #{selectedIssue?.id}</div>
+          <p className="text-xs text-slate-500 max-w-sm mx-auto">
+            This task was created directly or manually without attached spreadsheet or document files.
+          </p>
+          <button
+            type="button"
+            onClick={() => setActiveSheetTab('dataset')}
+            className="mt-2 px-3.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-semibold border border-slate-300 transition cursor-pointer"
+          >
+            ← Back to Transactions Data Grid
+          </button>
+        </div>
+      );
+    }
+
+    const activeAtt = attachments[selectedAttachmentIdx] || attachments[0];
+    const tabularRows: Record<string, any>[] = activeAtt.parsedData?.tabularRows || activeAtt.parsedData?.sampleRows || [];
+    const tabularHeaders: string[] = activeAtt.parsedData?.tabularHeaders || activeAtt.parsedData?.sampleHeaders || (tabularRows.length > 0 ? Object.keys(tabularRows[0]) : []);
+    const textContent: string = activeAtt.parsedData?.textContent || activeAtt.parsedText || '';
+
+    return (
+      <div className="bg-slate-50 min-h-[520px] max-h-[calc(100vh-210px)] flex flex-col font-sans">
+        {/* Top File Selection Bar & Controls */}
+        <div className="bg-white border-b border-slate-200 px-4 py-2.5 flex items-center justify-between gap-3 overflow-x-auto shadow-2xs">
+          <div className="flex items-center gap-2 overflow-x-auto py-0.5">
+            <span className="text-[11px] font-bold text-slate-400 uppercase font-mono tracking-wider mr-1 shrink-0">Attached Files:</span>
+            {attachments.map((att: any, idx: number) => {
+              const isSelected = selectedAttachmentIdx === idx;
+              const isSpreadsheet = att.contentType === 'spreadsheet' || att.filename?.endsWith('.csv') || att.filename?.endsWith('.xlsx') || att.filename?.endsWith('.xls');
+              return (
+                <button
+                  key={att.id || idx}
+                  type="button"
+                  onClick={() => setSelectedAttachmentIdx(idx)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-2 transition cursor-pointer border shrink-0 ${
+                    isSelected
+                      ? 'bg-blue-50 text-blue-900 border-blue-400 font-bold shadow-xs'
+                      : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+                  }`}
+                >
+                  {isSpreadsheet ? (
+                    <FileSpreadsheet size={13} className={isSelected ? 'text-emerald-600' : 'text-slate-500'} />
+                  ) : (
+                    <FileText size={13} className={isSelected ? 'text-blue-600' : 'text-slate-500'} />
+                  )}
+                  <span className="truncate max-w-[180px]">{att.filename}</span>
+                  <span className="text-[10px] text-slate-400 font-mono">
+                    {att.sizeBytes ? `${(att.sizeBytes / 1024).toFixed(1)} KB` : ''}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Action Tools for Currently Inspected File */}
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => handlePromoteAttachment(selectedAttachmentIdx)}
+              disabled={isPromotingAttachment}
+              className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 shadow-xs transition cursor-pointer"
+              title="Promote records from this attachment into the main investigation grid"
+            >
+              <Zap size={13} className={isPromotingAttachment ? 'animate-spin' : ''} />
+              <span>{isPromotingAttachment ? 'Promoting...' : 'Promote to Investigation Dataset'}</span>
+            </button>
+
+            {(activeAtt.rawBase64 || activeAtt.base64) && (
+              <button
+                type="button"
+                onClick={() => handleDownloadAttachment(activeAtt)}
+                className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-medium flex items-center gap-1 border border-slate-300 transition cursor-pointer"
+              >
+                <Download size={13} />
+                <span>Download</span>
+              </button>
+            )}
+
+            <button
+              type="button"
+              onClick={() => setActiveSheetTab('dataset')}
+              className="px-2.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-medium border border-slate-300 transition cursor-pointer"
+            >
+              Close View
+            </button>
+          </div>
+        </div>
+
+        {/* Feedback Alert Banner */}
+        {attachmentSuccessMsg && (
+          <div className="mx-4 mt-3 p-3 bg-emerald-50 border border-emerald-200 rounded-xl text-xs text-emerald-900 flex items-center gap-2 font-mono">
+            <CheckCircle2 size={15} className="text-emerald-600 shrink-0" />
+            <span className="font-semibold">{attachmentSuccessMsg}</span>
+          </div>
+        )}
+
+        {/* Main Content Area */}
+        <div className="flex-1 overflow-auto p-4 space-y-4">
+          {tabularRows.length > 0 ? (
+            <div className="space-y-3">
+              {/* Table Metrics & Search Filter */}
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+                <div className="flex items-center gap-2">
+                  <span className="font-bold text-slate-900 font-mono text-sm">{activeAtt.filename}</span>
+                  <span className="px-2 py-0.5 bg-emerald-100 text-emerald-800 rounded font-mono text-[11px] font-bold border border-emerald-200">
+                    {tabularRows.length} extracted records
+                  </span>
+                  <span className="text-slate-500 font-mono text-[11px]">
+                    ({tabularHeaders.length} columns)
+                  </span>
+                </div>
+                <div className="relative w-72">
+                  <Search size={12} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+                  <input
+                    type="text"
+                    placeholder="Search in attachment records..."
+                    value={attachmentSearchTerm}
+                    onChange={(e) => setAttachmentSearchTerm(e.target.value)}
+                    className="w-full pl-8 pr-2.5 py-1.5 text-xs bg-white border border-slate-300 rounded-lg focus:outline-none focus:ring-1 focus:ring-blue-500 font-sans shadow-2xs"
+                  />
+                </div>
+              </div>
+
+              {/* Data Table */}
+              <div className="border border-slate-300 rounded-xl overflow-x-auto bg-white shadow-xs max-h-[460px]">
+                <table className="w-full text-left text-xs border-collapse">
+                  <thead className="bg-[#f8f9fa] sticky top-0 z-10 border-b border-slate-300">
+                    <tr>
+                      <th className="w-12 p-2 text-center text-slate-500 font-mono font-bold text-[11px] border-r border-slate-200 bg-slate-100">#</th>
+                      {tabularHeaders.map((h: string) => (
+                        <th key={h} className="p-2 font-bold text-slate-700 border-r border-slate-200 whitespace-nowrap text-[11px] select-none font-mono">
+                          {h}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-200">
+                    {tabularRows
+                      .filter((r: any) => {
+                        if (!attachmentSearchTerm.trim()) return true;
+                        return Object.values(r).some(v => String(v ?? '').toLowerCase().includes(attachmentSearchTerm.toLowerCase()));
+                      })
+                      .slice(0, 100)
+                      .map((r: any, rIdx: number) => (
+                        <tr key={rIdx} className="hover:bg-blue-50/20 transition-colors">
+                          <td className="p-2 text-center font-mono text-slate-400 text-[11px] border-r border-slate-200 bg-slate-50/50">
+                            {rIdx + 1}
+                          </td>
+                          {tabularHeaders.map((h: string) => (
+                            <td key={h} className="p-2 border-r border-slate-200 text-slate-800 whitespace-nowrap font-mono text-[11px]">
+                              {String(r[h] ?? '') || <span className="text-slate-300 italic">—</span>}
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              </div>
+              {tabularRows.length > 100 && (
+                <div className="text-[11px] text-slate-500 text-center font-mono">
+                  Displaying first 100 rows in preview. Click "Promote to Investigation Dataset" to load the entire {tabularRows.length}-record set into the active workspace.
+                </div>
+              )}
+            </div>
+          ) : textContent ? (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between text-xs">
+                <div className="flex items-center gap-2">
+                  <span className="font-bold text-slate-800 font-mono">{activeAtt.filename}</span>
+                  <span className="text-[11px] text-slate-500">Text Content Preview</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    navigator.clipboard.writeText(textContent);
+                    setCopiedAttachmentText(true);
+                    setTimeout(() => setCopiedAttachmentText(false), 2000);
+                  }}
+                  className="px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded text-xs font-mono flex items-center gap-1 transition cursor-pointer"
+                >
+                  {copiedAttachmentText ? <Check size={12} className="text-emerald-600" /> : <Copy size={12} />}
+                  <span>{copiedAttachmentText ? 'Copied' : 'Copy Text'}</span>
+                </button>
+              </div>
+              <pre className="p-4 bg-slate-900 text-emerald-400 font-mono text-xs rounded-xl overflow-auto max-h-[460px] leading-relaxed border border-slate-800 select-text">
+                {textContent}
+              </pre>
+            </div>
+          ) : (
+            <div className="p-12 text-center space-y-4 max-w-md mx-auto bg-white rounded-2xl border border-slate-200 shadow-xs my-6">
+              <div className="w-14 h-14 bg-blue-50 text-blue-600 rounded-2xl flex items-center justify-center mx-auto border border-blue-200">
+                <FileText size={28} />
+              </div>
+              <div>
+                <div className="font-bold text-slate-900 text-base">{activeAtt.filename}</div>
+                <p className="text-xs text-slate-500 mt-1 font-mono">
+                  {activeAtt.mimeType || 'application/octet-stream'} • {activeAtt.sizeBytes ? `${(activeAtt.sizeBytes / 1024).toFixed(1)} KB` : 'Unknown size'}
+                </p>
+                <p className="text-xs text-slate-600 mt-2 leading-relaxed">
+                  This file is stored in server attachment repository. Click below to promote and ingest its records directly into this task.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => handlePromoteAttachment(selectedAttachmentIdx)}
+                disabled={isPromotingAttachment}
+                className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white rounded-lg text-xs font-semibold shadow-xs transition flex items-center justify-center gap-2 mx-auto cursor-pointer"
+              >
+                <Zap size={14} className={isPromotingAttachment ? 'animate-spin' : ''} />
+                <span>{isPromotingAttachment ? 'Extracting Records...' : 'Promote & Ingest into Dataset'}</span>
+              </button>
+            </div>
+          )}
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="space-y-0 font-sans text-slate-800 border border-slate-300 rounded-xl shadow-sm overflow-hidden bg-white">
       {/* =========================================================================
@@ -2299,6 +2758,20 @@ export default function ValidationOrchestratorWorkspace({
           >
             {sourceFileName}
           </span>
+
+          {/* Attached Files Count Pill */}
+          {selectedIssue?.attachments && selectedIssue.attachments.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setActiveSheetTab('attachments')}
+              className="text-[11px] bg-blue-900/90 hover:bg-blue-800 text-blue-100 px-2 py-0.5 rounded font-mono font-semibold border border-blue-400/30 flex items-center gap-1 cursor-pointer transition shadow-2xs"
+              title={`Attached Message Files:\n${selectedIssue.attachments.map((a: any) => `• ${a.filename} (${a.contentType || 'file'})`).join('\n')}\n\nClick to inspect attachment content!`}
+            >
+              <Paperclip size={11} className="text-blue-300" />
+              <span>{selectedIssue.attachments.length} attached</span>
+              <span className="text-[10px] text-blue-300 underline font-sans ml-0.5">view</span>
+            </button>
+          )}
 
           {/* Active Multi-Stage Workflow Pill */}
           {activeWorkflow ? (
@@ -3024,12 +3497,21 @@ export default function ValidationOrchestratorWorkspace({
       </div>
 
       {/* Sheet Operational Ribbon */}
-      <div className={`px-4 py-1.5 text-xs flex items-center justify-between border-b ${activeSheetTab === 'sheet1_central'
+      <div className={`px-4 py-1.5 text-xs flex items-center justify-between border-b ${
+        activeSheetTab === 'attachments'
+          ? 'bg-amber-50/70 border-amber-200 text-amber-900'
+          : activeSheetTab === 'sheet1_central'
           ? 'bg-indigo-50/70 border-indigo-200 text-indigo-900'
           : 'bg-emerald-50/70 border-emerald-200 text-emerald-900'
         }`}>
         <div className="flex items-center gap-2">
-          {activeSheetTab === 'sheet1_central' ? (
+          {activeSheetTab === 'attachments' ? (
+            <>
+              <Paperclip size={14} className="text-amber-600 shrink-0" />
+              <span className="font-semibold">Attached Source Files & Spreadsheets</span>
+              <span className="text-slate-600 text-[11px]">— Raw file content and tabular previews attached to this case.</span>
+            </>
+          ) : activeSheetTab === 'sheet1_central' ? (
             <>
               <Database size={14} className="text-indigo-600 shrink-0" />
               <span className="font-semibold">Central Master Ledger Cross-Check</span>
@@ -3061,8 +3543,11 @@ export default function ValidationOrchestratorWorkspace({
       {/* =========================================================================
           4. EXCEL DATA GRID (EXPANDED VIEWPORT HEIGHT FOR MAXIMUM DATA SPACE)
           ========================================================================= */}
-      <div className="overflow-x-auto max-h-[calc(100vh-210px)] min-h-[520px] relative">
-        <table className="w-full text-left text-xs border-collapse border border-slate-300">
+      {activeSheetTab === 'attachments' ? (
+        renderAttachmentInspector()
+      ) : (
+        <div className="overflow-x-auto max-h-[calc(100vh-210px)] min-h-[520px] relative">
+          <table className="w-full text-left text-xs border-collapse border border-slate-300">
           <thead>
             {/* Header Row: Clean Abstracted Labels with Excel-Style Filter/Sort Menu */}
             <tr className="bg-[#f3f4f6] border-b border-slate-300 sticky top-0 z-20 shadow-2xs">
@@ -3528,18 +4013,32 @@ export default function ValidationOrchestratorWorkspace({
                       <div>
                         <div className="text-sm font-bold text-slate-800">No Dataset Records Found for #{selectedIssue?.id}</div>
                         <p className="text-xs text-slate-500 mt-1 font-sans">
-                          This task does not contain any uploaded transaction records yet. Upload a batch reconciliation file or ingest records into this task to view and run validation.
+                          {selectedIssue?.attachments && selectedIssue.attachments.length > 0
+                            ? `This task has ${selectedIssue.attachments.length} attached file(s) that can be inspected and promoted into the investigation dataset.`
+                            : 'This task does not contain any uploaded transaction records yet. Upload a batch reconciliation file or ingest records into this task to view and run validation.'}
                         </p>
                       </div>
-                      {onOpenNewCase && (
-                        <button
-                          type="button"
-                          onClick={onOpenNewCase}
-                          className="px-3.5 py-1.5 bg-emerald-700 hover:bg-emerald-800 text-white rounded-lg text-xs font-semibold shadow-xs transition-colors cursor-pointer"
-                        >
-                          + Upload File & Create Task
-                        </button>
-                      )}
+                      <div className="flex items-center justify-center gap-2 pt-1">
+                        {selectedIssue?.attachments && selectedIssue.attachments.length > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => setActiveSheetTab('attachments')}
+                            className="px-3.5 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-semibold shadow-xs transition-colors cursor-pointer flex items-center gap-1.5"
+                          >
+                            <Paperclip size={13} />
+                            <span>View Attached Files ({selectedIssue.attachments.length})</span>
+                          </button>
+                        )}
+                        {onOpenNewCase && (
+                          <button
+                            type="button"
+                            onClick={onOpenNewCase}
+                            className="px-3.5 py-1.5 bg-emerald-700 hover:bg-emerald-800 text-white rounded-lg text-xs font-semibold shadow-xs transition-colors cursor-pointer"
+                          >
+                            + Upload File & Create Task
+                          </button>
+                        )}
+                      </div>
                     </div>
                   ) : (
                     'No records found matching current criteria.'
@@ -3748,6 +4247,7 @@ export default function ValidationOrchestratorWorkspace({
           </tbody>
         </table>
       </div>
+      )}
 
       {/* =========================================================================
           6. EXCEL BOTTOM SHEET TABS & STATUS BAR
@@ -3811,6 +4311,21 @@ export default function ValidationOrchestratorWorkspace({
             <Database size={13} className="text-indigo-600" />
             <span>Central Repo Cross-Check ({centralMasterRows.length > 0 ? centralMasterRows.length : effectiveRows.length})</span>
           </button>
+
+          {/* Tab 5: Attached Source Files */}
+          {selectedIssue?.attachments && selectedIssue.attachments.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setActiveSheetTab('attachments')}
+              className={`px-3 py-1.5 text-xs font-sans rounded-t font-semibold flex items-center gap-1.5 border-t-2 transition cursor-pointer ${activeSheetTab === 'attachments'
+                  ? 'bg-white text-amber-900 border-amber-600 shadow-2xs'
+                  : 'text-slate-600 border-transparent hover:bg-slate-200'
+                }`}
+            >
+              <Paperclip size={13} className="text-amber-600" />
+              <span>Attachments ({selectedIssue.attachments.length})</span>
+            </button>
+          )}
         </div>
 
         {/* Pagination & Excel Status Metrics */}
@@ -3896,14 +4411,23 @@ export default function ValidationOrchestratorWorkspace({
           }
         }
 
-        const targetRecord = serverRec?._target_record
-          ?? outcomeDrilldownRow._target_record
-          ?? outcomeDrilldownRow.sourceRecord?._target_record
-          ?? outcomeDrilldownRow.canonical_data?._target_record
-          ?? outcomeDrilldownRow.sourceRecord?.canonical_data?._target_record
+        const isServerRecMatch = Boolean(
+          serverRec && (!serverRec._validation_workflow_id || serverRec._validation_workflow_id === activeWorkflow.id)
+        );
+        const isRowWfMatch = Boolean(
+          outcomeDrilldownRow._validation_workflow_id === activeWorkflow.id ||
+          outcomeDrilldownRow.sourceRecord?._validation_workflow_id === activeWorkflow.id ||
+          outcomeDrilldownRow.canonical_data?._validation_workflow_id === activeWorkflow.id
+        );
+
+        const targetRecord = (isServerRecMatch ? serverRec?._target_record : null)
+          ?? (isRowWfMatch ? outcomeDrilldownRow._target_record : null)
+          ?? (isRowWfMatch ? outcomeDrilldownRow.sourceRecord?._target_record : null)
+          ?? (isRowWfMatch ? outcomeDrilldownRow.canonical_data?._target_record : null)
+          ?? (isRowWfMatch ? outcomeDrilldownRow.sourceRecord?.canonical_data?._target_record : null)
           ?? null;
-        const targetDbName = serverRec?._target_db || outcomeDrilldownRow._target_db || outcomeDrilldownRow.sourceRecord?._target_db || activeWorkflow.targetDbId || 'Target Database';
-        const targetTableName = serverRec?._target_table || outcomeDrilldownRow._target_table || outcomeDrilldownRow.sourceRecord?._target_table || activeWorkflow.targetTable || 'transactions';
+        const targetDbName = (isServerRecMatch && serverRec?._target_db) || (isRowWfMatch && outcomeDrilldownRow._target_db) || (isRowWfMatch && outcomeDrilldownRow.sourceRecord?._target_db) || activeWorkflow.targetDbId || 'Target Database';
+        const targetTableName = (isServerRecMatch && serverRec?._target_table) || (isRowWfMatch && outcomeDrilldownRow._target_table) || (isRowWfMatch && outcomeDrilldownRow.sourceRecord?._target_table) || activeWorkflow.targetTable || 'transactions';
 
         const getCaseInsensitiveVal = (obj: any, key: string) => {
           if (!obj || typeof obj !== 'object' || !key) return undefined;
@@ -4296,59 +4820,84 @@ export default function ValidationOrchestratorWorkspace({
             </p>
 
             {/* Audit Trail of Rules Evaluated */}
-            <div className="space-y-2 text-xs">
-              <span className="font-bold text-slate-700 text-[11px] uppercase tracking-wider flex items-center gap-1.5 font-mono">
-                <CheckCircle size={13} className="text-blue-600" />
-                <span>Multi-Stage Rule Evaluation Trajectory:</span>
-              </span>
+            {(() => {
+              const modalAuditTrail = (
+                (Array.isArray(inspectingRow.executionSummary?.auditTrail) && inspectingRow.executionSummary.auditTrail.length > 0 ? inspectingRow.executionSummary.auditTrail : null) ||
+                (Array.isArray(inspectingRow.sourceRecord?.auditTrail) ? inspectingRow.sourceRecord.auditTrail : null) ||
+                (Array.isArray(inspectingRow.sourceRecord?.canonical_data?.auditTrail) ? inspectingRow.sourceRecord.canonical_data.auditTrail : null) ||
+                (Array.isArray(serverEvaluatedRecords?.[inspectingRow.rowId]?.auditTrail) ? serverEvaluatedRecords[inspectingRow.rowId].auditTrail : null) ||
+                []
+              ).filter((entry: any) => {
+                if (!entry || !entry.ruleId) return false;
+                if (activeWorkflow?.steps && activeWorkflow.steps.length > 0) {
+                  return activeWorkflow.steps.some(s => isStepIdMatch(s.id, entry.ruleId));
+                }
+                return true;
+              });
 
-              <div className="space-y-2">
-                {(inspectingRow.executionSummary?.auditTrail || []).length > 0 ? (
-                  inspectingRow.executionSummary!.auditTrail.map((entry, idx) => (
-                    <div
-                      key={idx}
-                      className={`p-3 rounded-lg border text-xs space-y-1 ${entry.validationResult === 'PASS' ? 'bg-emerald-50/60 border-emerald-200 text-emerald-950' :
-                          entry.validationResult === 'FAIL' ? 'bg-amber-50/60 border-amber-200 text-amber-950' :
-                            'bg-rose-50/60 border-rose-200 text-rose-950'
-                        }`}
-                    >
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-2">
-                          <span className="px-1.5 py-0.2 rounded text-[9px] font-mono font-bold bg-white text-slate-700 border border-slate-300">
-                            {entry.stageName}
-                          </span>
-                          <span className="font-bold text-slate-900">{entry.ruleName}</span>
-                        </div>
-
-                        <div className="flex items-center gap-1.5 font-mono text-[10px]">
-                          <span className={`px-1.5 py-0.5 rounded font-bold ${entry.validationResult === 'PASS' ? 'bg-emerald-600 text-white' :
-                              entry.validationResult === 'FAIL' ? 'bg-amber-500 text-white' :
-                                'bg-rose-600 text-white'
-                            }`}>
-                            {entry.validationResult}
-                          </span>
-                          <span className="px-1.5 py-0.5 rounded font-bold bg-white border border-slate-300 text-slate-700">
-                            ➔ {entry.pipelineAction}
-                          </span>
-                          <span className="text-slate-400 font-bold">{entry.durationMs}ms</span>
-                        </div>
-                      </div>
-
-                      <p className="text-[11px] text-slate-700 font-sans">{entry.message}</p>
-                      {entry.errorDetail && (
-                        <div className="p-1.5 bg-rose-100 rounded text-[10px] font-mono text-rose-800 border border-rose-200">
-                          {entry.errorDetail}
-                        </div>
-                      )}
-                    </div>
-                  ))
-                ) : (
-                  <div className="p-3 bg-slate-50 rounded border border-slate-200 text-slate-500 italic text-center">
-                    No sequential audit entries recorded for this transaction.
+              return (
+                <div className="space-y-2 text-xs">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold text-slate-700 text-[11px] uppercase tracking-wider flex items-center gap-1.5 font-mono">
+                      <CheckCircle size={13} className="text-blue-600" />
+                      <span>Multi-Stage Rule Evaluation Trajectory:</span>
+                    </span>
+                    {activeWorkflow && (
+                      <span className="text-[10px] font-mono text-purple-700 font-bold bg-purple-50 px-2 py-0.5 rounded border border-purple-200">
+                        Workflow: {activeWorkflow.name}
+                      </span>
+                    )}
                   </div>
-                )}
-              </div>
-            </div>
+
+                  <div className="space-y-2">
+                    {modalAuditTrail.length > 0 ? (
+                      modalAuditTrail.map((entry: any, idx: number) => (
+                        <div
+                          key={idx}
+                          className={`p-3 rounded-lg border text-xs space-y-1 ${entry.validationResult === 'PASS' ? 'bg-emerald-50/60 border-emerald-200 text-emerald-950' :
+                              entry.validationResult === 'FAIL' ? 'bg-amber-50/60 border-amber-200 text-amber-950' :
+                                'bg-rose-50/60 border-rose-200 text-rose-950'
+                            }`}
+                        >
+                          <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                              <span className="px-1.5 py-0.2 rounded text-[9px] font-mono font-bold bg-white text-slate-700 border border-slate-300">
+                                {entry.stageName}
+                              </span>
+                              <span className="font-bold text-slate-900">{entry.ruleName}</span>
+                            </div>
+
+                            <div className="flex items-center gap-1.5 font-mono text-[10px]">
+                              <span className={`px-1.5 py-0.5 rounded font-bold ${entry.validationResult === 'PASS' ? 'bg-emerald-600 text-white' :
+                                  entry.validationResult === 'FAIL' ? 'bg-amber-500 text-white' :
+                                    'bg-rose-600 text-white'
+                                }`}>
+                                {entry.validationResult}
+                              </span>
+                              <span className="px-1.5 py-0.5 rounded font-bold bg-white border border-slate-300 text-slate-700">
+                                ➔ {entry.pipelineAction}
+                              </span>
+                              <span className="text-slate-400 font-bold">{entry.durationMs}ms</span>
+                            </div>
+                          </div>
+
+                          <p className="text-[11px] text-slate-700 font-sans">{entry.message}</p>
+                          {entry.errorDetail && (
+                            <div className="p-1.5 bg-rose-100 rounded text-[10px] font-mono text-rose-800 border border-rose-200">
+                              {entry.errorDetail}
+                            </div>
+                          )}
+                        </div>
+                      ))
+                    ) : (
+                      <div className="p-3 bg-slate-50 rounded border border-slate-200 text-slate-500 italic text-center">
+                        No sequential audit entries recorded for this transaction under [{activeWorkflow?.name || 'Current Workflow'}].
+                      </div>
+                    )}
+                  </div>
+                </div>
+              );
+            })()}
 
             {inspectingRow.remedySql && (
               <div className="space-y-1 text-xs">

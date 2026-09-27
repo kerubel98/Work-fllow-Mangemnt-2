@@ -221,6 +221,67 @@ describe('External Request Staging, Attachment Parsing & Maker-Checker Suite', (
       expect(issueInRepo?.chat?.length).toBeGreaterThan(0);
       expect(issueInRepo?.chat?.[0]?.senderName).toContain('Checker Approval');
     });
+
+    it('passes message attachments and tabular records through to task creation and repository', async () => {
+      const csvContent = 'transaction_id,amount,currency,status\nTXN-9001,1500.00,USD,SUCCESS\nTXN-9002,2300.50,EUR,PENDING';
+      const base64Data = Buffer.from(csvContent, 'utf-8').toString('base64');
+
+      const emailWithAttachment = {
+        from: 'partner_bank@clearing.com',
+        sourceMessageId: `msg-att-${Date.now()}`,
+        subject: 'Batch Settlement Reconciliation Feed',
+        text: 'Please reconcile attached batch TXN-9001 and TXN-9002.',
+        attachments: [
+          {
+            id: `att-${Date.now()}`,
+            filename: 'clearing_batch_feed.csv',
+            mimeType: 'text/csv',
+            contentType: 'spreadsheet' as const,
+            rawBase64: base64Data
+          }
+        ]
+      };
+
+      const envelope = emailAdapter.normalize(emailWithAttachment);
+      const staged = await stagingService.stageInboundEnvelope(envelope);
+
+      expect(staged.attachments).toBeDefined();
+      expect(staged.attachments!.length).toBe(1);
+      expect(staged.attachments![0].filename).toBe('clearing_batch_feed.csv');
+
+      // Maker proposes
+      await stagingService.proposeTaskConversion(
+        staged.id,
+        { id: 'usr_maker_ops_1', name: 'Maker Ops 1' },
+        { title: 'Reconcile Clearing Batch Feed' }
+      );
+
+      // Independent Checker approves
+      const result = await stagingService.approveAndConvertTask(
+        staged.id,
+        { id: 'usr_checker_ops_2', name: 'Supervisor Checker 2' },
+        'Approved batch feed for reconciliation.'
+      );
+
+      // Verify attachment pass-through on the created task
+      expect(result.issue).toBeDefined();
+      expect(result.issue.uploadedFileName).toBe('clearing_batch_feed.csv');
+      expect(result.issue.attachments).toBeDefined();
+      expect(result.issue.attachments!.length).toBe(1);
+      expect(result.issue.attachments![0].filename).toBe('clearing_batch_feed.csv');
+
+      // Verify tabular rows were extracted into the task
+      expect(result.issue.transactionCount).toBe(2);
+      expect(result.issue.datasetStatus).toBe('READY');
+
+      // Verify persistence in PostgreSQL repo
+      const persisted = await repo.getIssueById(result.issue.id);
+      expect(persisted).toBeDefined();
+      expect(persisted?.uploadedFileName).toBe('clearing_batch_feed.csv');
+      expect(persisted?.attachments).toBeDefined();
+      expect(persisted?.attachments?.length).toBe(1);
+      expect(persisted?.attachments?.[0]?.filename).toBe('clearing_batch_feed.csv');
+    });
   });
 
   describe('5. External Request Intake Summary Metrics', () => {

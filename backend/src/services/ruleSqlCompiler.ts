@@ -282,10 +282,20 @@ export const ruleSqlCompiler = {
             colConfigConditions.push(`COALESCE(${colExp}::text, '') != ''`);
           }
         } else if (cfg.ruleType === 'GROUPING_CHECK') {
-          const groupCols = Array.isArray(cfg.groupByColumns) && cfg.groupByColumns.length > 0
-            ? cfg.groupByColumns
-            : (Array.isArray(cfg.columns) ? cfg.columns.map(c => c.columnName) : []);
-          for (const colName of groupCols) {
+          const matchCols: string[] = [];
+          if (Array.isArray(cfg.groupByColumns) && cfg.groupByColumns.length > 0) {
+            matchCols.push(...cfg.groupByColumns);
+          } else if (Array.isArray(cfg.columns)) {
+            const keyCols = cfg.columns
+              .filter(c => c.role === 'MATCH_KEY' || c.role === 'PRIMARY_KEY' || (c as any).isPrimary)
+              .map(c => c.columnName);
+            if (keyCols.length > 0) {
+              matchCols.push(...keyCols);
+            } else if (cfg.primaryKeyColumn) {
+              matchCols.push(cfg.primaryKeyColumn);
+            }
+          }
+          for (const colName of matchCols) {
             const colExp = resolveColExpr(sanitizeCol(colName), mirrorColPrefix, validColumns);
             colConfigConditions.push(`COALESCE(${colExp}::text, '') != ''`);
           }

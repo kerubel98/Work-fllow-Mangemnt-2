@@ -235,11 +235,117 @@ messagesRouter.post('/oauth2/test', async (req, res) => {
     try {
         const { oauth2Service } = await import('../services/messaging/oauth2Service.js');
         const { config, channel } = req.body;
-        if (!config) {
+        const effectiveConfig = config || (req.body.adminOAuth2ConnectionId || req.body.clientId || req.body.authType ? req.body : null);
+        if (!effectiveConfig) {
             return res.status(400).json({ error: 'config is required.' });
         }
-        const result = await oauth2Service.testOAuth2Credentials(config, channel || 'email');
+        const result = await oauth2Service.testOAuth2Credentials(effectiveConfig, channel || effectiveConfig.channel || 'email');
         return res.json(result);
+    }
+    catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+});
+/**
+ * ========================================================
+ * Admin Global OAuth 2.0 Connection Management Endpoints
+ * ========================================================
+ */
+// GET /api/messages/admin/oauth2 - List Admin-configured OAuth2 Connections
+messagesRouter.get('/admin/oauth2', async (req, res) => {
+    try {
+        const { stagingService } = await import('../services/messaging/stagingService.js');
+        const connections = await stagingService.getAdminOAuth2Connections();
+        const masked = connections.map(conn => ({
+            ...conn,
+            config: {
+                ...conn.config,
+                clientSecret: conn.config?.clientSecret ? '••••••••' : '',
+                hasSecret: !!conn.config?.clientSecret
+            }
+        }));
+        return res.json(masked);
+    }
+    catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+});
+// GET /api/messages/admin/oauth2/available - Public catalog for teams to pick from
+messagesRouter.get('/admin/oauth2/available', async (req, res) => {
+    try {
+        const { stagingService } = await import('../services/messaging/stagingService.js');
+        const connections = await stagingService.getAdminOAuth2Connections();
+        const available = connections
+            .filter(c => c.status === 'ACTIVE')
+            .map(c => ({
+            id: c.id,
+            displayName: c.displayName,
+            channel: c.channel,
+            providerPreset: c.config?.providerPreset || c.config?.preset || 'CUSTOM',
+            tenantId: c.config?.tenantId || '',
+            scope: c.config?.scope || '',
+            grantType: c.config?.grantType || 'client_credentials',
+            userEmail: c.config?.userEmail || ''
+        }));
+        return res.json(available);
+    }
+    catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+});
+// POST /api/messages/admin/oauth2 - Create or update Admin OAuth2 Connection
+messagesRouter.post('/admin/oauth2', async (req, res) => {
+    try {
+        const { stagingService } = await import('../services/messaging/stagingService.js');
+        const { id, displayName, channel, config, status, createdBy } = req.body;
+        if (!displayName) {
+            return res.status(400).json({ error: 'displayName is required for Admin OAuth2 connection.' });
+        }
+        let mergedConfig = { ...(config || {}) };
+        mergedConfig.authType = 'OAUTH2';
+        mergedConfig.isGlobal = true;
+        // If editing existing connection and clientSecret is masked, preserve existing secret
+        if (id && (!mergedConfig.clientSecret || mergedConfig.clientSecret === '••••••••')) {
+            const existing = await stagingService.getProviderConnectionById(id);
+            if (existing?.config?.clientSecret) {
+                mergedConfig.clientSecret = existing.config.clientSecret;
+            }
+        }
+        if (!mergedConfig.clientId) {
+            return res.status(400).json({ error: 'Client ID (App ID) is required.' });
+        }
+        if (!mergedConfig.clientSecret) {
+            return res.status(400).json({ error: 'Client Secret is required.' });
+        }
+        const saved = await stagingService.saveProviderConnection({
+            id,
+            teamId: null, // Admin-level connection
+            userId: null,
+            channel: channel || 'email',
+            displayName,
+            status: status || 'ACTIVE',
+            config: mergedConfig,
+            createdBy: createdBy || 'admin'
+        });
+        return res.status(201).json({
+            ...saved,
+            config: {
+                ...saved.config,
+                clientSecret: '••••••••',
+                hasSecret: true
+            }
+        });
+    }
+    catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+});
+// DELETE /api/messages/admin/oauth2/:id - Delete an Admin OAuth2 Connection
+messagesRouter.delete('/admin/oauth2/:id', async (req, res) => {
+    try {
+        const { stagingService } = await import('../services/messaging/stagingService.js');
+        const deleted = await stagingService.deleteProviderConnection(req.params.id);
+        return res.json({ success: deleted });
     }
     catch (err) {
         return res.status(500).json({ error: err.message });
@@ -370,6 +476,65 @@ messagesRouter.get('/summary', async (req, res) => {
         return res.json(summary);
     }
     catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+});
+/**
+ * ========================================================
+ * Team Mailbox, Threading & Task Linking Endpoints
+ * ========================================================
+ */
+// GET /api/messages/mailbox - Consolidated thread-aware team mailbox
+messagesRouter.get('/mailbox', async (req, res) => {
+    try {
+        const teamId = req.query.teamId;
+        const filter = req.query.filter || 'all';
+        const search = req.query.search;
+        const threads = await messageIntakeService.getTeamMailbox(teamId || '', filter, search);
+        return res.json(threads);
+    }
+    catch (err) {
+        console.error('[messagesRouter] Error fetching team mailbox:', err);
+        return res.status(500).json({ error: err.message });
+    }
+});
+// PUT /api/messages/:messageId/link-issue - Link message and its thread to a newly created/existing issue
+messagesRouter.put('/:messageId/link-issue', async (req, res) => {
+    try {
+        const { messageId } = req.params;
+        const { issueId } = req.body;
+        if (!issueId) {
+            return res.status(400).json({ error: 'issueId is required.' });
+        }
+        const linked = await messageIntakeService.linkMessageToIssue(messageId, issueId);
+        return res.json({ success: linked, messageId, issueId });
+    }
+    catch (err) {
+        console.error('[messagesRouter] Error linking message to issue:', err);
+        return res.status(500).json({ error: err.message });
+    }
+});
+// POST /api/messages/reply - Reply directly within a mailbox thread
+messagesRouter.post('/reply', async (req, res) => {
+    try {
+        const { teamId, channel, to, subject, textBody, htmlBody, conversationId, threadId, inReplyToMessageId } = req.body;
+        if (!to || !textBody) {
+            return res.status(400).json({ error: 'Recipient "to" and "textBody" are required.' });
+        }
+        const result = await messageIntakeService.replyToMessage(teamId || '', {
+            channel: channel || 'email',
+            to,
+            subject: subject || 'Re: Message',
+            textBody,
+            htmlBody,
+            conversationId,
+            threadId,
+            inReplyToMessageId
+        });
+        return res.status(201).json({ success: true, ...result });
+    }
+    catch (err) {
+        console.error('[messagesRouter] Error sending reply:', err);
         return res.status(500).json({ error: err.message });
     }
 });

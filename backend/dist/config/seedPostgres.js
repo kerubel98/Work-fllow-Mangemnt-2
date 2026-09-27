@@ -42,6 +42,57 @@ async function seedTeamsAndRelationshipsIfEmpty(pool) {
         console.warn('Could not seed teams/relationships in PostgreSQL:', err.message);
     }
 }
+async function seedAdminOAuthConnectionsIfEmpty(pool) {
+    try {
+        const { rows } = await pool.query('SELECT COUNT(*)::int as count FROM provider_connections WHERE team_id IS NULL;');
+        if (rows[0].count === 0) {
+            console.log('🌱 Seeding Enterprise Admin OAuth 2.0 Connections in PostgreSQL...');
+            const adminOAuthConnections = [
+                {
+                    id: 'admin-conn-ms365-global',
+                    displayName: 'Microsoft 365 Exchange Online (Enterprise)',
+                    channel: 'email',
+                    config: {
+                        authType: 'OAUTH2',
+                        isGlobal: true,
+                        providerPreset: 'MICROSOFT_365',
+                        preset: 'MICROSOFT_365',
+                        clientId: '4a8b7c6d-1234-5678-90ab-cdef12345678',
+                        clientSecret: 'ms_enterprise_secret_vault_secured_99',
+                        tenantId: '7f9e8d7c-8888-4444-aaaa-bbbbbbbbbbbb',
+                        tokenUrl: 'https://login.microsoftonline.com/7f9e8d7c-8888-4444-aaaa-bbbbbbbbbbbb/oauth2/v2.0/token',
+                        scope: 'https://outlook.office365.com/.default',
+                        grantType: 'client_credentials'
+                    }
+                },
+                {
+                    id: 'admin-conn-google-workspace',
+                    displayName: 'Google Workspace Gmail (Enterprise IMAP)',
+                    channel: 'email',
+                    config: {
+                        authType: 'OAUTH2',
+                        isGlobal: true,
+                        providerPreset: 'GOOGLE_WORKSPACE',
+                        preset: 'GOOGLE_WORKSPACE',
+                        clientId: '987654321098-abcdefghijklmnopqrstuvwxyz.apps.googleusercontent.com',
+                        clientSecret: 'google_workspace_app_secret_vault_88',
+                        tokenUrl: 'https://oauth2.googleapis.com/token',
+                        scope: 'https://mail.google.com/',
+                        grantType: 'client_credentials'
+                    }
+                }
+            ];
+            for (const conn of adminOAuthConnections) {
+                await pool.query(`INSERT INTO provider_connections (id, team_id, user_id, channel, display_name, status, config, created_by, created_at, updated_at)
+           VALUES ($1, NULL, NULL, $2, $3, 'ACTIVE', $4::jsonb, 'admin', NOW(), NOW())
+           ON CONFLICT (id) DO NOTHING;`, [conn.id, conn.channel, conn.displayName, JSON.stringify(conn.config)]);
+            }
+        }
+    }
+    catch (err) {
+        console.warn('Could not seed admin OAuth connections in PostgreSQL:', err.message);
+    }
+}
 export async function seedPostgres() {
     if (!isPostgresConnected)
         return;
@@ -50,6 +101,7 @@ export async function seedPostgres() {
         const { rows } = await pool.query('SELECT COUNT(*)::int as count FROM users;');
         if (rows[0].count > 0) {
             await seedTeamsAndRelationshipsIfEmpty(pool);
+            await seedAdminOAuthConnectionsIfEmpty(pool);
             return; // Already seeded other tables
         }
         console.log('🌱 Seeding initial PostgreSQL data...');
@@ -220,6 +272,47 @@ export async function seedPostgres() {
              VALUES ($1, $2, $3, $4);`, [issue.id, i + 1, JSON.stringify(row), JSON.stringify(row)]);
                 }
             }
+        }
+        // Seed Enterprise Admin OAuth 2.0 Connections (Central IT Admin control)
+        const adminOAuthConnections = [
+            {
+                id: 'admin-conn-ms365-global',
+                displayName: 'Microsoft 365 Exchange Online (Enterprise)',
+                channel: 'email',
+                config: {
+                    authType: 'OAUTH2',
+                    isGlobal: true,
+                    providerPreset: 'MICROSOFT_365',
+                    preset: 'MICROSOFT_365',
+                    clientId: '4a8b7c6d-1234-5678-90ab-cdef12345678',
+                    clientSecret: 'ms_enterprise_secret_vault_secured_99',
+                    tenantId: '7f9e8d7c-8888-4444-aaaa-bbbbbbbbbbbb',
+                    tokenUrl: 'https://login.microsoftonline.com/7f9e8d7c-8888-4444-aaaa-bbbbbbbbbbbb/oauth2/v2.0/token',
+                    scope: 'https://outlook.office365.com/.default',
+                    grantType: 'client_credentials'
+                }
+            },
+            {
+                id: 'admin-conn-google-workspace',
+                displayName: 'Google Workspace Gmail (Enterprise IMAP)',
+                channel: 'email',
+                config: {
+                    authType: 'OAUTH2',
+                    isGlobal: true,
+                    providerPreset: 'GOOGLE_WORKSPACE',
+                    preset: 'GOOGLE_WORKSPACE',
+                    clientId: '987654321098-abcdefghijklmnopqrstuvwxyz.apps.googleusercontent.com',
+                    clientSecret: 'google_workspace_app_secret_vault_88',
+                    tokenUrl: 'https://oauth2.googleapis.com/token',
+                    scope: 'https://mail.google.com/',
+                    grantType: 'client_credentials'
+                }
+            }
+        ];
+        for (const conn of adminOAuthConnections) {
+            await pool.query(`INSERT INTO provider_connections (id, team_id, user_id, channel, display_name, status, config, created_by, created_at, updated_at)
+         VALUES ($1, NULL, NULL, $2, $3, 'ACTIVE', $4::jsonb, 'admin', NOW(), NOW())
+         ON CONFLICT (id) DO NOTHING;`, [conn.id, conn.channel, conn.displayName, JSON.stringify(conn.config)]);
         }
         console.log('🎉 PostgreSQL database seeded with default collections successfully!');
     }

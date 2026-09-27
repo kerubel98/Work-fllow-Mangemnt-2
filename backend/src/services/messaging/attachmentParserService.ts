@@ -3,6 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import fs from 'fs';
 import * as XLSX from 'xlsx';
 import { 
   MessageAttachment, 
@@ -120,16 +121,19 @@ export class AttachmentParserService {
     const filename = (att.filename || '').toLowerCase();
     const isSpreadsheet = att.contentType === 'spreadsheet' || filename.endsWith('.csv') || filename.endsWith('.xlsx') || filename.endsWith('.xls');
 
+    const rawData = att.rawBase64 || (att as any).base64;
+
     // 1. Spreadsheet (CSV / Excel)
     if (isSpreadsheet) {
-      if (att.rawBase64) {
-        const buffer = Buffer.from(att.rawBase64, 'base64');
+      if (rawData) {
+        const buffer = Buffer.from(rawData, 'base64');
         const workbook = XLSX.read(buffer, { type: 'buffer' });
         const sheetName = workbook.SheetNames[0];
         const sheet = workbook.Sheets[sheetName];
         const jsonData = XLSX.utils.sheet_to_json<Record<string, any>>(sheet, { defval: '' });
 
         const headers = jsonData.length > 0 ? Object.keys(jsonData[0]) : [];
+        const rows = jsonData.slice(0, 500); // First 500 rows for preview/staging
 
         return {
           attachmentId: att.id,
@@ -138,26 +142,98 @@ export class AttachmentParserService {
           contentType: 'spreadsheet',
           storagePath: att.storagePath,
           tabularHeaders: headers,
-          tabularRows: jsonData.slice(0, 500), // First 500 rows for preview/staging
+          tabularRows: rows,
           parsedText: `Spreadsheet "${att.filename}": ${jsonData.length} records found across columns [${headers.join(', ')}].`,
           parsedData: {
             sheetNames: workbook.SheetNames,
             activeSheet: sheetName,
             totalRows: jsonData.length,
-            sampleHeaders: headers
+            sampleHeaders: headers,
+            sampleRows: rows,
+            tabularHeaders: headers,
+            tabularRows: rows
           },
           parsingStatus: 'PARSED'
         };
-      } else if (filename.endsWith('.csv') && att.storagePath) {
+      } else if (att.storagePath && fs.existsSync(att.storagePath) && (filename.endsWith('.xlsx') || filename.endsWith('.xls'))) {
+        try {
+          const workbook = XLSX.readFile(att.storagePath);
+          const sheetName = workbook.SheetNames[0];
+          const sheet = workbook.Sheets[sheetName];
+          const jsonData = XLSX.utils.sheet_to_json<Record<string, any>>(sheet, { defval: '' });
+          const headers = jsonData.length > 0 ? Object.keys(jsonData[0]) : [];
+          const rows = jsonData.slice(0, 500);
+          return {
+            attachmentId: att.id,
+            filename: att.filename,
+            mimeType: att.mimeType,
+            contentType: 'spreadsheet',
+            storagePath: att.storagePath,
+            tabularHeaders: headers,
+            tabularRows: rows,
+            parsedText: `Spreadsheet "${att.filename}": ${jsonData.length} records found across columns [${headers.join(', ')}].`,
+            parsedData: {
+              sheetNames: workbook.SheetNames,
+              activeSheet: sheetName,
+              totalRows: jsonData.length,
+              sampleHeaders: headers,
+              sampleRows: rows,
+              tabularHeaders: headers,
+              tabularRows: rows
+            },
+            parsingStatus: 'PARSED'
+          };
+        } catch (e: any) {
+          // fallback to CSV logic if readFile fails
+        }
+      } else if (filename.endsWith('.csv')) {
+        let csvText = '';
+        if (rawData) {
+          csvText = Buffer.from(rawData, 'base64').toString('utf-8');
+        } else if (att.storagePath) {
+          try {
+            if (fs.existsSync(att.storagePath)) {
+              csvText = fs.readFileSync(att.storagePath, 'utf8');
+            }
+          } catch { }
+        }
+        let headers: string[] = [];
+        let rows: Record<string, any>[] = [];
+        if (csvText) {
+          const lines = csvText.split(/\r?\n/).filter(l => l.trim().length > 0);
+          if (lines.length > 0) {
+            const headerLine = lines[0];
+            const delimiter = headerLine.includes('\t') ? '\t' : (headerLine.includes(';') ? ';' : ',');
+            headers = headerLine.split(delimiter).map(h => h.trim().replace(/^["']|["']$/g, ''));
+            for (let i = 1; i < lines.length && rows.length < 500; i++) {
+              const cols = lines[i].split(delimiter).map(c => c.trim().replace(/^["']|["']$/g, ''));
+              const rowObj: Record<string, any> = {};
+              headers.forEach((h, idx) => {
+                rowObj[h] = cols[idx] ?? '';
+              });
+              rows.push(rowObj);
+            }
+          }
+        }
         return {
           attachmentId: att.id,
           filename: att.filename,
           mimeType: att.mimeType,
           contentType: 'spreadsheet',
           storagePath: att.storagePath,
-          parsedText: `CSV file "${att.filename}" referenced at ${att.storagePath}. Ready for streaming mapper.`,
+          tabularHeaders: headers,
+          tabularRows: rows,
+          parsedText: `CSV file "${att.filename}": ${rows.length} records parsed across columns [${headers.join(', ')}].`,
           parsingStatus: 'PARSED',
-          parsedData: { format: 'CSV', path: att.storagePath }
+          parsedData: {
+            format: 'CSV',
+            path: att.storagePath,
+            totalRows: rows.length,
+            sampleHeaders: headers,
+            sampleRows: rows,
+            tabularHeaders: headers,
+            tabularRows: rows
+          }
         };
       }
     }

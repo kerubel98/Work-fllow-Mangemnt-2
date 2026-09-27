@@ -62,6 +62,9 @@ const TeamChannelsTabContent: React.FC<TeamChannelsTabProps> = ({ currentTeam, c
   const [providerChannel, setProviderChannel] = useState<'email' | 'teams' | 'whatsapp' | 'telegram'>('email');
   const [providerDisplayName, setProviderDisplayName] = useState('');
   const [authType, setAuthType] = useState<'OAUTH2' | 'BASIC'>('OAUTH2');
+  const [oauthMode, setOauthMode] = useState<'ADMIN' | 'CUSTOM'>('ADMIN');
+  const [availableAdminOAuth2, setAvailableAdminOAuth2] = useState<any[]>([]);
+  const [selectedAdminOAuth2Id, setSelectedAdminOAuth2Id] = useState<string>('');
   const [providerPreset, setProviderPreset] = useState<'MICROSOFT_365' | 'GOOGLE_WORKSPACE' | 'ZOHO' | 'CUSTOM'>('ZOHO');
   const [zohoRegion, setZohoRegion] = useState<'COM' | 'EU' | 'IN' | 'AU' | 'JP' | 'CA'>('COM');
   const [oauthGrantType, setOauthGrantType] = useState<'client_credentials' | 'refresh_token' | 'authorization_code'>('refresh_token');
@@ -104,18 +107,24 @@ const TeamChannelsTabContent: React.FC<TeamChannelsTabProps> = ({ currentTeam, c
     setIsLoading(true);
     setErrorMsg(null);
     try {
-      const [summ, staged, provs, cfgs, msgs] = await Promise.all([
+      const [summ, staged, provs, cfgs, msgs, adminOauths] = await Promise.all([
         api.getExternalRequestSummary(teamId).catch(() => null),
         api.getStagedMessages({ teamId, limit: 100 }).catch(() => []),
         api.getMessageProviders({ teamId }).catch(() => []),
         api.getTeamChannelConfigs(teamId).catch(() => []),
-        api.getIncomingMessages({ teamId, limit: 20 }).catch(() => [])
+        api.getIncomingMessages({ teamId, limit: 20 }).catch(() => []),
+        api.getAvailableAdminOAuth2Connections().catch(() => [])
       ]);
       setSummary(summ);
       setStagedMessages(staged || []);
       setProviders(provs || []);
       setConfigs(cfgs || []);
       setInboxLogs(msgs || []);
+      const oauthList = Array.isArray(adminOauths) ? adminOauths : [];
+      setAvailableAdminOAuth2(oauthList);
+      if (oauthList.length > 0) {
+        setSelectedAdminOAuth2Id(prev => prev || oauthList[0].id);
+      }
     } catch (err: any) {
       setErrorMsg(err.message || 'Failed to load external requests data');
     } finally {
@@ -170,33 +179,20 @@ const TeamChannelsTabContent: React.FC<TeamChannelsTabProps> = ({ currentTeam, c
   };
 
   const handleTestOAuth2 = async () => {
-    if (!oauthClientId.trim() || !oauthClientSecret.trim()) {
-      setOauthTestResult({ success: false, message: 'Client ID and Client Secret are required to test OAuth2.' });
+    if (!selectedAdminOAuth2Id) {
+      setOauthTestResult({ success: false, message: 'Please select an Admin-configured OAuth 2.0 Connection.' });
       return;
     }
-    if (providerPreset === 'ZOHO' && oauthGrantType === 'refresh_token' && !oauthRefreshToken.trim()) {
-      setOauthTestResult({ success: false, message: 'Zoho Refresh Token is required for Refresh Token flow. Generate one in Zoho API Console (Self-Client).' });
-      return;
-    }
-    if (providerPreset === 'ZOHO' && oauthGrantType === 'authorization_code' && !oauthAuthCode.trim()) {
-      setOauthTestResult({ success: false, message: 'Zoho Grant Token / Code is required for Code Exchange.' });
+    if (!oauthUserEmail.trim()) {
+      setOauthTestResult({ success: false, message: 'Team mailbox or account email is required to verify OAuth2.' });
       return;
     }
     setIsTestingOAuth(true);
     setOauthTestResult(null);
     try {
       const res = await api.testOAuth2Credentials({
-        grantType: oauthGrantType,
-        preset: providerPreset,
-        zohoRegion: providerPreset === 'ZOHO' ? zohoRegion : undefined,
-        tenantId: oauthTenantId.trim() || undefined,
-        clientId: oauthClientId.trim(),
-        clientSecret: oauthClientSecret.trim(),
-        scope: oauthScope.trim(),
-        tokenUrl: oauthTokenUrl.trim() || undefined,
-        userEmail: oauthUserEmail.trim() || undefined,
-        refreshToken: oauthRefreshToken.trim() || undefined,
-        code: oauthAuthCode.trim() || undefined,
+        adminOAuth2ConnectionId: selectedAdminOAuth2Id,
+        userEmail: oauthUserEmail.trim()
       }, providerChannel);
       setOauthTestResult(res);
     } catch (err: any) {
@@ -214,35 +210,33 @@ const TeamChannelsTabContent: React.FC<TeamChannelsTabProps> = ({ currentTeam, c
       let config: Record<string, any> = {};
 
       if (authType === 'OAUTH2') {
-        const defaultHost = providerPreset === 'ZOHO'
-          ? (zohoRegion === 'EU' ? 'imap.zoho.eu' : zohoRegion === 'IN' ? 'imap.zoho.in' : zohoRegion === 'AU' ? 'imap.zoho.com.au' : zohoRegion === 'JP' ? 'imap.zoho.jp' : 'imappro.zoho.com')
-          : (providerPreset === 'MICROSOFT_365' ? 'outlook.office365.com' : (providerPreset === 'GOOGLE_WORKSPACE' ? 'imap.gmail.com' : ''));
+        if (!selectedAdminOAuth2Id) {
+          setErrorMsg('Please select an Admin-configured OAuth 2.0 Connection.');
+          return;
+        }
+        if (!oauthUserEmail.trim()) {
+          setErrorMsg('Team mailbox or account email is required.');
+          return;
+        }
 
-        const oauth2Config = {
-          grantType: oauthGrantType,
-          preset: providerPreset,
-          zohoRegion: providerPreset === 'ZOHO' ? zohoRegion : undefined,
-          tenantId: oauthTenantId.trim() || undefined,
-          clientId: oauthClientId.trim(),
-          clientSecret: oauthClientSecret.trim(),
-          scope: oauthScope.trim(),
-          tokenUrl: oauthTokenUrl.trim() || undefined,
-          userEmail: oauthUserEmail.trim() || undefined,
-          refreshToken: oauthRefreshToken.trim() || undefined,
-          code: oauthAuthCode.trim() || undefined,
-        };
+        const selectedConn = availableAdminOAuth2.find(c => c.id === selectedAdminOAuth2Id);
+        const adminPreset = selectedConn?.config?.preset || selectedConn?.config?.oauth2?.preset || selectedConn?.providerPreset;
+        const defaultHost = adminPreset === 'ZOHO'
+          ? 'imappro.zoho.com'
+          : (adminPreset === 'MICROSOFT_365' ? 'outlook.office365.com' : (adminPreset === 'GOOGLE_WORKSPACE' ? 'imap.gmail.com' : ''));
 
         config = {
           authType: 'OAUTH2',
-          oauth2: oauth2Config,
+          adminOAuth2ConnectionId: selectedAdminOAuth2Id,
+          userEmail: oauthUserEmail.trim(),
+          email: oauthUserEmail.trim(),
+          user: oauthUserEmail.trim(),
           host: providerHost.trim() || defaultHost,
-          user: oauthUserEmail.trim() || providerUser.trim(),
-          clientId: oauthClientId.trim(),
-          clientSecret: oauthClientSecret.trim(),
-          tenantId: oauthTenantId.trim(),
-          token: oauthClientSecret.trim(),
-          accessToken: oauthClientSecret.trim(),
-          botToken: oauthClientSecret.trim()
+          oauth2: {
+            adminOAuth2ConnectionId: selectedAdminOAuth2Id,
+            userEmail: oauthUserEmail.trim(),
+            preset: adminPreset
+          }
         };
       } else {
         config = {
@@ -827,7 +821,20 @@ const TeamChannelsTabContent: React.FC<TeamChannelsTabProps> = ({ currentTeam, c
               <span>Registered Message Provider Connectors</span>
             </h4>
             <button
-              onClick={() => setShowAddProviderModal(true)}
+              onClick={() => {
+                setShowAddProviderModal(true);
+                if (availableAdminOAuth2.length > 0) {
+                  setOauthMode('ADMIN');
+                  setSelectedAdminOAuth2Id(prev => prev || availableAdminOAuth2[0].id);
+                  const firstConn = availableAdminOAuth2[0];
+                  const preset = firstConn.config?.preset || firstConn.config?.oauth2?.preset;
+                  if (preset === 'MICROSOFT_365') setProviderHost('outlook.office365.com');
+                  else if (preset === 'GOOGLE_WORKSPACE') setProviderHost('imap.gmail.com');
+                  else if (preset === 'ZOHO') setProviderHost('imappro.zoho.com');
+                } else {
+                  setOauthMode('CUSTOM');
+                }
+              }}
               className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-xl transition cursor-pointer flex items-center gap-1.5"
             >
               <Plus size={14} />
@@ -863,9 +870,17 @@ const TeamChannelsTabContent: React.FC<TeamChannelsTabProps> = ({ currentTeam, c
                               <Key size={10} /> OAuth 2.0 ({prov.config?.oauth2?.preset || 'MODERN'})
                             </span>
                           )}
+                          {prov.config?.adminOAuth2ConnectionId && (
+                            <span className="px-1.5 py-0.2 rounded text-[9px] font-bold uppercase bg-blue-100 text-blue-800 flex items-center gap-1">
+                              <Shield size={10} /> Central Admin OAuth
+                            </span>
+                          )}
                         </div>
                         <div className="text-slate-500 font-mono text-[11px] truncate mt-0.5">
                           Channel: <span className="uppercase">{prov.channel}</span> | ID: {prov.id}
+                          {(prov.config?.userEmail || prov.config?.email) && (
+                            <span className="ml-2 font-semibold text-slate-700">Mailbox: {prov.config?.userEmail || prov.config?.email}</span>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -1500,228 +1515,147 @@ const TeamChannelsTabContent: React.FC<TeamChannelsTabProps> = ({ currentTeam, c
 
               {/* OAuth 2.0 Configuration Form */}
               {authType === 'OAUTH2' && (
-                <div className="bg-slate-50 border border-slate-200 rounded-xl p-3.5 space-y-3">
-                  <div className="flex items-center justify-between">
-                    <span className="text-[10px] font-bold text-indigo-700 uppercase flex items-center gap-1">
-                      <Key size={12} />
-                      <span>OAuth 2.0 Provider Preset</span>
-                    </span>
-                    <select
-                      value={providerPreset}
-                      onChange={e => handlePresetChange(e.target.value as any)}
-                      className="bg-white border border-slate-300 rounded-lg px-2 py-1 text-slate-800 text-xs font-semibold"
-                    >
-                      <option value="ZOHO">Zoho Mail / Zoho Workspace</option>
-                      <option value="MICROSOFT_365">Microsoft 365 / Entra ID</option>
-                      <option value="GOOGLE_WORKSPACE">Google Workspace / Gmail</option>
-                      <option value="CUSTOM">Custom OAuth 2.0 (RFC 6749)</option>
-                    </select>
-                  </div>
-
-                  {/* Zoho Data Center & Authorization Mode Controls */}
-                  {providerPreset === 'ZOHO' && (
-                    <div className="p-3 bg-amber-50/70 border border-amber-200/80 rounded-xl space-y-2.5">
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
-                        <div>
-                          <label className="block text-[10px] font-bold text-amber-900 uppercase mb-1">
-                            Zoho Data Center Region
-                          </label>
-                          <select
-                            value={zohoRegion}
-                            onChange={e => handleZohoRegionChange(e.target.value as any)}
-                            className="w-full bg-white border border-amber-300 rounded-lg p-2 text-slate-800 text-xs font-medium"
-                          >
-                            <option value="COM">Global / US (accounts.zoho.com)</option>
-                            <option value="EU">Europe (accounts.zoho.eu)</option>
-                            <option value="IN">India (accounts.zoho.in)</option>
-                            <option value="AU">Australia (accounts.zoho.com.au)</option>
-                            <option value="JP">Japan (accounts.zoho.jp)</option>
-                            <option value="CA">Canada (accounts.zohocloud.ca)</option>
-                          </select>
-                        </div>
-
-                        <div>
-                          <label className="block text-[10px] font-bold text-amber-900 uppercase mb-1">
-                            Authorization Mode
-                          </label>
-                          <select
-                            value={oauthGrantType}
-                            onChange={e => setOauthGrantType(e.target.value as any)}
-                            className="w-full bg-white border border-amber-300 rounded-lg p-2 text-slate-800 text-xs font-medium"
-                          >
-                            <option value="refresh_token">Refresh Token (Standard Background Sync)</option>
-                            <option value="authorization_code">Self-Client Grant Token (Code Exchange)</option>
-                            <option value="client_credentials">Client Credentials</option>
-                          </select>
-                        </div>
-                      </div>
-
-                      {/* Refresh Token Input */}
-                      {oauthGrantType === 'refresh_token' && (
-                        <div>
-                          <label className="block text-[10px] font-bold text-amber-900 uppercase mb-1">
-                            Zoho Refresh Token *
-                          </label>
-                          <input
-                            type="password"
-                            required
-                            placeholder="e.g. 1000.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-                            value={oauthRefreshToken}
-                            onChange={e => setOauthRefreshToken(e.target.value)}
-                            className="w-full bg-white border border-amber-300 rounded-lg p-2 text-slate-800 font-mono text-xs"
-                          />
-                          <p className="text-[10px] text-amber-700 mt-1">
-                            Generated from Zoho API Console Self-Client tab or OAuth authorization flow. Never expires unless revoked.
-                          </p>
-                        </div>
-                      )}
-
-                      {/* Code Exchange Input */}
-                      {oauthGrantType === 'authorization_code' && (
-                        <div>
-                          <label className="block text-[10px] font-bold text-amber-900 uppercase mb-1">
-                            Zoho Self-Client Code / Grant Token *
-                          </label>
-                          <input
-                            type="text"
-                            required
-                            placeholder="e.g. 1000.xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-                            value={oauthAuthCode}
-                            onChange={e => setOauthAuthCode(e.target.value)}
-                            className="w-full bg-white border border-amber-300 rounded-lg p-2 text-slate-800 font-mono text-xs"
-                          />
-                          <p className="text-[10px] text-amber-700 mt-1">
-                            Temporary code from Zoho API Console &gt; Self-Client &gt; Generate Code (valid 10 mins). System exchanges it for a permanent Refresh Token.
-                          </p>
-                        </div>
-                      )}
-
-                      <div className="text-[10px] text-amber-800 pt-1">
-                        💡 Visit <a href="https://api-console.zoho.com" target="_blank" rel="noopener noreferrer" className="underline font-bold text-blue-700">api-console.zoho.com</a> to create a Client ID &amp; Secret for your organization.
-                      </div>
-                    </div>
-                  )}
-
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                <div className="bg-slate-50 border border-slate-200 rounded-xl p-3.5 space-y-3.5">
+                  <div className="flex items-center justify-between border-b border-slate-200/70 pb-2">
                     <div>
-                      <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">
-                        Application (Client) ID *
-                      </label>
-                      <input
-                        type="text"
-                        required
-                        placeholder={providerPreset === 'ZOHO' ? 'e.g. 1000.XXXXXXXXXX' : 'Azure App ID / Google Client ID'}
-                        value={oauthClientId}
-                        onChange={e => setOauthClientId(e.target.value)}
-                        className="w-full bg-white border border-slate-300 rounded-lg p-2 text-slate-800 font-mono text-xs"
-                      />
-                    </div>
-
-                    <div>
-                      <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">
-                        Client Secret *
-                      </label>
-                      <input
-                        type="password"
-                        required
-                        placeholder="Client Secret Value"
-                        value={oauthClientSecret}
-                        onChange={e => setOauthClientSecret(e.target.value)}
-                        className="w-full bg-white border border-slate-300 rounded-lg p-2 text-slate-800 font-mono text-xs"
-                      />
+                      <span className="text-[11px] font-bold text-slate-800 font-mono flex items-center gap-1.5">
+                        <Shield size={14} className="text-[#155DFC]" />
+                        <span>Admin-Managed OAuth 2.0 (Modern Authentication)</span>
+                      </span>
+                      <p className="text-[10px] text-slate-500 mt-0.5">
+                        Enterprise app credentials (Client ID, Secrets, Scopes) are secured by IT Admins. Teams only provide their dedicated mailbox email.
+                      </p>
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
-                    <div>
-                      <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">
-                        User / Mailbox Email
-                      </label>
-                      <input
-                        type="email"
-                        placeholder="settlement-ops@corp.bank.com"
-                        value={oauthUserEmail}
-                        onChange={e => setOauthUserEmail(e.target.value)}
-                        className="w-full bg-white border border-slate-300 rounded-lg p-2 text-slate-800 font-mono text-xs"
-                      />
+                  {availableAdminOAuth2.length === 0 ? (
+                    <div className="p-3 bg-amber-50 border border-amber-200 rounded-xl text-xs text-amber-800 space-y-1">
+                      <div className="font-bold flex items-center gap-1.5">
+                        <AlertTriangle size={14} className="text-amber-600" />
+                        <span>No Admin OAuth 2.0 Connections Found</span>
+                      </div>
+                      <p className="text-[11px] text-amber-700">
+                        A Global Administrator must first register corporate OAuth 2.0 connections (e.g. Microsoft 365, Google Workspace, Zoho) in <strong>Admin Hub &gt; OAuth 2.0 &amp; Messaging</strong>.
+                      </p>
                     </div>
-
-                    {providerPreset === 'MICROSOFT_365' && (
+                  ) : (
+                    <div className="space-y-3">
                       <div>
                         <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">
-                          Tenant ID (Microsoft Entra ID)
+                          Select Admin OAuth 2.0 Connection *
+                        </label>
+                        <select
+                          value={selectedAdminOAuth2Id}
+                          onChange={e => {
+                            const id = e.target.value;
+                            setSelectedAdminOAuth2Id(id);
+                            setOauthTestResult(null);
+                            const conn = availableAdminOAuth2.find(c => c.id === id);
+                            if (conn) {
+                              const preset = conn.config?.preset || conn.config?.oauth2?.preset || conn.providerPreset;
+                              if (preset === 'MICROSOFT_365') setProviderHost('outlook.office365.com');
+                              else if (preset === 'GOOGLE_WORKSPACE') setProviderHost('imap.gmail.com');
+                              else if (preset === 'ZOHO') setProviderHost('imappro.zoho.com');
+                            }
+                          }}
+                          className="w-full bg-white border border-slate-300 rounded-lg p-2 text-slate-800 text-xs font-semibold"
+                        >
+                          {availableAdminOAuth2.map((conn: any) => {
+                            const preset = conn.config?.preset || conn.config?.oauth2?.preset || conn.providerPreset || conn.channel?.toUpperCase();
+                            const tenant = conn.tenantId ? `Tenant: ${conn.tenantId}` : (conn.config?.tenantId ? `Tenant: ${conn.config.tenantId}` : 'Enterprise');
+                            return (
+                              <option key={conn.id} value={conn.id}>
+                                {conn.displayName || conn.config?.displayName || 'Central Connection'} — {preset} ({tenant})
+                              </option>
+                            );
+                          })}
+                        </select>
+                      </div>
+
+                      {/* Selected Connection Info Card */}
+                      {(() => {
+                        const selectedConn = availableAdminOAuth2.find(c => c.id === selectedAdminOAuth2Id) || availableAdminOAuth2[0];
+                        if (!selectedConn) return null;
+                        const preset = selectedConn.config?.preset || selectedConn.config?.oauth2?.preset || selectedConn.providerPreset || selectedConn.channel?.toUpperCase();
+                        return (
+                          <div className="p-3 bg-blue-50/70 border border-blue-200/80 rounded-xl space-y-1.5 text-xs">
+                            <div className="flex items-center justify-between text-[11px]">
+                              <span className="font-bold text-blue-900 flex items-center gap-1.5">
+                                <ShieldCheck size={13} className="text-blue-600" />
+                                <span>Enterprise Central Authorization Active</span>
+                              </span>
+                              <span className="px-1.5 py-0.5 bg-blue-100 text-blue-800 rounded font-semibold text-[10px]">
+                                {preset}
+                              </span>
+                            </div>
+                            <p className="text-[11px] text-blue-800">
+                              App ID, Client Secret, and Tenant credentials are managed and secured by IT Admins. Your team only needs to specify its dedicated mailbox below.
+                            </p>
+                          </div>
+                        );
+                      })()}
+
+                      {/* Team Email / Mailbox Address Input */}
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-700 uppercase mb-1 flex items-center justify-between">
+                          <span>Team Mailbox / Account Email Address *</span>
+                          <span className="text-[10px] font-normal text-slate-500 font-mono">e.g. recon-ops@corp.bank.com</span>
                         </label>
                         <input
-                          type="text"
-                          placeholder="Directory UUID or common"
-                          value={oauthTenantId}
-                          onChange={e => setOauthTenantId(e.target.value)}
-                          className="w-full bg-white border border-slate-300 rounded-lg p-2 text-slate-800 font-mono text-xs"
+                          type="email"
+                          required
+                          placeholder="recon-ops@corp.bank.com"
+                          value={oauthUserEmail}
+                          onChange={e => {
+                            setOauthUserEmail(e.target.value);
+                            if (!providerDisplayName.trim()) {
+                              const localPart = e.target.value.split('@')[0];
+                              if (localPart) setProviderDisplayName(`${localPart.charAt(0).toUpperCase() + localPart.slice(1)} Ingestion`);
+                            }
+                          }}
+                          className="w-full bg-white border border-blue-400 ring-2 ring-blue-50 rounded-lg p-2 text-slate-800 font-mono text-xs font-semibold focus:outline-none"
                         />
+                        <p className="text-[10px] text-slate-500 mt-1">
+                          The specific team mailbox or service account that will receive and send operational messages via centralized OAuth2.
+                        </p>
                       </div>
-                    )}
 
-                    {providerPreset !== 'MICROSOFT_365' && (
                       <div>
                         <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">
-                          Server / IMAP Host
+                          IMAP Server / Host (Optional Override)
                         </label>
                         <input
                           type="text"
-                          placeholder={providerPreset === 'ZOHO' ? 'imappro.zoho.com' : 'imap.mail.com'}
+                          placeholder="outlook.office365.com / imap.gmail.com"
                           value={providerHost}
                           onChange={e => setProviderHost(e.target.value)}
                           className="w-full bg-white border border-slate-300 rounded-lg p-2 text-slate-800 font-mono text-xs"
                         />
                       </div>
-                    )}
-                  </div>
 
-                  <div>
-                    <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">Scope</label>
-                    <input
-                      type="text"
-                      placeholder="e.g. ZohoMail.messages.ALL,ZohoMail.accounts.ALL"
-                      value={oauthScope}
-                      onChange={e => setOauthScope(e.target.value)}
-                      className="w-full bg-white border border-slate-300 rounded-lg p-2 text-slate-800 font-mono text-xs"
-                    />
-                  </div>
+                      {/* Live OAuth2 Test Verification */}
+                      <div className="pt-2 flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-t border-slate-200">
+                        <button
+                          type="button"
+                          disabled={isTestingOAuth || !selectedAdminOAuth2Id || !oauthUserEmail.trim()}
+                          onClick={handleTestOAuth2}
+                          className="px-3.5 py-2 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-lg transition text-xs flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
+                        >
+                          {isTestingOAuth ? <RefreshCw size={13} className="animate-spin" /> : <ShieldCheck size={13} />}
+                          <span>{isTestingOAuth ? 'Testing Authentication...' : 'Verify Mailbox Access With Admin OAuth2'}</span>
+                        </button>
 
-                  {providerPreset === 'CUSTOM' && (
-                    <div>
-                      <label className="block text-[10px] font-bold text-slate-600 uppercase mb-1">Token Endpoint URL *</label>
-                      <input
-                        type="text"
-                        placeholder="https://auth.bank.com/oauth/v2/token"
-                        value={oauthTokenUrl}
-                        onChange={e => setOauthTokenUrl(e.target.value)}
-                        className="w-full bg-white border border-slate-300 rounded-lg p-2 text-slate-800 font-mono text-xs"
-                      />
+                        {oauthTestResult && (
+                          <div className={`p-2 rounded-lg text-xs font-semibold flex items-center gap-1.5 ${
+                            oauthTestResult.success ? 'bg-emerald-50 text-emerald-800 border border-emerald-200' : 'bg-rose-50 text-rose-800 border border-rose-200'
+                          }`}>
+                            {oauthTestResult.success ? <CheckCircle2 size={14} className="text-emerald-600 shrink-0" /> : <AlertTriangle size={14} className="text-rose-600 shrink-0" />}
+                            <span>{oauthTestResult.message}</span>
+                          </div>
+                        )}
+                      </div>
                     </div>
                   )}
-
-                  {/* Live OAuth2 Test Verification */}
-                  <div className="pt-1 flex items-center justify-between">
-                    <button
-                      type="button"
-                      disabled={isTestingOAuth || !oauthClientId.trim() || !oauthClientSecret.trim()}
-                      onClick={handleTestOAuth2}
-                      className="px-3 py-1.5 bg-indigo-50 hover:bg-indigo-100 text-indigo-700 font-bold rounded-lg transition text-xs flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
-                    >
-                      {isTestingOAuth ? <RefreshCw size={12} className="animate-spin" /> : <Key size={12} />}
-                      <span>Test OAuth 2.0 Token Acquisition</span>
-                    </button>
-
-                    {oauthTestResult && (
-                      <span className={`text-[11px] font-semibold flex items-center gap-1 ${
-                        oauthTestResult.success ? 'text-emerald-700' : 'text-rose-700'
-                      }`}>
-                        {oauthTestResult.success ? <CheckCircle2 size={13} /> : <AlertTriangle size={13} />}
-                        <span>{oauthTestResult.message}</span>
-                      </span>
-                    )}
-                  </div>
                 </div>
               )}
 

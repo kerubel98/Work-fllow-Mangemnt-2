@@ -233,6 +233,7 @@ export interface Issue {
   workflowId?: string;
   acceptedScriptProposalId?: string;
   initialSnapshot?: Record<string, any>[];
+  attachments?: any[];
 }
 
 export interface CriteriaRule {
@@ -877,9 +878,10 @@ export interface DatabaseValidationWorkflow {
   description?: string;
   targetDbId: string;
   targetTable: string;
-  category?: 'Settlement' | 'Fulfillment' | 'Compliance' | 'Reconciliation' | 'Custom';
+  category?: 'Settlement' | 'Fulfillment' | 'Compliance' | 'Reconciliation' | 'Custom' | 'Simulation';
   stages: ProcessingStage[];
   steps: ValidationCheckStep[];
+  rules?: ValidationCheckStep[];
   nodes?: FlowchartNode[];
   connections?: FlowchartConnection[];
   globalSuccessMessage?: string;
@@ -942,6 +944,7 @@ export interface QueryColumn {
 export interface QueryKeyMapping {
   inputField: string;
   sourceField: string;
+  targetColumn?: string;
   required: boolean;
 }
 
@@ -975,11 +978,14 @@ export interface QueryExtraction {
   stageId: string;
   targetDbId: string;
   targetDataSource: string;
+  dataSourceId?: string;
+  externalDbId?: string;
+  targetTable?: string;
   selectedColumns: QueryColumn[];
   keyMappings: QueryKeyMapping[];
   filters?: QueryFilter[];
   batchPolicy?: BatchPolicy;
-  enabled: boolean;
+  enabled?: boolean;
   createdAt?: string;
   updatedAt?: string;
 }
@@ -993,6 +999,7 @@ export interface QueryChunkPlan {
 export interface InvestigationBatchPlan {
   batchId: string;
   sequence: number;
+  rowCount?: number;
   transactionIds: string[];
   queryChunks: QueryChunkPlan[];
 }
@@ -1269,7 +1276,7 @@ export interface ColumnValueLabelMapping {
 
 export interface TypeColumnCondition {
   columnName: string;
-  operator: '=' | '!=' | 'IN' | 'NOT_IN' | 'LIKE' | 'STARTS_WITH';
+  operator: '=' | '!=' | 'IN' | 'NOT_IN' | 'LIKE' | 'STARTS_WITH' | '>' | '>=' | '<' | '<=';
   value: string;
 }
 
@@ -1341,6 +1348,7 @@ export interface DatabaseColumnConfiguration {
   // Type Group classification based on single or multiple columns
   typeGroups?: TransactionTypeGroupConfig[]; // Transaction Type Groups (multi-column classified)
   typeGroupColumns?: string[]; // Columns used to identify type groups
+  filterConditions?: TypeColumnCondition[]; // Filtering conditions within common grouping column(s) for conditional count / duplicate evaluation
   // Value constant labeling and interpretation
   valueLabels?: ColumnValueLabelMapping[]; // User labels and interpretation when column value equals a constant
   unmappedValueAction?: 'FLAG' | 'ALLOW' | 'IGNORE'; // How to handle values without a defined label

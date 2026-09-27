@@ -167,7 +167,7 @@ export async function discoverTablesForDb(db) {
     if (db.type === 'MongoDB') {
         if (isMongoConnected && mongoose.connection.db) {
             const collections = await mongoose.connection.db.listCollections().toArray();
-            return collections.map(c => c.name);
+            return collections.map((c) => c.name);
         }
         throw new Error('MongoDB is not currently connected to inspect collections.');
     }
@@ -485,7 +485,7 @@ export async function executeLiveQueryOnDb(db, query, params) {
             const docs = await cursor.toArray();
             const executionTimeMs = Date.now() - started;
             const columnsSet = new Set();
-            const rows = docs.map(d => {
+            const rows = docs.map((d) => {
                 const rowObj = {};
                 Object.keys(d).forEach(k => {
                     columnsSet.add(k);
@@ -512,7 +512,7 @@ export async function executeLiveQueryOnDb(db, query, params) {
                 const docs = await coll.find(filter).limit(limit).toArray();
                 const executionTimeMs = Date.now() - started;
                 const columnsSet = new Set();
-                const rows = docs.map(d => {
+                const rows = docs.map((d) => {
                     const rowObj = {};
                     Object.keys(d).forEach(k => {
                         columnsSet.add(k);
@@ -540,7 +540,7 @@ export async function executeLiveQueryOnDb(db, query, params) {
             const docs = await coll.find({}).limit(25).toArray();
             const executionTimeMs = Date.now() - started;
             const columnsSet = new Set();
-            const rows = docs.map(d => {
+            const rows = docs.map((d) => {
                 const rowObj = {};
                 Object.keys(d).forEach(k => {
                     columnsSet.add(k);

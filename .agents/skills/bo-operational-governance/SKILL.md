@@ -184,6 +184,18 @@ When synchronizing concurrent operations (table provisioning, task rollback, Mak
 - Worker processes emit progress pulses into `task_batch_heartbeats` `(task_id, batch_id, worker_pid, last_chunk_index, total_chunks, last_heartbeat_at)`.
 - Server boot sweepers must only mark tasks as `Failed` if `last_heartbeat_at < NOW() - INTERVAL '3 minutes'`, safeguarding legitimately running long batches from premature termination.
 
+### 3.17 Centralized OAuth 2.0 & Channel Ingestion Architecture
+Enterprise messaging channels (Microsoft 365, Google Workspace, Zoho Mail, Custom OAuth 2.0) follow strict administrative centralization:
+- **Admin Hub Responsibility**: IT Administrators configure the single authoritative OAuth 2.0 App Registration (`provider_connections` where `team_id IS NULL` and `config->>'isGlobal' = 'true'`).
+- **Team Responsibility**: Operational teams select the pre-approved corporate provider and specify only their operational inbox/mailbox address (`userEmail`).
+- **Dynamic Credential Merging**: The backend service layer (`stagingService.resolveEffectiveConfig` and `oauth2Service.resolveOAuth2Config`) merges the corporate credentials with the team's email identity at execution time, enforcing least-privilege token acquisition.
+
+### 3.18 Persistent Presentation Assets & Re-executable Generation Scripts
+When producing executive slide decks (`.pptx`), system introductions, or compliance walkthroughs:
+- **Dedicated Asset Folder**: All high-definition screenshots (1920x1080), diagrams, and media must be retained in `presentation_assets/` with descriptive filenames.
+- **Re-executable Automation**: Store and maintain the Python compiler script (`build_presentation.py`) in the workspace. Any future modifications (slide re-ordering, text copy updates, replacing individual screenshot steps) must be executable with `python build_presentation.py` without re-extracting assets from scratch.
+- **No Disposable Presentation Materials**: Screenshots and slide generation routines are permanent deliverables, never to be stored solely in ephemeral logs or transient temp directories.
+
 ---
 
 ## 4. End-to-End Investigation Flow
@@ -266,3 +278,6 @@ Evaluate:
 10. **NEVER** pass unbounded composite tuple lists to PostgreSQL without checking against the 65,535 parameter ceiling. Always chunk under 30,000 parameters.
 11. **NEVER** silently discard duplicate matched rows in external reconciliation. Always flag `DUPLICATE_EXTERNAL_MATCH` and preserve `_rawRows` in the evidence snapshot.
 12. **NEVER** acquire global table locks during task rollback. Always use task-scoped advisory locks (`task_revert_${taskId}`).
+13. **NEVER** require individual operational teams to supply or manage OAuth 2.0 Client IDs, Client Secrets, or Tenant IDs. Centralize enterprise provider credentials in the Admin Hub and bind team mailboxes via `adminOAuth2ConnectionId`.
+14. **NEVER** return plaintext OAuth 2.0 client secrets in API responses. Always mask secrets (`••••••••`) on read and preserve existing database secrets when updating with a masked payload.
+15. **NEVER** discard presentation screenshots, decoded media, or Python compilation scripts as disposable scratch. Persist them in `presentation_assets/` and maintain `build_presentation.py` for reproducible slide deck updates.

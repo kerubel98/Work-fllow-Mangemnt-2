@@ -444,6 +444,7 @@ export default function DatabaseColumnConfigurationStudio({ currentUser, teams =
       description: 'Automated column validation rule',
       columns: defaultCols,
       groupByColumns: [],
+      filterConditions: [],
       aggregationRules: [{ function: 'COUNT', operator: '>', value: 1 }],
       primaryKeyColumn: previewColumns.length > 0 ? previewColumns[0].name : '',
       roleColumn: previewColumns.length > 1 ? previewColumns[1].name : '',
@@ -1427,11 +1428,17 @@ export default function DatabaseColumnConfigurationStudio({ currentUser, teams =
 
                   {/* Duplicate Check Criteria details */}
                   {(cfg.ruleType === 'DUPLICATE_CHECK' || cfg.ruleType === 'UNIQUE_CONSTRAINT') && (
-                    <div className="text-[11px] text-slate-600 bg-amber-50/70 border border-amber-200/80 rounded-lg p-2.5 space-y-1">
+                    <div className="text-[11px] text-slate-600 bg-amber-50/70 border border-amber-200/80 rounded-lg p-2.5 space-y-1.5">
                       <div className="flex items-center justify-between flex-wrap gap-1.5">
                         <div className="flex items-center gap-1.5 flex-wrap">
-                          <span className="font-bold text-amber-950">Checked for Value & Count:</span>
-                          {(!cfg.columns || cfg.columns.length === 0) ? (
+                          <span className="font-bold text-amber-950">
+                            {cfg.groupByColumns && cfg.groupByColumns.length > 0 ? 'Common Grouping Column(s):' : 'Checked for Value & Count:'}
+                          </span>
+                          {cfg.groupByColumns && cfg.groupByColumns.length > 0 ? (
+                            <span className="font-mono font-bold text-amber-900 bg-white px-1.5 py-0.5 rounded border border-amber-200">
+                              {cfg.groupByColumns.join(' + ')}
+                            </span>
+                          ) : (!cfg.columns || cfg.columns.length === 0) ? (
                             <span className="text-rose-600 font-bold">⚠️ No columns configured (at least one required)</span>
                           ) : (
                             <span className="font-mono font-bold text-amber-900 bg-white px-1.5 py-0.5 rounded border border-amber-200">
@@ -1441,10 +1448,21 @@ export default function DatabaseColumnConfigurationStudio({ currentUser, teams =
                         </div>
                         <span className="font-mono text-[10px] px-2 py-0.5 rounded bg-amber-100 text-amber-900 font-bold border border-amber-300">
                           {cfg.aggregationRules?.[0]
-                            ? `COUNT ${cfg.aggregationRules[0].operator || '>'} ${cfg.aggregationRules[0].value ?? 1}`
+                            ? (cfg.aggregationRules[0].operator === '=' || cfg.aggregationRules[0].operator === '=='
+                                ? `EXPECTED COUNT = ${cfg.aggregationRules[0].value ?? 1}`
+                                : `COUNT ${cfg.aggregationRules[0].operator || '>'} ${cfg.aggregationRules[0].value ?? 1}`)
                             : 'COUNT > 1 (Duplicates)'}
                         </span>
                       </div>
+
+                      {cfg.filterConditions && cfg.filterConditions.length > 0 && (
+                        <div className="flex items-center gap-1.5 flex-wrap pt-1 border-t border-amber-200/60 text-[10px]">
+                          <span className="font-bold text-amber-900">Filtered By:</span>
+                          <span className="font-mono bg-white text-amber-950 px-1.5 py-0.2 rounded border border-amber-300 font-semibold">
+                            {cfg.filterConditions.map(c => `${c.columnName} ${c.operator} ${c.value}`).join(' AND ')}
+                          </span>
+                        </div>
+                      )}
                     </div>
                   )}
 
@@ -1915,11 +1933,11 @@ export default function DatabaseColumnConfigurationStudio({ currentUser, teams =
                       )}
                     </div>
                   ) : (
-                    <div className="space-y-2.5">
+                    <div className="space-y-3">
                       {/* Active Columns to Check for Value */}
                       <div className="p-2.5 bg-white border border-amber-200 rounded-lg space-y-1.5">
                         <span className="text-[10px] font-bold uppercase tracking-wider text-amber-900 block">
-                          Column(s) Evaluated for Duplicate Values ({editingConfig.columns.length}):
+                          Priority Column(s) Evaluated ({editingConfig.columns.length}):
                         </span>
                         <div className="flex flex-wrap gap-1.5">
                           {editingConfig.columns.map((c, idx) => (
@@ -1937,7 +1955,175 @@ export default function DatabaseColumnConfigurationStudio({ currentUser, teams =
                         </div>
                       </div>
 
-                      {/* Occurrence Count Condition */}
+                      {/* 1. Common Grouping Column(s) (Partition Key) */}
+                      <div className="p-2.5 bg-white border border-amber-200 rounded-lg space-y-2">
+                        <div className="flex items-center justify-between">
+                          <span className="text-[10px] font-bold uppercase tracking-wider text-amber-900 block">
+                            Common Grouping Column(s) (Partition Key):
+                          </span>
+                          <span className="text-[9px] text-amber-700 italic">
+                            {(editingConfig.groupByColumns || []).length > 0
+                              ? `${(editingConfig.groupByColumns || []).length} grouping column(s) selected`
+                              : 'Default: Groups across priority columns'}
+                          </span>
+                        </div>
+                        <div className="flex flex-wrap gap-1.5 items-center">
+                          {previewColumns.map(col => {
+                            const isGrouped = (editingConfig.groupByColumns || []).includes(col.name);
+                            return (
+                              <button
+                                key={col.name}
+                                type="button"
+                                onClick={() => {
+                                  const current = editingConfig.groupByColumns || [];
+                                  const updated = isGrouped
+                                    ? current.filter(c => c !== col.name)
+                                    : [...current, col.name];
+                                  setEditingConfig({ ...editingConfig, groupByColumns: updated });
+                                }}
+                                className={`px-2 py-0.5 rounded text-[11px] font-mono font-bold border transition cursor-pointer flex items-center gap-1 ${
+                                  isGrouped
+                                    ? 'bg-amber-600 text-white border-amber-700 shadow-xs'
+                                    : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-amber-50 hover:border-amber-300'
+                                }`}
+                              >
+                                <span>{isGrouped ? '✓' : '+'}</span>
+                                <span>{col.name}</span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                        <p className="text-[10px] text-slate-500">
+                          Rows sharing the same values in these column(s) (e.g. <strong className="font-mono text-slate-700">TR_GROUP_ID</strong>) belong to the same group for duplicate and occurrence counting.
+                        </p>
+                      </div>
+
+                      {/* 2. Conditional Row Filter (Column Name, Comparator & Value) */}
+                      <div className="p-2.5 bg-white border border-amber-200 rounded-lg space-y-2">
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <span className="text-[10px] font-bold uppercase tracking-wider text-amber-900 block">
+                              Conditional Row Filter (Column Name, Comparator & Value):
+                            </span>
+                            <p className="text-[10px] text-slate-500">
+                              Only count rows within each common group that match these conditions (e.g. <span className="font-mono font-bold text-amber-900">BO_TYPE = 'CMTP254'</span>).
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const current = editingConfig.filterConditions || [];
+                              const defaultCol = previewColumns.length > 0 ? previewColumns[0].name : '';
+                              setEditingConfig({
+                                ...editingConfig,
+                                filterConditions: [...current, { columnName: defaultCol, operator: '=', value: '' }]
+                              });
+                            }}
+                            className="px-2 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded text-[10px] font-bold transition flex items-center gap-1 cursor-pointer shrink-0 ml-2"
+                          >
+                            <Plus className="w-3 h-3" />
+                            <span>Add Condition</span>
+                          </button>
+                        </div>
+
+                        {(!editingConfig.filterConditions || editingConfig.filterConditions.length === 0) ? (
+                          <div className="text-[10px] text-slate-400 italic p-1.5 bg-slate-50 border border-slate-200 rounded">
+                            No row filter configured. All rows within each common group will be counted.
+                          </div>
+                        ) : (
+                          <div className="space-y-1.5">
+                            {editingConfig.filterConditions.map((cond, cIdx) => {
+                              const sampleVals = getDiscoveredColumnValues(cond.columnName);
+                              return (
+                                <div key={cIdx} className="p-1.5 bg-amber-50/50 border border-amber-200 rounded space-y-1">
+                                  <div className="flex items-center gap-1.5 flex-wrap">
+                                    <select
+                                      value={cond.columnName}
+                                      onChange={(e) => {
+                                        const updated = [...(editingConfig.filterConditions || [])];
+                                        updated[cIdx] = { ...updated[cIdx], columnName: e.target.value };
+                                        setEditingConfig({ ...editingConfig, filterConditions: updated });
+                                      }}
+                                      className="text-xs p-1 bg-white border border-slate-300 rounded font-mono font-bold text-slate-800"
+                                    >
+                                      {previewColumns.map(col => (
+                                        <option key={col.name} value={col.name}>{col.name}</option>
+                                      ))}
+                                    </select>
+
+                                    <select
+                                      value={cond.operator}
+                                      onChange={(e) => {
+                                        const updated = [...(editingConfig.filterConditions || [])];
+                                        updated[cIdx] = { ...updated[cIdx], operator: e.target.value as any };
+                                        setEditingConfig({ ...editingConfig, filterConditions: updated });
+                                      }}
+                                      className="text-xs p-1 bg-white border border-slate-300 rounded font-bold text-slate-800"
+                                    >
+                                      <option value="=">= Exactly Equals</option>
+                                      <option value="!=">!= Not Equal</option>
+                                      <option value=">">&gt; Greater Than</option>
+                                      <option value=">=">&gt;= Greater or Equal</option>
+                                      <option value="<">&lt; Less Than</option>
+                                      <option value="<=">&lt;= Less or Equal</option>
+                                      <option value="IN">IN (Comma-separated)</option>
+                                      <option value="NOT_IN">NOT IN</option>
+                                      <option value="STARTS_WITH">STARTS WITH</option>
+                                      <option value="LIKE">CONTAINS</option>
+                                    </select>
+
+                                    <input
+                                      type="text"
+                                      placeholder="Value (e.g. CMTP254 or __NULL__)..."
+                                      value={cond.value}
+                                      onChange={(e) => {
+                                        const updated = [...(editingConfig.filterConditions || [])];
+                                        updated[cIdx] = { ...updated[cIdx], value: e.target.value };
+                                        setEditingConfig({ ...editingConfig, filterConditions: updated });
+                                      }}
+                                      className="text-xs p-1 bg-white border border-slate-300 rounded font-mono flex-1 min-w-[140px]"
+                                    />
+
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        const updated = (editingConfig.filterConditions || []).filter((_, i) => i !== cIdx);
+                                        setEditingConfig({ ...editingConfig, filterConditions: updated });
+                                      }}
+                                      className="p-1 text-slate-400 hover:text-red-600 rounded transition cursor-pointer"
+                                      title="Remove condition"
+                                    >
+                                      <X className="w-3.5 h-3.5" />
+                                    </button>
+                                  </div>
+
+                                  {sampleVals.length > 0 && (
+                                    <div className="flex items-center gap-1 flex-wrap pl-1">
+                                      <span className="text-[9px] text-slate-400">Sample values:</span>
+                                      {sampleVals.slice(0, 5).map(sv => (
+                                        <button
+                                          key={sv}
+                                          type="button"
+                                          onClick={() => {
+                                            const updated = [...(editingConfig.filterConditions || [])];
+                                            updated[cIdx] = { ...updated[cIdx], value: sv };
+                                            setEditingConfig({ ...editingConfig, filterConditions: updated });
+                                          }}
+                                          className="px-1.5 py-0.2 bg-white hover:bg-amber-100 text-slate-700 hover:text-amber-900 border border-slate-200 rounded text-[9px] font-mono transition cursor-pointer"
+                                        >
+                                          {sv}
+                                        </button>
+                                      ))}
+                                    </div>
+                                  )}
+                                </div>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* 3. Occurrence Count Condition */}
                       <div className="p-2.5 bg-white border border-amber-200 rounded-lg space-y-2">
                         <span className="text-[10px] font-bold uppercase tracking-wider text-amber-900 block">
                           Occurrence Count Criterion:
@@ -1947,14 +2133,18 @@ export default function DatabaseColumnConfigurationStudio({ currentUser, teams =
                             <label className="block text-[10px] font-bold text-amber-900 mb-1">Check Function</label>
                             <input
                               type="text"
-                              value="COUNT(*) (Occurrences)"
+                              value={
+                                editingConfig.filterConditions && editingConfig.filterConditions.length > 0
+                                  ? 'COUNT(*) (Filtered Rows in Group)'
+                                  : 'COUNT(*) (Rows in Group)'
+                              }
                               disabled
                               className="w-full text-xs p-1.5 bg-slate-100 border border-slate-200 rounded font-mono font-bold text-slate-700"
                             />
                           </div>
 
                           <div>
-                            <label className="block text-[10px] font-bold text-amber-900 mb-1">Violation When Count</label>
+                            <label className="block text-[10px] font-bold text-amber-900 mb-1">Occurrence / Duplicate Condition</label>
                             <select
                               value={editingConfig.aggregationRules?.[0]?.operator || '>'}
                               onChange={(e) => {
@@ -1964,15 +2154,19 @@ export default function DatabaseColumnConfigurationStudio({ currentUser, teams =
                               }}
                               className="w-full text-xs p-1.5 bg-white border border-amber-300 rounded font-bold text-amber-950 focus:outline-none"
                             >
-                              <option value=">">&gt; Greater Than (Default: &gt; 1)</option>
-                              <option value=">=">&gt;= Greater or Equal</option>
-                              <option value="=">= Exactly Equals</option>
-                              <option value="!=">!= Not Equal</option>
+                              <option value="=">= Expected Count = 1 (Unique Requirement: Flags duplicates if Count &gt; 1)</option>
+                              <option value=">">&gt; Exceeds Threshold (Default: Flags when Count &gt; 1)</option>
+                              <option value=">=">&gt;= Greater or Equal (Flags when Count &gt;= Threshold)</option>
+                              <option value="!=">!= Discrepancy (Flags when Count != Threshold)</option>
                             </select>
                           </div>
 
                           <div>
-                            <label className="block text-[10px] font-bold text-amber-900 mb-1">Threshold Count</label>
+                            <label className="block text-[10px] font-bold text-amber-900 mb-1">
+                              {editingConfig.aggregationRules?.[0]?.operator === '=' || editingConfig.aggregationRules?.[0]?.operator === '=='
+                                ? 'Expected Occurrences'
+                                : 'Threshold Count'}
+                            </label>
                             <input
                               type="number"
                               min={1}
@@ -1988,7 +2182,21 @@ export default function DatabaseColumnConfigurationStudio({ currentUser, teams =
                         </div>
 
                         <p className="text-[10px] text-amber-700 font-medium">
-                          Flags any row whose value in <strong className="font-mono font-bold text-amber-950">{editingConfig.columns.map(c => c.columnName).join(' + ')}</strong> appears with occurrence count <strong className="font-mono font-bold">{editingConfig.aggregationRules?.[0]?.operator || '>'} {editingConfig.aggregationRules?.[0]?.value ?? 1}</strong>.
+                          {(editingConfig.aggregationRules?.[0]?.operator === '=' || editingConfig.aggregationRules?.[0]?.operator === '==') ? (
+                            <>
+                              Within each common group of <strong className="font-mono font-bold text-amber-950">{(editingConfig.groupByColumns && editingConfig.groupByColumns.length > 0 ? editingConfig.groupByColumns : editingConfig.columns.map(c => c.columnName)).join(' + ')}</strong>
+                              {editingConfig.filterConditions && editingConfig.filterConditions.length > 0 && (
+                                <> matching filter <strong className="font-mono font-bold text-amber-950">[{editingConfig.filterConditions.map(c => `${c.columnName} ${c.operator} ${c.value}`).join(' AND ')}]</strong></>
+                              )}, expects occurrence count <strong className="font-mono font-bold">= {editingConfig.aggregationRules?.[0]?.value ?? 1}</strong>. Occurring {editingConfig.aggregationRules?.[0]?.value ?? 1} time(s) passes cleanly; occurrences exceeding this threshold will be flagged as duplicates.
+                            </>
+                          ) : (
+                            <>
+                              Within each common group of <strong className="font-mono font-bold text-amber-950">{(editingConfig.groupByColumns && editingConfig.groupByColumns.length > 0 ? editingConfig.groupByColumns : editingConfig.columns.map(c => c.columnName)).join(' + ')}</strong>
+                              {editingConfig.filterConditions && editingConfig.filterConditions.length > 0 && (
+                                <> matching filter <strong className="font-mono font-bold text-amber-950">[{editingConfig.filterConditions.map(c => `${c.columnName} ${c.operator} ${c.value}`).join(' AND ')}]</strong></>
+                              )}, flags duplicate rows when occurrence count <strong className="font-mono font-bold">{editingConfig.aggregationRules?.[0]?.operator || '>'} {editingConfig.aggregationRules?.[0]?.value ?? 1}</strong>.
+                            </>
+                          )}
                         </p>
                       </div>
                     </div>

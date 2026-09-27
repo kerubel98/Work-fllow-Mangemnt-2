@@ -76,7 +76,7 @@ export class EmailAdapter implements IChannelAdapter {
         storagePath: att.url || att.storagePath || undefined,
         checksum: att.checksum || undefined,
         contentType: detectContentType(filename, mimeType),
-        rawBase64: att.base64 || undefined
+        rawBase64: att.rawBase64 || att.base64 || undefined
       };
     });
 

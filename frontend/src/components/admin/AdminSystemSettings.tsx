@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { EnvironmentSystem, Plugin, User } from '../../types';
-import { Server, ToggleLeft, ToggleRight, Plus, Trash2, ShieldCheck, Zap, X } from 'lucide-react';
+import { Server, ToggleLeft, ToggleRight, Plus, Trash2, ShieldCheck, Zap, X, KeyRound } from 'lucide-react';
+import AdminOAuth2Connections from './AdminOAuth2Connections';
 
 interface AdminSystemSettingsProps {
   systems: EnvironmentSystem[];
@@ -17,7 +18,7 @@ export default function AdminSystemSettings({
   onAddSystem,
   onDeleteSystem
 }: AdminSystemSettingsProps) {
-  const [activeTab, setActiveTab] = useState<'systems' | 'plugins'>('systems');
+  const [activeTab, setActiveTab] = useState<'systems' | 'plugins' | 'oauth2'>('systems');
   const [isAddingSystem, setIsAddingSystem] = useState(false);
 
   // New system form state
@@ -84,6 +85,16 @@ export default function AdminSystemSettings({
             }`}
           >
             Plugins & Webhooks ({plugins.length})
+          </button>
+          <button
+            type="button"
+            onClick={() => setActiveTab('oauth2')}
+            className={`px-3 py-1.5 rounded-lg font-bold transition flex items-center gap-1.5 ${
+              activeTab === 'oauth2' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-600 hover:text-slate-900'
+            }`}
+          >
+            <KeyRound className="w-3.5 h-3.5 text-blue-600" />
+            <span>OAuth 2.0 Auth</span>
           </button>
         </div>
       </div>
@@ -301,6 +312,12 @@ export default function AdminSystemSettings({
               </div>
             </form>
           </div>
+        </div>
+      )}
+
+      {activeTab === 'oauth2' && (
+        <div className="pt-2">
+          <AdminOAuth2Connections />
         </div>
       )}
     </div>

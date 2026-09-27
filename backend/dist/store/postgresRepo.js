@@ -237,7 +237,7 @@ export const postgresRepo = {
         assigned_tech_user_name, investigation_system_id, investigation_environment,
         investigation_table, validation_status, validation_errors, query_results, moved_to_testing,
         row_labels, added_label_column_name, custom_filters, team_id, visibility,
-        process_type, workflow_id, accepted_script_proposal_id, initial_snapshot
+        process_type, workflow_id, accepted_script_proposal_id, initial_snapshot, attachments
       ) VALUES (
         $1, $2, $3, $4, $5, $6, $7, $8, $9,
         $10, $11, $12, $13, $14,
@@ -246,7 +246,7 @@ export const postgresRepo = {
         $25, $26, $27,
         $28, $29, $30, $31, $32,
         $33, $34, $35, $36, $37,
-        $38, $39, $40, $41
+        $38, $39, $40, $41, $42
       ) ON CONFLICT (id) DO UPDATE SET
         title = EXCLUDED.title,
         description = EXCLUDED.description,
@@ -284,7 +284,8 @@ export const postgresRepo = {
         process_type = EXCLUDED.process_type,
         workflow_id = EXCLUDED.workflow_id,
         accepted_script_proposal_id = EXCLUDED.accepted_script_proposal_id,
-        initial_snapshot = EXCLUDED.initial_snapshot;`, [
+        initial_snapshot = EXCLUDED.initial_snapshot,
+        attachments = EXCLUDED.attachments;`, [
             issue.id,
             issue.title,
             issue.description,
@@ -325,7 +326,8 @@ export const postgresRepo = {
             issue.processType || 'INTERNAL_STAGED_FIX',
             issue.workflowId || null,
             issue.acceptedScriptProposalId || null,
-            issue.initialSnapshot ? JSON.stringify(issue.initialSnapshot) : null
+            issue.initialSnapshot ? JSON.stringify(issue.initialSnapshot) : null,
+            JSON.stringify(issue.attachments || [])
         ]);
         // If mapped data was passed and no transactions exist yet for this task, store it into task_dataset_transactions
         if (issue.firstLevelMappedData && issue.firstLevelMappedData.length > 0) {
@@ -353,6 +355,28 @@ export const postgresRepo = {
     },
     async deleteIssue(id) {
         const pool = getPostgresPool();
+        await pool.query('DELETE FROM task_dataset_transactions WHERE task_id = $1 OR LOWER(task_id) = LOWER($1);', [id]);
+        await pool.query('DELETE FROM task_workflow_executions WHERE task_id = $1 OR LOWER(task_id) = LOWER($1);', [id]);
+        await pool.query(`DELETE FROM central_transaction_repository
+       WHERE (current_task_id = $1 OR original_task_id = $1 OR task_id = $1)
+         AND (all_task_ids IS NULL OR jsonb_array_length(all_task_ids) <= 1 OR all_task_ids = jsonb_build_array($1::text));`, [id]);
+        await pool.query(`UPDATE central_transaction_repository
+       SET all_task_ids = (
+         SELECT COALESCE(jsonb_agg(elem), '[]'::jsonb)
+         FROM jsonb_array_elements_text(all_task_ids) elem
+         WHERE elem <> $1
+       ),
+       current_task_id = (
+         SELECT elem
+         FROM jsonb_array_elements_text(all_task_ids) elem
+         WHERE elem <> $1
+         LIMIT 1
+       ),
+       updated_at = NOW()
+       WHERE (current_task_id = $1 OR original_task_id = $1 OR task_id = $1)
+         AND all_task_ids IS NOT NULL
+         AND jsonb_array_length(all_task_ids) > 1
+         AND all_task_ids @> jsonb_build_array($1::text);`, [id]);
         const res = await pool.query('DELETE FROM issues WHERE id = $1 OR LOWER(id) = LOWER($1);', [id]);
         return (res.rowCount ?? 0) > 0;
     },
@@ -406,7 +430,8 @@ export const postgresRepo = {
             processType: r.process_type || 'INTERNAL_STAGED_FIX',
             workflowId: r.workflow_id || undefined,
             acceptedScriptProposalId: r.accepted_script_proposal_id || undefined,
-            initialSnapshot: parseJson(r.initial_snapshot, undefined)
+            initialSnapshot: parseJson(r.initial_snapshot, undefined),
+            attachments: parseJson(r.attachments, [])
         };
     },
     // ================= TASK DATASET TRANSACTIONS (100k+ SCALABILITY) =================
@@ -516,9 +541,10 @@ export const postgresRepo = {
                 _validation_details: evalInfo?.details || canonical._validation_details || null,
                 _target_record: evalInfo?.targetRecord || canonical._target_record || null,
                 _target_db: evalInfo?.targetDb || canonical._target_db || null,
-                _target_table: evalInfo?.targetTable || canonical._target_table || null,
                 _validation_workflow_id: latestWorkflowId || canonical._validation_workflow_id,
-                _validation_workflow_name: latestWorkflowName || canonical._validation_workflow_name
+                _validation_workflow_name: latestWorkflowName || canonical._validation_workflow_name,
+                auditTrail: evalInfo?.auditTrail || canonical.auditTrail || canonical._stage_results || canonical._validation_details?.stageResults || [],
+                _stage_results: evalInfo?.auditTrail || canonical.auditTrail || canonical._stage_results || canonical._validation_details?.stageResults || []
             };
         });
         return { rows, totalCount };
@@ -539,7 +565,9 @@ export const postgresRepo = {
              '_target_db', $4::text,
              '_target_table', $5::text,
              '_validation_workflow_id', $6::text,
-             '_validation_workflow_name', $7::text
+             '_validation_workflow_name', $7::text,
+             'auditTrail', $10::jsonb,
+             '_stage_results', $11::jsonb
            )
            WHERE task_id = $8 AND (
              row_number::text = $9
@@ -563,7 +591,9 @@ export const postgresRepo = {
                     workflowId,
                     workflowName,
                     taskId,
-                    rec.key
+                    rec.key,
+                    JSON.stringify(rec.auditTrail || rec.stageResults || []),
+                    JSON.stringify(rec.stageResults || rec.auditTrail || [])
                 ]);
             }
             await client.query('COMMIT');
@@ -1518,6 +1548,40 @@ export const postgresRepo = {
          VALUES (${placeholders})
          ON CONFLICT (transaction_key) DO UPDATE SET
            ${joinedUpdates};`, params);
+        }
+        // After upserting records, prune obsolete records for each task involved so that
+        // central_transaction_repository records strictly match the latest ingested dataset
+        const taskIds = Array.from(new Set(records.map(r => r.currentTaskId || r.originalTaskId).filter(Boolean)));
+        for (const tid of taskIds) {
+            const activeKeys = records
+                .filter(r => (r.currentTaskId || r.originalTaskId) === tid)
+                .map(r => r.transactionKey);
+            if (activeKeys.length > 0) {
+                // 1. Delete records belonging exclusively to this task that are not in the new activeKeys list
+                await pool.query(`DELETE FROM central_transaction_repository
+           WHERE (current_task_id = $1 OR original_task_id = $1 OR task_id = $1)
+             AND NOT (transaction_key = ANY($2::text[]))
+             AND (all_task_ids IS NULL OR jsonb_array_length(all_task_ids) <= 1 OR all_task_ids = jsonb_build_array($1::text));`, [tid, activeKeys]);
+                // 2. For multi-task records that no longer belong to this task, remove tid from all_task_ids
+                await pool.query(`UPDATE central_transaction_repository
+           SET all_task_ids = (
+             SELECT COALESCE(jsonb_agg(elem), '[]'::jsonb)
+             FROM jsonb_array_elements_text(all_task_ids) elem
+             WHERE elem <> $1
+           ),
+           current_task_id = (
+             SELECT elem
+             FROM jsonb_array_elements_text(all_task_ids) elem
+             WHERE elem <> $1
+             LIMIT 1
+           ),
+           updated_at = NOW()
+           WHERE (current_task_id = $1 OR original_task_id = $1 OR task_id = $1)
+             AND NOT (transaction_key = ANY($2::text[]))
+             AND all_task_ids IS NOT NULL
+             AND jsonb_array_length(all_task_ids) > 1
+             AND all_task_ids @> jsonb_build_array($1::text);`, [tid, activeKeys]);
+            }
         }
     },
     async getCentralTransaction(key) {
@@ -3012,6 +3076,7 @@ export const postgresRepo = {
                 crossRowRules: parseJson(r.cross_row_rules, []),
                 typeGroups: parseJson(r.type_groups, []),
                 typeGroupColumns: parseJson(r.type_group_columns, []),
+                filterConditions: parseJson(r.filter_conditions, []),
                 valueLabels: parseJson(r.value_labels, []),
                 unmappedValueAction: r.unmapped_value_action || 'FLAG',
                 violationAction: r.violation_action || 'FLAG',
@@ -3052,6 +3117,7 @@ export const postgresRepo = {
                 crossRowRules: parseJson(r.cross_row_rules, []),
                 typeGroups: parseJson(r.type_groups, []),
                 typeGroupColumns: parseJson(r.type_group_columns, []),
+                filterConditions: parseJson(r.filter_conditions, []),
                 valueLabels: parseJson(r.value_labels, []),
                 unmappedValueAction: r.unmapped_value_action || 'FLAG',
                 violationAction: r.violation_action || 'FLAG',
@@ -3094,6 +3160,7 @@ export const postgresRepo = {
                 crossRowRules: parseJson(r.cross_row_rules, []),
                 typeGroups: parseJson(r.type_groups, []),
                 typeGroupColumns: parseJson(r.type_group_columns, []),
+                filterConditions: parseJson(r.filter_conditions, []),
                 valueLabels: parseJson(r.value_labels, []),
                 unmappedValueAction: r.unmapped_value_action || 'FLAG',
                 violationAction: r.violation_action || 'FLAG',
@@ -3118,8 +3185,8 @@ export const postgresRepo = {
         id, name, db_id, db_name, table_name, rule_type, description,
         columns, group_by_columns, aggregation_rules, primary_key_column, role_column, semantic_roles, cross_row_rules,
         type_groups, type_group_columns, value_labels, unmapped_value_action, violation_action,
-        severity, violation_message, is_active, created_by, created_at, updated_at
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)
+        severity, violation_message, is_active, created_by, created_at, updated_at, filter_conditions
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)
       ON CONFLICT (id) DO UPDATE SET
         name = EXCLUDED.name,
         db_id = EXCLUDED.db_id,
@@ -3142,6 +3209,7 @@ export const postgresRepo = {
         severity = EXCLUDED.severity,
         violation_message = EXCLUDED.violation_message,
         is_active = EXCLUDED.is_active,
+        filter_conditions = EXCLUDED.filter_conditions,
         updated_at = NOW();`, [
             id,
             config.name,
@@ -3167,7 +3235,8 @@ export const postgresRepo = {
             config.isActive !== false,
             config.createdBy || 'admin',
             config.createdAt ? new Date(config.createdAt) : now,
-            now
+            now,
+            safeJsonStringify(config.filterConditions || [])
         ]);
         const saved = await this.getColumnConfigurationById(id);
         return saved || { ...config, id };
@@ -3204,8 +3273,9 @@ export const postgresRepo = {
         severity = $19,
         violation_message = $20,
         is_active = $21,
+        filter_conditions = $22,
         updated_at = NOW()
-       WHERE id = $22;`, [
+       WHERE id = $23;`, [
             merged.name,
             merged.dbId,
             merged.dbName || null,
@@ -3227,6 +3297,7 @@ export const postgresRepo = {
             merged.severity || 'CRITICAL',
             merged.violationMessage || null,
             merged.isActive !== false,
+            safeJsonStringify(merged.filterConditions || []),
             id
         ]);
         return this.getColumnConfigurationById(id);

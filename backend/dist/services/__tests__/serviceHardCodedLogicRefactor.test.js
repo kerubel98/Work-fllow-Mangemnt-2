@@ -36,11 +36,14 @@ describe('Service Layer Hard-Coded Logic Refactor Suite', () => {
                     id: 'ext-1',
                     workflowId: 'wf-1',
                     stageId: 's-1',
+                    targetDbId: 'db-1',
+                    targetDataSource: 'tbl',
                     dataSourceId: 'ds-1',
                     externalDbId: 'db-1',
                     targetTable: 'tbl',
                     selectedColumns: [],
-                    keyMappings: [{ sourceField: 'refnum', targetColumn: 'REF', required: true }]
+                    keyMappings: [{ inputField: 'refnum', sourceField: 'refnum', targetColumn: 'REF', required: true }],
+                    enabled: true
                 },
                 transactions: [{ transaction_id: 'TX-1', refnum: 'REF-001' }]
             });
@@ -59,7 +62,7 @@ describe('Service Layer Hard-Coded Logic Refactor Suite', () => {
         it('throws ConfigurationError on strictFailFast when no key can be determined', () => {
             expect(() => {
                 resolveCanonicalKey({
-                    workflow: { id: 'wf-empty', name: 'Empty WF', stages: [], rules: [], createdAt: '', updatedAt: '' },
+                    workflow: { id: 'wf-empty', name: 'Empty WF', targetDbId: 'db-1', targetTable: 'tbl', stages: [], steps: [], rules: [], createdAt: '', updatedAt: '' },
                     transactions: [{ foo: 'bar', baz: 123 }],
                     strictFailFast: true
                 });

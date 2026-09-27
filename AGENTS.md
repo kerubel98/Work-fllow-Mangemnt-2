@@ -62,3 +62,14 @@ Whenever modifying, designing, reviewing, or analyzing features in this reposito
     - Rollbacks must never execute global table locks (`LOCK TABLE ... IN EXCLUSIVE MODE`). Use task-scoped 64-bit advisory locks (`task_revert_${taskId}`).
     - All `UPDATE ... FROM` joins must deduplicate source rows using CTE `DISTINCT ON (task_id, row_number)` or join strictly on surrogate keys `(target.task_id = source.task_id AND target.row_number = source.row_number)`.
 
+14. **Centralized Enterprise OAuth 2.0 & Team Credential Segregation**:
+    - Centralize enterprise OAuth 2.0 credentials (Client ID, Client Secret, Tenant ID, Scopes) at the Admin level (`provider_connections` with `team_id IS NULL`).
+    - Individual teams must NEVER manage, enter, or be exposed to sensitive Client Secrets or App Registrations. Teams only select an Admin-configured OAuth 2.0 connection and provide their dedicated mailbox / account address (`userEmail`).
+    - The backend service layer (`oauth2Service`, `stagingService`) must dynamically resolve `adminOAuth2ConnectionId` at fetch/test runtime with least privilege.
+    - All Admin API endpoints returning connection definitions must mask `clientSecret` (`••••••••`) and preserve existing database secrets when updating without a new secret.
+
+15. **Persistent Presentation Assets & Re-executable Generation Scripts**:
+    - Whenever generating presentations, executive slide decks (`.pptx`), or visual system introductions, NEVER treat captured screenshots or generator code as ephemeral scratch.
+    - All high-resolution screenshots, diagrams, and media must be saved in a designated, persistent workspace folder (`presentation_assets/`) with clear descriptive filenames.
+    - The compilation/builder script (e.g. `build_presentation.py`) must be preserved in the repository root or assets directory, fully parameterized and documented so that future modifications, slide re-orderings, or content additions can be executed in a single command (`python build_presentation.py`).
+

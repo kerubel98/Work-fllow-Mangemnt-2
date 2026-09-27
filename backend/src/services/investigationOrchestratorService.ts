@@ -180,6 +180,10 @@ export const investigationOrchestratorService = {
               _target_record: evalInfo?.targetRecord || null,
               _target_db: evalInfo?.targetDb || null,
               _target_table: evalInfo?.targetTable || null,
+              _validation_workflow_id: workflowId,
+              _validation_workflow_name: existingExec.workflowName || workflow?.name,
+              auditTrail: evalInfo?.auditTrail || evalInfo?._stage_results || [],
+              _stage_results: evalInfo?._stage_results || evalInfo?.auditTrail || [],
               _is_cached: true,
               _evaluated_at: existingExec.executedAt
             };
@@ -305,9 +309,32 @@ export const investigationOrchestratorService = {
     // Register in-flight locks for fresh records
     const jobPromise = (async () => {
       // Execute Stages with Key Chaining and Liveness Checks
-      let currentActiveKeys: string[] = toExecute.map((r, idx) => getRecordCandidateKeys(r, idx)[0]);
-      let currentActiveRecords = [...toExecute];
+      // Strip residual evaluation metadata from previous workflow executions to prevent cross-workflow contamination
+      const indexedRecords: any[] = toExecute.map((r: any, idx: number) => {
+        const {
+          _validation_status,
+          _validation_action,
+          _validation_details,
+          _target_record,
+          _target_db,
+          _target_table,
+          _validation_workflow_id,
+          _validation_workflow_name,
+          _stage_results,
+          auditTrail,
+          _isDiagnosticOnly,
+          _diagnosticTaintReason,
+          ...cleanRecord
+        } = r;
+        return {
+          ...cleanRecord,
+          _origExecutionIndex: idx
+        };
+      });
+      let currentActiveKeys: string[] = indexedRecords.map((r, idx) => getRecordCandidateKeys(r, idx)[0]);
+      let currentActiveRecords: any[] = [...indexedRecords];
       let previousMirrorTable: string | null = null;
+      const latestEvaluatedByOrigIndex = new Map<number, any>();
 
       for (let stageIdx = 0; stageIdx < stages.length; stageIdx++) {
         const stage = stages[stageIdx];
@@ -350,14 +377,14 @@ export const investigationOrchestratorService = {
             // Gracefully pause affected transactions without crashing
             for (let rIdx = 0; rIdx < currentActiveRecords.length; rIdx++) {
               const r = currentActiveRecords[rIdx];
+              const origIdx = r._origExecutionIndex ?? rIdx;
               const txKey = getRecordCandidateKeys(r, rIdx)[0] || '';
-              finalEvaluatedRecords.push({
+              latestEvaluatedByOrigIndex.set(origIdx, {
                 ...r,
                 _validation_status: 'PAUSED_DB_OFFLINE',
                 _validation_details: { circuitBreaker: 'OPEN', error: liveness.error },
                 _evaluated_at: new Date().toISOString()
               });
-              totalFailed++;
 
               if (txKey) {
                 workflowEngineSingleton.cacheResult(
@@ -426,8 +453,7 @@ export const investigationOrchestratorService = {
         }
 
         // 5. Fetch External Data & Ingest to Mirror
-        // Build the extraction using ALL searchParameters configured across the stage's steps
-        // AND all parameters present in the uploaded file.
+        // Build the extraction using searchParameters configured for THIS stage
         const stageSearchParams: { inputField: string; targetColumn: string; required: boolean }[] = [];
         const seenInputs = new Set<string>();
 
@@ -453,11 +479,13 @@ export const investigationOrchestratorService = {
           }
         }
 
-        // Add all activeKeyFields present in the file
-        for (const kf of activeKeyFields) {
-          if (!seenInputs.has(kf.toLowerCase())) {
-            seenInputs.add(kf.toLowerCase());
-            stageSearchParams.push({ inputField: kf, targetColumn: kf, required: true });
+        // Only fallback to activeKeyFields if this stage has no explicit search parameters configured
+        if (stageSearchParams.length === 0) {
+          for (const kf of activeKeyFields) {
+            if (!seenInputs.has(kf.toLowerCase())) {
+              seenInputs.add(kf.toLowerCase());
+              stageSearchParams.push({ inputField: kf, targetColumn: kf, required: true });
+            }
           }
         }
 
@@ -494,10 +522,12 @@ export const investigationOrchestratorService = {
             }
             if (matchedTarget) {
               const primaryVal = candidateKeys[0] || `ROW-${rIdx + 1}`;
-              if (!seenMirrorKeys.has(primaryVal)) {
-                seenMirrorKeys.add(primaryVal);
+              const targetSig = JSON.stringify(matchedTarget);
+              if (!seenMirrorKeys.has(targetSig)) {
+                seenMirrorKeys.add(targetSig);
                 recordsToMirror.push({
                   [primaryKeyField]: primaryVal,
+                  _input_key: primaryVal,
                   ...matchedTarget
                 });
               }
@@ -529,11 +559,20 @@ export const investigationOrchestratorService = {
         const stageInputRecords = [...currentActiveRecords];
 
         // 7. Segregate Passed vs. Failed Partitions
-        const hasKeyCol = mirrorCols.includes(primaryKeyField);
+        // Resolve stage-specific primary key column present in this mirror table
+        const stageTargetCols = stageSearchParams.map(sp => (sp.targetColumn || sp.inputField).toLowerCase().replace(/[^a-z0-9_]/g, '_'));
+        const stageInputCols = stageSearchParams.map(sp => sp.inputField.toLowerCase().replace(/[^a-z0-9_]/g, '_'));
+        const resolvedMirrorKeyCol = 
+          (mirrorCols.includes(primaryKeyField.toLowerCase()) ? primaryKeyField.toLowerCase() : null) ||
+          stageTargetCols.find(c => mirrorCols.includes(c)) ||
+          stageInputCols.find(c => mirrorCols.includes(c)) ||
+          (mirrorCols.includes('fe_utrnno') ? 'fe_utrnno' : null) ||
+          (mirrorCols.includes('transaction_id') ? 'transaction_id' : null);
+
         const hasPayloadCol = mirrorCols.includes('payload');
-        const keyExpr = hasKeyCol
-          ? `${primaryKeyField}::text`
-          : (hasPayloadCol ? `COALESCE(payload->>'${primaryKeyField}', _mirror_id::text)` : `_mirror_id::text`);
+        const keyExpr = resolvedMirrorKeyCol
+          ? `"${resolvedMirrorKeyCol}"::text`
+          : (hasPayloadCol ? `COALESCE(payload->>'_input_key', payload->>'${primaryKeyField}', _mirror_id::text)` : `_mirror_id::text`);
 
         const partitionQuery = `
           SELECT ${keyExpr} as tx_key, _validation_status, _validation_action, _validation_details 
@@ -545,6 +584,18 @@ export const investigationOrchestratorService = {
         const partitionMap = new Map<string, any>();
         partitionRes.rows.forEach((r: any) => partitionMap.set(String(r.tx_key), r));
 
+        // Detect downstream connection edge from this stage to next stage
+        const nextStage = stageIdx + 1 < stages.length ? stages[stageIdx + 1] : null;
+        let stageConnectingEdge: any = null;
+        if (nextStage && workflow.connections && workflow.connections.length > 0) {
+          const currentStageNodeId = stage.id.replace(/^stage-/, '');
+          const nextStageNodeId = nextStage.id.replace(/^stage-/, '');
+          stageConnectingEdge = workflow.connections.find((c: any) =>
+            (c.fromNodeId === stage.id || c.fromNodeId === currentStageNodeId) &&
+            (c.toNodeId === nextStage.id || c.toNodeId === nextStageNodeId)
+          );
+        }
+
         const forwardKeys: string[] = [];
         const passKeys: string[] = [];
         const failKeys: string[] = [];
@@ -553,6 +604,7 @@ export const investigationOrchestratorService = {
         for (let recIdx = 0; recIdx < stageInputRecords.length; recIdx++) {
           const orig = stageInputRecords[recIdx];
           const candidateKeys = getRecordCandidateKeys(orig, recIdx);
+          const origIdx = orig._origExecutionIndex ?? recIdx;
 
           let matchedPartitionRow: any = null;
           for (const ck of candidateKeys) {
@@ -574,73 +626,146 @@ export const investigationOrchestratorService = {
               failKeys.push(keyStr);
             }
 
-            const canAdvance = isPass || (matchedPartitionRow._validation_status === 'FAIL' && (action === 'CONTINUE' || action === 'REPORT'));
+            let targetRec: any = null;
+            if (externalResult?.correlatedRecords) {
+              for (const k of candidateKeys) {
+                if (externalResult.correlatedRecords[k]) {
+                  targetRec = externalResult.correlatedRecords[k];
+                  break;
+                }
+              }
+            }
+
+            const stageStepEntries = stageSteps.map((st: any) => ({
+              ruleId: st.id,
+              ruleName: st.name || stage.name,
+              stageId: stage.id,
+              stageName: stage.name,
+              targetDb: targetDb?.name || stage.targetDbId || 'Target DB',
+              targetTable,
+              validationResult: isPass ? 'PASS' : 'FAIL',
+              pipelineAction: action,
+              message: isPass
+                ? `Condition satisfied in ${targetDb?.name || stage.targetDbId || 'Target DB'} (${targetTable})`
+                : (matchedPartitionRow._validation_details?.message || `Discrepancy detected in ${targetTable}`)
+            }));
+
+            const prevRecord = latestEvaluatedByOrigIndex.get(origIdx);
+            const prevAuditTrail = Array.isArray(prevRecord?.auditTrail) ? prevRecord.auditTrail : [];
+            const updatedAuditTrail = [...prevAuditTrail, ...stageStepEntries];
+
+            latestEvaluatedByOrigIndex.set(origIdx, {
+              ...orig,
+              _validation_status: matchedPartitionRow._validation_status,
+              _validation_action: matchedPartitionRow._validation_action,
+              _validation_details: {
+                ...(typeof matchedPartitionRow._validation_details === 'object' ? matchedPartitionRow._validation_details : {}),
+                stageResults: updatedAuditTrail
+              },
+              auditTrail: updatedAuditTrail,
+              _stage_results: updatedAuditTrail,
+              _isDiagnosticOnly: orig?._isDiagnosticOnly || false,
+              _target_record: targetRec || null,
+              _target_db: targetDb?.name || stage.targetDbId || 'Target DB',
+              _target_table: targetTable,
+              _validation_workflow_id: workflow.id,
+              _validation_workflow_name: workflow.name,
+              _evaluated_at: new Date().toISOString()
+            });
+
+            // Determine if record advances downstream
+            let canAdvance = false;
+            if (nextStage) {
+              if (stageConnectingEdge) {
+                if (stageConnectingEdge.fromPort === 'fail') {
+                  canAdvance = !isPass;
+                } else if (stageConnectingEdge.fromPort === 'pass') {
+                  canAdvance = isPass;
+                } else {
+                  canAdvance = isPass || (action === 'CONTINUE' || action === 'REPORT');
+                }
+              } else {
+                canAdvance = isPass || (action === 'CONTINUE' || action === 'REPORT');
+              }
+            }
+
             if (canAdvance) {
               forwardKeys.push(keyStr);
             }
 
-            const isHalted = !isPass && action !== 'CONTINUE' && action !== 'REPORT';
-            const isLastStage = stageIdx === stages.length - 1;
-
-            if (isLastStage || isHalted) {
-              let targetRec: any = null;
-              if (externalResult?.correlatedRecords) {
-                for (const k of candidateKeys) {
-                  if (externalResult.correlatedRecords[k]) {
-                    targetRec = externalResult.correlatedRecords[k];
-                    break;
-                  }
-                }
-              }
-
-              finalEvaluatedRecords.push({
-                ...orig,
-                _validation_status: matchedPartitionRow._validation_status,
-                _validation_action: matchedPartitionRow._validation_action,
-                _validation_details: matchedPartitionRow._validation_details,
-                _isDiagnosticOnly: orig?._isDiagnosticOnly || false,
-                _target_record: targetRec || null,
-                _target_db: targetDb?.name || stage.targetDbId || 'Target DB',
-                _target_table: targetTable,
-                _evaluated_at: new Date().toISOString()
-              });
-
-              if (isPass) totalPassed++;
-              else totalFailed++;
-
-              if (!shouldForceFresh) {
-                workflowEngineSingleton.cacheResult(
-                  workflowId,
-                  keyStr,
-                  isPass ? 'PASS' : 'FAIL',
-                  matchedPartitionRow._validation_status,
-                  matchedPartitionRow._validation_details
-                );
-              }
+            if (!shouldForceFresh) {
+              workflowEngineSingleton.cacheResult(
+                workflowId,
+                keyStr,
+                isPass ? 'PASS' : 'FAIL',
+                matchedPartitionRow._validation_status,
+                matchedPartitionRow._validation_details
+              );
             }
           } else {
             // CRITICAL: Record was NOT found in target database / mirror!
-            // A rule should NEVER say passed for a record not found in the external database!
             const recKey = candidateKeys[0] || `ROW-${recIdx + 1}`;
             failKeys.push(recKey);
             const failDetails = {
               existence: 'NOT_FOUND_IN_TARGET_DB',
               message: `Record not found in target database ${targetDb?.name || stage.targetDbId || 'Target DB'} (${targetTable})`
             };
+            const stageFailAction = stageSteps[0]?.onFailAction || (stage as any).actionOnFail || 'STOP';
 
-            finalEvaluatedRecords.push({
+            const stageStepEntries = stageSteps.map((st: any) => ({
+              ruleId: st.id,
+              ruleName: st.name || stage.name,
+              stageId: stage.id,
+              stageName: stage.name,
+              targetDb: targetDb?.name || stage.targetDbId || 'Target DB',
+              targetTable,
+              validationResult: 'FAIL',
+              pipelineAction: stageFailAction,
+              message: `Record not found in target database ${targetDb?.name || stage.targetDbId || 'Target DB'} (${targetTable})`
+            }));
+
+            const prevRecord = latestEvaluatedByOrigIndex.get(origIdx);
+            const prevAuditTrail = Array.isArray(prevRecord?.auditTrail) ? prevRecord.auditTrail : [];
+            const updatedAuditTrail = [...prevAuditTrail, ...stageStepEntries];
+
+            latestEvaluatedByOrigIndex.set(origIdx, {
               ...orig,
               _validation_status: 'FAIL',
-              _validation_action: stageSteps[0]?.onFailAction || 'STOP',
-              _validation_details: failDetails,
+              _validation_action: stageFailAction,
+              _validation_details: {
+                ...failDetails,
+                stageResults: updatedAuditTrail
+              },
+              auditTrail: updatedAuditTrail,
+              _stage_results: updatedAuditTrail,
               _isDiagnosticOnly: orig?._isDiagnosticOnly || false,
               _target_record: null,
               _target_db: targetDb?.name || stage.targetDbId || 'Target DB',
               _target_table: targetTable,
+              _validation_workflow_id: workflow.id,
+              _validation_workflow_name: workflow.name,
               _evaluated_at: new Date().toISOString()
             });
 
-            totalFailed++;
+            // Determine if NOT_FOUND record advances downstream
+            let canAdvance = false;
+            if (nextStage) {
+              if (stageConnectingEdge) {
+                if (stageConnectingEdge.fromPort === 'fail') {
+                  canAdvance = true; // Negative test / fallback branch!
+                } else if (stageConnectingEdge.fromPort === 'pass') {
+                  canAdvance = false;
+                } else {
+                  canAdvance = stageFailAction === 'CONTINUE' || stageFailAction === 'REPORT';
+                }
+              } else {
+                canAdvance = stageFailAction === 'CONTINUE' || stageFailAction === 'REPORT';
+              }
+            }
+
+            if (canAdvance) {
+              forwardKeys.push(recKey);
+            }
 
             if (!shouldForceFresh) {
               workflowEngineSingleton.cacheResult(
@@ -704,6 +829,19 @@ export const investigationOrchestratorService = {
           console.log(`[WorkflowEngine] No records forwarded from stage '${stage.name}'. Terminating pipeline early.`);
           break;
         }
+      }
+
+      // Consolidate final evaluated records preserving original index order
+      for (let i = 0; i < toExecute.length; i++) {
+        const latest = latestEvaluatedByOrigIndex.get(i) || {
+          ...toExecute[i],
+          _validation_status: 'FAIL',
+          _validation_details: { message: 'Pipeline terminated without evaluating record' }
+        };
+        const { _origExecutionIndex, ...cleanRecord } = latest;
+        finalEvaluatedRecords.push(cleanRecord);
+        if (cleanRecord._validation_status === 'PASS') totalPassed++;
+        else totalFailed++;
       }
 
       return {
@@ -781,7 +919,8 @@ export const investigationOrchestratorService = {
             details: rec._validation_details,
             targetRecord: sanitizedTarget || null,
             targetDb: rec._target_db || null,
-            targetTable: rec._target_table || null
+            targetTable: rec._target_table || null,
+            auditTrail: rec.auditTrail || rec._stage_results || []
           };
           for (const ck of candidateKeys) {
             resultMap[ck] = evalEntry;
@@ -811,7 +950,9 @@ export const investigationOrchestratorService = {
             details: r._validation_details,
             targetRecord: sanitizeTargetRecord(r._target_record) || null,
             targetDb: r._target_db || null,
-            targetTable: r._target_table || null
+            targetTable: r._target_table || null,
+            auditTrail: r.auditTrail || r._stage_results || [],
+            stageResults: r._stage_results || r.auditTrail || []
           }))
         );
 

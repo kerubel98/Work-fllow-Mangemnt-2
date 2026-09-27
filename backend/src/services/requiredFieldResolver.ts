@@ -86,6 +86,7 @@ export function resolveRequiredColumnsForStage(
     if (rule.sqlCondition) {
       const sqlParamMatches = rule.sqlCondition.match(/[:{]([a-zA-Z0-9_]+)[}]?/g);
       if (sqlParamMatches) {
+        for (const rawMatch of sqlParamMatches) {
           const cleaned = rawMatch.replace(/[:{}]/g, '').trim();
           if (cleaned) {
             if (!columnMap.has(cleaned)) {
@@ -93,6 +94,7 @@ export function resolveRequiredColumnsForStage(
             }
             columnMap.get(cleaned)!.usedByRuleIds.add(rule.id);
           }
+        }
       }
     }
   }

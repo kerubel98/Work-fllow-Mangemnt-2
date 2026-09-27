@@ -7,7 +7,7 @@ import React, { useState, useEffect, useCallback, Suspense, lazy } from 'react';
 import { 
   User, Issue, HashtagPreset, Plugin, DatabaseConnection, 
   Transaction, ChatMessage, EnvironmentSystem, QueryApprovalRequest, 
-  DbAccessRequest, ConnectionUsageLog, UserRole, Team, TeamTask, TeamInsight, TeamDiscussionMessage, AppNotification, DirectMessage
+  DbAccessRequest, ConnectionUsageLog, UserRole, Team, TeamTask, TeamInsight, TeamDiscussionMessage, AppNotification, DirectMessage, TaskPreFillFromMessage
 } from './types';
 import { 
   INITIAL_USERS, INITIAL_HASHTAGS, INITIAL_PLUGINS, 
@@ -30,7 +30,7 @@ const IssueDetailView = lazy(() => import('./components/IssueDetailView'));
 const TeamWorkspace = lazy(() => import('./components/TeamWorkspace'));
 const PersonalChat = lazy(() => import('./components/PersonalChat'));
 const DbQueryTool = lazy(() => import('./components/DbQueryTool'));
-const IssueCreator = lazy(() => import('./components/IssueCreator'));
+const WorkspaceTaskCreator = lazy(() => import('./components/issue/WorkspaceTaskCreator'));
 const ManagerialDashboard = lazy(() => import('./components/ManagerialDashboard'));
 const AdminPanel = lazy(() => import('./components/AdminPanel'));
 const WorkspaceSettings = lazy(() => import('./components/WorkspaceSettings'));
@@ -38,22 +38,15 @@ const SystemSettings = lazy(() => import('./components/settings/SystemSettings')
 const AdminTeamResourcesMonitor = lazy(() => import('./components/AdminTeamResourcesMonitor'));
 import { GovernanceProvider } from './context/GovernanceContext';
 import { GlobalMappingService } from './services/globalMappingService';
-import { SkeletonCard, SkeletonTable } from './components/common/Skeleton';
 
 function PanelLoadingSkeleton() {
   return (
-    <div className="w-full space-y-4 p-4 panel-enter">
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-        <SkeletonCard />
-        <SkeletonCard />
-        <SkeletonCard />
-        <SkeletonCard />
-      </div>
-      <SkeletonTable rows={6} cols={6} />
+    <div className="w-full h-96 flex flex-col items-center justify-center gap-3 p-8 bg-white/50 rounded-2xl border border-slate-200/80 animate-pulse">
+      <div className="w-9 h-9 border-3 border-purple-600 border-t-transparent rounded-full animate-spin" />
+      <span className="text-xs font-semibold text-slate-500 tracking-wide">Loading workspace view...</span>
     </div>
   );
 }
-
 
 const serializeIssues = (data: Issue[]) => {
   if (!Array.isArray(data)) return data;
@@ -104,6 +97,14 @@ export default function App() {
 
   // Helper State to link a transaction directly into the issue creator
   const [activeTransactionForLinking, setActiveTransactionForLinking] = useState<Transaction | null>(null);
+
+  // Mailbox Task Conversion pre-fill state
+  const [mailboxTaskPreFill, setMailboxTaskPreFill] = useState<TaskPreFillFromMessage | null>(null);
+
+  const handleCreateTaskFromMessage = (preFill: TaskPreFillFromMessage) => {
+    setMailboxTaskPreFill(preFill);
+    setActiveNavigation('create_case');
+  };
 
   // Active view navigation
   const [activeNavigation, setActiveNavigation] = useState<string>(() => {
@@ -870,9 +871,9 @@ export default function App() {
     api.deleteIssue(issueId).catch(err => console.warn('Could not delete issue in API:', err));
   };
 
-  const handleCreateIssue = (newIssueData: Omit<Issue, 'id' | 'createdAt' | 'creatorId' | 'creatorName' | 'status'>) => {
+  const handleCreateIssue = (newIssueData: Omit<Issue, 'id' | 'createdAt' | 'creatorId' | 'creatorName' | 'status'> & { id?: string }) => {
     if (!currentUser) return;
-    const newId = `ISS-${100 + issues.length + 1}`;
+    const newId = (newIssueData as any).id || `ISS-${100 + issues.length + 1}`;
     const freshIssue: Issue = {
       ...newIssueData,
       id: newId,
@@ -885,6 +886,14 @@ export default function App() {
     setIssues(prev => [freshIssue, ...prev]);
     setDeepLinkIssueId(newId);
     api.createIssue(freshIssue).catch(err => console.warn('Could not create issue in API:', err));
+
+    if (mailboxTaskPreFill?.sourceMessageId) {
+      api.linkMessageToIssue(mailboxTaskPreFill.sourceMessageId, newId).catch(err => {
+        console.warn('Could not link message to issue:', err);
+      });
+      setMailboxTaskPreFill(null);
+    }
+
     setActiveNavigation('workspace');
   };
 
@@ -1013,9 +1022,9 @@ export default function App() {
           />
 
           {/* Main Context Dynamic Panel Router */}
-          <main className="flex-grow p-2 lg:p-3 overflow-y-auto max-h-[calc(100vh-2.75rem)] panel-enter">
+          <main className="flex-grow p-2 lg:p-3 overflow-y-auto max-h-[calc(100vh-2.25rem)]">
             <Suspense fallback={<PanelLoadingSkeleton />}>
-            {(activeNavigation === 'workspace' || activeNavigation === 'my_tasks' || activeNavigation === 'hashtags' || activeNavigation === 'open_case' || activeNavigation === 'create_case') && (
+            {(activeNavigation === 'workspace' || activeNavigation === 'my_tasks' || activeNavigation === 'hashtags' || activeNavigation === 'open_case') && (
               <ErrorBoundary fallbackTitle="Workspace Display Error" fallbackMessage="An error occurred while loading the workspace. You can retry rendering or reset settings.">
                 <IssueDetailView 
                   issues={issues} 
@@ -1041,10 +1050,11 @@ export default function App() {
                       ? 'my_tasks'
                       : activeNavigation === 'hashtags'
                       ? 'hashtags'
-                      : (activeNavigation === 'open_case' || activeNavigation === 'create_case')
+                      : activeNavigation === 'open_case'
                       ? 'open_case'
                       : 'workspace'
                   }
+                  mailboxTaskPreFill={mailboxTaskPreFill}
                 />
               </ErrorBoundary>
             )}
@@ -1074,6 +1084,11 @@ export default function App() {
                   initialSelectedTaskId={deepLinkTaskId}
                   onOpenPersonalChat={handleOpenPersonalChat}
                   onActiveTeamChange={setActiveTeamName}
+                  onNavigateToTaskCreation={handleCreateTaskFromMessage}
+                  onOpenIssueInWorkspace={(issueId) => {
+                    setDeepLinkIssueId(issueId);
+                    setActiveNavigation('workspace');
+                  }}
                 />
               </ErrorBoundary>
             )}
@@ -1103,16 +1118,31 @@ export default function App() {
             )}
 
             {activeNavigation === 'create_case' && isAuthorizedTab('create_case') && (
-              <IssueCreator 
+              <WorkspaceTaskCreator 
                 hashtags={hashtags} 
-                transactions={transactions} 
                 currentUser={effectiveUser || currentUser} 
                 systems={systems}
+                databases={databases}
+                teams={teams}
                 users={users}
                 onCreateIssue={handleCreateIssue} 
-                activeTransactionForLinking={activeTransactionForLinking}
-                onClearLinkedTransaction={handleClearLinkedTransaction}
-                onNavigateToWorkspace={() => setActiveNavigation('workspace')}
+                onBackToWorkspace={() => {
+                  setMailboxTaskPreFill(null);
+                  setActiveNavigation('workspace');
+                }}
+                onTaskCreated={(generatedTaskId) => {
+                  if (mailboxTaskPreFill?.sourceMessageId && generatedTaskId) {
+                    api.linkMessageToIssue(mailboxTaskPreFill.sourceMessageId, generatedTaskId).catch(err => {
+                      console.warn('Could not link message to issue:', err);
+                    });
+                  }
+                  setMailboxTaskPreFill(null);
+                  setActiveNavigation('workspace');
+                  if (generatedTaskId) {
+                    setDeepLinkIssueId(generatedTaskId);
+                  }
+                }}
+                initialPreFill={mailboxTaskPreFill}
               />
             )}
 

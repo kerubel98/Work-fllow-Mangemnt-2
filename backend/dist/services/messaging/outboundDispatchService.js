@@ -14,9 +14,10 @@ export class OutboundDispatchService {
         const sql = `
       INSERT INTO outgoing_messages (
         id, channel, recipient_address, subject, text_body,
-        linked_issue_id, linked_message_id, status, created_at
+        linked_issue_id, linked_message_id, status, created_at,
+        team_id, conversation_id, sender_address
       )
-      VALUES ($1, $2, $3, $4, $5, $6, $7, 'PENDING', NOW())
+      VALUES ($1, $2, $3, $4, $5, $6, $7, 'PENDING', NOW(), $8, $9, $10)
       RETURNING id;
     `;
         await pool.query(sql, [
@@ -26,7 +27,10 @@ export class OutboundDispatchService {
             msg.subject || null,
             msg.body,
             msg.linkedIssueId || null,
-            msg.linkedMessageId || null
+            msg.linkedMessageId || null,
+            msg.teamId || null,
+            msg.conversationId || null,
+            msg.senderAddress || null
         ]);
         // Dispatch the message immediately
         try {
@@ -91,13 +95,21 @@ export class OutboundDispatchService {
     /**
      * Gets recent outbox messages.
      */
-    async getOutboxMessages(limit = 50, issueId) {
+    async getOutboxMessages(limit = 50, issueId, teamId) {
         const pool = getPostgresPool();
         let sql = `SELECT * FROM outgoing_messages`;
         const params = [];
+        const wheres = [];
         if (issueId) {
-            sql += ` WHERE linked_issue_id = $1`;
+            wheres.push(`linked_issue_id = $${params.length + 1}`);
             params.push(issueId);
+        }
+        if (teamId) {
+            wheres.push(`team_id = $${params.length + 1}`);
+            params.push(teamId);
+        }
+        if (wheres.length > 0) {
+            sql += ` WHERE ` + wheres.join(' AND ');
         }
         sql += ` ORDER BY created_at DESC LIMIT $${params.length + 1}`;
         params.push(limit);

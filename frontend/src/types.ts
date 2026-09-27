@@ -272,6 +272,7 @@ export interface Issue {
   workflowStatus?: 'DRAFT' | 'PENDING_CHECKER_TEST' | 'APPROVED' | 'DECLINED';
   acceptedScriptProposalId?: string;
   initialSnapshot?: Record<string, any>[];
+  attachments?: any[];
 }
 
 export interface CriteriaRule {
@@ -1338,7 +1339,7 @@ export interface ColumnValueLabelMapping {
 
 export interface TypeColumnCondition {
   columnName: string;
-  operator: '=' | '!=' | 'IN' | 'NOT_IN' | 'LIKE' | 'STARTS_WITH';
+  operator: '=' | '!=' | 'IN' | 'NOT_IN' | 'LIKE' | 'STARTS_WITH' | '>' | '>=' | '<' | '<=';
   value: string;
 }
 
@@ -1410,6 +1411,7 @@ export interface DatabaseColumnConfiguration {
   // Type Group classification based on single or multiple columns
   typeGroups?: TransactionTypeGroupConfig[]; // Transaction Type Groups (multi-column classified)
   typeGroupColumns?: string[]; // Columns used to identify type groups
+  filterConditions?: TypeColumnCondition[]; // Filtering conditions within common grouping column(s) for conditional count / duplicate evaluation
   // Value constant labeling and interpretation
   valueLabels?: ColumnValueLabelMapping[]; // User labels and interpretation when column value equals a constant
   unmappedValueAction?: 'FLAG' | 'ALLOW' | 'IGNORE'; // How to handle values without a defined label
@@ -1570,6 +1572,100 @@ export interface WorkflowBundle {
   approvedAt?: string;
   updatedAt: string;
 }
+
+// ==========================================
+// Collaborative Team Mailbox & Threading
+// ==========================================
+
+export type SupportedMessageChannel = 'email' | 'teams' | 'whatsapp' | 'telegram';
+
+export interface MailboxAttachment {
+  id: string;
+  messageId: string;
+  filename: string;
+  mimeType: string;
+  sizeBytes: number;
+  storagePath?: string;
+  checksum?: string;
+  contentType: string;
+  ingestionStatus?: string;
+  parsedData?: {
+    tabularRows?: Record<string, any>[];
+    sampleHeaders?: string[];
+    sampleRows?: Record<string, any>[];
+    tabularHeaders?: string[];
+    textContent?: string;
+    totalRows?: number;
+    rowCount?: number;
+  };
+  rawBase64?: string;
+  createdAt?: string;
+}
+
+export interface MailboxMessage {
+  id: string;
+  channel: SupportedMessageChannel;
+  direction: 'inbound' | 'outbound';
+  source_message_id?: string;
+  conversation_id?: string;
+  thread_id?: string;
+  sender_address?: string;
+  recipient_address?: string;
+  sender_name?: string;
+  sender_type?: string;
+  subject?: string;
+  text_body?: string;
+  html_body?: string;
+  raw_payload?: Record<string, any>;
+  status?: string;
+  linked_issue_id?: string | null;
+  created_at: string;
+  sent_at?: string;
+  attachments?: MailboxAttachment[];
+}
+
+export interface MailboxParticipant {
+  name: string;
+  address: string;
+  direction: 'inbound' | 'outbound';
+}
+
+export interface MailboxThread {
+  threadId: string;
+  subject: string;
+  normalizedSubject: string;
+  channel: SupportedMessageChannel;
+  messages: MailboxMessage[];
+  latestMessageAt: string;
+  linkedIssueId: string | null;
+  taskCreated: boolean;
+  participants: MailboxParticipant[];
+  attachments: MailboxAttachment[];
+  hasAttachments: boolean;
+  snippet: string;
+  unread: boolean;
+}
+
+export interface MailboxResponse {
+  threads: MailboxThread[];
+  totalThreads: number;
+  unreadCount: number;
+  unassignedCount: number;
+}
+
+export interface TaskPreFillFromMessage {
+  sourceMessageId: string;
+  threadId?: string;
+  title: string;
+  description: string;
+  teamId: string;
+  channel: SupportedMessageChannel;
+  senderName?: string;
+  senderAddress?: string;
+  taskVisibility: 'TEAM_PUBLIC';
+  attachments?: MailboxAttachment[];
+}
+
 
 
 

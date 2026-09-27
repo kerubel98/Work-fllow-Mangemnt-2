@@ -224,6 +224,58 @@ issuesRouter.post(['/:id/dataset', '/:id/ingest-dataset'], async (req: Request, 
   }
 });
 
+// POST /api/issues/:id/attachments/:attachmentIndex/promote-to-dataset - Ingest attachment into dataset table
+issuesRouter.post('/:id/attachments/:attachmentIndex/promote-to-dataset', async (req: Request, res: Response) => {
+  try {
+    const issue = await repo.getIssueById(req.params.id);
+    if (!issue) return res.status(404).json({ error: 'Issue not found' });
+    const attIndex = parseInt(req.params.attachmentIndex, 10);
+    const attachments = issue.attachments || [];
+    const att = (!isNaN(attIndex) ? attachments[attIndex] : null) || attachments.find(a => a.id === req.params.attachmentIndex);
+    if (!att) return res.status(404).json({ error: 'Attachment not found' });
+
+    let rows: Record<string, any>[] = att.parsedData?.tabularRows || att.parsedData?.sampleRows || [];
+    let headers: string[] = att.parsedData?.tabularHeaders || att.parsedData?.sampleHeaders || [];
+
+    if (rows.length === 0) {
+      const { AttachmentParserService } = await import('../services/messaging/attachmentParserService.js');
+      const parser = new AttachmentParserService();
+      const parseRes = await parser.parseAttachments([att]);
+      const parsedAtt = parseRes.attachments?.[0];
+      if (parsedAtt && parsedAtt.tabularRows && parsedAtt.tabularRows.length > 0) {
+        rows = parsedAtt.tabularRows;
+        headers = parsedAtt.tabularHeaders || Object.keys(rows[0]);
+      }
+    }
+
+    if (rows.length === 0) {
+      return res.status(400).json({ error: 'Attachment does not contain tabular records to promote into dataset.' });
+    }
+
+    await repo.createTaskDatasetTransactions(issue.id, rows);
+    await repo.updateIssue(issue.id, {
+      uploadedFileName: att.filename,
+      uploadedFileHeaders: headers,
+      transactionCount: rows.length,
+      datasetStatus: 'INGESTED'
+    });
+
+    eventService.broadcastEvent('issue:dataset_ingested', {
+      issueId: issue.id,
+      transactionCount: rows.length
+    });
+
+    return res.json({
+      success: true,
+      message: `Successfully promoted ${rows.length} records from attachment "${att.filename}" into investigation dataset.`,
+      transactionCount: rows.length,
+      headers
+    });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 issuesRouter.put('/:id', async (req: Request, res: Response) => {
   try {
     const updated = await repo.updateIssue(req.params.id, req.body);

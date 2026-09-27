@@ -59,8 +59,9 @@ export function resolveCanonicalKey(options) {
         }
     }
     // Check stage rules for primary sourceField or requiredParams
-    if (stage && workflow?.rules) {
-        const stageRules = workflow.rules.filter(r => r.stageId === stage.id);
+    const workflowRules = workflow?.rules || workflow?.steps;
+    if (stage && workflowRules) {
+        const stageRules = workflowRules.filter((r) => r.stageId === stage.id);
         for (const rule of stageRules) {
             if (rule.sourceField && STANDARD_CANDIDATE_KEYS.includes(rule.sourceField.toLowerCase())) {
                 return {

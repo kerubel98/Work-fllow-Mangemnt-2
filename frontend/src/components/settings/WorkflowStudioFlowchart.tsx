@@ -5,6 +5,7 @@ import {
   Database,
   CheckCircle2,
   AlertTriangle,
+  AlertCircle,
   ArrowRight,
   ArrowDown,
   Plus,

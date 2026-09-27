@@ -19,7 +19,7 @@ import {
   Network, GitFork, ArrowUpRight, ArrowDownLeft, Share2, Layers,
   Globe, Lock, FileCode, RefreshCw, GitPullRequest, ExternalLink, Sliders,
   PanelLeftClose, PanelLeftOpen, Settings, Database, Key, Server,
-  BookOpen, Copy, CheckCheck, Search, HardDrive, HelpCircle, FolderPlus, Activity, Table, Shield, Boxes
+  BookOpen, Copy, CheckCheck, Search, HardDrive, HelpCircle, FolderPlus, Activity, Table, Shield, Boxes, Mail
 } from 'lucide-react';
 
 import { TeamHeader } from './team/TeamHeader';
@@ -30,6 +30,9 @@ import { TeamDiscussionTab } from './team/TeamDiscussionTab';
 import { TeamResourcesTab } from './team/TeamResourcesTab';
 import { TeamChannelsTab } from './team/TeamChannelsTab';
 import { TeamStagedAssetsConsole } from './team/TeamStagedAssetsConsole';
+import { TeamMailboxTab } from './team/TeamMailboxTab';
+import { TaskPreFillFromMessage } from '../types';
+
 
 export type TeamSettingsSubTab = 'bundles' | 'approvals' | 'grants' | 'ai-strategy' | 'relationships' | 'db-access' | 'delegated-admin' | 'channels';
 export type ResourceSubTab = 'system-resources' | 'library' | 'insights';
@@ -53,10 +56,12 @@ interface TeamWorkspaceProps {
   onSendMessage: (msg: Omit<TeamDiscussionMessage, 'id' | 'timestamp'>) => void;
   openCreateModalSignal?: number;
   initialSelectedTeamId?: string | null;
-  initialActiveTab?: 'overview' | 'members' | 'discussion' | 'tasks' | 'timeline' | 'dashboard' | 'insights' | 'resources' | 'team_settings' | 'approvals' | 'grants' | 'ai-strategy' | 'relationships' | 'db-access' | 'delegated-admin' | null;
+  initialActiveTab?: 'overview' | 'members' | 'discussion' | 'tasks' | 'mailbox' | 'timeline' | 'dashboard' | 'insights' | 'resources' | 'team_settings' | 'approvals' | 'grants' | 'ai-strategy' | 'relationships' | 'db-access' | 'delegated-admin' | null;
   initialSelectedTaskId?: string | null;
   onOpenPersonalChat?: (userId: string) => void;
   onActiveTeamChange?: (teamName: string | null) => void;
+  onNavigateToTaskCreation?: (preFill: TaskPreFillFromMessage) => void;
+  onOpenIssueInWorkspace?: (issueId: string) => void;
 }
 
 export default function TeamWorkspace({
@@ -81,7 +86,9 @@ export default function TeamWorkspace({
   initialActiveTab,
   initialSelectedTaskId,
   onOpenPersonalChat,
-  onActiveTeamChange
+  onActiveTeamChange,
+  onNavigateToTaskCreation,
+  onOpenIssueInWorkspace
 }: TeamWorkspaceProps) {
 
   // Helper for computing 2-3 character initials for circle avatar
@@ -129,7 +136,7 @@ export default function TeamWorkspace({
 
   // Active sub-tab state inside Team Workspace
   const [activeTab, setActiveTab] = useState<
-    'overview' | 'members' | 'discussion' | 'tasks' | 'timeline' | 'dashboard' | 'insights' | 'resources' | 'team_settings' | 'approvals' | 'grants' | 'ai-strategy' | 'relationships' | 'db-access' | 'delegated-admin'
+    'overview' | 'members' | 'discussion' | 'tasks' | 'mailbox' | 'timeline' | 'dashboard' | 'insights' | 'resources' | 'team_settings' | 'approvals' | 'grants' | 'ai-strategy' | 'relationships' | 'db-access' | 'delegated-admin'
   >(
     isInitialSettingsSubTab ? 'team_settings' : (initialActiveTab === 'insights' ? 'resources' : (initialActiveTab || 'overview'))
   );
@@ -1385,6 +1392,7 @@ export default function TeamWorkspace({
                     { id: 'overview', label: 'Overview', icon: BarChart2 },
                     { id: 'members', label: 'Members', icon: Users, count: currentTeamUsers.length },
                     { id: 'tasks', label: 'Tasks', icon: CheckSquare, count: teamTasks.filter(t => t.status !== 'Done').length },
+                    { id: 'mailbox', label: 'Mailbox', icon: Mail },
                     { id: 'discussion', label: 'Discussion', icon: MessageSquare, count: teamMessages.length },
                     { id: 'resources', label: 'Resources', icon: Layers, count: allTeamDbs.length }
                   ].map(tab => {
@@ -1454,6 +1462,15 @@ export default function TeamWorkspace({
                     onAddTaskClick={() => setShowAddTaskModal(true)}
                     onUpdateTaskStatus={onUpdateTaskStatus}
                     onDeleteTask={onDeleteTask}
+                  />
+                )}
+
+                {activeTab === 'mailbox' && (
+                  <TeamMailboxTab
+                    currentTeam={currentTeam}
+                    currentUser={currentUser}
+                    onNavigateToTaskCreation={onNavigateToTaskCreation}
+                    onOpenIssueInWorkspace={onOpenIssueInWorkspace}
                   />
                 )}
 

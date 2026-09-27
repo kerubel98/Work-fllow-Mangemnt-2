@@ -111,8 +111,8 @@ export class MessageIntakeService {
         envelope.senderAddress,
         envelope.senderName || 'External Operator',
         envelope.senderType,
-        resolvedUserId || null,
-        resolvedTeamId || null,
+        envelope.personId || resolvedUserId || null,
+        envelope.teamId || resolvedTeamId || null,
         intent,
         envelope.priority || 'normal',
         envelope.textBody || '',
@@ -127,9 +127,9 @@ export class MessageIntakeService {
         for (const att of envelope.attachments) {
           await client.query(
             `INSERT INTO message_attachments (
-              id, message_id, filename, mime_type, size_bytes, storage_path, checksum, content_type, ingestion_status, created_at
+              id, message_id, filename, mime_type, size_bytes, storage_path, checksum, content_type, ingestion_status, parsed_data, raw_base64, created_at
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW());`,
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW());`,
             [
               att.id,
               envelope.messageId,
@@ -139,7 +139,9 @@ export class MessageIntakeService {
               att.storagePath || null,
               att.checksum || null,
               att.contentType,
-              att.ingestionStatus || 'NONE'
+              att.ingestionStatus || 'NONE',
+              att.parsedData ? JSON.stringify(att.parsedData) : null,
+              att.rawBase64 || null
             ]
           );
         }
@@ -362,6 +364,23 @@ export class MessageIntakeService {
       const effectiveTeam = resolvedTeamId || 'team-settlement-01';
       const effectiveCreator = resolvedUserId || 'usr-external-channel';
 
+      // Extract tabular records from attachments if present
+      let extractedRows: Record<string, any>[] = [];
+      let detectedHeaders: string[] = [];
+
+      if (envelope.attachments && envelope.attachments.length > 0) {
+        for (const att of envelope.attachments) {
+          const rows = att.parsedData?.tabularRows || att.parsedData?.sampleRows;
+          if (Array.isArray(rows) && rows.length > 0) {
+            extractedRows = extractedRows.concat(rows);
+          }
+          const headers = att.parsedData?.sampleHeaders || att.parsedData?.tabularHeaders;
+          if (Array.isArray(headers) && headers.length > 0) {
+            detectedHeaders = Array.from(new Set([...detectedHeaders, ...headers]));
+          }
+        }
+      }
+
       const newIssue: Issue = {
         id: `ISS-${Date.now().toString().slice(-6)}`,
         title: issueTitle,
@@ -375,8 +394,11 @@ export class MessageIntakeService {
         teamId: effectiveTeam,
         visibility: 'TEAM_PUBLIC',
         uploadedFileName: envelope.attachments?.[0]?.filename,
-        datasetStatus: envelope.attachments && envelope.attachments.length > 0 ? 'PENDING_MAPPING' : 'NONE',
-        transactionCount: 0,
+        uploadedFileHeaders: detectedHeaders.length > 0 ? detectedHeaders : undefined,
+        firstLevelMappedData: extractedRows.length > 0 ? extractedRows : undefined,
+        datasetStatus: extractedRows.length > 0 ? 'READY' : (envelope.attachments && envelope.attachments.length > 0 ? 'PENDING_MAPPING' : 'NONE'),
+        transactionCount: extractedRows.length,
+        attachments: envelope.attachments || [],
         chat: []
       };
 
@@ -614,6 +636,313 @@ export class MessageIntakeService {
 
     const res = await pool.query(sql, params);
     return res.rows;
+  }
+
+  /**
+   * Aggregated Team Mailbox with Thread Awareness, Inbound & Outbound collation,
+   * Attachments, and Task Creation Status.
+   */
+  async getTeamMailbox(
+    teamId: string,
+    filter: 'all' | 'inbound' | 'outbound' | 'unassigned' = 'all',
+    search?: string
+  ): Promise<{
+    threads: any[];
+    totalThreads: number;
+    unreadCount: number;
+    unassignedCount: number;
+  }> {
+    const pool = getPostgresPool();
+
+    // 1. Fetch incoming messages for this team
+    const inRes = await pool.query(
+      `SELECT 
+        id, channel, source_message_id, conversation_id, thread_id,
+        sender_address, sender_name, sender_type, resolved_user_id,
+        resolved_team_id, intent, priority, text_body, html_body,
+        raw_payload, status, dedupe_key, linked_issue_id, created_at,
+        'inbound' AS direction
+       FROM incoming_messages
+       WHERE resolved_team_id = $1
+       ORDER BY created_at ASC;`,
+      [teamId]
+    );
+
+    const incomingMessages = inRes.rows;
+    const incomingIds = incomingMessages.map(m => m.id);
+
+    // 2. Fetch attachments for incoming messages
+    const attachmentsMap: Record<string, any[]> = {};
+    if (incomingIds.length > 0) {
+      const attRes = await pool.query(
+        `SELECT 
+          id, message_id, filename, mime_type, size_bytes,
+          storage_path, checksum, content_type, ingestion_status,
+          parsed_data, raw_base64, created_at
+         FROM message_attachments
+         WHERE message_id = ANY($1::text[])
+         ORDER BY created_at ASC;`,
+        [incomingIds]
+      );
+      for (const a of attRes.rows) {
+        if (!attachmentsMap[a.message_id]) {
+          attachmentsMap[a.message_id] = [];
+        }
+        attachmentsMap[a.message_id].push({
+          id: a.id,
+          messageId: a.message_id,
+          filename: a.filename,
+          mimeType: a.mime_type,
+          sizeBytes: Number(a.size_bytes) || 0,
+          storagePath: a.storage_path,
+          checksum: a.checksum,
+          contentType: a.content_type,
+          ingestionStatus: a.ingestion_status,
+          parsedData: a.parsed_data,
+          rawBase64: a.raw_base64,
+          createdAt: a.created_at
+        });
+      }
+    }
+
+    // Attach to incoming messages
+    for (const m of incomingMessages) {
+      m.attachments = attachmentsMap[m.id] || [];
+    }
+
+    // 3. Fetch outgoing messages for this team
+    const outRes = await pool.query(
+      `SELECT
+        id, channel, recipient_address, subject, text_body,
+        linked_issue_id, linked_message_id, status, retry_count,
+        sent_at, created_at, team_id, conversation_id, sender_address,
+        'outbound' AS direction
+       FROM outgoing_messages
+       WHERE team_id = $1
+       ORDER BY created_at ASC;`,
+      [teamId]
+    );
+
+    const outgoingMessages = outRes.rows.map(m => ({
+      ...m,
+      attachments: []
+    }));
+
+    // 4. Combine all messages and group into threads
+    const allMessages = [...incomingMessages, ...outgoingMessages];
+
+    const extractCleanSubject = (msg: any): string => {
+      if (msg.raw_payload?.subject) return msg.raw_payload.subject;
+      if (msg.raw_payload?.metadata?.subject) return msg.raw_payload.metadata.subject;
+      if (msg.subject) return msg.subject;
+      const text = msg.text_body || '';
+      const firstLine = text.split('\n')[0].trim();
+      if (firstLine.length > 5 && firstLine.length < 80) return firstLine;
+      return `${(msg.channel || 'message').toUpperCase()} Message - ${new Date(msg.created_at).toLocaleDateString()}`;
+    };
+
+    const normalizeSubject = (subj: string): string => {
+      return subj.replace(/^(re|fwd|fw):\s*/i, '').trim();
+    };
+
+    const threadMap: Record<string, {
+      threadId: string;
+      subject: string;
+      normalizedSubject: string;
+      channel: SupportedMessageChannel;
+      messages: any[];
+      latestMessageAt: string;
+      linkedIssueId: string | null;
+      taskCreated: boolean;
+      participants: Array<{ name: string; address: string; direction: 'inbound' | 'outbound' }>;
+      attachments: any[];
+      hasAttachments: boolean;
+      snippet: string;
+      unread: boolean;
+    }> = {};
+
+    for (const msg of allMessages) {
+      const subj = extractCleanSubject(msg);
+      const normSubj = normalizeSubject(subj);
+      const threadKey = msg.conversation_id || msg.thread_id || msg.linked_message_id || `thread-${normSubj.toLowerCase()}`;
+
+      if (!threadMap[threadKey]) {
+        threadMap[threadKey] = {
+          threadId: threadKey,
+          subject: subj,
+          normalizedSubject: normSubj,
+          channel: msg.channel,
+          messages: [],
+          latestMessageAt: msg.created_at,
+          linkedIssueId: msg.linked_issue_id || null,
+          taskCreated: Boolean(msg.linked_issue_id),
+          participants: [],
+          attachments: [],
+          hasAttachments: false,
+          snippet: '',
+          unread: false
+        };
+      }
+
+      const thread = threadMap[threadKey];
+      thread.messages.push(msg);
+
+      if (msg.linked_issue_id) {
+        thread.linkedIssueId = msg.linked_issue_id;
+        thread.taskCreated = true;
+      }
+      if (new Date(msg.created_at) > new Date(thread.latestMessageAt)) {
+        thread.latestMessageAt = msg.created_at;
+        thread.snippet = (msg.text_body || '').slice(0, 140);
+        thread.channel = msg.channel;
+      }
+      if (msg.attachments && msg.attachments.length > 0) {
+        thread.hasAttachments = true;
+        thread.attachments.push(...msg.attachments);
+      }
+      if (msg.direction === 'inbound' && msg.status === 'RECEIVED') {
+        thread.unread = true;
+      }
+
+      const addr = msg.direction === 'inbound' ? msg.sender_address : msg.recipient_address;
+      const name = msg.direction === 'inbound' ? (msg.sender_name || addr) : addr;
+      if (!thread.participants.some(p => p.address === addr)) {
+        thread.participants.push({ name, address: addr, direction: msg.direction });
+      }
+    }
+
+    let threadList = Object.values(threadMap).map(t => {
+      t.messages.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+      if (!t.snippet && t.messages.length > 0) {
+        const lastMsg = t.messages[t.messages.length - 1];
+        t.snippet = (lastMsg.text_body || '').slice(0, 140);
+      }
+      return t;
+    });
+
+    // 5. Apply Filter
+    if (filter === 'inbound') {
+      threadList = threadList.filter(t => t.messages.some(m => m.direction === 'inbound'));
+    } else if (filter === 'outbound') {
+      threadList = threadList.filter(t => t.messages.some(m => m.direction === 'outbound'));
+    } else if (filter === 'unassigned') {
+      threadList = threadList.filter(t => !t.linkedIssueId);
+    }
+
+    // 6. Apply Search
+    if (search && search.trim()) {
+      const q = search.trim().toLowerCase();
+      threadList = threadList.filter(t => 
+        t.subject.toLowerCase().includes(q) ||
+        t.participants.some(p => p.name.toLowerCase().includes(q) || p.address.toLowerCase().includes(q)) ||
+        t.messages.some(m => (m.text_body || '').toLowerCase().includes(q))
+      );
+    }
+
+    threadList.sort((a, b) => new Date(b.latestMessageAt).getTime() - new Date(a.latestMessageAt).getTime());
+
+    const unreadCount = threadList.filter(t => t.unread).length;
+    const unassignedCount = threadList.filter(t => !t.linkedIssueId).length;
+
+    return {
+      threads: threadList,
+      totalThreads: threadList.length,
+      unreadCount,
+      unassignedCount
+    };
+  }
+
+  /**
+   * Links a message and its entire thread to a created Issue/Task, preventing
+   * duplicate task creation by other team members.
+   */
+  async linkMessageToIssue(messageId: string, issueId: string): Promise<boolean> {
+    const pool = getPostgresPool();
+
+    const msgRes = await pool.query(
+      `SELECT conversation_id, thread_id FROM incoming_messages WHERE id = $1;`,
+      [messageId]
+    );
+
+    const convId = msgRes.rows[0]?.conversation_id || msgRes.rows[0]?.thread_id;
+
+    if (convId) {
+      await pool.query(
+        `UPDATE incoming_messages 
+         SET linked_issue_id = $1 
+         WHERE conversation_id = $2 OR thread_id = $2 OR id = $3;`,
+        [issueId, convId, messageId]
+      );
+      await pool.query(
+        `UPDATE outgoing_messages
+         SET linked_issue_id = $1
+         WHERE conversation_id = $2;`,
+        [issueId, convId]
+      );
+    } else {
+      await pool.query(
+        `UPDATE incoming_messages 
+         SET linked_issue_id = $1 
+         WHERE id = $2;`,
+        [issueId, messageId]
+      );
+    }
+
+    await pool.query(
+      `UPDATE staged_messages 
+       SET status = 'CONVERTED_TO_TASK', created_issue_id = $1, linked_issue_id = $1, updated_at = NOW() 
+       WHERE conversation_id = $2 OR thread_id = $2 OR source_message_id = $2;`,
+      [issueId, convId || messageId]
+    );
+
+    return true;
+  }
+
+  /**
+   * Dispatches a reply in the context of an existing thread or inbound message.
+   */
+  async replyToMessage(teamId: string, payload: {
+    channel: SupportedMessageChannel;
+    to: string;
+    subject: string;
+    textBody: string;
+    htmlBody?: string;
+    conversationId?: string;
+    threadId?: string;
+    inReplyToMessageId?: string;
+    senderAddress?: string;
+  }): Promise<any> {
+    const pool = getPostgresPool();
+
+    let sender = payload.senderAddress;
+    if (!sender) {
+      const cfgRes = await pool.query(
+        `SELECT address FROM team_channel_configurations 
+         WHERE team_id = $1 AND channel = $2 AND is_active = true 
+         ORDER BY is_primary DESC LIMIT 1;`,
+        [teamId, payload.channel]
+      );
+      sender = cfgRes.rows[0]?.address || 'team-operations@bank.com';
+    }
+
+    const outboxId = await outboundDispatchService.enqueueMessage({
+      channel: payload.channel,
+      to: payload.to,
+      subject: payload.subject.startsWith('Re: ') ? payload.subject : `Re: ${payload.subject}`,
+      body: payload.textBody,
+      teamId,
+      conversationId: payload.conversationId || payload.threadId,
+      linkedMessageId: payload.inReplyToMessageId,
+      senderAddress: sender
+    });
+
+    return {
+      success: true,
+      id: outboxId,
+      outboxId,
+      status: 'QUEUED',
+      sentAt: new Date().toISOString()
+    };
   }
 }
 

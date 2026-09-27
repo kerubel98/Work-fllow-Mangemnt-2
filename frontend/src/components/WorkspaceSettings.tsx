@@ -20,6 +20,7 @@ import { WorkspaceGeneralTab } from './settings/WorkspaceGeneralTab';
 import { WorkspaceWorkflowTab } from './settings/WorkspaceWorkflowTab';
 import { WorkspaceNotificationsTab } from './settings/WorkspaceNotificationsTab';
 import { WorkspaceDataTab } from './settings/WorkspaceDataTab';
+import { WorkspaceAuthTab } from './settings/WorkspaceAuthTab';
 
 const DatabaseColumnConfigurationStudio = lazyWithRetry(() => import('./settings/DatabaseColumnConfiguration'), 'DatabaseColumnConfiguration');
 const ValidationBoxManager = lazyWithRetry(() => import('./settings/ValidationBoxManager').then(m => ({ default: m.ValidationBoxManager })), 'ValidationBoxManager');
@@ -51,6 +52,9 @@ export interface WorkspaceConfig {
   defaultRowsPerPage: number;
   defaultExportFormat: 'xlsx' | 'csv' | 'json';
   maskSensitiveCardNumbers: boolean;
+  adminOAuth2ConnectionId?: string;
+  operationalEmail?: string;
+  authChannel?: 'email' | 'teams';
 }
 
 const DEFAULT_WORKSPACE_CONFIG: WorkspaceConfig = {
@@ -69,7 +73,10 @@ const DEFAULT_WORKSPACE_CONFIG: WorkspaceConfig = {
   enableSlaBreachAlerts: true,
   defaultRowsPerPage: 50,
   defaultExportFormat: 'xlsx',
-  maskSensitiveCardNumbers: true
+  maskSensitiveCardNumbers: true,
+  adminOAuth2ConnectionId: '',
+  operationalEmail: '',
+  authChannel: 'email'
 };
 
 const STORAGE_KEY = 'operational_workspace_config_v1';
@@ -79,6 +86,7 @@ export type SettingsTab =
   | 'workflow' 
   | 'notifications' 
   | 'data' 
+  | 'auth'
   | 'db_config' 
   | 'validation_box' 
   | 'workflow_studio';
@@ -236,6 +244,7 @@ export default function WorkspaceSettings({
               {[
                 { id: 'general' as const, label: 'General', icon: Sliders, desc: 'Identity & Environment' },
                 { id: 'workflow' as const, label: 'Workflow', icon: Clock, desc: 'Rules & SLA targets' },
+                { id: 'auth' as const, label: 'Auth & Ingestion', icon: ShieldCheck, desc: 'OAuth 2.0 & Mailbox' },
                 { id: 'notifications' as const, label: 'Notifications', icon: Bell, desc: 'Alerts & Chimes' },
                 { id: 'data' as const, label: 'Data', icon: Database, desc: 'Page size & Exports' },
               ].map(item => {
@@ -315,6 +324,15 @@ export default function WorkspaceSettings({
                 config={config}
                 onChange={(updates) => setConfig(prev => ({ ...prev, ...updates }))}
                 onOpenWorkflowStudio={() => setActiveTab('workflow_studio')}
+              />
+            )}
+
+            {activeTab === 'auth' && (
+              <WorkspaceAuthTab
+                currentUser={currentUser}
+                config={config}
+                onChange={(updates) => setConfig(prev => ({ ...prev, ...updates }))}
+                onSave={handleApplyChanges}
               />
             )}
 
