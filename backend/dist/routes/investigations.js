@@ -175,7 +175,7 @@ investigationsRouter.post('/resume-paused', async (req, res) => {
 // POST /api/investigations/execute-universal - Universal workflow runner for Sandbox, Panel, or API
 investigationsRouter.post('/execute-universal', async (req, res) => {
     try {
-        const { workflowId, records, sourceType, sourceId, keyField, keyFields, priority, options, forceRerun, executedBy } = req.body;
+        const { workflowId, records, sourceType, sourceId, keyField, keyFields, priority, options, forceRerun, executedBy, useNewPipeline } = req.body;
         if (!workflowId) {
             return res.status(400).json({ error: 'workflowId is required' });
         }
@@ -183,7 +183,8 @@ investigationsRouter.post('/execute-universal', async (req, res) => {
             return res.status(400).json({ error: 'records array is required and must not be empty' });
         }
         const { investigationOrchestratorService } = await import('../services/investigationOrchestratorService.js');
-        const result = await investigationOrchestratorService.executeUniversalWorkflow({
+        // Unconditional execution via compiled ExecutablePipeline (§3.2, §7.2)
+        const result = await investigationOrchestratorService.executeViaNewPipeline({
             workflowId,
             records,
             sourceType: sourceType || 'QUERY_SANDBOX',
@@ -200,6 +201,32 @@ investigationsRouter.post('/execute-universal', async (req, res) => {
     catch (err) {
         console.error('Error in execute-universal:', err);
         return res.status(500).json({ error: err.message || 'Internal workflow execution error' });
+    }
+});
+// POST /api/investigations/execute-pipeline - Canonical DAG pipeline execution endpoint (§3.2, §7.2)
+investigationsRouter.post('/execute-pipeline', async (req, res) => {
+    try {
+        const { workflowId, records, sourceType, sourceId, options, executedBy } = req.body;
+        if (!workflowId) {
+            return res.status(400).json({ error: 'workflowId is required' });
+        }
+        if (!records || !Array.isArray(records) || records.length === 0) {
+            return res.status(400).json({ error: 'records array is required and must not be empty' });
+        }
+        const { investigationOrchestratorService } = await import('../services/investigationOrchestratorService.js');
+        const result = await investigationOrchestratorService.executeViaNewPipeline({
+            workflowId,
+            records,
+            sourceType: sourceType || 'PIPELINE_DIRECT',
+            sourceId,
+            options,
+            executedBy: executedBy || req.user?.name || req.user?.username || 'investigator'
+        });
+        return res.json(result);
+    }
+    catch (err) {
+        console.error('Error in execute-pipeline:', err);
+        return res.status(500).json({ error: err.message || 'Pipeline execution error' });
     }
 });
 // GET /api/investigations/:taskId/central-records - Dedicated Sheet 1 Master Ledger ingress

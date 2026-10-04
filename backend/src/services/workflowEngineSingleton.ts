@@ -150,15 +150,16 @@ class WorkflowEngineSingleton extends EventEmitter {
     records: Record<string, any>[],
     keyField = 'retrieval_ref_num'
   ): {
-    cacheHits: { record: Record<string, any>; cached: CachedValidationResult }[];
-    inFlight: { record: Record<string, any>; promise: Promise<any> }[];
-    toExecute: Record<string, any>[];
+    cacheHits: { origIdx: number; record: Record<string, any>; cached: CachedValidationResult }[];
+    inFlight: { origIdx: number; record: Record<string, any>; promise: Promise<any> }[];
+    toExecute: (Record<string, any> & { _origExecutionIndex?: number })[];
   } {
-    const cacheHits: { record: Record<string, any>; cached: CachedValidationResult }[] = [];
-    const inFlight: { record: Record<string, any>; promise: Promise<any> }[] = [];
-    const toExecute: Record<string, any>[] = [];
+    const cacheHits: { origIdx: number; record: Record<string, any>; cached: CachedValidationResult }[] = [];
+    const inFlight: { origIdx: number; record: Record<string, any>; promise: Promise<any> }[] = [];
+    const toExecute: (Record<string, any> & { _origExecutionIndex?: number })[] = [];
 
-    for (const rec of records) {
+    for (let idx = 0; idx < records.length; idx++) {
+      const rec = records[idx];
       const txKey = String(
         (keyField && rec[keyField]) ||
         rec.transaction_id ||
@@ -172,23 +173,23 @@ class WorkflowEngineSingleton extends EventEmitter {
         ''
       );
       if (!txKey) {
-        toExecute.push(rec);
+        toExecute.push({ ...rec, _origExecutionIndex: idx });
         continue;
       }
 
       const cached = this.getCachedResult(workflowId, txKey);
       if (cached) {
-        cacheHits.push({ record: rec, cached });
+        cacheHits.push({ origIdx: idx, record: rec, cached });
         continue;
       }
 
       const inFlightPromise = this.getInFlightLock(workflowId, txKey);
       if (inFlightPromise) {
-        inFlight.push({ record: rec, promise: inFlightPromise });
+        inFlight.push({ origIdx: idx, record: rec, promise: inFlightPromise });
         continue;
       }
 
-      toExecute.push(rec);
+      toExecute.push({ ...rec, _origExecutionIndex: idx });
     }
 
     return { cacheHits, inFlight, toExecute };

@@ -321,7 +321,8 @@ CREATE TABLE IF NOT EXISTS task_dataset_transactions (
     row_number INT NOT NULL,
     canonical_data JSONB NOT NULL DEFAULT '{}'::jsonb,
     raw_data JSONB NOT NULL DEFAULT '{}'::jsonb,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT task_dataset_transactions_task_id_row_number_key UNIQUE (task_id, row_number)
 );
 CREATE INDEX IF NOT EXISTS idx_task_dataset_lookup ON task_dataset_transactions(task_id, row_number);
 CREATE INDEX IF NOT EXISTS idx_task_dataset_rrn ON task_dataset_transactions(task_id, (canonical_data->>'retrievalRefNum'));

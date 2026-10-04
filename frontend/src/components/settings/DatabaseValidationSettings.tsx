@@ -83,6 +83,7 @@ export function normalizeWorkflow(wf: any): DatabaseValidationWorkflow {
     targetDbId: wf.targetDbId || '',
     targetTable: wf.targetTable || '',
     category: wf.category || 'Settlement',
+    attachedDbConfigIds: Array.isArray(wf.attachedDbConfigIds) ? wf.attachedDbConfigIds : [],
     stages,
     steps,
     version: wf.version || '2.2.0'

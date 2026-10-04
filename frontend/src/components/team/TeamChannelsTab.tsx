@@ -8,7 +8,7 @@ import {
   MessageSquare, Mail, Send, CheckCircle2, AlertTriangle, 
   RefreshCw, Plus, Shield, Terminal, Hash, PhoneCall, Bot,
   Inbox, FileText, Check, X, ArrowUpRight, Clock, UserCheck,
-  ChevronRight, Filter, Search, Layers, Server, Play, Eye, Key, Lock
+  ChevronRight, Filter, Search, Layers, Server, Play, Eye, Key, Lock, ShieldCheck
 } from 'lucide-react';
 import { Team, User } from '../../types';
 import { api } from '../../api/client';

@@ -344,6 +344,11 @@ Workflows are divided into ordered **`ProcessingStage`** objects:
 - `targetDbId`: Foreign key to `database_connections.id`.
 - `targetDataSource`: Physical table name in that database.
 - `businessMeaning`: Operational context (e.g., "Network Switch Ingress").
+- `attachedDbConfigIds`: Explicit array of `database_column_configurations.id` bound to this stage.
+- `cardinalityPolicy`: Multi-row policy (`STRICT_SINGLE`, `ONE_TO_MANY`, `EXPLICIT_LATEST`, `EXPLICIT_FIRST`, `ALL_ROWS`).
+- `aggregationStrategy`: Aggregation function (`NONE`, `SUM`, `COUNT`, `MIN`, `MAX`).
+- `orderByColumn`: Sort key used when `EXPLICIT_LATEST` or `EXPLICIT_FIRST` is configured.
+
 
 ### 9.2 Key Chaining Between Stages
 When a workflow spans multiple databases across stages, the orchestrator uses **Pipeline Key Chaining** (`investigationOrchestratorService.ts: lines 184–209`):
@@ -850,3 +855,29 @@ The current application context report has been generated and saved to `CURRENT_
   - Re-skinned `GovernanceScreen.tsx` into the **Operational Authority & Dual Authorization Center** featuring dedicated tabs for Financial Resolutions and Workflow Bundles with interactive evidence/manifest inspectors and Anti-Self-Approval enforcement banners, fully wrapped in `<ErrorBoundary>`.
   - Streamlined `WorkspaceSettings.tsx` and `WorkspaceGovernanceTab.tsx` by removing the redundant proposal queue and linking directly to the centralized Authority Center.
 - **Verification**: 100% pass rate across test suites (`workflowBundleAndGovernanceRefactor.test.ts`, `governanceAndAnalyticsRefactor.test.ts`, `messageIntegrationArchitecture.test.ts`), with clean TypeScript compilation and Vite build (`0` errors).
+
+---
+
+## 31. Data Preservation, Canonical Validation Box Typings & Team Database Isolation (2026-10-01)
+
+- **Strict Data Loss Prevention Guardrails**:
+  - Automated maintenance scripts, migrations, or scratch files must NEVER issue blanket `DELETE FROM <table>` or `DROP TABLE` on persistent entity tables (`database_validation_workflows`, `validation_boxes`, `database_connections`, `database_table_mappings`, `issues`, `teams`, `users`, `workflow_bundles`).
+  - Only auto-generated mirror tables (`mirror_%`) are considered ephemeral and eligible for batch dropping. All entity cleanup must be strictly scoped (`is_system_mock = true`) and requires explicit operator review.
+- **Canonical ValidationBoxType System**:
+  - Validation box container categories are strictly partitioned into four canonical enums:
+    1. `'INGESTION_SEARCH'`: Ingress table existence and primary key discovery (`auth_log_tab`).
+    2. `'CONDITION_CHECK'`: Inline field values, status checks, and ISO decline code validation.
+    3. `'RECONCILIATION'`: Cross-table / cross-system mathematical matching and financial amounts (`sv_fin_tab`).
+    4. `'REPORT'`: Diagnostic discrepancy emission.
+  - Internal check types (`EXISTENCE_CHECK`, `AMOUNT_MATCH`, `VALUE_MATCH`, `ISO_DECLINE_CODE`) must reside strictly inside `rule_definition.checkType` or `steps[].checkType`, never in `validation_boxes.box_type`. `ValidationBoxManager.tsx` silently excludes non-conforming types.
+- **Team-Scoped Database Isolation & Promotion Lifecycle**:
+  - `TeamWorkspace.tsx` (`handleCreateTeamDbSubmit` / `api.createTeamDatabase`) establishes team-private database connections (`database_connections.team_id = :teamId`).
+  - Team-private connections are visible and queryable only within their originating team. Promotion to system-wide global connections (`team_id IS NULL`) requires administrative review (`db_access_requests`).
+  - Sensitive connection credentials (passwords) are masked on API retrieval (`••••••••`) and preserved across metadata updates.
+- **Incident Post-Mortems & Operational Lessons (2026-10-01)**:
+  - **Incident 1 (Accidental Cleanup & Provenance)**: At 2:53 PM on Sep 28, a maintenance script (`scratch/comprehensive_cleanup.mjs`) intended to drop leftover mirror tables executed blanket `DELETE FROM database_validation_workflows` and `DELETE FROM validation_boxes` without a `WHERE` clause, wiping user workflows and boxes. *Lesson:* Persistent application data must never be treated as disposable test fixtures without verified ownership/provenance.
+  - **Incident 2 (ValidationBoxType Mismatch)**: Re-inserted validation boxes with non-standard check types (`EXISTENCE_CHECK`, `VALUE_MATCH`) were silently excluded from the UI by `ValidationBoxManager.tsx`. *Lesson:* Container types (`ValidationBoxType`) and execution check types (`CheckType`) are distinct architectural concepts and must remain separated across every layer.
+  - **Incident 3 (Team Database Connections)**: Database connections created in team workspaces require explicit ownership, query authorization, and formal promotion workflows to prevent cross-tenant data leaks. *Lesson:* Access must be bounded by the chain `User` → `Team Membership` → `Team` → `DB Connection` → `Allowed Operation`.
+  - **Core Engineering Mandate**: Replace the failure pattern `Assumption → Unverified modification → Persistent state changed → Data loss` with `Evidence → Inspection → Plan → Approval → Controlled modification → Verification`.
+
+

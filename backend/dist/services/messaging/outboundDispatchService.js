@@ -11,6 +11,22 @@ export class OutboundDispatchService {
     async enqueueMessage(msg) {
         const pool = getPostgresPool();
         const outboxId = `out-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+        // Validate linkedMessageId to satisfy foreign key constraint on incoming_messages(id)
+        let validLinkedMsgId = null;
+        if (msg.linkedMessageId) {
+            const checkIncoming = await pool.query(`SELECT id FROM incoming_messages WHERE id = $1 LIMIT 1;`, [msg.linkedMessageId]);
+            if (checkIncoming.rows.length > 0) {
+                validLinkedMsgId = msg.linkedMessageId;
+            }
+            else {
+                const checkStaged = await pool.query(`SELECT i.id FROM incoming_messages i 
+           JOIN staged_messages s ON (i.dedupe_key = s.dedupe_key OR (i.channel = s.channel AND i.source_message_id = s.source_message_id))
+           WHERE s.id = $1 LIMIT 1;`, [msg.linkedMessageId]);
+                if (checkStaged.rows.length > 0) {
+                    validLinkedMsgId = checkStaged.rows[0].id;
+                }
+            }
+        }
         const sql = `
       INSERT INTO outgoing_messages (
         id, channel, recipient_address, subject, text_body,
@@ -27,7 +43,7 @@ export class OutboundDispatchService {
             msg.subject || null,
             msg.body,
             msg.linkedIssueId || null,
-            msg.linkedMessageId || null,
+            validLinkedMsgId,
             msg.teamId || null,
             msg.conversationId || null,
             msg.senderAddress || null

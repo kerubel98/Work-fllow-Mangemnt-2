@@ -117,18 +117,19 @@ export class StagingService {
           `INSERT INTO staged_message_attachments (
             id, staged_message_id, filename, mime_type, size_bytes,
             content_type, storage_path, parsed_text, parsed_data,
-            parsing_status, parsing_error, created_at
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW());`,
+            raw_base64, parsing_status, parsing_error, created_at
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW());`,
           [
             att.attachmentId,
             stagedId,
             att.filename,
             att.mimeType,
-            0,
+            att.sizeBytes || 0,
             att.contentType,
             att.storagePath || null,
             att.parsedText || null,
             JSON.stringify(att.parsedData || {}),
+            att.rawBase64 || null,
             att.parsingStatus,
             att.parsingError || null
           ]
@@ -383,12 +384,32 @@ export class StagingService {
       `UPDATE staged_messages
        SET status = 'CONVERTED_TO_TASK',
            created_issue_id = $1,
+           linked_issue_id = $1,
            checker_id = $2,
            review_notes = $3,
            updated_at = NOW()
        WHERE id = $4;`,
       [createdIssue.id, checker.id, reviewNotes || `Approved by ${checker.name}`, id]
     );
+
+    // Propagate task linkage across thread/conversation
+    if (staged.conversationId || staged.threadId) {
+      const convId = staged.conversationId || staged.threadId;
+      await pool.query(
+        `UPDATE staged_messages 
+         SET linked_issue_id = $1, status = 'CONVERTED_TO_TASK', created_issue_id = $1, updated_at = NOW()
+         WHERE conversation_id = $2 OR thread_id = $2;`,
+        [createdIssue.id, convId]
+      );
+      await pool.query(
+        `UPDATE incoming_messages SET linked_issue_id = $1 WHERE conversation_id = $2 OR thread_id = $2;`,
+        [createdIssue.id, convId]
+      );
+      await pool.query(
+        `UPDATE outgoing_messages SET linked_issue_id = $1 WHERE conversation_id = $2;`,
+        [createdIssue.id, convId]
+      );
+    }
 
     // 3. Dispatch confirmation outbound message to requester
     try {
@@ -397,7 +418,10 @@ export class StagingService {
         channel: staged.channel,
         subject: `Re: ${staged.subject || 'Back-Office Request'} - Task #${createdIssue.id} Created`,
         body: `Hello ${staged.senderName || 'Valued Customer'},\n\nYour request has been accepted and logged into our operations queue as Task #${createdIssue.id} ("${createdIssue.title}"). Our team is currently investigating it.\n\nThank you,\nOperations Workflow Support`,
-        linkedIssueId: createdIssue.id
+        linkedIssueId: createdIssue.id,
+        teamId: staged.teamId || undefined,
+        conversationId: staged.conversationId || staged.threadId || undefined,
+        linkedMessageId: staged.id
       });
     } catch (dispatchErr: any) {
       console.warn(`[StagingService] Could not send outbound confirmation: ${dispatchErr.message}`);

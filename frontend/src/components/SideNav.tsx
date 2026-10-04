@@ -154,7 +154,7 @@ export default function SideNav({
 
   return (
     <aside 
-      className={`bg-[#0F172B] border-r border-slate-800 flex flex-col justify-between shadow-sm relative transition-all duration-200 ease-in-out shrink-0 text-slate-300 ${
+      className={`bg-ds-bg border-r border-slate-800 flex flex-col justify-between shadow-sm relative transition-all duration-200 ease-in-out shrink-0 text-slate-300 ${
         isCollapsed ? 'w-full lg:w-14' : 'min-w-[220px] w-full lg:w-56'
       }`} 
       id="app-sidebar"
@@ -176,7 +176,7 @@ export default function SideNav({
         ) : (
           <div className="hidden lg:flex items-center justify-between px-1 pb-1.5 border-b border-slate-800">
             <div className="flex items-center space-x-1.5">
-              <ShieldCheck className="text-[#155DFC]" size={15} />
+              <ShieldCheck className="text-ds-primary" size={15} />
               <span className="text-[9.5px] uppercase font-bold text-slate-300 tracking-wider font-mono">
                 Operational Core
               </span>
@@ -195,7 +195,7 @@ export default function SideNav({
         {/* Mobile Header */}
         <div className="flex lg:hidden items-center justify-between px-2 pb-1.5 border-b border-slate-800">
           <div className="flex items-center space-x-1.5">
-            <ShieldCheck className="text-[#155DFC]" size={15} />
+            <ShieldCheck className="text-ds-primary" size={15} />
             <span className="text-[9.5px] uppercase font-bold text-slate-300 tracking-wider font-mono">
               Operational Core
             </span>
@@ -218,15 +218,15 @@ export default function SideNav({
               onClick={() => setShowNotificationPanel(!showNotificationPanel)}
               className={`relative flex items-center justify-center w-9 h-9 mx-auto rounded-lg text-xs font-semibold tracking-wide transition-all cursor-pointer ${
                 showNotificationPanel
-                  ? 'bg-[#155DFC] text-white shadow-xs font-bold'
+                  ? 'bg-ds-primary text-ds-on-primary shadow-xs font-bold'
                   : unreadCount > 0
-                  ? 'text-white bg-slate-800 border border-[#155DFC]/60 hover:bg-slate-700'
+                  ? 'text-white bg-slate-800 border border-ds-primary/60 hover:bg-slate-700'
                   : 'text-slate-400 hover:text-white hover:bg-slate-800/80'
               }`}
               id="nav-notifications"
               title={`Notifications (${unreadCount} unread)`}
             >
-              <Bell size={16} className={showNotificationPanel ? 'text-white' : unreadCount > 0 ? 'text-[#155DFC]' : 'text-slate-400'} />
+              <Bell size={16} className={showNotificationPanel ? 'text-white' : unreadCount > 0 ? 'text-ds-primary' : 'text-slate-400'} />
               {unreadCount > 0 && (
                 <span className={`absolute -top-1 -right-1 min-w-[16px] h-[16px] px-0.5 text-[8.5px] font-bold rounded-full font-mono flex items-center justify-center border border-[#0F172B] shadow-xs ${
                   showNotificationPanel ? 'bg-amber-400 text-slate-900' : 'bg-red-500 text-white'
@@ -240,9 +240,9 @@ export default function SideNav({
               onClick={() => setShowNotificationPanel(!showNotificationPanel)}
               className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs font-medium tracking-wide transition-all cursor-pointer ${
                 showNotificationPanel
-                  ? 'bg-[#155DFC] text-white shadow-xs font-bold'
+                  ? 'bg-ds-primary text-ds-on-primary shadow-xs font-bold'
                   : unreadCount > 0
-                  ? 'text-white bg-slate-800/90 border border-[#155DFC]/60 hover:bg-slate-700'
+                  ? 'text-white bg-slate-800/90 border border-ds-primary/60 hover:bg-slate-700'
                   : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
               }`}
               id="nav-notifications"
@@ -250,7 +250,7 @@ export default function SideNav({
             >
               <div className="flex items-center space-x-2.5">
                 <div className="relative flex items-center justify-center">
-                  <Bell size={14} className={showNotificationPanel ? 'text-white' : unreadCount > 0 ? 'text-[#155DFC]' : 'text-slate-400'} />
+                  <Bell size={14} className={showNotificationPanel ? 'text-white' : unreadCount > 0 ? 'text-ds-primary' : 'text-slate-400'} />
                   {unreadCount > 0 && !showNotificationPanel && (
                     <span className="absolute -top-0.5 -right-0.5 w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
                   )}
@@ -281,7 +281,7 @@ export default function SideNav({
               }}
               className={`flex items-center justify-center w-9 h-9 mx-auto rounded-lg text-xs font-semibold tracking-wide transition-all cursor-pointer ${
                 (activeNavigation === 'workspace' || activeNavigation === 'my_tasks' || activeNavigation === 'open_case' || activeNavigation === 'create_case') && !showNotificationPanel
-                  ? 'bg-[#155DFC] text-white shadow-xs font-bold'
+                  ? 'bg-ds-primary text-ds-on-primary shadow-xs font-bold'
                   : 'text-slate-400 hover:text-white hover:bg-slate-800/80'
               }`}
               id="nav-workspace"
@@ -297,7 +297,7 @@ export default function SideNav({
               }}
               className={`w-full flex items-center space-x-2.5 px-2.5 py-1.5 rounded-lg text-xs font-medium tracking-wide transition-all cursor-pointer ${
                 (activeNavigation === 'workspace' || activeNavigation === 'my_tasks' || activeNavigation === 'open_case' || activeNavigation === 'create_case') && !showNotificationPanel
-                  ? 'bg-[#155DFC] text-white shadow-xs font-bold'
+                  ? 'bg-ds-primary text-ds-on-primary shadow-xs font-bold'
                   : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
               }`}
               id="nav-workspace"
@@ -317,7 +317,7 @@ export default function SideNav({
                 }}
                 className={`flex items-center justify-center w-9 h-9 mx-auto rounded-lg text-xs font-semibold tracking-wide transition-all cursor-pointer ${
                   (activeNavigation === 'workspace_settings' || activeNavigation === 'setting') && !showNotificationPanel
-                    ? 'bg-[#155DFC] text-white shadow-xs font-bold'
+                    ? 'bg-ds-primary text-ds-on-primary shadow-xs font-bold'
                     : 'text-slate-400 hover:text-white hover:bg-slate-800/80'
                 }`}
                 id="nav-workspace-settings"
@@ -333,7 +333,7 @@ export default function SideNav({
                 }}
                 className={`w-full flex items-center space-x-2.5 px-2.5 py-1.5 rounded-lg text-xs font-medium tracking-wide transition-all cursor-pointer ${
                   (activeNavigation === 'workspace_settings' || activeNavigation === 'setting') && !showNotificationPanel
-                    ? 'bg-[#155DFC] text-white shadow-xs font-bold'
+                    ? 'bg-ds-primary text-ds-on-primary shadow-xs font-bold'
                     : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
                 }`}
                 id="nav-workspace-settings"
@@ -356,7 +356,7 @@ export default function SideNav({
                     }}
                     className={`flex items-center justify-center w-9 h-9 mx-auto rounded-lg text-xs font-semibold tracking-wide transition-all cursor-pointer ${
                       activeNavigation === 'team_workspace' && !showNotificationPanel
-                        ? 'bg-[#155DFC] text-white shadow-xs font-bold'
+                        ? 'bg-ds-primary text-ds-on-primary shadow-xs font-bold'
                         : 'text-slate-400 hover:text-white hover:bg-slate-800/80'
                     }`}
                     id="nav-my-team"
@@ -374,7 +374,7 @@ export default function SideNav({
                     }}
                     className={`relative flex items-center justify-center w-9 h-9 mx-auto rounded-lg text-xs font-semibold tracking-wide transition-all cursor-pointer ${
                       activeNavigation === 'direct_chat' && !showNotificationPanel
-                        ? 'bg-[#155DFC] text-white shadow-xs font-bold'
+                        ? 'bg-ds-primary text-ds-on-primary shadow-xs font-bold'
                         : 'text-slate-400 hover:text-white hover:bg-slate-800/80'
                     }`}
                     id="nav-personal-chat"
@@ -382,7 +382,7 @@ export default function SideNav({
                   >
                     <MessageSquare size={16} />
                     {unreadDirectMessageCount > 0 && (
-                      <span className="absolute -top-1 -right-1 min-w-[16px] h-[16px] px-0.5 bg-[#155DFC] text-white text-[8.5px] font-bold rounded-full flex items-center justify-center font-mono border border-[#0F172B] shadow-xs">
+                      <span className="absolute -top-1 -right-1 min-w-[16px] h-[16px] px-0.5 bg-ds-primary text-ds-on-primary text-[8.5px] font-bold rounded-full flex items-center justify-center font-mono border border-[#0F172B] shadow-xs">
                         {unreadDirectMessageCount > 9 ? '9+' : unreadDirectMessageCount}
                       </span>
                     )}
@@ -393,7 +393,7 @@ export default function SideNav({
               <div className="space-y-0.5 pt-1.5 border-t border-slate-800/80">
                 <div className="px-2 py-0.5 flex items-center justify-between text-[9px] font-bold text-slate-500 uppercase tracking-wider font-mono">
                   <span>Team & Chat</span>
-                  <Users size={11} className="text-[#155DFC]" />
+                  <Users size={11} className="text-ds-primary" />
                 </div>
 
                 {/* 1. My Team */}
@@ -405,7 +405,7 @@ export default function SideNav({
                     }}
                     className={`w-full flex items-center space-x-2.5 px-2.5 py-1.5 rounded-lg text-xs font-medium tracking-wide transition-all cursor-pointer ${
                       activeNavigation === 'team_workspace' && !showNotificationPanel
-                        ? 'bg-[#155DFC] text-white shadow-xs font-bold'
+                        ? 'bg-ds-primary text-ds-on-primary shadow-xs font-bold'
                         : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
                     }`}
                     id="nav-my-team"
@@ -424,7 +424,7 @@ export default function SideNav({
                     }}
                     className={`w-full flex items-center justify-between px-2.5 py-1.5 rounded-lg text-xs font-medium tracking-wide transition-all cursor-pointer ${
                       activeNavigation === 'direct_chat' && !showNotificationPanel
-                        ? 'bg-[#155DFC] text-white shadow-xs font-bold'
+                        ? 'bg-ds-primary text-ds-on-primary shadow-xs font-bold'
                         : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
                     }`}
                     id="nav-personal-chat"
@@ -437,7 +437,7 @@ export default function SideNav({
                       <span className={`px-1.5 py-0.2 text-[9px] font-bold rounded-full font-mono transition-all ${
                         activeNavigation === 'direct_chat' && !showNotificationPanel
                           ? 'bg-white text-blue-900'
-                          : 'bg-[#155DFC] text-white shadow-2xs'
+                          : 'bg-ds-primary text-ds-on-primary shadow-2xs'
                       }`}>
                         {unreadDirectMessageCount}
                       </span>
@@ -459,7 +459,7 @@ export default function SideNav({
                   }}
                   className={`flex items-center justify-center w-9 h-9 mx-auto rounded-lg text-xs font-semibold tracking-wide transition-all cursor-pointer ${
                     activeNavigation === 'manager_analytics' && !showNotificationPanel
-                      ? 'bg-[#155DFC] text-white shadow-xs font-bold'
+                      ? 'bg-ds-primary text-ds-on-primary shadow-xs font-bold'
                       : 'text-slate-400 hover:text-white hover:bg-slate-800/80'
                   }`}
                   id="nav-analytics"
@@ -472,7 +472,7 @@ export default function SideNav({
               <div className="space-y-0.5 pt-1.5 border-t border-slate-800/80">
                 <div className="px-2 py-0.5 flex items-center justify-between text-[9px] font-bold text-slate-500 uppercase tracking-wider font-mono">
                   <span>Analytics</span>
-                  <BarChart3 size={11} className="text-[#155DFC]" />
+                  <BarChart3 size={11} className="text-ds-primary" />
                 </div>
                 <button
                   onClick={() => {
@@ -481,7 +481,7 @@ export default function SideNav({
                   }}
                   className={`w-full flex items-center space-x-2.5 px-2.5 py-1.5 rounded-lg text-xs font-medium tracking-wide transition-all cursor-pointer ${
                     activeNavigation === 'manager_analytics' && !showNotificationPanel
-                      ? 'bg-[#155DFC] text-white shadow-xs font-bold'
+                      ? 'bg-ds-primary text-ds-on-primary shadow-xs font-bold'
                       : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
                   }`}
                   id="nav-analytics"
@@ -507,7 +507,7 @@ export default function SideNav({
                     }}
                     className={`flex items-center justify-center w-9 h-9 mx-auto rounded-lg text-xs font-semibold tracking-wide transition-all cursor-pointer ${
                       activeNavigation === 'admin_panel' && activeAdminSubTab !== 'user_admin' && activeAdminSubTab !== 'connection_settings' && !showNotificationPanel
-                        ? 'bg-[#155DFC] text-white shadow-xs font-bold'
+                        ? 'bg-ds-primary text-ds-on-primary shadow-xs font-bold'
                         : 'text-slate-400 hover:text-white hover:bg-slate-800/80'
                     }`}
                     id="nav-admin"
@@ -525,7 +525,7 @@ export default function SideNav({
                     }}
                     className={`flex items-center justify-center w-9 h-9 mx-auto rounded-lg text-xs font-medium tracking-wide transition-all cursor-pointer ${
                       activeNavigation === 'admin_panel' && activeAdminSubTab === 'user_admin' && !showNotificationPanel
-                        ? 'bg-[#155DFC] text-white shadow-xs font-bold'
+                        ? 'bg-ds-primary text-ds-on-primary shadow-xs font-bold'
                         : 'text-slate-400 hover:text-white hover:bg-slate-800/80'
                     }`}
                     id="nav-user-admin"
@@ -543,7 +543,7 @@ export default function SideNav({
                     }}
                     className={`flex items-center justify-center w-9 h-9 mx-auto rounded-lg text-xs font-medium tracking-wide transition-all cursor-pointer ${
                       activeNavigation === 'admin_panel' && activeAdminSubTab === 'connection_settings' && !showNotificationPanel
-                        ? 'bg-[#155DFC] text-white shadow-xs font-bold'
+                        ? 'bg-ds-primary text-ds-on-primary shadow-xs font-bold'
                         : 'text-slate-400 hover:text-white hover:bg-slate-800/80'
                     }`}
                     id="nav-admin-oauth2"
@@ -561,7 +561,7 @@ export default function SideNav({
                     }}
                     className={`flex items-center justify-center w-9 h-9 mx-auto rounded-lg text-xs font-medium tracking-wide transition-all cursor-pointer ${
                       activeNavigation === 'system_settings' && !showNotificationPanel
-                        ? 'bg-[#155DFC] text-white shadow-xs font-bold'
+                        ? 'bg-ds-primary text-ds-on-primary shadow-xs font-bold'
                         : 'text-slate-400 hover:text-white hover:bg-slate-800/80'
                     }`}
                     id="nav-system-settings"
@@ -579,7 +579,7 @@ export default function SideNav({
                     }}
                     className={`flex items-center justify-center w-9 h-9 mx-auto rounded-lg text-xs font-medium tracking-wide transition-all cursor-pointer ${
                       activeNavigation === 'admin_team_resources' && !showNotificationPanel
-                        ? 'bg-[#155DFC] text-white shadow-xs font-bold'
+                        ? 'bg-ds-primary text-ds-on-primary shadow-xs font-bold'
                         : 'text-slate-400 hover:text-white hover:bg-slate-800/80'
                     }`}
                     id="nav-admin-team-resources"
@@ -605,7 +605,7 @@ export default function SideNav({
                     }}
                     className={`w-full flex items-center space-x-2.5 px-2.5 py-1.5 rounded-lg text-xs font-medium tracking-wide transition-all cursor-pointer ${
                       activeNavigation === 'admin_panel' && activeAdminSubTab !== 'user_admin' && activeAdminSubTab !== 'connection_settings' && !showNotificationPanel
-                        ? 'bg-[#155DFC] text-white shadow-xs font-bold'
+                        ? 'bg-ds-primary text-ds-on-primary shadow-xs font-bold'
                         : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
                     }`}
                     id="nav-admin"
@@ -624,7 +624,7 @@ export default function SideNav({
                     }}
                     className={`w-full flex items-center space-x-2.5 px-2.5 py-1.5 pl-5 rounded-lg text-xs font-medium tracking-wide transition-all cursor-pointer ${
                       activeNavigation === 'admin_panel' && activeAdminSubTab === 'user_admin' && !showNotificationPanel
-                        ? 'bg-[#155DFC] text-white shadow-xs font-bold'
+                        ? 'bg-ds-primary text-ds-on-primary shadow-xs font-bold'
                         : 'text-slate-400 hover:text-white hover:bg-slate-800/80'
                     }`}
                     id="nav-user-admin"
@@ -643,7 +643,7 @@ export default function SideNav({
                     }}
                     className={`w-full flex items-center space-x-2.5 px-2.5 py-1.5 pl-5 rounded-lg text-xs font-medium tracking-wide transition-all cursor-pointer ${
                       activeNavigation === 'admin_panel' && activeAdminSubTab === 'connection_settings' && !showNotificationPanel
-                        ? 'bg-[#155DFC] text-white shadow-xs font-bold'
+                        ? 'bg-ds-primary text-ds-on-primary shadow-xs font-bold'
                         : 'text-slate-400 hover:text-white hover:bg-slate-800/80'
                     }`}
                     id="nav-admin-oauth2"
@@ -662,7 +662,7 @@ export default function SideNav({
                     }}
                     className={`w-full flex items-center space-x-2.5 px-2.5 py-1.5 pl-5 rounded-lg text-xs font-medium tracking-wide transition-all cursor-pointer ${
                       activeNavigation === 'admin_team_resources' && !showNotificationPanel
-                        ? 'bg-[#155DFC] text-white shadow-xs font-bold'
+                        ? 'bg-ds-primary text-ds-on-primary shadow-xs font-bold'
                         : 'text-slate-400 hover:text-white hover:bg-slate-800/80'
                     }`}
                     id="nav-admin-team-resources"
@@ -682,7 +682,7 @@ export default function SideNav({
                     }}
                     className={`w-full flex items-center space-x-2.5 px-2.5 py-1.5 pl-5 rounded-lg text-xs font-medium tracking-wide transition-all cursor-pointer ${
                       activeNavigation === 'system_settings' && !showNotificationPanel
-                        ? 'bg-[#155DFC] text-white shadow-xs font-bold'
+                        ? 'bg-ds-primary text-ds-on-primary shadow-xs font-bold'
                         : 'text-slate-400 hover:text-white hover:bg-slate-800/80'
                     }`}
                     id="nav-system-settings"
@@ -713,7 +713,7 @@ export default function SideNav({
       ) : (
         <div className="p-2 border-t border-slate-800 text-[9px] bg-slate-900/40 hidden lg:block font-mono text-slate-400">
           <div className="flex items-center justify-between">
-            <span className="text-[#155DFC] font-bold block">SCOPE: ACTIVE</span>
+            <span className="text-ds-primary font-bold block">SCOPE: ACTIVE</span>
             <button
               onClick={toggleCollapsed}
               className="text-slate-400 hover:text-white p-0.5 rounded transition-colors cursor-pointer"
@@ -731,9 +731,9 @@ export default function SideNav({
         <div className={`fixed inset-y-0 left-0 ${isCollapsed ? 'sm:left-14' : 'sm:left-56'} z-50 w-full sm:w-88 bg-white border-r border-slate-200 shadow-2xl flex flex-col justify-between animate-in slide-in-from-left duration-200`}>
           
           {/* Panel Header */}
-          <div className="p-3 border-b border-slate-800 bg-[#0F172B] text-white flex items-center justify-between">
+          <div className="p-3 border-b border-slate-800 bg-ds-bg text-white flex items-center justify-between">
             <div className="flex items-center space-x-2">
-              <Bell size={16} className="text-[#155DFC]" />
+              <Bell size={16} className="text-ds-primary" />
               <div>
                 <h3 className="text-xs font-bold tracking-tight">Notifications</h3>
                 <p className="text-[9.5px] text-slate-400 font-mono">Chat & team alerts</p>

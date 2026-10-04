@@ -27,6 +27,10 @@ import {
   FileSpreadsheet
 } from 'lucide-react';
 import { showSystemAlert } from '../common/MessageModal';
+import { Button } from '../common/Button';
+import { Badge } from '../common/Badge';
+import { Modal } from '../common/Overlay';
+import { ConfirmDialog } from '../common/Feedback';
 
 interface SystemSettingsProps {
   currentUser: User;
@@ -78,6 +82,7 @@ export default function SystemSettings({
   const [dictCategory, setDictCategory] = useState('ALL');
   const [dictLoading, setDictLoading] = useState(false);
   const [dictSuccessMsg, setDictSuccessMsg] = useState<string | null>(null);
+  const [confirmDeleteSelectedOpen, setConfirmDeleteSelectedOpen] = useState(false);
 
   // Field Add/Edit Modal State
   const [showFieldModal, setShowFieldModal] = useState(false);
@@ -411,11 +416,9 @@ export default function SystemSettings({
     );
   };
 
-  const handleDeleteSelectedFields = async () => {
+  const executeDeleteSelectedFields = async () => {
     if (selectedFieldKeys.length === 0) return;
-    if (!window.confirm(`Delete ${selectedFieldKeys.length} selected fields from the Global Schema and Database?`)) {
-      return;
-    }
+    setConfirmDeleteSelectedOpen(false);
     try {
       for (const key of selectedFieldKeys) {
         globalMappingService.deleteStandardField(key, currentUser?.username || 'admin');
@@ -438,6 +441,11 @@ export default function SystemSettings({
         type: 'error'
       });
     }
+  };
+
+  const handleDeleteSelectedFields = () => {
+    if (selectedFieldKeys.length === 0) return;
+    setConfirmDeleteSelectedOpen(true);
   };
 
   const handleDiscoverFromDatabases = async () => {
@@ -1797,43 +1805,38 @@ export default function SystemSettings({
       )}
 
       {/* ========================================================================= */}
-      {/* MODAL: CLEAR ALL GLOBAL SCHEMA FIELDS                                      */}
+      {/* MODAL: CLEAR ALL GLOBAL SCHEMA FIELDS using accessible ConfirmDialog       */}
       {/* ========================================================================= */}
-      {showClearAllModal && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl shadow-xl border border-slate-200 max-w-md w-full p-6 space-y-4 animate-in fade-in zoom-in-95">
-            <div className="w-12 h-12 rounded-xl bg-red-100 text-red-600 flex items-center justify-center">
-              <Trash2 size={22} />
-            </div>
-            <div className="space-y-1">
-              <h3 className="text-sm font-bold text-slate-900">Delete All Global Schema Fields?</h3>
-              <p className="text-xs text-slate-500">
-                Are you sure you want to delete <span className="font-bold text-rose-600">all {fields.length} canonical fields</span> from the Global Standard Directory and Schema? 
-              </p>
-              <p className="text-xs text-slate-400">
-                This will clear all columns from the global directory in the database. You can always add custom fields or restore factory defaults anytime via &quot;Reset Defaults&quot;.
-              </p>
-            </div>
-            <div className="flex items-center justify-end gap-2.5 pt-3 border-t border-slate-100">
-              <button
-                type="button"
-                onClick={() => setShowClearAllModal(false)}
-                className="px-4 py-2 text-xs font-medium text-slate-600 hover:bg-slate-100 rounded-lg transition"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={handleClearAllFields}
-                className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white rounded-lg text-xs font-bold transition shadow-sm"
-                id="btn-confirm-clear-all"
-              >
-                Yes, Delete All ({fields.length})
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <ConfirmDialog
+        open={showClearAllModal}
+        title="Delete All Global Schema Fields?"
+        message={
+          <span>
+            Are you sure you want to delete <strong className="text-ds-danger">all {fields.length} canonical fields</strong> from the Global Standard Directory and Schema? This will clear all columns from the global directory in the database. You can restore factory defaults anytime via &quot;Reset Defaults&quot;.
+          </span>
+        }
+        confirmLabel={`Yes, Delete All (${fields.length})`}
+        cancelLabel="Cancel"
+        tone="danger"
+        onConfirm={handleClearAllFields}
+        onCancel={() => setShowClearAllModal(false)}
+      />
+
+      {/* Accessible ConfirmDialog for bulk deleting selected fields */}
+      <ConfirmDialog
+        open={confirmDeleteSelectedOpen}
+        title="Delete Selected Fields?"
+        message={
+          <span>
+            Are you sure you want to delete <strong className="text-ds-danger">{selectedFieldKeys.length} selected fields</strong> from the Global Schema and Database?
+          </span>
+        }
+        confirmLabel={`Delete ${selectedFieldKeys.length} Fields`}
+        cancelLabel="Cancel"
+        tone="danger"
+        onConfirm={executeDeleteSelectedFields}
+        onCancel={() => setConfirmDeleteSelectedOpen(false)}
+      />
 
       {/* ========================================================================= */}
       {/* MODAL: EXPORT / IMPORT JSON                                               */}

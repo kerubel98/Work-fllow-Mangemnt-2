@@ -98,6 +98,7 @@ miscRouter.get('/hashtags/analytics', async (_req, res) => {
                 workflowId: tag.workflowId,
                 workflowName: tag.workflowName,
                 processType: tag.processType || 'INTERNAL_STAGED_FIX',
+                hashtagType: tag.hashtagType || 'FILE_INGESTION',
                 totalTasks: matchingTasks.length,
                 openCount,
                 resolvedCount,
@@ -124,6 +125,152 @@ miscRouter.get('/hashtags/analytics', async (_req, res) => {
             issuesAwaitingSolution,
             totalTrackedTags: tags.length
         });
+    }
+    catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+});
+// ── Universal Hashtag Engine Routes (Phase 4) ────────────────────────────────
+// ── Universal Hashtag Engine Routes (Phase 4) ────────────────────────────────
+function normalizeHashtagParam(rawTag) {
+    const clean = (rawTag || '').trim().replace(/^#+/, '');
+    return clean ? `#${clean.toUpperCase()}` : '';
+}
+// POST /api/hashtags/test-preflight
+// Dry-run pre-flight test for any hashtag type
+miscRouter.post('/hashtags/test-preflight', async (req, res) => {
+    try {
+        const { testPreFlight } = await import('../services/hashtagService.js');
+        const { tag, sampleRows } = req.body;
+        if (!tag)
+            return res.status(400).json({ error: 'tag is required' });
+        const normalized = normalizeHashtagParam(tag);
+        const preset = await repo.getHashtagByTag(normalized);
+        if (!preset)
+            return res.status(404).json({ error: `Hashtag '${normalized}' not found` });
+        const result = await testPreFlight(preset, sampleRows || []);
+        return res.json(result);
+    }
+    catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+});
+// GET /api/hashtags/reports/team/:teamId - Team dashboard report
+miscRouter.get('/hashtags/reports/team/:teamId', async (req, res) => {
+    try {
+        const report = await repo.getTeamHashtagReport(req.params.teamId);
+        return res.json(report);
+    }
+    catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+});
+// GET /api/hashtags/reports/personal/:userId - Personal dashboard report
+miscRouter.get('/hashtags/reports/personal/:userId', async (req, res) => {
+    try {
+        const report = await repo.getPersonalHashtagReport(req.params.userId);
+        return res.json(report);
+    }
+    catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+});
+// GET /api/hashtags/lookup/bank/:bankCode - Quick bank code → bank name resolver
+miscRouter.get('/hashtags/lookup/bank/:bankCode', async (req, res) => {
+    try {
+        const result = await repo.lookupBankCode(req.params.bankCode);
+        if (!result.bankName) {
+            return res.status(404).json({ error: `No bank found for code '${req.params.bankCode}'` });
+        }
+        return res.json(result);
+    }
+    catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+});
+// GET /api/hashtags/:tag/runs - Retrieve execution run history
+miscRouter.get('/hashtags/:tag/runs', async (req, res) => {
+    try {
+        const normalized = normalizeHashtagParam(req.params.tag);
+        const limit = parseInt(req.query.limit || '50', 10);
+        const runs = await repo.getHashtagRuns(normalized, limit);
+        return res.json(runs);
+    }
+    catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+});
+// POST /api/hashtags/:tag/execute-scan
+// Triggers a Type B (Database-Direct Scanner) on demand
+miscRouter.post('/hashtags/:tag/execute-scan', async (req, res) => {
+    try {
+        const { executeDatabaseDirectScan } = await import('../services/hashtagService.js');
+        const { executedBy, taskId, teamId, isDryRun } = req.body;
+        if (!executedBy)
+            return res.status(400).json({ error: 'executedBy is required' });
+        const normalized = normalizeHashtagParam(req.params.tag);
+        const preset = await repo.getHashtagByTag(normalized);
+        if (!preset)
+            return res.status(404).json({ error: `Hashtag '${normalized}' not found` });
+        if (preset.hashtagType !== 'DATABASE_DIRECT_SCANNER') {
+            return res.status(400).json({
+                error: `Hashtag ${normalized} is of type '${preset.hashtagType}', not DATABASE_DIRECT_SCANNER`
+            });
+        }
+        const scanResult = await executeDatabaseDirectScan(preset, executedBy, isDryRun ?? true);
+        // Record the run in PostgreSQL
+        const runId = `run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        await repo.recordHashtagRun({
+            id: runId,
+            hashtagTag: normalized,
+            taskId: taskId || null,
+            teamId: teamId || null,
+            executedBy,
+            executionMode: isDryRun ? 'DRY_RUN_PARTIAL' : 'LIVE_FULL',
+            rowsScanned: scanResult.rowsScanned,
+            anomaliesDetected: scanResult.anomaliesDetected,
+            verdict: scanResult.verdict,
+            resultSnapshot: {
+                anomalyRows: scanResult.anomalyRows.slice(0, 100),
+                errors: scanResult.errors,
+                executionDurationMs: scanResult.executionDurationMs
+            },
+            isDiagnosticOnly: isDryRun ?? true,
+            executedAt: new Date().toISOString()
+        });
+        return res.json({ runId, ...scanResult });
+    }
+    catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+});
+// POST /api/hashtags/:tag/provision-table
+// Provisions a dedicated staging table for Type C (ETL/Staging) hashtags
+miscRouter.post('/hashtags/:tag/provision-table', async (req, res) => {
+    try {
+        const { executeExtractionStaging } = await import('../services/hashtagService.js');
+        const { executedBy } = req.body;
+        if (!executedBy)
+            return res.status(400).json({ error: 'executedBy is required' });
+        const normalized = normalizeHashtagParam(req.params.tag);
+        const preset = await repo.getHashtagByTag(normalized);
+        if (!preset)
+            return res.status(404).json({ error: `Hashtag '${normalized}' not found` });
+        const result = await executeExtractionStaging(preset, executedBy);
+        return res.json(result);
+    }
+    catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+});
+// GET /api/hashtags/:tag - Retrieve a single hashtag preset with all engine config
+miscRouter.get('/hashtags/:tag', async (req, res) => {
+    try {
+        const normalized = normalizeHashtagParam(req.params.tag);
+        const preset = await repo.getHashtagByTag(normalized);
+        if (!preset)
+            return res.status(404).json({ error: `Hashtag '${normalized}' not found` });
+        return res.json(preset);
     }
     catch (err) {
         return res.status(500).json({ error: err.message });

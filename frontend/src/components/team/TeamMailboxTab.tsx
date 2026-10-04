@@ -13,7 +13,8 @@ import {
   Mail, MessageSquare, Send, Paperclip, CheckCircle2, Clock, 
   Search, RefreshCw, PlusCircle, Reply, AlertCircle, ExternalLink, 
   FileSpreadsheet, FileText, Download, ChevronRight, User as UserIcon,
-  ShieldCheck, ArrowUpRight, ArrowDownLeft, Filter, Tag, Check
+  ShieldCheck, ArrowUpRight, ArrowDownLeft, Filter, Tag, Check, Key,
+  Image as ImageIcon, Maximize2
 } from 'lucide-react';
 
 interface TeamMailboxTabProps {
@@ -21,13 +22,15 @@ interface TeamMailboxTabProps {
   currentUser: User;
   onNavigateToTaskCreation?: (preFill: TaskPreFillFromMessage) => void;
   onOpenIssueInWorkspace?: (issueId: string) => void;
+  onOpenChannelsTab?: () => void;
 }
 
 export const TeamMailboxTab: React.FC<TeamMailboxTabProps> = ({
   currentTeam,
   currentUser,
   onNavigateToTaskCreation,
-  onOpenIssueInWorkspace
+  onOpenIssueInWorkspace,
+  onOpenChannelsTab
 }) => {
   const [threads, setThreads] = useState<MailboxThread[]>([]);
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
@@ -40,9 +43,11 @@ export const TeamMailboxTab: React.FC<TeamMailboxTabProps> = ({
   // Reply composer state
   const [showReplyComposer, setShowReplyComposer] = useState(false);
   const [replyBody, setReplyBody] = useState('');
+  const [quickReplyText, setQuickReplyText] = useState('');
   const [isSendingReply, setIsSendingReply] = useState(false);
   const [replySuccessMsg, setReplySuccessMsg] = useState<string | null>(null);
   const [replyError, setReplyError] = useState<string | null>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
 
   // Attachment inspection modal
   const [inspectingAttachment, setInspectingAttachment] = useState<MailboxAttachment | null>(null);
@@ -162,9 +167,16 @@ export const TeamMailboxTab: React.FC<TeamMailboxTabProps> = ({
     onNavigateToTaskCreation(preFill);
   };
 
-  // Send Reply Action
-  const handleSendReply = async () => {
-    if (!selectedThread || !replyBody.trim()) return;
+  // Auto-scroll messages list to latest message when thread or messages change
+  useEffect(() => {
+    if (selectedThreadId) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [selectedThreadId, selectedThread?.messages.length]);
+
+  // Unified Outbound Reply Dispatcher
+  const dispatchOutboundReply = async (messageText: string, isQuick: boolean = false) => {
+    if (!selectedThread || !messageText.trim()) return;
 
     // Determine recipient: find last inbound sender, or first participant
     const lastInbound = [...selectedThread.messages].reverse().find(m => m.direction === 'inbound');
@@ -185,15 +197,19 @@ export const TeamMailboxTab: React.FC<TeamMailboxTabProps> = ({
         channel: selectedThread.channel,
         to: toAddress,
         subject: selectedThread.subject.startsWith('Re:') ? selectedThread.subject : `Re: ${selectedThread.subject}`,
-        textBody: replyBody.trim(),
+        textBody: messageText.trim(),
         conversationId: selectedThread.threadId,
         threadId: selectedThread.threadId,
         inReplyToMessageId: lastInbound?.id
       });
 
       setReplySuccessMsg('Reply dispatched successfully to outbox!');
-      setReplyBody('');
-      setShowReplyComposer(false);
+      if (isQuick) {
+        setQuickReplyText('');
+      } else {
+        setReplyBody('');
+        setShowReplyComposer(false);
+      }
 
       // Refresh thread
       await loadMailbox(true);
@@ -205,6 +221,9 @@ export const TeamMailboxTab: React.FC<TeamMailboxTabProps> = ({
       setIsSendingReply(false);
     }
   };
+
+  const handleSendReply = () => dispatchOutboundReply(replyBody, false);
+  const handleSendQuickReply = () => dispatchOutboundReply(quickReplyText, true);
 
   // Helper to download or open attachment
   const handleDownloadAttachment = (att: MailboxAttachment) => {
@@ -220,13 +239,13 @@ export const TeamMailboxTab: React.FC<TeamMailboxTabProps> = ({
   };
 
   return (
-    <div className="flex-1 flex flex-col md:flex-row h-full min-h-[550px] bg-slate-50/50 rounded-2xl border border-slate-200/90 overflow-hidden shadow-xs font-sans" id="team-mailbox-container">
+    <div className="flex-1 flex flex-col md:flex-row h-full min-h-0 bg-slate-50/50 rounded-2xl border border-slate-200/90 overflow-hidden shadow-xs font-sans" id="team-mailbox-container">
       {/* ========================================================
           LEFT COLUMN: THREAD LIST, SEARCH & FILTERS
          ======================================================== */}
-      <div className="w-full md:w-96 flex flex-col border-b md:border-b-0 md:border-r border-slate-200 bg-white shrink-0">
+      <div className="w-full md:w-96 flex flex-col h-full min-h-0 border-b md:border-b-0 md:border-r border-slate-200 bg-white shrink-0 overflow-hidden">
         {/* Header & Search */}
-        <div className="p-3.5 border-b border-slate-100 space-y-3 bg-slate-50/70">
+        <div className="p-3.5 border-b border-slate-100 space-y-3 bg-slate-50/70 shrink-0">
           <div className="flex items-center justify-between">
             <div className="flex items-center space-x-2">
               <div className="w-7 h-7 rounded-lg bg-blue-100 text-blue-700 flex items-center justify-center">
@@ -237,17 +256,33 @@ export const TeamMailboxTab: React.FC<TeamMailboxTabProps> = ({
                 <p className="text-[10px] text-slate-500 font-mono">Consolidated Inbound & Outbound</p>
               </div>
             </div>
-            <button
-              type="button"
-              onClick={() => {
-                setIsRefreshing(true);
-                loadMailbox(true);
-              }}
-              className="p-1.5 hover:bg-slate-200 rounded-lg text-slate-500 hover:text-slate-800 transition-colors cursor-pointer"
-              title="Refresh Mailbox"
-            >
-              <RefreshCw size={13} className={isRefreshing ? 'animate-spin text-blue-600' : ''} />
-            </button>
+            <div className="flex items-center gap-1.5">
+              {onOpenChannelsTab && (
+                <button
+                  type="button"
+                  onClick={onOpenChannelsTab}
+                  className="px-2.5 py-1 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-lg text-[11px] font-bold transition-colors cursor-pointer flex items-center gap-1 border border-blue-200/80"
+                  title="Connect Email Provider & Authenticate Mailbox"
+                >
+                  <Key size={12} />
+                  <span>Connect Email</span>
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={async () => {
+                  setIsRefreshing(true);
+                  if (currentTeam?.id) {
+                    await api.fetchTeamMessages(currentTeam.id).catch(() => null);
+                  }
+                  await loadMailbox(true);
+                }}
+                className="p-1.5 hover:bg-slate-200 rounded-lg text-slate-500 hover:text-slate-800 transition-colors cursor-pointer"
+                title="Fetch & Refresh Mailbox"
+              >
+                <RefreshCw size={13} className={isRefreshing ? 'animate-spin text-blue-600' : ''} />
+              </button>
+            </div>
           </div>
 
           {/* Search bar */}
@@ -287,24 +322,42 @@ export const TeamMailboxTab: React.FC<TeamMailboxTabProps> = ({
         </div>
 
         {/* Thread List */}
-        <div className="flex-1 overflow-y-auto divide-y divide-slate-100">
+        <div className="flex-1 overflow-y-auto no-scrollbar divide-y divide-slate-100 min-h-0">
           {isLoading ? (
             <div className="p-8 text-center text-slate-400 text-xs font-mono flex flex-col items-center justify-center space-y-2">
               <RefreshCw size={18} className="animate-spin text-blue-500" />
               <span>Collating mailbox threads...</span>
             </div>
           ) : filteredThreads.length === 0 ? (
-            <div className="p-8 text-center text-slate-400 text-xs font-mono space-y-2">
-              <Mail size={24} className="mx-auto text-slate-300" />
-              <p>No messages match the current filter.</p>
-              {filter !== 'all' && (
+            <div className="p-8 text-center text-slate-500 text-xs font-mono space-y-3">
+              <Mail size={28} className="mx-auto text-blue-400" />
+              <div>
+                <p className="font-bold text-slate-800">No Mailbox Messages Found</p>
+                <p className="text-[11px] text-slate-400 mt-1 font-sans">
+                  {filter === 'all' 
+                    ? 'Authenticate your team email address with the corporate OAuth 2.0 provider to ingest incoming requests.'
+                    : 'No messages match the current filter.'}
+                </p>
+              </div>
+              {filter === 'all' && onOpenChannelsTab ? (
                 <button
                   type="button"
-                  onClick={() => setFilter('all')}
-                  className="text-blue-600 hover:underline text-[11px]"
+                  onClick={onOpenChannelsTab}
+                  className="px-3.5 py-1.5 bg-[#155DFC] hover:bg-blue-700 text-white rounded-xl text-xs font-bold transition shadow-xs cursor-pointer inline-flex items-center gap-1.5"
                 >
-                  Clear filters
+                  <Key size={13} />
+                  <span>Authenticate Team Email</span>
                 </button>
+              ) : (
+                filter !== 'all' && (
+                  <button
+                    type="button"
+                    onClick={() => setFilter('all')}
+                    className="text-blue-600 hover:underline text-[11px]"
+                  >
+                    Clear filters
+                  </button>
+                )
               )}
             </div>
           ) : (
@@ -390,7 +443,7 @@ export const TeamMailboxTab: React.FC<TeamMailboxTabProps> = ({
       {/* ========================================================
           RIGHT COLUMN: SELECTED THREAD INSPECTION & COMPOSER
          ======================================================== */}
-      <div className="flex-1 flex flex-col bg-white overflow-hidden min-w-0">
+      <div className="flex-1 flex flex-col h-full min-h-0 bg-white overflow-hidden min-w-0">
         {!selectedThread ? (
           <div className="flex-1 flex flex-col items-center justify-center p-8 text-center text-slate-400">
             <Mail size={36} className="text-slate-200 mb-3" />
@@ -400,7 +453,7 @@ export const TeamMailboxTab: React.FC<TeamMailboxTabProps> = ({
             </p>
           </div>
         ) : (
-          <div className="flex-1 flex flex-col h-full overflow-hidden">
+          <div className="flex-1 flex flex-col h-full min-h-0 overflow-hidden">
             {/* Thread Header Bar */}
             <div className="p-4 border-b border-slate-200 bg-white flex flex-col sm:flex-row sm:items-center justify-between gap-3 shrink-0">
               <div className="min-w-0">
@@ -512,7 +565,7 @@ export const TeamMailboxTab: React.FC<TeamMailboxTabProps> = ({
             )}
 
             {/* Message Thread History */}
-            <div className="flex-1 overflow-y-auto p-4 space-y-4 bg-slate-50/40">
+            <div className="flex-1 overflow-y-auto no-scrollbar p-4 space-y-4 bg-slate-50/40 min-h-0">
               {selectedThread.messages.map((msg, index) => {
                 const isInbound = msg.direction === 'inbound';
                 const hasAttachments = msg.attachments && msg.attachments.length > 0;
@@ -573,6 +626,7 @@ export const TeamMailboxTab: React.FC<TeamMailboxTabProps> = ({
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                           {msg.attachments!.map(att => {
                             const isTabular = att.contentType === 'spreadsheet' || att.filename.endsWith('.xlsx') || att.filename.endsWith('.csv');
+                            const isImage = att.contentType === 'image' || att.filename.toLowerCase().endsWith('.png') || att.filename.toLowerCase().endsWith('.jpg') || att.filename.toLowerCase().endsWith('.jpeg');
 
                             return (
                               <div 
@@ -581,9 +635,9 @@ export const TeamMailboxTab: React.FC<TeamMailboxTabProps> = ({
                               >
                                 <div className="flex items-center space-x-2 min-w-0 pr-2">
                                   <div className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${
-                                    isTabular ? 'bg-emerald-100 text-emerald-700' : 'bg-blue-100 text-blue-700'
+                                    isTabular ? 'bg-emerald-100 text-emerald-700' : isImage ? 'bg-purple-100 text-purple-700' : 'bg-blue-100 text-blue-700'
                                   }`}>
-                                    {isTabular ? <FileSpreadsheet size={15} /> : <FileText size={15} />}
+                                    {isTabular ? <FileSpreadsheet size={15} /> : isImage ? <ImageIcon size={15} /> : <FileText size={15} />}
                                   </div>
                                   <div className="min-w-0">
                                     <p className="text-xs font-medium text-slate-800 truncate" title={att.filename}>
@@ -597,13 +651,13 @@ export const TeamMailboxTab: React.FC<TeamMailboxTabProps> = ({
                                 </div>
 
                                 <div className="flex items-center space-x-1 shrink-0">
-                                  {/* Inspect parsed data */}
-                                  {att.parsedData && (
+                                  {/* Inspect parsed data / preview */}
+                                  {(att.parsedData?.sampleRows || att.rawBase64 || isImage) && (
                                     <button
                                       type="button"
                                       onClick={() => setInspectingAttachment(att)}
                                       className="p-1 hover:bg-slate-100 rounded text-slate-600 hover:text-blue-600 transition-colors cursor-pointer"
-                                      title="Preview parsed data"
+                                      title={isImage ? "Preview image" : "Preview parsed data"}
                                     >
                                       <Tag size={13} />
                                     </button>
@@ -628,9 +682,10 @@ export const TeamMailboxTab: React.FC<TeamMailboxTabProps> = ({
                   </div>
                 );
               })}
+              <div ref={messagesEndRef} />
             </div>
 
-            {/* Inline Reply Composer Drawer */}
+            {/* Inline Reply Composer Drawer (Expanded View with Canned Templates) */}
             {showReplyComposer && (
               <div className="p-4 border-t border-slate-200 bg-white shadow-lg space-y-3 shrink-0">
                 <div className="flex items-center justify-between">
@@ -646,9 +701,9 @@ export const TeamMailboxTab: React.FC<TeamMailboxTabProps> = ({
                   <button
                     type="button"
                     onClick={() => setShowReplyComposer(false)}
-                    className="text-xs text-slate-400 hover:text-slate-600 font-mono"
+                    className="text-xs text-slate-400 hover:text-slate-600 font-mono cursor-pointer"
                   >
-                    Cancel
+                    Close Drawer
                   </button>
                 </div>
 
@@ -710,6 +765,55 @@ export const TeamMailboxTab: React.FC<TeamMailboxTabProps> = ({
                 </div>
               </div>
             )}
+
+            {/* Quick Reply Bar (Always available at bottom of conversation) */}
+            <div className="p-3 border-t border-slate-200 bg-white shrink-0">
+              {replyError && !showReplyComposer && (
+                <div className="mb-2 p-2 rounded-lg bg-red-50 border border-red-200 text-xs text-red-700 font-mono flex items-center justify-between">
+                  <span>{replyError}</span>
+                  <button type="button" onClick={() => setReplyError(null)} className="text-red-500 hover:text-red-700 cursor-pointer">✕</button>
+                </div>
+              )}
+              <div className="flex items-center gap-2">
+                <div className="relative flex-1">
+                  <input
+                    type="text"
+                    value={quickReplyText}
+                    onChange={(e) => setQuickReplyText(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault();
+                        handleSendQuickReply();
+                      }
+                    }}
+                    placeholder={`Quick reply to ${selectedThread.participants[0]?.name || selectedThread.participants[0]?.address || 'sender'}... (Press Enter to send)`}
+                    className="w-full pl-3.5 pr-9 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:border-blue-500 focus:bg-white font-sans transition-all"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowReplyComposer(!showReplyComposer)}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-700 rounded transition-colors cursor-pointer"
+                    title={showReplyComposer ? "Hide full reply drawer" : "Expand full composer & templates"}
+                  >
+                    <Maximize2 size={13} />
+                  </button>
+                </div>
+                <button
+                  type="button"
+                  disabled={isSendingReply || !quickReplyText.trim()}
+                  onClick={handleSendQuickReply}
+                  className="px-3.5 py-2 bg-[#155DFC] hover:bg-blue-700 disabled:opacity-50 text-white rounded-xl text-xs font-mono font-bold flex items-center space-x-1.5 transition-all shadow-xs cursor-pointer shrink-0"
+                  title="Send quick reply"
+                >
+                  {isSendingReply ? (
+                    <RefreshCw size={13} className="animate-spin" />
+                  ) : (
+                    <Send size={13} />
+                  )}
+                  <span className="hidden sm:inline">Reply</span>
+                </button>
+              </div>
+            </div>
           </div>
         )}
       </div>
@@ -719,28 +823,48 @@ export const TeamMailboxTab: React.FC<TeamMailboxTabProps> = ({
          ======================================================== */}
       {inspectingAttachment && (
         <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl max-w-2xl w-full max-h-[80vh] flex flex-col overflow-hidden font-sans">
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xl max-w-2xl w-full max-h-[85vh] flex flex-col overflow-hidden font-sans">
             <div className="p-4 border-b border-slate-100 flex items-center justify-between bg-slate-50">
               <div className="flex items-center space-x-2">
-                <FileSpreadsheet size={18} className="text-emerald-600" />
+                {inspectingAttachment.contentType === 'spreadsheet' || inspectingAttachment.filename.endsWith('.xlsx') || inspectingAttachment.filename.endsWith('.csv') ? (
+                  <FileSpreadsheet size={18} className="text-emerald-600 shrink-0" />
+                ) : inspectingAttachment.contentType === 'image' || inspectingAttachment.filename.match(/\.(png|jpe?g|gif|webp)$/i) ? (
+                  <ImageIcon size={18} className="text-purple-600 shrink-0" />
+                ) : (
+                  <FileText size={18} className="text-blue-600 shrink-0" />
+                )}
                 <div>
                   <h4 className="text-xs font-bold font-mono text-slate-800">{inspectingAttachment.filename}</h4>
-                  <p className="text-[10px] text-slate-400 font-mono">Parsed Tabular Ledger Preview</p>
+                  <p className="text-[10px] text-slate-400 font-mono">
+                    {inspectingAttachment.contentType === 'spreadsheet' ? 'Parsed Tabular Ledger Preview' : inspectingAttachment.contentType === 'image' ? 'Image Attachment Preview' : 'Document Attachment Details'}
+                  </p>
                 </div>
               </div>
               <button
                 type="button"
                 onClick={() => setInspectingAttachment(null)}
-                className="text-slate-400 hover:text-slate-600 text-xs font-mono px-2 py-1 rounded"
+                className="text-slate-400 hover:text-slate-600 text-xs font-mono px-2 py-1 rounded cursor-pointer"
               >
                 Close
               </button>
             </div>
 
             <div className="p-4 overflow-y-auto flex-1 font-mono text-xs space-y-3">
+              {/* Image Preview */}
+              {(inspectingAttachment.contentType === 'image' || inspectingAttachment.filename.match(/\.(png|jpe?g|gif|webp)$/i)) && inspectingAttachment.rawBase64 && (
+                <div className="flex flex-col items-center justify-center p-3 bg-slate-100/70 border border-slate-200 rounded-xl overflow-hidden">
+                  <img 
+                    src={`data:${inspectingAttachment.mimeType || 'image/png'};base64,${inspectingAttachment.rawBase64}`} 
+                    alt={inspectingAttachment.filename}
+                    className="max-h-96 object-contain rounded-lg shadow-xs"
+                  />
+                </div>
+              )}
+
+              {/* Spreadsheet Columns */}
               {inspectingAttachment.parsedData?.sampleHeaders && (
                 <div>
-                  <span className="text-[10px] text-slate-500 uppercase font-bold">Detected Columns:</span>
+                  <span className="text-[10px] text-slate-500 uppercase font-bold">Detected Columns ({inspectingAttachment.parsedData.sampleHeaders.length}):</span>
                   <div className="flex flex-wrap gap-1 mt-1">
                     {inspectingAttachment.parsedData.sampleHeaders.map((h, i) => (
                       <span key={i} className="px-2 py-0.5 bg-slate-100 text-slate-700 rounded text-[11px]">
@@ -751,18 +875,19 @@ export const TeamMailboxTab: React.FC<TeamMailboxTabProps> = ({
                 </div>
               )}
 
-              {inspectingAttachment.parsedData?.sampleRows && (
+              {/* Spreadsheet Sample Rows */}
+              {inspectingAttachment.parsedData?.sampleRows && inspectingAttachment.parsedData.sampleRows.length > 0 && (
                 <div className="overflow-x-auto border border-slate-200 rounded-xl">
                   <table className="min-w-full divide-y divide-slate-200 text-[11px]">
                     <thead className="bg-slate-50">
                       <tr>
                         {(inspectingAttachment.parsedData.sampleHeaders || Object.keys(inspectingAttachment.parsedData.sampleRows[0] || {})).map((col, idx) => (
-                          <th key={idx} className="px-3 py-1.5 text-left font-bold text-slate-600">{col}</th>
+                          <th key={idx} className="px-3 py-1.5 text-left font-bold text-slate-600 whitespace-nowrap">{col}</th>
                         ))}
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 bg-white">
-                      {inspectingAttachment.parsedData.sampleRows.slice(0, 8).map((row, rIdx) => (
+                      {inspectingAttachment.parsedData.sampleRows.slice(0, 15).map((row, rIdx) => (
                         <tr key={rIdx} className="hover:bg-slate-50">
                           {(inspectingAttachment.parsedData!.sampleHeaders || Object.keys(row)).map((col, cIdx) => (
                             <td key={cIdx} className="px-3 py-1 text-slate-700 truncate max-w-[150px]">{String(row[col] ?? '')}</td>
@@ -774,7 +899,18 @@ export const TeamMailboxTab: React.FC<TeamMailboxTabProps> = ({
                 </div>
               )}
 
-              <div className="flex items-center justify-end space-x-2 pt-2">
+              {/* Document Text or Fallback Preview */}
+              {inspectingAttachment.parsedText && !inspectingAttachment.parsedData?.sampleRows && !inspectingAttachment.filename.match(/\.(png|jpe?g|gif|webp)$/i) && (
+                <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl whitespace-pre-wrap text-slate-700">
+                  {inspectingAttachment.parsedText}
+                </div>
+              )}
+
+              <div className="flex items-center justify-between pt-2 border-t border-slate-100">
+                <span className="text-[11px] text-slate-400 font-mono">
+                  {inspectingAttachment.sizeBytes ? `${Math.round(inspectingAttachment.sizeBytes / 1024)} KB` : ''}
+                  {inspectingAttachment.parsedData?.totalRows ? ` • ${inspectingAttachment.parsedData.totalRows} total rows` : ''}
+                </span>
                 <button
                   type="button"
                   onClick={() => handleDownloadAttachment(inspectingAttachment)}

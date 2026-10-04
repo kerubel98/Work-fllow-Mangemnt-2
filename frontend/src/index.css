@@ -6,9 +6,106 @@
   --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
 }
 
+/* ---------------------------------------------------------------
+   Design tokens from the brand palette:
+   orange #F47920 · navy #0F172A · dark gray #555555 · light gray #D3D3D3 · white #FFFFFF
+   Dark is the default; light is available via <html data-theme="light">.
+   --------------------------------------------------------------- */
+:root,
+[data-theme="dark"] {
+  --ds-bg: #0f172a;
+  --ds-surface: #151f38;
+  --ds-surface-elevated: #1c2744;
+  --ds-border: #2d3a57;
+  --ds-border-strong: #555555;
+  --ds-text: #ffffff;
+  --ds-text-muted: #d3d3d3;
+  --ds-text-disabled: #8a8f99;
+  --ds-primary: #f47920;
+  --ds-primary-hover: #ff8f3d;
+  --ds-on-primary: #0f172a;
+  --ds-success: #34d399;
+  --ds-warning: #fbbf24;
+  --ds-danger: #fb7185;
+  --ds-info: #38bdf8;
+  --ds-overlay: rgba(8, 12, 24, 0.72);
+}
+
+[data-theme="light"] {
+  --ds-bg: #ffffff;
+  --ds-surface: #ffffff;
+  --ds-surface-elevated: #f5f5f5;
+  --ds-border: #d3d3d3;
+  --ds-border-strong: #555555;
+  --ds-text: #0f172a;
+  --ds-text-muted: #555555;
+  --ds-text-disabled: #8a8f99;
+  --ds-primary: #f47920;
+  --ds-primary-hover: #d9650f;
+  --ds-on-primary: #0f172a;
+  --ds-success: #059669;
+  --ds-warning: #b45309;
+  --ds-danger: #e11d48;
+  --ds-info: #0369a1;
+  --ds-overlay: rgba(15, 23, 42, 0.5);
+}
+
+/* Expose tokens as Tailwind utilities: bg-ds-surface, text-ds-muted, border-ds-border ... */
+@theme inline {
+  --color-ds-bg: var(--ds-bg);
+  --color-ds-surface: var(--ds-surface);
+  --color-ds-elevated: var(--ds-surface-elevated);
+  --color-ds-border: var(--ds-border);
+  --color-ds-border-strong: var(--ds-border-strong);
+  --color-ds-text: var(--ds-text);
+  --color-ds-muted: var(--ds-text-muted);
+  --color-ds-disabled: var(--ds-text-disabled);
+  --color-ds-primary: var(--ds-primary);
+  --color-ds-primary-hover: var(--ds-primary-hover);
+  --color-ds-on-primary: var(--ds-on-primary);
+  --color-ds-success: var(--ds-success);
+  --color-ds-warning: var(--ds-warning);
+  --color-ds-danger: var(--ds-danger);
+  --color-ds-info: var(--ds-info);
+  --radius-ds-sm: 6px;
+  --radius-ds-md: 8px;
+  --radius-ds-lg: 12px;
+  --shadow-ds-sm: 0 1px 2px rgba(0, 0, 0, 0.25);
+  --shadow-ds-md: 0 4px 12px rgba(0, 0, 0, 0.3);
+  --shadow-ds-overlay: 0 24px 64px rgba(0, 0, 0, 0.5);
+}
+
 body {
   background-color: #f8fafc;
   color: #0f172a;
+}
+
+/* Visible keyboard focus everywhere (unlayered, so it also beats utility `focus:outline-none`). */
+:where(button, a, input, select, textarea, summary, [role="button"], [tabindex]):focus-visible {
+  outline: 2px solid var(--ds-primary);
+  outline-offset: 2px;
+}
+
+/* Overlay animations (short, consistent). */
+@keyframes ds-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes ds-pop-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes ds-slide-in-right {
+  from { transform: translateX(24px); opacity: 0; }
+  to { transform: none; opacity: 1; }
+}
+.ds-fade-in { animation: ds-fade-in 150ms ease-out both; }
+.ds-pop-in { animation: ds-pop-in 180ms ease-out both; }
+.ds-slide-in-right { animation: ds-slide-in-right 200ms ease-out both; }
+
+@media (prefers-reduced-motion: reduce) {
+  .ds-fade-in, .ds-pop-in, .ds-slide-in-right { animation: none; }
+  .animate-spin, .animate-ping, .animate-pulse { animation-duration: 2s; }
 }
 
 /* Custom scrollbar styled for minimal modern light theme */
@@ -29,4 +126,14 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background: #3b82f6;
 }
+
+/* Hide scrollbar across all modern browsers */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
 

@@ -4,6 +4,21 @@
  */
 
 import React from 'react';
+import { Check, X, AlertTriangle, Pause, Clock } from 'lucide-react';
+
+const STATUS_ICONS: Record<string, React.ReactNode> = {
+  pass: <Check size={11} aria-hidden="true" />,
+  resolved: <Check size={11} aria-hidden="true" />,
+  success: <Check size={11} aria-hidden="true" />,
+  fail: <X size={11} aria-hidden="true" />,
+  error: <X size={11} aria-hidden="true" />,
+  critical: <AlertTriangle size={11} aria-hidden="true" />,
+  warning: <AlertTriangle size={11} aria-hidden="true" />,
+  paused: <Pause size={11} aria-hidden="true" />,
+  paused_db_offline: <Pause size={11} aria-hidden="true" />,
+  pending: <Clock size={11} aria-hidden="true" />,
+  pending_checker_review: <Clock size={11} aria-hidden="true" />,
+};
 
 export type BadgeVariant =
   | 'open'
@@ -101,8 +116,8 @@ export const Badge: React.FC<BadgeProps> = ({
         };
       case 'technical':
         return {
-          badge: 'bg-[#3b6cff]/15 text-[#3b6cff] border-[#3b6cff]/30',
-          dotColor: 'bg-[#3b6cff]',
+          badge: 'bg-ds-primary/15 text-ds-primary border-ds-primary/30',
+          dotColor: 'bg-ds-primary',
         };
       case 'operational':
         return {
@@ -149,7 +164,9 @@ export const Badge: React.FC<BadgeProps> = ({
           <span className={`relative inline-flex rounded-full h-1.5 w-1.5 ${dotColor}`} />
         </span>
       )}
-      {icon && <span className="flex-shrink-0">{icon}</span>}
+      {(icon ?? STATUS_ICONS[normalizedVariant]) && (
+        <span className="flex-shrink-0">{icon ?? STATUS_ICONS[normalizedVariant]}</span>
+      )}
       <span className="capitalize">{children || variant}</span>
     </span>
   );

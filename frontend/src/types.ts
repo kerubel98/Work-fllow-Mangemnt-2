@@ -257,13 +257,16 @@ export interface Issue {
   investigationSystemId?: string; // selected environment system
   investigationEnvironment?: 'testing' | 'production'; // testing or production
   investigationTable?: string; // mapped database table
-  validationStatus?: 'untested' | 'passed' | 'failed';
+  validationStatus?: 'untested' | 'passed' | 'failed' | 'PASS' | 'FAIL';
   validationErrors?: string[];
   queryResults?: any[]; // Simulated query results against chosen environment
   movedToTesting?: boolean; // whether operational user promoted this to testing env
   rowLabels?: Record<string, string>; // Maps row unique transaction identifier -> custom label annotation
   addedLabelColumnName?: string; // name of the custom operational labeling column
   customFilters?: { column: string; value: string }[]; // operational active dynamic criteria filters
+  transactionCount?: number;
+  datasetStatus?: string;
+  updatedAt?: string;
   teamId?: string;
   visibility?: 'TEAM_PUBLIC' | 'PERSONAL_PRIVATE';
   processType?: SolutionProcessType;
@@ -291,23 +294,97 @@ export interface HashtagKpi {
   createdAt: string;
 }
 
+// ========================= UNIVERSAL HASHTAG ENGINE TYPES =========================
+
+/** Four canonical hashtag types governing execution behaviour */
+export type HashtagType =
+  | 'FILE_INGESTION'           // Type A: batch file ingestion with column mapping
+  | 'DATABASE_DIRECT_SCANNER'  // Type B: zero-file DB scanner (duplicates, anomalies)
+  | 'EXTRACTION_STAGING'       // Type C: ETL extract → dedicated internal table
+  | 'AUDITING_GOVERNANCE';     // Type D: read-only diagnostic / compliance audit
+
+/** How the hashtag obtains its data */
+export type DataSourceMode = 'FILE_UPLOAD' | 'DATABASE_DIRECT' | 'HYBRID';
+
+/** How the hashtag run is triggered */
+export type ExecutionTrigger = 'MANUAL' | 'SCHEDULED_CRON' | 'CHAT_DIRECTIVE';
+
+/** Verdict of an execution run */
+export type HashtagExecutionVerdict = 'PASS' | 'FAIL' | 'DISCREPANCY' | 'STAGED' | 'ERROR';
+
+/**
+ * Single dictionary lookup mapping rule.
+ * Translates a source column code into a canonical name
+ * (e.g. bank_code "001" → bank_name "Commercial Bank of Ethiopia").
+ */
+export interface DictionaryLookupMapping {
+  sourceCol: string;
+  targetCol: string;
+  lookupTable: string;  // e.g. 'bank_directory'
+  fallbackValue?: string | null;
+}
+
+/** A single execution run recorded in hashtag_execution_runs */
+export interface HashtagExecutionRun {
+  id: string;
+  hashtagTag: string;
+  taskId?: string | null;
+  teamId?: string | null;
+  executedBy: string;
+  executionMode: 'DRY_RUN_PARTIAL' | 'LIVE_FULL';
+  rowsScanned: number;
+  anomaliesDetected: number;
+  verdict: HashtagExecutionVerdict;
+  makerProposalId?: string | null;
+  resultSnapshot: Record<string, any>;
+  isDiagnosticOnly: boolean;
+  executedAt: string;
+}
+
 export interface HashtagPreset {
   tag: string; // e.g., "#DUPLICATE_TXN"
   category?: string;
   description: string;
-  criteria: string; // Match criteria text or rules
-  expectedFileStructure: string[]; // e.g. ["Txn_ID", "Card_Num", "Amount", "Status"]
+  criteria: string;
+  expectedFileStructure: string[];
   expectedHeaders?: string[];
-  solutionTemplate: string; // SQL template for resolution
+  solutionTemplate: string;
   author: string;
   createdAt: string;
-  // NEW fields:
-  fileTemplateData?: Record<string, string>[]; // mock downloadable rows
-  criteriaRules?: CriteriaRule[]; // validation rules to auto-check
+  fileTemplateData?: Record<string, string>[];
+  criteriaRules?: CriteriaRule[];
   workflowId?: string;
   workflowName?: string;
   processType?: SolutionProcessType;
   kpis?: HashtagKpi[];
+
+  // ── Universal Hashtag Engine fields (Migration 026) ──────────────────────
+  /** Hashtag taxonomy: FILE_INGESTION | DATABASE_DIRECT_SCANNER | EXTRACTION_STAGING | AUDITING_GOVERNANCE */
+  hashtagType?: HashtagType;
+  /** Input modality: FILE_UPLOAD | DATABASE_DIRECT | HYBRID */
+  dataSourceMode?: DataSourceMode;
+  /** Target external/mirror DB connection ID (Types B/C/D) */
+  targetDbId?: string | null;
+  /** Target table within external/mirror DB (Types B/C) */
+  targetTableName?: string | null;
+  /** Dedicated internal staging table for Type C ETL */
+  dedicatedAppTable?: string | null;
+  /** Minimum columns the incoming file must contain (Type A) */
+  minimumRequiredColumns?: string[];
+  /**
+   * Dictionary lookup mappings keyed by source column name.
+   * e.g. { bank_code: { sourceCol, targetCol, lookupTable, fallbackValue } }
+   */
+  dictionaryLookupMappings?: Record<string, DictionaryLookupMapping>;
+  /** Trigger mode: MANUAL | SCHEDULED_CRON | CHAT_DIRECTIVE */
+  executionTrigger?: ExecutionTrigger;
+  /** 5-field cron expression for autonomous scheduled runs */
+  scheduleCron?: string | null;
+  /** Conditional action rules driven by workflow verdict */
+  conditionalAction?: {
+    onPass: 'EXECUTE_SQL' | 'STAGE_PROPOSAL' | 'NOTIFY_ONLY' | 'CLOSE_TASK';
+    onFail: 'FLAG_INVESTIGATION' | 'STOP' | 'ESCALATE' | 'REPORT_ONLY';
+  };
 }
 
 export interface TransactionReversionSnapshot {
@@ -798,9 +875,134 @@ export interface UploadAuditLog {
 // BUSINESS PROCESSING STAGE & STAGE-AWARE WORKFLOWS
 // ==========================================
 
-export type ValidationResultStatus = 'PASS' | 'FAIL' | 'ERROR' | 'SKIPPED' | 'NOT_EVALUATED' | 'PAUSED_DB_OFFLINE';
-export type PipelineAction = 'CONTINUE' | 'STOP' | 'CLOSE' | 'FLAG' | 'REPORT';
-export type TransactionInvestigationStatus = 'PENDING' | 'INVESTIGATING' | 'RECONCILED' | 'FLAGGED' | 'CLOSED';
+// ==========================================
+// PIPELINE ENGINE: CARDINALITY, CONTRACTS & LINEAGE
+// ==========================================
+
+export type MultiRowCardinalityPolicy =
+  | 'STRICT_SINGLE'
+  | 'ONE_TO_MANY'
+  | 'EXPLICIT_LATEST'
+  | 'EXPLICIT_FIRST'
+  | 'ALL_ROWS'
+  | 'REQUIRE_MANUAL_SELECTION'
+  | 'SUM_AND_COLLAPSE'
+  | 'LATEST'
+  | 'EARLIEST'
+  | 'AGGREGATE_SUM'
+  | 'COMPOSITE_BUNDLE';
+
+export type AggregationStrategy =
+  | 'NONE'
+  | 'SUM'
+  | 'COUNT'
+  | 'MIN'
+  | 'MAX'
+  | 'CUSTOM';
+
+export interface StageExecutionSummary {
+  stageId: string;
+  stageName?: string;
+  order?: number;
+  batchId?: string;
+  ruleBlockId?: string;
+  stageExecutionId: string;
+  workflowExecutionId: string;
+  validationResult: 'PASS' | 'FAIL' | 'ERROR' | 'PAUSED_DB_OFFLINE';
+  pipelineAction: 'CONTINUE' | 'CLOSE' | 'STOP' | 'FLAG' | 'REPORT';
+  outputTarget?: {
+    type: 'MIRROR_TABLE' | 'VIRTUAL_DATASET' | 'PASSTHROUGH';
+    tableName: string;
+    schema?: Record<string, string>;
+  };
+  producedKeys: string[];
+  totalRows: number;
+  passedRows: number;
+  failedRows: number;
+  errorRows?: number;
+  durationMs?: number;
+  executedAt?: string;
+}
+
+export interface StageRowExecutionResult {
+  rowNumber: number;
+  matchFound: boolean;
+  validationResult: 'PASS' | 'FAIL' | 'ERROR' | 'PAUSED_DB_OFFLINE';
+  infrastructureCondition?: 'HEALTHY' | 'DB_OFFLINE' | 'TIMEOUT' | 'CONFIGURATION_ERROR';
+  pipelineAction: 'CONTINUE' | 'CLOSE' | 'STOP' | 'FLAG' | 'REPORT';
+  discrepancyReasons?: string[];
+  candidateKeys?: string[];
+  extractedFields?: Record<string, any>;
+  mirrorRecordSnapshot?: Record<string, any>;
+  errorDetails?: string;
+}
+
+export interface StageOutputContract {
+  stageExecutionId: string;
+  workflowExecutionId: string;
+  stageId: string;
+  stageName?: string;
+  validationResult: 'PASS' | 'FAIL' | 'ERROR' | 'PAUSED_DB_OFFLINE';
+  pipelineAction: 'CONTINUE' | 'CLOSE' | 'STOP' | 'FLAG' | 'REPORT';
+  outputTarget: {
+    type: 'MIRROR_TABLE' | 'VIRTUAL_DATASET' | 'PASSTHROUGH';
+    tableName: string;
+    schema?: Record<string, string>;
+  };
+  producedKeys: string[];
+  totalRows: number;
+  passedRows: number;
+  failedRows: number;
+  errorDetails?: Array<{ rowNumber: number; reason: string }>;
+  summary?: StageExecutionSummary;
+  rowResults?: StageRowExecutionResult[];
+}
+
+export interface NextStageInputRequest {
+  targetStageId: string;
+  targetStageName?: string;
+  workflowExecutionId: string;
+  requiredKeys: string[];
+  cardinalityPolicy?: MultiRowCardinalityPolicy;
+  aggregationStrategy?: AggregationStrategy;
+  upstreamContracts: StageOutputContract[];
+  initialTaskDatasetTable?: string;
+  initialKeys?: string[];
+}
+
+export interface NextStageInputResolution {
+  status: 'RESOLVED' | 'CONFIGURATION_ERROR';
+  resolvedSource: {
+    sourceType: 'MIRROR_TABLE' | 'UPSTREAM_PREDECESSOR' | 'TASK_DATASET';
+    tableName: string;
+    joinKeys: Array<{ sourceKey: string; targetKey: string }>;
+    stageExecutionId?: string;
+    stageId?: string;
+  };
+  inputQuality: 'VERIFIED_CLEAN' | 'UPSTREAM_FAILED_BUT_HYDRATED' | 'SYNTHETIC_FALLBACK';
+  availableKeys: string[];
+  errorMessage?: string;
+}
+
+export interface RowExecutionStageTraversed {
+  stageId: string;
+  stageName?: string;
+  stageExecutionId: string;
+  validationResult: 'PASS' | 'FAIL' | 'ERROR' | 'PAUSED_DB_OFFLINE';
+  pipelineAction: 'CONTINUE' | 'FLAG' | 'STOP' | 'CLOSE' | 'REPORT';
+  discrepancyReasons?: string[];
+  dataSourceUsed: 'MIRROR_TABLE' | 'UPSTREAM_PREDECESSOR' | 'RAW_TASK_INPUT';
+  inputQuality: 'VERIFIED_CLEAN' | 'UPSTREAM_FAILED_BUT_HYDRATED' | 'SYNTHETIC_FALLBACK';
+}
+
+export interface RowExecutionLineage {
+  workflowExecutionId: string;
+  taskRowNumber: number;
+  stagesTraversed: RowExecutionStageTraversed[];
+  currentInputQuality: 'VERIFIED_CLEAN' | 'DEGRADED_UPSTREAM' | 'MISSING_INGRESS';
+  /** @deprecated Replaced by Granular RowExecutionLineage inputQuality vector (AGENTS.md & Architecture §6.1) */
+  isDiagnosticOnly?: boolean;
+}
 
 export interface ProcessingStage {
   id: string;
@@ -813,6 +1015,10 @@ export interface ProcessingStage {
   mappingConfigId?: string; // Optional reference to DbTableMappingConfig
   businessMeaning?: string; // e.g., 'Authorization Processing', 'Financial Settlement'
   ruleBlockIds?: string[];
+  attachedDbConfigIds?: string[];
+  cardinalityPolicy?: MultiRowCardinalityPolicy;
+  aggregationStrategy?: AggregationStrategy;
+  orderByColumn?: string;
   createdAt?: string;
   updatedAt?: string;
 }
@@ -931,6 +1137,10 @@ export interface ValidationCheckStep {
   // Database Column Configurations & Table Rules
   columnConfigurationIds?: string[];
   columnConfigurations?: DatabaseColumnConfiguration[];
+  attachedDbConfigIds?: string[];
+  cardinalityPolicy?: MultiRowCardinalityPolicy;
+  aggregationStrategy?: AggregationStrategy;
+  orderByColumn?: string;
 
   // Output Configuration
   successMessage?: string;
@@ -957,6 +1167,10 @@ export interface FlowchartNode {
   targetTable?: string;
   columnConfigurationIds?: string[];
   columnConfigurations?: DatabaseColumnConfiguration[];
+  attachedDbConfigIds?: string[];
+  cardinalityPolicy?: MultiRowCardinalityPolicy;
+  aggregationStrategy?: AggregationStrategy;
+  orderByColumn?: string;
 }
 
 export interface FlowchartConnection {
@@ -985,6 +1199,7 @@ export interface DatabaseValidationWorkflow {
   targetDbId: string;
   targetTable: string;
   category?: 'Settlement' | 'Fulfillment' | 'Compliance' | 'Reconciliation' | 'Custom';
+  attachedDbConfigIds?: string[];
   stages: ProcessingStage[];
   steps: ValidationCheckStep[];
   nodes?: FlowchartNode[];
@@ -1101,6 +1316,7 @@ export interface QueryChunkPlan {
 export interface InvestigationBatchPlan {
   batchId: string;
   sequence: number;
+  rowCount?: number;
   transactionIds: string[];
   queryChunks: QueryChunkPlan[];
 }
@@ -1277,7 +1493,9 @@ export interface ValidationBox {
   // Standalone Reconciliation configuration
   matchKeyInput?: string;
   matchKeyExternal?: string;
-  multiRowPolicy?: 'LATEST' | 'EARLIEST' | 'AGGREGATE_SUM' | 'COMPOSITE_BUNDLE' | 'STRICT_SINGLE';
+  multiRowPolicy?: MultiRowCardinalityPolicy;
+  cardinalityPolicy?: MultiRowCardinalityPolicy;
+  attachedDbConfigIds?: string[];
   groupConfig?: GroupedTransactionConfig;
 
   // Dual-Source Condition configuration

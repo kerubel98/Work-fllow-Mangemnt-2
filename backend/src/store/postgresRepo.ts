@@ -483,8 +483,13 @@ export const postgresRepo = {
     const pool = getPostgresPool();
     const client = await pool.connect();
     try {
-      await client.query('BEGIN');
+      const hasExistingCoordinates = rows.some(
+        r => r.row_number !== undefined || r._row_number !== undefined || r._rowNumber !== undefined
+      );
+      if (!hasExistingCoordinates) {
         await client.query('DELETE FROM task_dataset_transactions WHERE task_id = $1;', [taskId]);
+      }
+
       // Chunk inserts into 1,000 items per batch
       const CHUNK_SIZE = 1000;
       let inserted = 0;
@@ -495,23 +500,30 @@ export const postgresRepo = {
 
         chunk.forEach((row, idx) => {
           const paramOffset = idx * 5;
-          const rowBatchId = row._batchId || `BATCH-${taskId.slice(-6)}-001`;
+          const rowBatchId = row._batchId || row.batch_id || `BATCH-${taskId.slice(-6)}-001`;
+          const rowNum = Number(row.row_number ?? row._row_number ?? row._rowNumber ?? (i + idx + 1));
           placeholders.push(`($${paramOffset + 1}, $${paramOffset + 2}, $${paramOffset + 3}, $${paramOffset + 4}, $${paramOffset + 5})`);
-          values.push(taskId, i + idx + 1, rowBatchId, JSON.stringify(row), JSON.stringify(row));
+          values.push(taskId, rowNum, rowBatchId, JSON.stringify(row), JSON.stringify(row));
         });
 
         const query = `
           INSERT INTO task_dataset_transactions (task_id, row_number, batch_id, canonical_data, raw_data)
           VALUES ${placeholders.join(', ')}
-          ON CONFLICT DO NOTHING;
+          ON CONFLICT (task_id, row_number) DO UPDATE SET
+            batch_id = EXCLUDED.batch_id,
+            canonical_data = EXCLUDED.canonical_data,
+            raw_data = EXCLUDED.raw_data;
         `;
         await client.query(query, values);
         inserted += chunk.length;
       }
 
+      const countRes = await client.query('SELECT COUNT(*)::int AS count FROM task_dataset_transactions WHERE task_id = $1;', [taskId]);
+      const totalCount = countRes.rows[0]?.count ?? rows.length;
+
       await client.query(
         `UPDATE issues SET transaction_count = $1, dataset_status = 'INGESTED' WHERE id = $2;`,
-        [rows.length, taskId]
+        [totalCount, taskId]
       );
 
       await client.query('COMMIT');
@@ -570,6 +582,8 @@ export const postgresRepo = {
 
     const rows = dataRes.rows.map(r => {
       const canonical = parseJson(r.canonical_data, {});
+      delete canonical.auditTrail;
+      delete canonical.stageResults;
       let evalInfo: any = null;
 
       if (resultMap && (!canonical._validation_status || canonical._validation_status === 'PENDING')) {
@@ -604,8 +618,8 @@ export const postgresRepo = {
         _target_db: evalInfo?.targetDb || canonical._target_db || null,
         _validation_workflow_id: latestWorkflowId || canonical._validation_workflow_id,
         _validation_workflow_name: latestWorkflowName || canonical._validation_workflow_name,
-        auditTrail: evalInfo?.auditTrail || canonical.auditTrail || canonical._stage_results || canonical._validation_details?.stageResults || [],
-        _stage_results: evalInfo?.auditTrail || canonical.auditTrail || canonical._stage_results || canonical._validation_details?.stageResults || []
+        auditTrail: evalInfo?.auditTrail || canonical._audit_trail || canonical.auditTrail || canonical._stage_results || canonical._validation_details?.stageResults || [],
+        _stage_results: evalInfo?.auditTrail || canonical._audit_trail || canonical.auditTrail || canonical._stage_results || canonical._validation_details?.stageResults || []
       };
     });
 
@@ -635,7 +649,7 @@ export const postgresRepo = {
         if (!rec.key) continue;
         await client.query(
           `UPDATE task_dataset_transactions
-           SET canonical_data = canonical_data || jsonb_build_object(
+           SET canonical_data = (canonical_data - 'auditTrail' - 'stageResults') || jsonb_build_object(
              '_validation_status', $1::text,
              '_validation_details', $2::jsonb,
              '_target_record', $3::jsonb,
@@ -643,7 +657,7 @@ export const postgresRepo = {
              '_target_table', $5::text,
              '_validation_workflow_id', $6::text,
              '_validation_workflow_name', $7::text,
-             'auditTrail', $10::jsonb,
+             '_audit_trail', $10::jsonb,
              '_stage_results', $11::jsonb
            )
            WHERE task_id = $8 AND (
@@ -1202,6 +1216,7 @@ export const postgresRepo = {
       targetDbId: r.target_db_id,
       targetTable: r.target_table,
       category: r.category,
+      attachedDbConfigIds: parseJson(r.attached_db_config_ids, []),
       stages: parseJson(r.stages, []),
       steps: parseJson(r.steps, []),
       nodes: parseJson(r.nodes, []),
@@ -1232,6 +1247,7 @@ export const postgresRepo = {
       targetDbId: r.target_db_id,
       targetTable: r.target_table,
       category: r.category,
+      attachedDbConfigIds: parseJson(r.attached_db_config_ids, []),
       stages: parseJson(r.stages, []),
       steps: parseJson(r.steps, []),
       nodes: parseJson(r.nodes, []),
@@ -1254,18 +1270,19 @@ export const postgresRepo = {
     const pool = getPostgresPool();
     await pool.query(
       `INSERT INTO database_validation_workflows (
-        id, name, description, target_db_id, target_table, category, stages, steps, 
+        id, name, description, target_db_id, target_table, category, attached_db_config_ids, stages, steps, 
         nodes, connections,
         global_success_message, global_failure_message, created_by, created_at, updated_at, 
         is_system_default, version, message_aggregations, team_id, is_public, visibility
       )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
        ON CONFLICT (id) DO UPDATE SET
          name = EXCLUDED.name,
          description = EXCLUDED.description,
          target_db_id = EXCLUDED.target_db_id,
          target_table = EXCLUDED.target_table,
          category = EXCLUDED.category,
+         attached_db_config_ids = EXCLUDED.attached_db_config_ids,
          stages = EXCLUDED.stages,
          steps = EXCLUDED.steps,
          nodes = EXCLUDED.nodes,
@@ -1286,6 +1303,7 @@ export const postgresRepo = {
         wf.targetDbId || null,
         wf.targetTable || '',
         wf.category || 'Custom',
+        safeJsonStringify(wf.attachedDbConfigIds || [], '[]'),
         safeJsonStringify(wf.stages, '[]'),
         safeJsonStringify(wf.steps, '[]'),
         safeJsonStringify(wf.nodes, '[]'),
@@ -2792,67 +2810,10 @@ export const postgresRepo = {
     return merged;
   },
 
-  // ================= HASHTAG PRESETS =================
-  async getHashtags(): Promise<HashtagPreset[]> {
-    const pool = getPostgresPool();
-    const { rows } = await pool.query('SELECT * FROM hashtag_presets ORDER BY created_at ASC;');
-    return rows.map((r: any) => ({
-      id: r.id,
-      tag: r.tag,
-      description: r.description,
-      criteria: r.criteria,
-      expectedFileStructure: parseJson(r.expected_file_structure, []),
-      solutionTemplate: r.solution_template,
-      author: r.author,
-      createdAt: r.created_at?.toISOString() || new Date().toISOString(),
-      fileTemplateData: parseJson(r.file_template_data, []),
-      criteriaRules: parseJson(r.criteria_rules, []),
-      workflowId: r.workflow_id || undefined,
-      workflowName: r.workflow_name || undefined,
-      processType: r.process_type || 'INTERNAL_STAGED_FIX',
-      kpis: parseJson(r.kpis, [])
-    }));
-  },
+  // ================= HASHTAG PRESETS (Universal Engine) =================
 
-  async createHashtag(tag: HashtagPreset): Promise<HashtagPreset> {
-    const pool = getPostgresPool();
-    await pool.query(
-      `INSERT INTO hashtag_presets 
-       (id, tag, description, criteria, expected_file_structure, solution_template, author, created_at, file_template_data, criteria_rules, workflow_id, workflow_name, process_type, kpis)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
-       ON CONFLICT (id) DO UPDATE SET 
-         tag = EXCLUDED.tag, 
-         description = EXCLUDED.description, 
-         criteria = EXCLUDED.criteria,
-         solution_template = EXCLUDED.solution_template,
-         workflow_id = EXCLUDED.workflow_id,
-         workflow_name = EXCLUDED.workflow_name,
-         process_type = EXCLUDED.process_type,
-         kpis = EXCLUDED.kpis;`,
-      [
-        tag.tag, tag.tag, tag.description, tag.criteria,
-        JSON.stringify(tag.expectedFileStructure || []),
-        tag.solutionTemplate, tag.author,
-        tag.createdAt || new Date(),
-        JSON.stringify(tag.fileTemplateData || []),
-        JSON.stringify(tag.criteriaRules || []),
-        tag.workflowId || null,
-        tag.workflowName || null,
-        tag.processType || 'INTERNAL_STAGED_FIX',
-        JSON.stringify(tag.kpis || [])
-      ]
-    );
-    return tag;
-  },
-
-  async updateHashtagKpis(tag: string, kpis: any[]): Promise<HashtagPreset | null> {
-    const pool = getPostgresPool();
-    const { rows } = await pool.query(
-      'UPDATE hashtag_presets SET kpis = $1 WHERE tag = $2 OR id = $2 RETURNING *;',
-      [JSON.stringify(kpis), tag]
-    );
-    if (!rows.length) return null;
-    const r = rows[0];
+  /** Map a raw DB row to a fully-typed HashtagPreset (camelCase) */
+  _mapHashtagRow(r: any): HashtagPreset {
     return {
       tag: r.tag,
       description: r.description,
@@ -2866,9 +2827,240 @@ export const postgresRepo = {
       workflowId: r.workflow_id || undefined,
       workflowName: r.workflow_name || undefined,
       processType: r.process_type || 'INTERNAL_STAGED_FIX',
-      kpis: parseJson(r.kpis, [])
+      kpis: parseJson(r.kpis, []),
+      // Universal Hashtag Engine fields (Migration 026)
+      hashtagType: r.hashtag_type || 'FILE_INGESTION',
+      dataSourceMode: r.data_source_mode || 'FILE_UPLOAD',
+      targetDbId: r.target_db_id || null,
+      targetTableName: r.target_table_name || null,
+      dedicatedAppTable: r.dedicated_app_table || null,
+      minimumRequiredColumns: parseJson(r.minimum_required_columns, []),
+      dictionaryLookupMappings: parseJson(r.dictionary_lookup_mappings, {}),
+      executionTrigger: r.execution_trigger || 'MANUAL',
+      scheduleCron: r.schedule_cron || null,
+      conditionalAction: parseJson(r.conditional_action, { onPass: 'EXECUTE_SQL', onFail: 'FLAG_INVESTIGATION' })
     };
   },
+
+  async getHashtags(filter?: { type?: string; teamId?: string }): Promise<HashtagPreset[]> {
+    const pool = getPostgresPool();
+    let sql = 'SELECT * FROM hashtag_presets';
+    const params: any[] = [];
+
+    if (filter?.type) {
+      params.push(filter.type);
+      sql += ` WHERE hashtag_type = $${params.length}`;
+    }
+
+    sql += ' ORDER BY created_at ASC;';
+    const { rows } = await pool.query(sql, params);
+    return rows.map((r: any) => (this as any)._mapHashtagRow(r));
+  },
+
+  async getHashtagByTag(tag: string): Promise<HashtagPreset | null> {
+    const pool = getPostgresPool();
+    const cleanTag = (tag || '').trim().replace(/^#+/, '');
+    const exactTag = `#${cleanTag}`;
+    const { rows } = await pool.query(
+      'SELECT * FROM hashtag_presets WHERE LOWER(tag) = LOWER($1) OR LOWER(tag) = LOWER($2) OR LOWER(id) = LOWER($1) OR LOWER(id) = LOWER($2) LIMIT 1;',
+      [exactTag, cleanTag]
+    );
+    if (!rows.length) return null;
+    return (this as any)._mapHashtagRow(rows[0]);
+  },
+
+  async createHashtag(tag: HashtagPreset): Promise<HashtagPreset> {
+    const pool = getPostgresPool();
+    const normalizedTag = tag.tag.startsWith('#') ? tag.tag.toUpperCase() : `#${tag.tag.toUpperCase()}`;
+    const tagId = (tag as any).id || normalizedTag;
+    await pool.query(
+      `INSERT INTO hashtag_presets (
+         id, tag, description, criteria, expected_file_structure, solution_template,
+         author, created_at, file_template_data, criteria_rules,
+         workflow_id, workflow_name, process_type, kpis,
+         hashtag_type, data_source_mode,
+         target_db_id, target_table_name, dedicated_app_table,
+         minimum_required_columns, dictionary_lookup_mappings,
+         execution_trigger, schedule_cron, conditional_action
+       )
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)
+       ON CONFLICT (id) DO UPDATE SET
+         tag                       = EXCLUDED.tag,
+         description               = EXCLUDED.description,
+         criteria                  = EXCLUDED.criteria,
+         solution_template         = EXCLUDED.solution_template,
+         workflow_id               = EXCLUDED.workflow_id,
+         workflow_name             = EXCLUDED.workflow_name,
+         process_type              = EXCLUDED.process_type,
+         kpis                      = EXCLUDED.kpis,
+         hashtag_type              = EXCLUDED.hashtag_type,
+         data_source_mode          = EXCLUDED.data_source_mode,
+         target_db_id              = EXCLUDED.target_db_id,
+         target_table_name         = EXCLUDED.target_table_name,
+         dedicated_app_table       = EXCLUDED.dedicated_app_table,
+         minimum_required_columns  = EXCLUDED.minimum_required_columns,
+         dictionary_lookup_mappings= EXCLUDED.dictionary_lookup_mappings,
+         execution_trigger         = EXCLUDED.execution_trigger,
+         schedule_cron             = EXCLUDED.schedule_cron,
+         conditional_action        = EXCLUDED.conditional_action;`,
+      [
+        tagId, normalizedTag, tag.description, tag.criteria,
+        JSON.stringify(tag.expectedFileStructure || []),
+        tag.solutionTemplate, tag.author,
+        tag.createdAt || new Date(),
+        JSON.stringify(tag.fileTemplateData || []),
+        JSON.stringify(tag.criteriaRules || []),
+        tag.workflowId || null,
+        tag.workflowName || null,
+        tag.processType || 'INTERNAL_STAGED_FIX',
+        JSON.stringify(tag.kpis || []),
+        // Universal engine
+        tag.hashtagType || 'FILE_INGESTION',
+        tag.dataSourceMode || 'FILE_UPLOAD',
+        tag.targetDbId || null,
+        tag.targetTableName || null,
+        tag.dedicatedAppTable || null,
+        JSON.stringify(tag.minimumRequiredColumns || []),
+        JSON.stringify(tag.dictionaryLookupMappings || {}),
+        tag.executionTrigger || 'MANUAL',
+        tag.scheduleCron || null,
+        JSON.stringify(tag.conditionalAction || { onPass: 'EXECUTE_SQL', onFail: 'FLAG_INVESTIGATION' })
+      ]
+    );
+    return { ...tag, tag: normalizedTag };
+  },
+
+  async updateHashtagKpis(tag: string, kpis: any[]): Promise<HashtagPreset | null> {
+    const pool = getPostgresPool();
+    const { rows } = await pool.query(
+      'UPDATE hashtag_presets SET kpis = $1 WHERE tag = $2 OR id = $2 RETURNING *;',
+      [JSON.stringify(kpis), tag]
+    );
+    if (!rows.length) return null;
+    return (this as any)._mapHashtagRow(rows[0]);
+  },
+
+  /** Record a completed execution run in hashtag_execution_runs */
+  async recordHashtagRun(run: any): Promise<void> {
+    const pool = getPostgresPool();
+    await pool.query(
+      `INSERT INTO hashtag_execution_runs
+         (id, hashtag_tag, task_id, team_id, executed_by, execution_mode,
+          rows_scanned, anomalies_detected, verdict,
+          maker_proposal_id, result_snapshot, is_diagnostic_only, executed_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+       ON CONFLICT (id) DO NOTHING;`,
+      [
+        run.id, run.hashtagTag, run.taskId || null, run.teamId || null,
+        run.executedBy, run.executionMode,
+        run.rowsScanned, run.anomaliesDetected, run.verdict,
+        run.makerProposalId || null,
+        JSON.stringify(run.resultSnapshot || {}),
+        run.isDiagnosticOnly ?? false,
+        run.executedAt || new Date()
+      ]
+    );
+  },
+
+  /** Retrieve run history for a hashtag */
+  async getHashtagRuns(tag: string, limit: number = 50): Promise<any[]> {
+    const pool = getPostgresPool();
+    const { rows } = await pool.query(
+      `SELECT * FROM hashtag_execution_runs
+       WHERE hashtag_tag = $1
+       ORDER BY executed_at DESC
+       LIMIT $2;`,
+      [tag, limit]
+    );
+    return rows.map((r: any) => ({
+      id: r.id,
+      hashtagTag: r.hashtag_tag,
+      taskId: r.task_id,
+      teamId: r.team_id,
+      executedBy: r.executed_by,
+      executionMode: r.execution_mode,
+      rowsScanned: r.rows_scanned,
+      anomaliesDetected: r.anomalies_detected,
+      verdict: r.verdict,
+      makerProposalId: r.maker_proposal_id,
+      resultSnapshot: parseJson(r.result_snapshot, {}),
+      isDiagnosticOnly: r.is_diagnostic_only,
+      executedAt: r.executed_at?.toISOString() || new Date().toISOString()
+    }));
+  },
+
+  /** Aggregate hashtag execution metrics for a team's reporting dashboard */
+  async getTeamHashtagReport(teamId: string): Promise<any> {
+    const pool = getPostgresPool();
+    const { rows } = await pool.query(
+      `SELECT
+         r.hashtag_tag,
+         COUNT(*)                                                           AS total_runs,
+         SUM(r.rows_scanned)                                                AS total_rows_scanned,
+         SUM(r.anomalies_detected)                                          AS total_anomalies,
+         COUNT(*) FILTER (WHERE r.verdict = 'PASS')                         AS pass_count,
+         COUNT(*) FILTER (WHERE r.verdict IN ('FAIL','DISCREPANCY'))         AS fail_count,
+         COUNT(*) FILTER (WHERE r.verdict = 'STAGED')                       AS staged_count,
+         ROUND(AVG(EXTRACT(EPOCH FROM (r.executed_at - LAG(r.executed_at)
+           OVER (PARTITION BY r.hashtag_tag ORDER BY r.executed_at)))/3600),2) AS avg_run_interval_hours,
+         MAX(r.executed_at)                                                 AS last_run_at
+       FROM hashtag_execution_runs r
+       WHERE r.team_id = $1
+       GROUP BY r.hashtag_tag
+       ORDER BY total_runs DESC;`,
+      [teamId]
+    );
+
+    return {
+      teamId,
+      generatedAt: new Date().toISOString(),
+      hashtagMetrics: rows
+    };
+  },
+
+  /** Personal dashboard: execution stats for a single user */
+  async getPersonalHashtagReport(userId: string): Promise<any> {
+    const pool = getPostgresPool();
+    const { rows } = await pool.query(
+      `SELECT
+         r.hashtag_tag,
+         COUNT(*)                                                    AS total_runs,
+         SUM(r.rows_scanned)                                         AS total_rows_scanned,
+         COUNT(*) FILTER (WHERE r.verdict = 'PASS')                  AS pass_count,
+         COUNT(*) FILTER (WHERE r.verdict IN ('FAIL','DISCREPANCY'))  AS fail_count,
+         MAX(r.executed_at)                                          AS last_run_at
+       FROM hashtag_execution_runs r
+       WHERE r.executed_by = $1
+       GROUP BY r.hashtag_tag
+       ORDER BY last_run_at DESC
+       LIMIT 20;`,
+      [userId]
+    );
+
+    return {
+      userId,
+      generatedAt: new Date().toISOString(),
+      hashtagMetrics: rows
+    };
+  },
+
+  /**
+   * Convenience resolver: lookup bank_name from bank_code.
+   * Returns null if not found.
+   */
+  async lookupBankCode(bankCode: string): Promise<{ bankCode: string; bankName: string | null }> {
+    const pool = getPostgresPool();
+    const { rows } = await pool.query(
+      `SELECT "bank_name" FROM "bank_directory" WHERE "bank_code" = $1 AND "is_active" = TRUE LIMIT 1;`,
+      [bankCode]
+    );
+    return {
+      bankCode,
+      bankName: rows.length ? rows[0].bank_name : null
+    };
+  },
+
+
 
   // ================= PLUGINS =================
   async getPlugins(): Promise<Plugin[]> {

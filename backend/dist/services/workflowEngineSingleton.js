@@ -95,7 +95,8 @@ class WorkflowEngineSingleton extends EventEmitter {
         const cacheHits = [];
         const inFlight = [];
         const toExecute = [];
-        for (const rec of records) {
+        for (let idx = 0; idx < records.length; idx++) {
+            const rec = records[idx];
             const txKey = String((keyField && rec[keyField]) ||
                 rec.transaction_id ||
                 rec.transactionId ||
@@ -107,20 +108,20 @@ class WorkflowEngineSingleton extends EventEmitter {
                 rec.card_number ||
                 '');
             if (!txKey) {
-                toExecute.push(rec);
+                toExecute.push({ ...rec, _origExecutionIndex: idx });
                 continue;
             }
             const cached = this.getCachedResult(workflowId, txKey);
             if (cached) {
-                cacheHits.push({ record: rec, cached });
+                cacheHits.push({ origIdx: idx, record: rec, cached });
                 continue;
             }
             const inFlightPromise = this.getInFlightLock(workflowId, txKey);
             if (inFlightPromise) {
-                inFlight.push({ record: rec, promise: inFlightPromise });
+                inFlight.push({ origIdx: idx, record: rec, promise: inFlightPromise });
                 continue;
             }
-            toExecute.push(rec);
+            toExecute.push({ ...rec, _origExecutionIndex: idx });
         }
         return { cacheHits, inFlight, toExecute };
     }

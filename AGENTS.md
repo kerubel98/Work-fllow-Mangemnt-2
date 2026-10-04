@@ -73,3 +73,46 @@ Whenever modifying, designing, reviewing, or analyzing features in this reposito
     - All high-resolution screenshots, diagrams, and media must be saved in a designated, persistent workspace folder (`presentation_assets/`) with clear descriptive filenames.
     - The compilation/builder script (e.g. `build_presentation.py`) must be preserved in the repository root or assets directory, fully parameterized and documented so that future modifications, slide re-orderings, or content additions can be executed in a single command (`python build_presentation.py`).
 
+16. **Full-Viewport Workspace Layout, Scroll Containment & Header Preservation**:
+    - **No Hardcoded Viewport Heights in Inner Panes**: Never use brittle height subtractions (e.g. `h-[calc(100vh-140px)]`) for inner workspace columns or tabs. Always enforce strict flexbox bounding: `h-full flex-1 min-h-0 overflow-hidden` on parent wrappers, with `shrink-0` on headers, toolbars, and tab bars so they are permanently stationary and never scroll out of view.
+    - **Outer Viewport Scroll Isolation**: Route wrappers (such as `<main>` in `App.tsx`) must enforce `overflow-hidden flex flex-col h-[calc(100vh-2.25rem)] min-h-0` for full-screen workspace environments (`team_workspace`, `workspace`) to eliminate outer scroll leaks that push desktop TitleBars or TeamHeaders off-screen.
+    - **Independent Dual-Pane Scrolling & Clean Scrollbars**: Multi-pane interfaces (like Mailbox thread list and message history) must scroll independently using `overflow-y-auto min-h-0` with `.no-scrollbar` (`scrollbar-width: none; -ms-overflow-style: none; ::-webkit-scrollbar { display: none; }`).
+    - **Universal Team-Public Task Consolidation**: Operational tasks and issues with `visibility: 'TEAM_PUBLIC'` or belonging to an operational team must automatically project into the Team Tasks Kanban view with visual badges and 1-click workspace navigation links (`onOpenIssueInWorkspace`).
+
+17. **Strict Data Loss Prevention, Scoped Cleanup & Mandatory Dry-Run**:
+    - **No Blanket Deletions**: Automated scripts, scratch tools, migrations, or CLI commands must NEVER execute unconstrained `DELETE FROM <persistent_table>` or `DROP TABLE <persistent_table>` against persistent entities (`database_validation_workflows`, `validation_boxes`, `database_connections`, `database_table_mappings`, `issues`, `teams`, `users`, `workflow_bundles`).
+    - **Explicit Provenance Scoping**: Any cleanup touching persistent records must use restrictive, reviewable identification (e.g. `WHERE id = ANY($1)` or `is_system_mock = true`). Names, creation dates, or appearance alone must never be treated as proof that a record is disposable.
+    - **Mandatory Dry-Run Sequence**: Before deleting or modifying persistent records, the agent must execute:
+      `IDENTIFY` → `SELECT matching records` → `VERIFY ownership/provenance` → `DRY RUN` → `REPORT affected records` → `OBTAIN EXPLICIT APPROVAL` → `MODIFY / DELETE` → `VERIFY final state`. If provenance cannot be verified, DO NOT delete.
+    - **Transient Data Verification**: Never assume a table is safe to drop merely because of its name (e.g. `mirror_%`). Verify from the active repository that the object is truly a transient, generated structure before dropping.
+
+18. **Canonical ValidationBoxType & CheckType Segregation**:
+    - **Canonical Enums**: All validation box persistence in PostgreSQL (`validation_boxes.box_type`), backend models, API serialization, and frontend TypeScript state MUST strictly conform to the four canonical `ValidationBoxType` enums:
+      `'INGESTION_SEARCH' | 'CONDITION_CHECK' | 'RECONCILIATION' | 'REPORT'`.
+    - **Strict Layer Separation**: Internal rule check types (`EXISTENCE_CHECK`, `VALUE_MATCH`, `AMOUNT_MATCH`, `ISO_DECLINE_CODE`) belong exclusively inside `rule_definition.checkType` or `steps[].checkType`, NEVER in `validation_boxes.box_type`.
+    - **Single Source of Truth**: Before modifying enum values, verify consistency across Database Schema ↔ Backend Model ↔ API Contract ↔ Frontend Type ↔ UI Filters ↔ Seeds/Migrations ↔ Existing Data.
+
+19. **Team-Scoped Database Connection Isolation & Credential Protection**:
+    - **Team Ownership**: Database connections created within a team context (`team_id = currentTeam.id` via `api.createTeamDatabase`) are strictly private to that team (`scope = 'team'`).
+    - **Strict Authorization Chain**: Access must verify `User` → `Team Membership` → `Team` → `DB Connection` → `Allowed Operation`. Users must not access another team's connection simply by knowing an ID, database name, table name, or mirror table.
+    - **Promotion Governance**: Promoting a connection from `team_id = <team>` to global (`team_id = NULL`) requires an explicit administrative/Maker-Checker promotion workflow (`promotion_status = 'PENDING'` -> approval).
+    - **Credential Protection**: Passwords and secrets must never be logged or returned in plaintext, must be masked on retrieval (`••••••••`), and must remain unchanged during metadata updates when no new password is submitted.
+
+20. **Evidence-Based Persistent-State Modification & Cross-Layer Verification**:
+    - **No Speculative Assumptions**: Never assume a workflow is "probably a test workflow", a record is "probably unused", an enum "probably means the same thing", or a row "can probably be regenerated". Establish the intended state strictly from evidence (schemas, types, migrations, seeds, approved ADRs).
+    - **Cross-Layer Invariance**: When changing any status, enum, type, lifecycle, or persistent field, inspect and synchronize every layer: `Database` ↔ `Backend` ↔ `API` ↔ `Frontend` ↔ `Seeds` ↔ `Migrations` ↔ `Existing Data` ↔ `Tests`. Never patch only the layer where the symptom surfaced.
+    - **Mandatory 6-Phase Workflow**: For persistent state, architecture, schema, authorization, or lifecycle changes, execute:
+      1. *Inspect* → 2. *Analyze* → 3. *Plan* → 4. *Approval* → 5. *Modify* → 6. *Verify*.
+
+21. **Four-Tier Flowchart DAG Invariance & Explicit Pipeline Database Scoping**:
+    - **Four-Tier Synchronization**: Any property added to a workflow, stage, or step MUST be synchronized across all four layers simultaneously:
+      1. *Visual Canvas State* (`FlowchartNode`, `handleAddBoxNode`, `convertStagesToFlowchart`, `cleanNodes`, `createSnapshot`)
+      2. *Inspector & Component State* (`WorkflowInspector` props, live configuration queries, form state)
+      3. *Execution Model* (`ProcessingStage`, `ValidationCheckStep`, `ruleSqlCompiler`)
+      4. *Persistence & Hydration* (`postgresRepo`, `workflowsRouter`, `hydrateWorkflowColumnConfigurations`).
+      Never allow a property to exist in the database or execution model while being stripped during flowchart serialization or canvas loading.
+    - **Explicit Database & Table Scoping**: Workflows must never execute queries against external tables with ambiguous or hardcoded references. Every workflow must specify its `targetDbId` and `targetTable` at the pipeline level, and each stage/node must bind strictly to registered database column configurations via `attachedDbConfigIds`.
+    - **Execution Policy Preservation**: Multi-row cardinality policies (`cardinalityPolicy`), aggregation strategies (`aggregationStrategy`), and ordering columns (`orderByColumn`) must be preserved during conversion between stages, steps, and flowchart nodes.
+
+
+

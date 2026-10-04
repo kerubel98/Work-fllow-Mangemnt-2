@@ -8,7 +8,8 @@ import {
   User, Team, TeamTask, TeamInsight, TeamDiscussionMessage, 
   TeamRelationship, TeamRelationshipType,
   WorkspaceSettingProposal, SettingProposalType, SettingProposalStatus, TeamEscalationTarget,
-  DatabaseConnection, AllowedQueryType, MemberPrivilege, TeamAdminPrivileges, WorkflowBundle
+  DatabaseConnection, AllowedQueryType, MemberPrivilege, TeamAdminPrivileges, WorkflowBundle,
+  Issue
 } from '../types';
 import { api } from '../api/client';
 import { 
@@ -31,6 +32,7 @@ import { TeamResourcesTab } from './team/TeamResourcesTab';
 import { TeamChannelsTab } from './team/TeamChannelsTab';
 import { TeamStagedAssetsConsole } from './team/TeamStagedAssetsConsole';
 import { TeamMailboxTab } from './team/TeamMailboxTab';
+import { TeamHashtagReportsTab } from './team/TeamHashtagReportsTab';
 import { TaskPreFillFromMessage } from '../types';
 
 
@@ -45,6 +47,7 @@ interface TeamWorkspaceProps {
   tasks: TeamTask[];
   insights: TeamInsight[];
   messages: TeamDiscussionMessage[];
+  issues?: Issue[];
   onCreateTeam?: (team: Omit<Team, 'id' | 'createdAt'>) => void;
   onUpdateTeam?: (id: string, updates: Partial<Team>) => void;
   onAddTask: (task: Omit<TeamTask, 'id' | 'createdAt'>) => void;
@@ -56,7 +59,7 @@ interface TeamWorkspaceProps {
   onSendMessage: (msg: Omit<TeamDiscussionMessage, 'id' | 'timestamp'>) => void;
   openCreateModalSignal?: number;
   initialSelectedTeamId?: string | null;
-  initialActiveTab?: 'overview' | 'members' | 'discussion' | 'tasks' | 'mailbox' | 'timeline' | 'dashboard' | 'insights' | 'resources' | 'team_settings' | 'approvals' | 'grants' | 'ai-strategy' | 'relationships' | 'db-access' | 'delegated-admin' | null;
+  initialActiveTab?: 'overview' | 'members' | 'discussion' | 'tasks' | 'mailbox' | 'timeline' | 'dashboard' | 'insights' | 'resources' | 'reports' | 'team_settings' | 'approvals' | 'grants' | 'ai-strategy' | 'relationships' | 'db-access' | 'delegated-admin' | null;
   initialSelectedTaskId?: string | null;
   onOpenPersonalChat?: (userId: string) => void;
   onActiveTeamChange?: (teamName: string | null) => void;
@@ -72,6 +75,7 @@ export default function TeamWorkspace({
   tasks = [],
   insights = [],
   messages = [],
+  issues = [],
   onCreateTeam,
   onUpdateTeam,
   onAddTask,
@@ -136,7 +140,7 @@ export default function TeamWorkspace({
 
   // Active sub-tab state inside Team Workspace
   const [activeTab, setActiveTab] = useState<
-    'overview' | 'members' | 'discussion' | 'tasks' | 'mailbox' | 'timeline' | 'dashboard' | 'insights' | 'resources' | 'team_settings' | 'approvals' | 'grants' | 'ai-strategy' | 'relationships' | 'db-access' | 'delegated-admin'
+    'overview' | 'members' | 'discussion' | 'tasks' | 'mailbox' | 'timeline' | 'dashboard' | 'insights' | 'resources' | 'reports' | 'team_settings' | 'approvals' | 'grants' | 'ai-strategy' | 'relationships' | 'db-access' | 'delegated-admin'
   >(
     isInitialSettingsSubTab ? 'team_settings' : (initialActiveTab === 'insights' ? 'resources' : (initialActiveTab || 'overview'))
   );
@@ -703,7 +707,42 @@ export default function TeamWorkspace({
   }, [currentTeam, onActiveTeamChange]);
 
   const currentTeamId = currentTeam ? currentTeam.id : '';
-  const teamTasks = tasks.filter(t => t.teamId === currentTeamId);
+  const teamTasks = React.useMemo(() => {
+    const directTeamTasks = tasks.filter(t => t.teamId === currentTeamId);
+
+    // Map public operational issues belonging to this team or marked TEAM_PUBLIC
+    const publicOperationalTasks: TeamTask[] = (issues || [])
+      .filter(i => {
+        const matchesTeam = !i.teamId || i.teamId === currentTeamId;
+        const isPublic = i.visibility === 'TEAM_PUBLIC' || (i as any).isPublic === true;
+        return matchesTeam && isPublic;
+      })
+      .map(i => ({
+        id: `issue-task-${i.id}`,
+        teamId: currentTeamId || i.teamId || '',
+        title: i.title,
+        description: i.description || '',
+        assigneeId: i.assignedTechUserId || i.creatorId || '',
+        assigneeName: i.assignedTechUserName || i.creatorName || 'Operational Staff',
+        creatorId: i.creatorId,
+        creatorName: i.creatorName,
+        status: (i.status === 'Closed' || i.status === 'Resolved') 
+          ? 'Done' 
+          : (i.status === 'Investigating' ? 'In Progress' : 'To Do'),
+        priority: i.priority === 'Critical' 
+          ? 'High' 
+          : (i.priority === 'High' ? 'High' : (i.priority === 'Low' ? 'Low' : 'Medium')),
+        createdAt: i.createdAt,
+        isPublic: true,
+        visibility: 'public',
+        sourceIssueId: i.id,
+        isOperationalPublicTask: true
+      } as TeamTask & { sourceIssueId: string; isOperationalPublicTask: boolean }));
+
+    const existingIds = new Set(directTeamTasks.map(t => t.id));
+    const additional = publicOperationalTasks.filter(pt => !existingIds.has(pt.id) && !existingIds.has((pt as any).sourceIssueId));
+    return [...directTeamTasks, ...additional];
+  }, [tasks, issues, currentTeamId]);
   const teamInsights = insights.filter(i => i.teamId === currentTeamId);
   const teamMessages = messages.filter(m => m.teamId === currentTeamId);
 
@@ -1345,7 +1384,7 @@ export default function TeamWorkspace({
   const pendingApprovalsCount = pendingResolutions.length + settingProposals.filter(p => p.status === 'PENDING_TEAM_APPROVAL' || p.status === 'ESCALATED_TO_TARGET_TEAM').length;
 
   return (
-    <div className="flex flex-col gap-2.5 h-[calc(100vh-2.85rem)] min-h-[500px]" id="team-workspace-container">
+    <div className="flex flex-col gap-2.5 h-full flex-1 min-h-0 overflow-hidden" id="team-workspace-container">
       {/* 1. TOP HEADER: Single Switcher, Status Badges, 3 High-Value Actions */}
       {currentTeam && (
         <TeamHeader
@@ -1363,7 +1402,7 @@ export default function TeamWorkspace({
       )}
 
       {/* 2. MAIN WORKSPACE CONTENT */}
-      <main className="flex-1 flex flex-col min-w-0 overflow-y-auto space-y-2.5" id="team-workspace-main">
+      <main className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden space-y-2.5" id="team-workspace-main">
         {!currentTeam ? (
           <div className="flex-1 flex flex-col items-center justify-center p-8 bg-white rounded-2xl border border-slate-200/80 shadow-xs text-center">
             <div className="w-14 h-14 rounded-2xl bg-blue-50 flex items-center justify-center text-blue-600 mb-3 border border-blue-100">
@@ -1383,7 +1422,7 @@ export default function TeamWorkspace({
             </button>
           </div>
         ) : (
-          <div className="flex-1 flex flex-col min-w-0 space-y-2.5">
+          <div className="flex-1 flex flex-col min-w-0 min-h-0 space-y-2.5 overflow-hidden">
             {/* Primary 5-Zone Tab Bar (Only displayed for operational team workspace) */}
             {!isGovernanceActive && (
               <div className="h-10 min-h-[40px] px-2.5 bg-white border border-slate-200/90 rounded-xl flex items-center justify-between text-xs font-mono shadow-xs shrink-0 gap-2">
@@ -1394,7 +1433,8 @@ export default function TeamWorkspace({
                     { id: 'tasks', label: 'Tasks', icon: CheckSquare, count: teamTasks.filter(t => t.status !== 'Done').length },
                     { id: 'mailbox', label: 'Mailbox', icon: Mail },
                     { id: 'discussion', label: 'Discussion', icon: MessageSquare, count: teamMessages.length },
-                    { id: 'resources', label: 'Resources', icon: Layers, count: allTeamDbs.length }
+                    { id: 'resources', label: 'Resources', icon: Layers, count: allTeamDbs.length },
+                    { id: 'reports', label: 'Reports', icon: Tag }
                   ].map(tab => {
                     const isActive = activeTab === tab.id;
                     const IconComp = tab.icon;
@@ -1428,7 +1468,7 @@ export default function TeamWorkspace({
 
             {/* Operational Tabs (5 Core Zones) */}
             {!isGovernanceActive && (
-              <div className="flex-1 flex flex-col min-h-0">
+              <div className={`flex-1 flex flex-col min-h-0 ${activeTab === 'mailbox' ? 'overflow-hidden' : 'overflow-y-auto'}`}>
                 {activeTab === 'overview' && (
                   <TeamOverviewTab
                     currentTeam={currentTeam}
@@ -1462,6 +1502,7 @@ export default function TeamWorkspace({
                     onAddTaskClick={() => setShowAddTaskModal(true)}
                     onUpdateTaskStatus={onUpdateTaskStatus}
                     onDeleteTask={onDeleteTask}
+                    onOpenIssueInWorkspace={onOpenIssueInWorkspace}
                   />
                 )}
 
@@ -1471,6 +1512,10 @@ export default function TeamWorkspace({
                     currentUser={currentUser}
                     onNavigateToTaskCreation={onNavigateToTaskCreation}
                     onOpenIssueInWorkspace={onOpenIssueInWorkspace}
+                    onOpenChannelsTab={() => {
+                      setActiveTab('team_settings');
+                      setTeamSettingsSubTab('channels');
+                    }}
                   />
                 )}
 
@@ -1496,12 +1541,19 @@ export default function TeamWorkspace({
                     monitoringDbs={monitoringDbs}
                   />
                 )}
+
+                {activeTab === 'reports' && (
+                  <TeamHashtagReportsTab
+                    teamId={currentTeam.id}
+                    teamName={currentTeam.name}
+                  />
+                )}
               </div>
             )}
 
       {/* CONSOLIDATED TAB: TEAM SETTINGS (Approvals, Cross-Team, AI Strategy, Org Structure, DB Access, Delegated Admin) */}
       {(activeTab === 'team_settings' || ['approvals', 'grants', 'ai-strategy', 'relationships', 'db-access', 'delegated-admin'].includes(activeTab)) && (
-        <div className="space-y-4" id="team-settings-container">
+        <div className="space-y-4 flex-1 overflow-y-auto min-h-0" id="team-settings-container">
           {/* Team Settings Header with Back Button */}
           <div className="bg-white border border-slate-200/90 rounded-2xl p-4 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 font-mono text-xs" id="team-settings-header">
             <div className="flex items-center space-x-3">

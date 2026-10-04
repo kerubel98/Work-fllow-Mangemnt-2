@@ -1022,7 +1022,9 @@ export default function App() {
           />
 
           {/* Main Context Dynamic Panel Router */}
-          <main className="flex-grow p-2 lg:p-3 overflow-y-auto max-h-[calc(100vh-2.25rem)]">
+          <main className={`flex-grow p-2 lg:p-3 max-h-[calc(100vh-2.25rem)] ${
+            activeNavigation === 'team_workspace' ? 'overflow-hidden flex flex-col h-[calc(100vh-2.25rem)] min-h-0' : 'overflow-y-auto'
+          }`}>
             <Suspense fallback={<PanelLoadingSkeleton />}>
             {(activeNavigation === 'workspace' || activeNavigation === 'my_tasks' || activeNavigation === 'hashtags' || activeNavigation === 'open_case') && (
               <ErrorBoundary fallbackTitle="Workspace Display Error" fallbackMessage="An error occurred while loading the workspace. You can retry rendering or reset settings.">
@@ -1069,6 +1071,7 @@ export default function App() {
                   tasks={teamTasks}
                   insights={teamInsights}
                   messages={teamMessages}
+                  issues={issues}
                   onCreateTeam={handleCreateTeam}
                   onUpdateTeam={handleUpdateTeam}
                   onAddTask={handleAddTeamTask}

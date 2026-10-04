@@ -187,5 +187,84 @@ export const reconciliationService = {
             errorCount: batchTxs.length,
             durationMs: Date.now() - startTime
         };
+    },
+    /**
+     * §9.5 Set-Based Reconciliation Joins on Universal Coordinates (_task_id, _row_number)
+     *
+     * Reconciles task_dataset_transactions directly against a typed UNLOGGED mirror table
+     * using the immutable coordinate join:
+     *   ON tdt.task_id = m._task_id AND tdt.row_number = m._row_number
+     *
+     * Uses DISTINCT ON (m._task_id, m._row_number) to enforce join determinism (Rule 13).
+     *
+     * @param taskId        PostgreSQL task ID
+     * @param batchId       Envelope batch ID
+     * @param ruleBlockId   Validation rule block ID
+     * @param mirrorTable   Physical mirror table name (e.g. mirror_core_auth)
+     * @param stageId       Current stage identifier
+     */
+    async reconcileByRowNumber(taskId, batchId, ruleBlockId, mirrorTable, stageId = '') {
+        const startTime = Date.now();
+        if (!isPostgresConnected) {
+            return { taskId, batchId, totalUpdated: 0, passCount: 0, failCount: 0, durationMs: 0 };
+        }
+        const pool = getPostgresPool();
+        const safeMirror = mirrorTable.toLowerCase().replace(/[^a-z0-9_]/g, '_');
+        try {
+            // Deterministic join using DISTINCT ON to eliminate row multiplication (Rule 13)
+            const updateSql = `
+        WITH deduplicated_mirror AS (
+          SELECT DISTINCT ON (_task_id, _row_number)
+            _task_id,
+            _row_number,
+            _validation_status,
+            _validation_action,
+            _validation_details
+          FROM ${safeMirror}
+          WHERE _batch_id = $1
+            AND _rule_block_id = $2
+            AND _task_id = $3
+          ORDER BY _task_id, _row_number, (CASE WHEN _validation_status = 'FAIL' THEN 0 ELSE 1 END), _mirrored_at DESC
+        )
+        UPDATE task_dataset_transactions tdt
+        SET 
+          validation_status = dm._validation_status,
+          _validation_details = jsonb_build_object(
+            'stage_id', $4::text,
+            'rule_block_id', $2::text,
+            'mirror_table', $5::text,
+            'details', dm._validation_details,
+            'reconciled_at', NOW()
+          ),
+          updated_at = NOW()
+        FROM deduplicated_mirror dm
+        WHERE tdt.task_id = dm._task_id
+          AND tdt.row_number = dm._row_number;
+      `;
+            const res = await pool.query(updateSql, [batchId, ruleBlockId, taskId, stageId, safeMirror]);
+            const totalUpdated = res.rowCount || 0;
+            const countSql = `
+        SELECT
+          COUNT(*) FILTER (WHERE validation_status = 'PASS')::int AS pass_count,
+          COUNT(*) FILTER (WHERE validation_status = 'FAIL')::int AS fail_count
+        FROM task_dataset_transactions
+        WHERE task_id = $1;
+      `;
+            const countRes = await pool.query(countSql, [taskId]);
+            const passCount = countRes.rows[0]?.pass_count || 0;
+            const failCount = countRes.rows[0]?.fail_count || 0;
+            return {
+                taskId,
+                batchId,
+                totalUpdated,
+                passCount,
+                failCount,
+                durationMs: Date.now() - startTime,
+            };
+        }
+        catch (err) {
+            console.warn(`[ReconciliationService] reconcileByRowNumber notice: ${err.message}`);
+            return { taskId, batchId, totalUpdated: 0, passCount: 0, failCount: 0, durationMs: Date.now() - startTime };
+        }
     }
 };

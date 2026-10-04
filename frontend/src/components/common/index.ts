@@ -9,3 +9,5 @@ export * from './Card';
 export * from './Skeleton';
 export * from './Tooltip';
 export * from './EmptyState';
+export * from './Overlay';
+export * from './Feedback';

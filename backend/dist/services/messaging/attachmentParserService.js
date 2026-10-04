@@ -36,6 +36,9 @@ export class AttachmentParserService {
                     mimeType: att.mimeType,
                     contentType: att.contentType,
                     storagePath: att.storagePath,
+                    sizeBytes: att.sizeBytes,
+                    rawBase64: att.rawBase64,
+                    parsedData: att.parsedData,
                     parsingStatus: 'FAILED',
                     parsingError: err.message
                 });
@@ -68,33 +71,56 @@ export class AttachmentParserService {
         // 1. Spreadsheet (CSV / Excel)
         if (isSpreadsheet) {
             if (rawData) {
-                const buffer = Buffer.from(rawData, 'base64');
-                const workbook = XLSX.read(buffer, { type: 'buffer' });
-                const sheetName = workbook.SheetNames[0];
-                const sheet = workbook.Sheets[sheetName];
-                const jsonData = XLSX.utils.sheet_to_json(sheet, { defval: '' });
-                const headers = jsonData.length > 0 ? Object.keys(jsonData[0]) : [];
-                const rows = jsonData.slice(0, 500); // First 500 rows for preview/staging
-                return {
-                    attachmentId: att.id,
-                    filename: att.filename,
-                    mimeType: att.mimeType,
-                    contentType: 'spreadsheet',
-                    storagePath: att.storagePath,
-                    tabularHeaders: headers,
-                    tabularRows: rows,
-                    parsedText: `Spreadsheet "${att.filename}": ${jsonData.length} records found across columns [${headers.join(', ')}].`,
-                    parsedData: {
-                        sheetNames: workbook.SheetNames,
-                        activeSheet: sheetName,
-                        totalRows: jsonData.length,
-                        sampleHeaders: headers,
-                        sampleRows: rows,
+                try {
+                    const buffer = Buffer.from(rawData, 'base64');
+                    const workbook = XLSX.read(buffer, { type: 'buffer' });
+                    const sheetName = workbook.SheetNames[0];
+                    const sheet = workbook.Sheets[sheetName];
+                    const jsonData = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+                    const headers = jsonData.length > 0 ? Object.keys(jsonData[0]) : [];
+                    const rows = jsonData.slice(0, 500); // First 500 rows for preview/staging
+                    return {
+                        attachmentId: att.id,
+                        filename: att.filename,
+                        mimeType: att.mimeType,
+                        contentType: 'spreadsheet',
+                        storagePath: att.storagePath,
+                        sizeBytes: att.sizeBytes || buffer.length,
+                        rawBase64: rawData,
                         tabularHeaders: headers,
-                        tabularRows: rows
-                    },
-                    parsingStatus: 'PARSED'
-                };
+                        tabularRows: rows,
+                        parsedText: `Spreadsheet "${att.filename}": ${jsonData.length} records found across columns [${headers.join(', ')}].`,
+                        parsedData: {
+                            sheetNames: workbook.SheetNames,
+                            activeSheet: sheetName,
+                            totalRows: jsonData.length,
+                            rowCount: jsonData.length,
+                            sampleHeaders: headers,
+                            sampleRows: rows,
+                            tabularHeaders: headers,
+                            tabularRows: rows
+                        },
+                        parsingStatus: 'PARSED'
+                    };
+                }
+                catch (xlsxErr) {
+                    if (att.parsedData) {
+                        return {
+                            attachmentId: att.id,
+                            filename: att.filename,
+                            mimeType: att.mimeType,
+                            contentType: 'spreadsheet',
+                            storagePath: att.storagePath,
+                            sizeBytes: att.sizeBytes,
+                            rawBase64: rawData,
+                            tabularHeaders: att.parsedData.sampleHeaders,
+                            tabularRows: att.parsedData.sampleRows,
+                            parsedData: att.parsedData,
+                            parsingStatus: 'PARSED'
+                        };
+                    }
+                    throw xlsxErr;
+                }
             }
             else if (att.storagePath && fs.existsSync(att.storagePath) && (filename.endsWith('.xlsx') || filename.endsWith('.xls'))) {
                 try {
@@ -110,6 +136,8 @@ export class AttachmentParserService {
                         mimeType: att.mimeType,
                         contentType: 'spreadsheet',
                         storagePath: att.storagePath,
+                        sizeBytes: att.sizeBytes,
+                        rawBase64: rawData,
                         tabularHeaders: headers,
                         tabularRows: rows,
                         parsedText: `Spreadsheet "${att.filename}": ${jsonData.length} records found across columns [${headers.join(', ')}].`,
@@ -117,6 +145,7 @@ export class AttachmentParserService {
                             sheetNames: workbook.SheetNames,
                             activeSheet: sheetName,
                             totalRows: jsonData.length,
+                            rowCount: jsonData.length,
                             sampleHeaders: headers,
                             sampleRows: rows,
                             tabularHeaders: headers,
@@ -166,6 +195,8 @@ export class AttachmentParserService {
                     mimeType: att.mimeType,
                     contentType: 'spreadsheet',
                     storagePath: att.storagePath,
+                    sizeBytes: att.sizeBytes || (csvText ? Buffer.byteLength(csvText) : 0),
+                    rawBase64: rawData,
                     tabularHeaders: headers,
                     tabularRows: rows,
                     parsedText: `CSV file "${att.filename}": ${rows.length} records parsed across columns [${headers.join(', ')}].`,
@@ -174,6 +205,7 @@ export class AttachmentParserService {
                         format: 'CSV',
                         path: att.storagePath,
                         totalRows: rows.length,
+                        rowCount: rows.length,
                         sampleHeaders: headers,
                         sampleRows: rows,
                         tabularHeaders: headers,
@@ -203,6 +235,8 @@ export class AttachmentParserService {
                 mimeType: att.mimeType,
                 contentType: 'document',
                 storagePath: att.storagePath,
+                sizeBytes: att.sizeBytes || (rawText ? Buffer.byteLength(rawText) : 0),
+                rawBase64: att.rawBase64,
                 parsedText: rawText ? rawText.substring(0, 4000) : `Text file "${att.filename}"`,
                 parsedData,
                 parsingStatus: 'PARSED'
@@ -215,6 +249,8 @@ export class AttachmentParserService {
             mimeType: att.mimeType,
             contentType: att.contentType,
             storagePath: att.storagePath,
+            sizeBytes: att.sizeBytes,
+            rawBase64: att.rawBase64,
             parsedText: `Document attachment "${att.filename}" (${att.contentType}). Registered in secure staging vault.`,
             parsingStatus: 'PARSED'
         };

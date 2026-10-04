@@ -11,20 +11,29 @@
 import { repo } from '../store/repository.js';
 import { eventService } from './events.js';
 import { executeExternalChunkQuery } from './externalDataQueryService.js';
-import { reconciliationService } from './reconciliationService.js';
 import { dbLivenessService } from './dbLivenessService.js';
 import { mirrorTableManager } from './mirrorTableManager.js';
 import { ruleSqlCompiler } from './ruleSqlCompiler.js';
 import { workflowEngineSingleton } from './workflowEngineSingleton.js';
 import { queryPg } from '../config/postgres.js';
+import { nextStageInputResolver } from './nextStageInputResolver.js';
+import { validationPipelineBuilder } from './validationPipelineBuilder.js';
+import { workflowPipelineBuilder } from './pipeline/index.js';
 export const investigationOrchestratorService = {
     /**
      * Universal Workflow Execution Engine.
      * Accepts arbitrary payloads from any caller (Investigation Panel or Query Sandbox),
      * deduplicates in-flight records, probes database liveness, provisions typed mirror tables,
      * compiles rules into dynamic SQL, and executes event-driven key chaining.
+     * PHASE 1 & 16: Delegates directly to the compiled DAG pipeline (executeViaNewPipeline).
      */
     async executeUniversalWorkflow(envelope) {
+        return this.executeViaNewPipeline(envelope);
+    },
+    /**
+     * @deprecated Legacy monolithic executor (Phase 16: DEAD / DEPRECATED).
+     */
+    async _legacyExecuteUniversalWorkflow(envelope) {
         const startTime = Date.now();
         const { workflowId, records, sourceType, sourceId, keyField: inputKeyField, keyFields: inputKeyFields, forceRerun, executedBy } = envelope;
         const workflow = await repo.getWorkflowById(workflowId);
@@ -221,39 +230,39 @@ export const investigationOrchestratorService = {
         const steps = workflow.steps || [];
         let totalPassed = 0;
         let totalFailed = 0;
-        const finalEvaluatedRecords = [];
-        // Append cached results directly
+        const finalEvaluatedRecords = new Array(records.length);
+        // Append cached results directly at their exact original indices
         for (const hit of cacheHits) {
-            finalEvaluatedRecords.push({
+            finalEvaluatedRecords[hit.origIdx] = {
                 ...hit.record,
                 _validation_status: hit.cached.verdict,
                 _is_cached: true,
                 _cached_at: new Date(hit.cached.cachedAt).toISOString()
-            });
+            };
             if (hit.cached.verdict === 'PASS')
                 totalPassed++;
             else
                 totalFailed++;
         }
-        // Wait on any in-flight promises from other users
+        // Wait on any in-flight promises from other users and place at original indices
         if (inFlight.length > 0) {
             const inFlightResults = await Promise.allSettled(inFlight.map(i => i.promise));
             for (let i = 0; i < inFlight.length; i++) {
                 const item = inFlight[i];
                 const res = inFlightResults[i];
                 if (res.status === 'fulfilled' && res.value) {
-                    finalEvaluatedRecords.push(res.value);
+                    finalEvaluatedRecords[item.origIdx] = res.value;
                     if (res.value._validation_status === 'PASS')
                         totalPassed++;
                     else
                         totalFailed++;
                 }
                 else {
-                    finalEvaluatedRecords.push({
+                    finalEvaluatedRecords[item.origIdx] = {
                         ...item.record,
                         _validation_status: 'FAIL',
                         _error: 'In-flight execution failed'
-                    });
+                    };
                     totalFailed++;
                 }
             }
@@ -270,7 +279,7 @@ export const investigationOrchestratorService = {
                 failedCount: totalFailed,
                 cachedHits: cacheHits.length,
                 durationMs: Date.now() - startTime,
-                records: finalEvaluatedRecords
+                records: finalEvaluatedRecords.filter(r => r !== undefined)
             };
         }
         // Register in-flight locks for fresh records
@@ -278,33 +287,85 @@ export const investigationOrchestratorService = {
             // Execute Stages with Key Chaining and Liveness Checks
             // Strip residual evaluation metadata from previous workflow executions to prevent cross-workflow contamination
             const indexedRecords = toExecute.map((r, idx) => {
-                const { _validation_status, _validation_action, _validation_details, _target_record, _target_db, _target_table, _validation_workflow_id, _validation_workflow_name, _stage_results, auditTrail, _isDiagnosticOnly, _diagnosticTaintReason, ...cleanRecord } = r;
+                const { _validation_status, _validation_action, _validation_details, _target_record, _target_db, _target_table, _validation_workflow_id, _validation_workflow_name, _stage_results, _audit_trail, auditTrail, stageResults, _isDiagnosticOnly, _diagnosticTaintReason, ...cleanRecord } = r;
                 return {
                     ...cleanRecord,
-                    _origExecutionIndex: idx
+                    _origExecutionIndex: idx,
+                    _targetOrigIndex: r._origExecutionIndex ?? idx
                 };
             });
+            const workflowExecutionId = `wf_exec_${Date.now()}_${Math.random().toString(36).substring(2, 8)}`;
+            const upstreamContracts = [];
+            // Mandatory Builder Compilation Gate (PIPELINE_ENGINE_MASTER_ARCHITECTURE.md §9)
+            let compiledPlan;
+            try {
+                compiledPlan = validationPipelineBuilder.compile(workflow);
+            }
+            catch (compileErr) {
+                console.error(`[WorkflowEngine] Compilation error in workflow '${workflow.name}':`, compileErr.message);
+                eventService.broadcastEvent('workflow:failed', {
+                    jobId,
+                    workflowId,
+                    error: compileErr.message
+                });
+                for (let i = 0; i < indexedRecords.length; i++) {
+                    const r = indexedRecords[i];
+                    const targetOrigIdx = r._targetOrigIndex !== undefined ? r._targetOrigIndex : i;
+                    finalEvaluatedRecords[targetOrigIdx] = {
+                        ...r,
+                        _validation_status: 'ERROR',
+                        _validation_action: 'STOP',
+                        _validation_details: {
+                            status: 'PAUSED_CONFIGURATION_ERROR',
+                            message: `Workflow compilation failed: ${compileErr.message}`
+                        }
+                    };
+                    totalFailed++;
+                }
+                return {
+                    jobId,
+                    sourceType,
+                    workflowId,
+                    totalRecords: records.length,
+                    processedRecords: records.length,
+                    passedCount: 0,
+                    failedCount: totalFailed,
+                    cachedHits: cacheHits.length,
+                    durationMs: Date.now() - startTime,
+                    records: finalEvaluatedRecords.filter(r => r !== undefined)
+                };
+            }
             let currentActiveKeys = indexedRecords.map((r, idx) => getRecordCandidateKeys(r, idx)[0]);
             let currentActiveRecords = [...indexedRecords];
             let previousMirrorTable = null;
             const latestEvaluatedByOrigIndex = new Map();
-            for (let stageIdx = 0; stageIdx < stages.length; stageIdx++) {
-                const stage = stages[stageIdx];
-                const stageSteps = steps.filter(s => s.stageId === stage.id || (!s.stageId && stageIdx === 0));
-                // Hydrate database table column configurations for stage steps (Complete Checks)
-                for (const step of stageSteps) {
-                    if ((!step.columnConfigurations || step.columnConfigurations.length === 0) && step.columnConfigurationIds && step.columnConfigurationIds.length > 0) {
-                        const configs = await Promise.all(step.columnConfigurationIds.map(id => repo.getColumnConfigurationById(id)));
-                        step.columnConfigurations = configs.filter((c) => c !== null);
-                    }
-                    else if ((!step.columnConfigurations || step.columnConfigurations.length === 0) && (step.targetDbId || stage.targetDbId) && (step.targetTable || stage.targetDataSource)) {
-                        try {
-                            const tableConfigs = await repo.getColumnConfigurations(step.targetDbId || stage.targetDbId, step.targetTable || stage.targetDataSource);
-                            if (tableConfigs.length > 0) {
-                                step.columnConfigurations = tableConfigs;
-                            }
-                        }
-                        catch { }
+            // Execute STRICTLY AND EXCLUSIVELY against compiledPlan.stages (Director/Builder Pattern)
+            for (let stageIdx = 0; stageIdx < compiledPlan.stages.length; stageIdx++) {
+                const stagePlan = compiledPlan.stages[stageIdx];
+                const stage = {
+                    id: stagePlan.stageId,
+                    name: stagePlan.stageName,
+                    order: stagePlan.order,
+                    enabled: true,
+                    targetDbId: stagePlan.targetDbId || '',
+                    targetDataSource: stagePlan.targetTable || '',
+                    cardinalityPolicy: stagePlan.cardinalityPolicy,
+                    aggregationStrategy: stagePlan.aggregationStrategy,
+                    orderByColumn: stagePlan.orderByColumn,
+                    attachedDbConfigIds: stagePlan.attachedDbConfigIds
+                };
+                const stageExecutionId = `stg_exec_${stage.id}_${stageIdx}`;
+                const stageSteps = stagePlan.steps;
+                // Hydrate database table column configurations strictly from attachedDbConfigIds (Anti-Contamination Mandate §10)
+                const boundConfigIds = Array.from(new Set([
+                    ...(stagePlan.attachedDbConfigIds || []),
+                    ...stageSteps.flatMap(s => s.attachedDbConfigIds || s.columnConfigurationIds || [])
+                ]));
+                if (boundConfigIds.length > 0) {
+                    const loadedConfigs = (await Promise.all(boundConfigIds.map(id => repo.getColumnConfigurationById(id))))
+                        .filter((c) => c !== null);
+                    for (const step of stageSteps) {
+                        step.columnConfigurations = loadedConfigs;
                     }
                 }
                 const targetDb = await repo.getDatabaseConnectionById(stage.targetDbId || workflow.targetDbId || '');
@@ -341,34 +402,54 @@ export const investigationOrchestratorService = {
                         break;
                     }
                 }
-                // 3. Key Chaining: Discover Downstream Primary Keys from Upstream Mirror
+                // 3. Dynamic Lineage & Key Chaining via NextStageInputResolver
                 let effectiveQueryKeys = currentActiveKeys;
-                if (previousMirrorTable && stageIdx > 0) {
+                let currentStageInputResolution = null;
+                if (stageIdx > 0) {
                     try {
-                        const previousCols = await mirrorTableManager.getMirrorColumns(previousMirrorTable);
-                        // Priority 1: Use keyMappings from the current stage's QueryExtraction if available
+                        // Priority 1: Key mappings from QueryExtraction
                         const stageExtractions = (await repo.getQueryExtractionsByWorkflowId(workflow.id))
                             .filter((qe) => qe.stageId === stage.id && qe.enabled !== false);
                         const extractionKeys = stageExtractions
                             .flatMap((qe) => (qe.keyMappings || []).map(km => km.sourceField))
-                            .filter((k) => k && previousCols.includes(k));
-                        // Priority 2: Use searchParameters from the current stage's steps that match previous mirror columns
+                            .filter(Boolean);
+                        // Priority 2: Step search parameters and required params
                         const stageStepKeys = stageSteps
                             .flatMap((step) => (step.searchParameters || []).map((sp) => sp.targetColumn || sp.inputField))
-                            .filter((k) => k && previousCols.includes(k));
-                        const candidateKeys = extractionKeys.length > 0 ? extractionKeys : stageStepKeys;
-                        const discoveredKey = candidateKeys.find((k) => previousCols.includes(k));
-                        if (discoveredKey) {
-                            console.log(`[WorkflowEngine] Key Chaining: Auto-discovered downstream key '${discoveredKey}' in ${previousMirrorTable}`);
-                            const chainQuery = `
-                SELECT DISTINCT ${discoveredKey} as key_val 
-                FROM ${previousMirrorTable} 
-                WHERE _batch_id = $1 AND _validation_status = 'PASS' AND ${discoveredKey} IS NOT NULL
-              `;
-                            const chainRes = await queryPg(chainQuery, [jobId]);
-                            if (chainRes.rows.length > 0) {
-                                effectiveQueryKeys = chainRes.rows.map((r) => String(r.key_val));
-                                console.log(`[WorkflowEngine] Key Chaining: Extracted ${effectiveQueryKeys.length} primary keys for stage ${stage.name}.`);
+                            .filter(Boolean);
+                        const stageRequiredParams = stageSteps.flatMap((step) => step.requiredParams || []).filter(Boolean);
+                        const targetRequiredKeys = Array.from(new Set([...extractionKeys, ...stageStepKeys, ...stageRequiredParams]));
+                        currentStageInputResolution = nextStageInputResolver.resolveStageInput({
+                            targetStageId: stage.id,
+                            targetStageName: stage.name,
+                            workflowExecutionId,
+                            requiredKeys: targetRequiredKeys,
+                            cardinalityPolicy: stage.cardinalityPolicy || stageSteps[0]?.cardinalityPolicy || 'STRICT_SINGLE',
+                            upstreamContracts,
+                            initialTaskDatasetTable: 'task_dataset_transactions',
+                            initialKeys: activeKeyFields
+                        });
+                        if (currentStageInputResolution.status === 'CONFIGURATION_ERROR') {
+                            console.warn(`[WorkflowEngine] NextStageInputResolver Configuration Notice for stage '${stage.name}': ${currentStageInputResolution.errorMessage}`);
+                        }
+                        else if (currentStageInputResolution.resolvedSource.sourceType === 'MIRROR_TABLE' ||
+                            currentStageInputResolution.resolvedSource.sourceType === 'UPSTREAM_PREDECESSOR') {
+                            const sourceTable = currentStageInputResolution.resolvedSource.tableName;
+                            const sourceCols = await mirrorTableManager.getMirrorColumns(sourceTable);
+                            const candidateKey = targetRequiredKeys.find(k => sourceCols.includes(k)) || targetRequiredKeys[0];
+                            if (candidateKey && sourceCols.includes(candidateKey)) {
+                                // Architectural Mandate: Do NOT restrict with _validation_status = 'PASS'.
+                                // Hydrated rows from FAIL + CONTINUE are valid operational evidence!
+                                const chainQuery = `
+                  SELECT DISTINCT "${candidateKey}" as key_val 
+                  FROM ${sourceTable} 
+                  WHERE _batch_id = $1 AND "${candidateKey}" IS NOT NULL
+                `;
+                                const chainRes = await queryPg(chainQuery, [jobId]);
+                                if (chainRes.rows.length > 0) {
+                                    effectiveQueryKeys = chainRes.rows.map((r) => String(r.key_val));
+                                    console.log(`[WorkflowEngine] Key Chaining: Resolved ${effectiveQueryKeys.length} primary keys for stage '${stage.name}' from ${sourceTable} (Quality: ${currentStageInputResolution.inputQuality}).`);
+                                }
                             }
                         }
                     }
@@ -456,6 +537,8 @@ export const investigationOrchestratorService = {
                                 recordsToMirror.push({
                                     [primaryKeyField]: primaryVal,
                                     _input_key: primaryVal,
+                                    _task_id: inputRec.task_id || sourceId || 'UNKNOWN_TASK',
+                                    _row_number: inputRec._rowNumber ?? inputRec.row_number ?? (rIdx + 1),
                                     ...matchedTarget
                                 });
                             }
@@ -562,6 +645,7 @@ export const investigationOrchestratorService = {
                                 stageResults: updatedAuditTrail
                             },
                             auditTrail: updatedAuditTrail,
+                            _audit_trail: updatedAuditTrail,
                             _stage_results: updatedAuditTrail,
                             _isDiagnosticOnly: orig?._isDiagnosticOnly || false,
                             _target_record: targetRec || null,
@@ -628,6 +712,7 @@ export const investigationOrchestratorService = {
                                 stageResults: updatedAuditTrail
                             },
                             auditTrail: updatedAuditTrail,
+                            _audit_trail: updatedAuditTrail,
                             _stage_results: updatedAuditTrail,
                             _isDiagnosticOnly: orig?._isDiagnosticOnly || false,
                             _target_record: null,
@@ -664,6 +749,37 @@ export const investigationOrchestratorService = {
                     }
                 }
                 console.log(`[WorkflowEngine] Stage '${stage.name}' completed: ${passKeys.length} passed, ${failKeys.length} failed, ${forwardKeys.length} forwarded downstream.`);
+                // Register StageOutputContract for downstream consumption (Partitioned Summary + Results)
+                const stageSummary = {
+                    stageId: stage.id,
+                    stageName: stage.name,
+                    order: stageIdx + 1,
+                    batchId: jobId,
+                    ruleBlockId: stage.id,
+                    stageExecutionId,
+                    workflowExecutionId,
+                    validationResult: failKeys.length === 0 ? 'PASS' : 'FAIL',
+                    pipelineAction: stageSteps[0]?.onPassAction || 'CONTINUE',
+                    outputTarget: {
+                        type: 'MIRROR_TABLE',
+                        tableName: mirrorTable
+                    },
+                    producedKeys: Object.keys((sampleRecord || {})).concat(stageSteps.map(s => s.targetField || '').filter(Boolean)),
+                    totalRows: stageInputRecords.length,
+                    passedRows: passKeys.length,
+                    failedRows: failKeys.length,
+                    errorRows: 0,
+                    executedAt: new Date().toISOString()
+                };
+                const stageOutputContract = {
+                    ...stageSummary,
+                    summary: stageSummary,
+                    outputTarget: {
+                        type: 'MIRROR_TABLE',
+                        tableName: mirrorTable
+                    }
+                };
+                upstreamContracts.push(stageOutputContract);
                 eventService.broadcastEvent('workflow:stage_completed', {
                     jobId,
                     stageId: stage.id,
@@ -671,7 +787,9 @@ export const investigationOrchestratorService = {
                     passedCount: passKeys.length,
                     failedCount: failKeys.length,
                     forwardedCount: forwardKeys.length,
-                    mirrorTable
+                    mirrorTable,
+                    stageExecutionId,
+                    workflowExecutionId
                 });
                 // 8. Event-Driven Chaining: Route forward subset to next stage
                 currentActiveKeys = forwardKeys;
@@ -679,13 +797,13 @@ export const investigationOrchestratorService = {
                     const rKeys = getRecordCandidateKeys(r, idx);
                     return rKeys.some(k => forwardKeys.includes(k));
                 });
-                // Tainted State Tracking: if a record failed with action REPORT, tag as diagnostic-only so downstream arithmetic is bypassed
+                // Granular Data Quality Tracking (PIPELINE_ENGINE_MASTER_ARCHITECTURE.md §6)
                 currentActiveRecords.forEach((r, idx) => {
                     const rKeys = getRecordCandidateKeys(r, idx);
                     const matchedRow = partitionRes.rows.find((pr) => rKeys.includes(String(pr.tx_key)));
-                    if (matchedRow && matchedRow._validation_status === 'FAIL' && matchedRow._validation_action === 'REPORT') {
-                        r._isDiagnosticOnly = true;
-                        r._diagnosticTaintReason = matchedRow._validation_details?.message || 'Upstream stage validation failed';
+                    if (matchedRow && matchedRow._validation_status === 'FAIL') {
+                        r._inputQuality = 'UPSTREAM_FAILED_BUT_HYDRATED';
+                        r._upstreamDiscrepancyReason = matchedRow._validation_details?.message || 'Upstream stage validation failed';
                     }
                 });
                 // Heartbeat pulse: record progress in task_batch_heartbeats
@@ -711,13 +829,14 @@ export const investigationOrchestratorService = {
             }
             // Consolidate final evaluated records preserving original index order
             for (let i = 0; i < toExecute.length; i++) {
+                const targetOrigIdx = toExecute[i]._origExecutionIndex ?? i;
                 const latest = latestEvaluatedByOrigIndex.get(i) || {
                     ...toExecute[i],
                     _validation_status: 'FAIL',
                     _validation_details: { message: 'Pipeline terminated without evaluating record' }
                 };
-                const { _origExecutionIndex, ...cleanRecord } = latest;
-                finalEvaluatedRecords.push(cleanRecord);
+                const { _origExecutionIndex, _targetOrigIndex, ...cleanRecord } = latest;
+                finalEvaluatedRecords[targetOrigIdx] = cleanRecord;
                 if (cleanRecord._validation_status === 'PASS')
                     totalPassed++;
                 else
@@ -733,7 +852,7 @@ export const investigationOrchestratorService = {
                 failedCount: totalFailed,
                 cachedHits: cacheHits.length,
                 durationMs: Date.now() - startTime,
-                records: finalEvaluatedRecords
+                records: finalEvaluatedRecords.filter(r => r !== undefined)
             };
         })();
         // Register locks for all executing transactions
@@ -843,6 +962,272 @@ export const investigationOrchestratorService = {
         });
     },
     /**
+     * WAVE 4: executeViaNewPipeline
+     * Structured DAG-based batch execution path using WorkflowPipelineBuilder (§3.2, §7.2).
+     */
+    async executeViaNewPipeline(envelope) {
+        const startTime = Date.now();
+        const { workflowId, records, sourceType, sourceId, forceRerun } = envelope;
+        const workflow = await repo.getWorkflowById(workflowId);
+        if (!workflow) {
+            throw new Error(`Workflow with ID '${workflowId}' not found.`);
+        }
+        const jobId = `job-newpipe-${Date.now()}`;
+        const taskId = sourceId || `task-${Date.now()}`;
+        // Validate that input records supply the required search keys/parameters for workflow execution (Phase 14 & Finding 2/3)
+        const configuredWorkflowParams = [];
+        const registerParam = (p) => {
+            if (p && typeof p === 'string' && p.trim()) {
+                const clean = p.trim();
+                if (!configuredWorkflowParams.includes(clean))
+                    configuredWorkflowParams.push(clean);
+            }
+        };
+        if (workflow.stages && Array.isArray(workflow.stages)) {
+            for (const stg of workflow.stages) {
+                if (Array.isArray(stg.steps)) {
+                    for (const step of stg.steps) {
+                        if (Array.isArray(step.searchParameters)) {
+                            for (const sp of step.searchParameters)
+                                registerParam(sp.inputField);
+                        }
+                        if (Array.isArray(step.requiredParams)) {
+                            for (const rp of step.requiredParams)
+                                registerParam(rp);
+                        }
+                        if (step.sourceField)
+                            registerParam(step.sourceField);
+                        if (step.targetField)
+                            registerParam(step.targetField);
+                    }
+                }
+            }
+        }
+        if (workflow.steps && Array.isArray(workflow.steps)) {
+            for (const step of workflow.steps) {
+                if (Array.isArray(step.searchParameters)) {
+                    for (const sp of step.searchParameters)
+                        registerParam(sp.inputField);
+                }
+                if (Array.isArray(step.requiredParams)) {
+                    for (const rp of step.requiredParams)
+                        registerParam(rp);
+                }
+                if (step.sourceField)
+                    registerParam(step.sourceField);
+                if (step.targetField)
+                    registerParam(step.targetField);
+            }
+        }
+        registerParam(envelope.keyField);
+        if (Array.isArray(envelope.keyFields)) {
+            for (const kf of envelope.keyFields)
+                registerParam(kf);
+        }
+        const sampleRecord = (records && records.length > 0) ? records[0] : {};
+        const fileColumns = Object.keys(sampleRecord);
+        const activeParamsInFile = [];
+        for (const cp of configuredWorkflowParams) {
+            const match = fileColumns.find(c => c.toLowerCase() === cp.toLowerCase() ||
+                c.toLowerCase().replace(/[^a-z0-9]/g, '') === cp.toLowerCase().replace(/[^a-z0-9]/g, ''));
+            if (match && !activeParamsInFile.includes(match)) {
+                activeParamsInFile.push(match);
+            }
+        }
+        const matchedInputKey = envelope.keyField && fileColumns.find(c => c.toLowerCase() === envelope.keyField.toLowerCase());
+        const resolvedKey = activeParamsInFile[0] || matchedInputKey;
+        if (configuredWorkflowParams.length > 0 && !resolvedKey) {
+            throw new Error(`[WorkflowEngine] Configuration Error: Unable to determine primary key for workflow "${workflow.name}". ` +
+                `None of the configured search parameters ([${configuredWorkflowParams.join(', ')}]) match columns in the ingested file ([${fileColumns.filter(c => !c.startsWith('_')).join(', ')}]). ` +
+                `Please configure searchParameters on your validation boxes/workflow steps or supply a valid keyField.`);
+        }
+        // 0. Check task_workflow_executions lookup table to prevent redundant execution
+        if (sourceId && !forceRerun) {
+            try {
+                const existingExec = await repo.getTaskWorkflowExecution(sourceId, workflowId);
+                if (existingExec && existingExec.status === 'COMPLETED') {
+                    console.log(`[executeViaNewPipeline] Task '${sourceId}' already evaluated with workflow '${workflowId}'. Serving from task_workflow_executions lookup table.`);
+                    const resultMap = existingExec.executionSummary?.results || {};
+                    const cachedRecords = (records || []).map((r, idx) => {
+                        const rowNum = r._row_number ?? r.row_number ?? (idx + 1);
+                        const k = String(r.transaction_id ?? r.id ?? rowNum);
+                        const evalInfo = resultMap[k] || resultMap[`ROW-${rowNum}`];
+                        return {
+                            ...r,
+                            _row_number: rowNum,
+                            _validation_status: evalInfo?.status || (existingExec.failedCount > 0 && existingExec.passedCount === 0 ? 'FAIL' : 'PENDING'),
+                            _validation_action: evalInfo?.action || 'CONTINUE',
+                            _validation_details: evalInfo?.details || { lookup: 'task_workflow_executions' },
+                            _target_record: evalInfo?.targetRecord || null,
+                            _validation_workflow_id: workflowId,
+                            _validation_workflow_name: existingExec.workflowName || workflow?.name,
+                            auditTrail: evalInfo?.auditTrail || [],
+                            _is_cached: true,
+                            _evaluated_at: existingExec.executedAt
+                        };
+                    });
+                    return {
+                        jobId: `lookup-${existingExec.id || Date.now()}`,
+                        sourceType: sourceType || 'DIRECT_API',
+                        workflowId,
+                        totalRecords: records.length,
+                        processedRecords: records.length,
+                        passedCount: existingExec.passedCount,
+                        failedCount: existingExec.failedCount,
+                        cachedHits: records.length,
+                        durationMs: 2,
+                        isLookupHit: true,
+                        cached: true,
+                        records: cachedRecords
+                    };
+                }
+            }
+            catch (lookupErr) {
+                console.warn('[executeViaNewPipeline] Lookup table check warning:', lookupErr.message);
+            }
+        }
+        eventService.broadcastEvent('workflow:started', {
+            jobId,
+            workflowId,
+            workflowName: workflow.name,
+            sourceType: sourceType || 'DIRECT_API',
+            totalRecords: (records || []).length,
+            freshCount: (records || []).length,
+            cachedHits: 0
+        });
+        const pipeline = workflowPipelineBuilder.compile(workflow);
+        // Ensure all records carry universal row coordinates (_row_number, _task_id)
+        const inputRows = (records || []).map((r, idx) => ({
+            ...r,
+            _row_number: Number(r._row_number ?? r.row_number ?? (idx + 1)),
+            _task_id: taskId,
+        }));
+        const batchCtx = {
+            taskId,
+            batchId: jobId,
+            ruleBlockId: `rb-${workflow.id}`,
+            stageId: '',
+            stageName: '',
+            totalRecords: inputRows.length,
+            executionTimestamp: new Date().toISOString(),
+        };
+        const dbLookup = async (id) => repo.getDatabaseConnectionById(id);
+        const batchReport = await pipeline.executeBatch(batchCtx, inputRows, dbLookup);
+        // Phase 4: Map each input row to its individual evaluated outcome using batchReport.rowOutcomes
+        const outcomeMap = new Map((batchReport.rowOutcomes || []).map((o) => [Number(o.rowNumber), o]));
+        const evaluatedRecords = inputRows.map((r) => {
+            const rowNum = Number(r._row_number);
+            const outcome = outcomeMap.get(rowNum);
+            const stepEntries = (workflow.stages && workflow.stages.length > 0)
+                ? workflow.stages.flatMap(stg => (stg.steps || []).map((st) => ({
+                    ruleId: st.id,
+                    ruleName: st.name || stg.name,
+                    stageId: stg.id,
+                    stageName: stg.name,
+                    targetDb: stg.targetDbId || '',
+                    targetTable: stg.targetDataSource || '',
+                    validationResult: outcome?.validationStatus || 'PASS',
+                    pipelineAction: outcome?.validationAction || 'CONTINUE',
+                    executionTimestamp: new Date().toISOString(),
+                    details: outcome?.details,
+                })))
+                : (workflow.steps || []).map((st) => ({
+                    ruleId: st.id,
+                    ruleName: st.name || workflow.name,
+                    stageId: 'default-stage',
+                    stageName: 'Default Stage',
+                    targetDb: workflow.targetDbId || '',
+                    targetTable: workflow.targetTable || '',
+                    validationResult: outcome?.validationStatus || 'PASS',
+                    pipelineAction: outcome?.validationAction || 'CONTINUE',
+                    executionTimestamp: new Date().toISOString(),
+                    details: outcome?.details,
+                }));
+            return {
+                ...r,
+                _validation_status: outcome?.validationStatus || (batchReport.failedCount === 0 ? 'PASS' : 'FAIL'),
+                _validation_action: outcome?.validationAction || (batchReport.failedCount === 0 ? 'CONTINUE' : 'STOP'),
+                _validation_details: outcome?.details || {
+                    totalEvaluated: batchReport.totalEvaluated,
+                    passedCount: batchReport.passedCount,
+                    failedCount: batchReport.failedCount,
+                    stageResults: batchReport.stageResults,
+                },
+                _target_record: outcome?.targetRecord || r._target_record || null,
+                _validation_workflow_id: workflowId,
+                _validation_workflow_name: workflow.name,
+                auditTrail: stepEntries,
+            };
+        });
+        eventService.broadcastEvent('workflow:completed', {
+            jobId,
+            workflowId,
+            totalRecords: records.length,
+            passedCount: batchReport.passedCount,
+            failedCount: batchReport.failedCount,
+            durationMs: Date.now() - startTime
+        });
+        if (sourceId) {
+            try {
+                const resultMap = {};
+                for (const rec of evaluatedRecords) {
+                    const k = String(rec.transaction_id ?? rec.id ?? rec._row_number);
+                    const evalEntry = {
+                        status: rec._validation_status,
+                        action: rec._validation_action,
+                        details: rec._validation_details,
+                        targetRecord: rec._target_record,
+                        auditTrail: rec.auditTrail,
+                    };
+                    resultMap[k] = evalEntry;
+                    resultMap[`ROW-${rec._row_number}`] = evalEntry;
+                }
+                await repo.recordTaskWorkflowExecution({
+                    taskId: sourceId,
+                    workflowId,
+                    workflowName: workflow.name,
+                    status: 'COMPLETED',
+                    totalRecords: records.length,
+                    passedCount: batchReport.passedCount,
+                    failedCount: batchReport.failedCount,
+                    durationMs: Date.now() - startTime,
+                    executedBy: envelope.executedBy || 'SYSTEM',
+                    executionSummary: {
+                        total: records.length,
+                        passed: batchReport.passedCount,
+                        failed: batchReport.failedCount,
+                        results: resultMap,
+                    },
+                });
+                await repo.updateTaskDatasetValidationStatus(sourceId, workflowId, workflow.name, evaluatedRecords.map((r) => ({
+                    key: `ROW-${r._row_number}`,
+                    status: r._validation_status,
+                    details: r._validation_details,
+                    targetRecord: r._target_record,
+                    targetDb: workflow.targetDbId || '',
+                    targetTable: workflow.targetTable || '',
+                    auditTrail: r.auditTrail,
+                    stageResults: r.auditTrail,
+                })));
+            }
+            catch (saveErr) {
+                console.warn(`[executeViaNewPipeline] Persistence notice: ${saveErr.message}`);
+            }
+        }
+        return {
+            jobId,
+            sourceType: sourceType || 'DIRECT_API',
+            workflowId,
+            totalRecords: records.length,
+            processedRecords: records.length,
+            passedCount: batchReport.passedCount,
+            failedCount: batchReport.failedCount,
+            cachedHits: 0,
+            durationMs: Date.now() - startTime,
+            records: evaluatedRecords,
+        };
+    },
+    /**
      * Executes an investigation task across batched external queries,
      * PostgreSQL mirror persistence, and set-based relational reconciliation.
      */
@@ -878,6 +1263,9 @@ export const investigationOrchestratorService = {
         let reconciledTotal = 0;
         let flaggedTotal = 0;
         let failedTotal = 0;
+        // Compile the pipeline once for all batches (Phase 1, Phase 16)
+        const pipeline = workflowPipelineBuilder.compile(workflow);
+        const dbLookup = async (id) => repo.getDatabaseConnectionById(id);
         // Process batches in bounded concurrent windows
         const batches = plan.batches;
         for (let i = 0; i < batches.length; i += maxConcurrency) {
@@ -890,63 +1278,55 @@ export const investigationOrchestratorService = {
                     startedAt: new Date().toISOString()
                 });
                 try {
-                    // 2. Pre-populate investigation_transactions for this batch
-                    for (const txId of batchPlan.transactionIds) {
+                    const txIdSet = new Set(batchPlan.transactionIds.map(String));
+                    const batchTxns = (transactions || []).filter((t) => {
+                        const tid = String(t.transactionId ?? t.id ?? (effectiveKeyField ? t[effectiveKeyField] : '') ?? t._row_number);
+                        return txIdSet.has(tid);
+                    });
+                    const sourceList = batchTxns.length > 0 ? batchTxns : batchPlan.transactionIds.map((id, idx) => ({
+                        ...(effectiveKeyField ? { [effectiveKeyField]: id } : { transaction_id: id }),
+                        _row_number: idx + 1,
+                    }));
+                    const inputRows = sourceList.map((r, idx) => ({
+                        ...r,
+                        _row_number: Number(r._row_number ?? r.row_number ?? (idx + 1)),
+                        _task_id: taskId,
+                    }));
+                    const batchCtx = {
+                        taskId,
+                        batchId,
+                        ruleBlockId: `rb-${workflow.id}`,
+                        stageId: '',
+                        stageName: '',
+                        totalRecords: inputRows.length,
+                        executionTimestamp: new Date().toISOString(),
+                    };
+                    const batchReport = await pipeline.executeBatch(batchCtx, inputRows, dbLookup);
+                    const outcomeMap = new Map((batchReport.rowOutcomes || []).map((o) => [Number(o.rowNumber), o]));
+                    for (const r of inputRows) {
+                        const rowNum = Number(r._row_number);
+                        const outcome = outcomeMap.get(rowNum);
+                        const isPass = outcome ? outcome.validationStatus === 'PASS' : (batchReport.failedCount === 0);
+                        const txId = String(r.transactionId ?? r.id ?? (effectiveKeyField ? r[effectiveKeyField] : '') ?? rowNum);
                         const invTx = {
                             id: `itx-${taskId}-${txId}`,
                             taskId,
                             batchId,
                             transactionId: txId,
-                            investigationStatus: 'IN_PROGRESS',
-                            statusFlagText: 'Querying external DB...',
-                            statusFlagColor: 'blue',
-                            finalResult: 'NOT_EVALUATED',
-                            finalAction: 'CONTINUE',
-                            auditTrail: [],
+                            investigationStatus: isPass ? 'RECONCILED' : 'FLAGGED_DISCREPANCY',
+                            statusFlagText: isPass ? 'Matched in External DB' : 'Reconciliation Discrepancy',
+                            statusFlagColor: isPass ? 'green' : 'amber',
+                            finalResult: outcome?.validationStatus || (isPass ? 'PASS' : 'FAIL'),
+                            finalAction: outcome?.validationAction || (isPass ? 'CONTINUE' : 'FLAG'),
+                            auditTrail: outcome?.details ? [outcome.details] : [],
                             updatedAt: new Date().toISOString()
                         };
                         await repo.createInvestigationTransaction(invTx);
                     }
-                    // 3. For each stage query chunk in the batch, fetch external records
-                    for (const chunk of batchPlan.queryChunks) {
-                        const extraction = extractions[0] || {
-                            id: `ext-${taskId}`,
-                            workflowId: workflow.id,
-                            stageId: 'stage-1',
-                            targetDbId: workflow.targetDbId || '',
-                            targetDataSource: workflow.targetTable || '',
-                            selectedColumns: [],
-                            keyMappings: [{ inputField: effectiveKeyField, sourceField: effectiveKeyField, required: true }],
-                            enabled: true
-                        };
-                        // Probe Liveness
-                        const targetDb = await repo.getDatabaseConnectionById(extraction.targetDbId);
-                        if (targetDb) {
-                            const liveness = await dbLivenessService.probeLiveness(targetDb, 3000);
-                            if (!liveness.isAlive) {
-                                console.warn(`[InvestigationTask] Liveness probe warning for ${targetDb.name}: ${liveness.error}`);
-                            }
-                        }
-                        const externalResult = await executeExternalChunkQuery(extraction, chunk, options.inMemoryRecords || transactions);
-                        if (externalResult.success) {
-                            // 4. Persist to transient PostgreSQL external mirror
-                            const mirrorRecords = Object.entries(externalResult.correlatedRecords).map(([k, v]) => ({
-                                recordKey: k,
-                                canonicalPayload: v
-                            }));
-                            await reconciliationService.persistExternalMirrorBatch(taskId, extraction.id, extraction.targetDbId || 'EXTERNAL_DB', mirrorRecords);
-                            // 5. Execute set-based relational reconciliation in PostgreSQL
-                            const reconOutcome = await reconciliationService.reconcileBatchInDatabase(taskId, batchId, extraction.id, effectiveKeyField);
-                            reconciledTotal += reconOutcome.passCount;
-                            flaggedTotal += reconOutcome.failCount;
-                            failedTotal += reconOutcome.errorCount;
-                        }
-                        else {
-                            failedTotal += batchPlan.transactionIds.length;
-                        }
-                    }
+                    reconciledTotal += batchReport.passedCount;
+                    flaggedTotal += batchReport.failedCount;
                     processedTotal += batchPlan.transactionIds.length;
-                    // 6. Complete batch
+                    // Complete batch
                     await repo.updateInvestigationBatch(batchId, {
                         status: 'COMPLETED',
                         processedCount: batchPlan.transactionIds.length,
@@ -964,6 +1344,7 @@ export const investigationOrchestratorService = {
                 }
                 catch (batchErr) {
                     console.error(`Error processing batch ${batchId}:`, batchErr.message);
+                    failedTotal += batchPlan.transactionIds.length;
                     await repo.updateInvestigationBatch(batchId, {
                         status: 'FAILED',
                         errorDetail: batchErr.message,

@@ -1,8 +1,9 @@
 import React, { useState } from 'react';
 import { ValidationBox, DatabaseValidationWorkflow } from '../../../types';
 import { 
-  GitFork, Boxes, Plus, Search, ShieldCheck, 
-  Sparkles, Layers, SlidersHorizontal, ChevronDown, Check 
+  Plus, Search, 
+  Sparkles, SlidersHorizontal, ChevronDown, Check,
+  Play, ArrowRightToLine, FileSpreadsheet
 } from 'lucide-react';
 
 interface WorkflowPaletteProps {
@@ -31,7 +32,10 @@ export const WorkflowPalette: React.FC<WorkflowPaletteProps> = ({
   aggregationsCount
 }) => {
   const [searchTerm, setSearchTerm] = useState('');
-  const [showTemplatesDropdown, setShowTemplatesDropdown] = useState(false);
+  const [triggersOpen, setTriggersOpen] = useState(true);
+  const [rulesOpen, setRulesOpen] = useState(true);
+  const [reportAggregatorOpen, setReportAggregatorOpen] = useState(true);
+  const [templatesOpen, setTemplatesOpen] = useState(false);
 
   const filteredBoxes = validationBoxes.filter(b => {
     if (!searchTerm.trim()) return true;
@@ -45,64 +49,213 @@ export const WorkflowPalette: React.FC<WorkflowPaletteProps> = ({
 
   return (
     <aside 
-      className="w-72 bg-slate-900 border-r border-slate-800 flex flex-col h-full text-slate-200 font-sans"
-      aria-label="Workflow Palette"
+      className="w-72 bg-[#071318] border-r border-[#163848] flex flex-col h-full text-slate-200 select-none overflow-hidden font-sans"
+      aria-label="Flow Block Catalog"
     >
-      {/* 1. Header & Active Workflow Selector */}
-      <div className="p-3.5 border-b border-slate-800 bg-slate-950/60 space-y-2">
+      {/* 1. Catalog Header & Search */}
+      <div className="p-3.5 border-b border-[#163848] space-y-2.5 bg-[#09151d] shrink-0">
         <div className="flex items-center justify-between">
-          <div className="flex items-center space-x-2 text-white">
-            <div className="p-1.5 bg-blue-950/80 border border-blue-500/40 text-[#155DFC] rounded-lg">
-              <GitFork size={15} />
-            </div>
-            <span className="font-bold text-xs font-mono uppercase tracking-wider">Pipelines</span>
-          </div>
+          <h3 className="text-xs font-bold uppercase tracking-wider text-white font-mono">
+            Flow Block Catalog
+          </h3>
           <button
             type="button"
             onClick={onNewWorkflow}
-            className="px-2 py-1 bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-[10px] font-mono font-bold flex items-center space-x-1 cursor-pointer transition shadow-xs"
-            title="Create fresh workflow pipeline"
+            className="p-1 hover:bg-[#163848] text-cyan-400 hover:text-white rounded-lg transition cursor-pointer"
+            title="Create New Blank Workflow"
           >
-            <Plus size={11} />
-            <span>New</span>
+            <Plus size={14} />
           </button>
         </div>
 
-        {/* Workflow Dropdown */}
-        <select
-          value={activeWorkflow?.id || ''}
-          onChange={(e) => {
-            const found = workflows.find(w => w.id === e.target.value);
-            if (found) onSelectWorkflow(found);
-          }}
-          className="w-full bg-slate-900 border border-slate-700 rounded-xl px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-purple-500 font-mono shadow-2xs"
-        >
-          {workflows.map(wf => (
-            <option key={wf.id} value={wf.id}>
-              {wf.name} ({wf.category || 'General'})
-            </option>
-          ))}
-          {workflows.length === 0 && <option value="">No Workflows Found</option>}
-        </select>
+        {/* Search input matching design */}
+        <div className="relative">
+          <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-cyan-400/80" />
+          <input
+            type="text"
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            placeholder="Search blocks..."
+            className="w-full bg-[#071318] border border-[#163848] rounded-xl pl-8 pr-3 py-1.5 text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-cyan-400 font-sans shadow-inner transition"
+          />
+        </div>
+
+        {/* Active Workflow Switcher */}
+        {workflows.length > 0 && (
+          <div className="pt-1">
+            <select
+              value={activeWorkflow?.id || ''}
+              onChange={(e) => {
+                const target = workflows.find(w => w.id === e.target.value);
+                if (target) onSelectWorkflow(target);
+              }}
+              className="w-full bg-[#071318] border border-[#163848] rounded-xl px-2.5 py-1 text-[11px] text-cyan-300 font-mono focus:outline-none focus:border-cyan-400"
+            >
+              {workflows.map(wf => (
+                <option key={wf.id} value={wf.id}>
+                  {wf.name} ({wf.category || 'General'})
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
       </div>
 
-      {/* 2. Scrollable Body: Templates + Terminals + Validation Boxes */}
-      <div className="p-3.5 space-y-4 overflow-y-auto flex-1 text-xs">
-        {/* Guided Templates Section */}
-        <div className="space-y-1.5">
+      {/* 2. Scrollable Body: Triggers, Rules & Validations, Report Aggregator */}
+      <div className="p-3.5 space-y-4 overflow-y-auto flex-1 min-h-0 text-xs">
+        
+        {/* Section 1: Flow Triggers */}
+        <div className="space-y-2">
           <button
             type="button"
-            onClick={() => setShowTemplatesDropdown(!showTemplatesDropdown)}
-            className="w-full flex items-center justify-between text-[10px] font-bold text-purple-300 font-mono uppercase tracking-wider py-1 px-1.5 rounded hover:bg-slate-800 transition"
+            onClick={() => setTriggersOpen(!triggersOpen)}
+            className="w-full flex items-center justify-between text-xs font-semibold text-slate-300 hover:text-white transition py-0.5 cursor-pointer"
           >
-            <div className="flex items-center space-x-1.5">
-              <Sparkles size={12} className="text-purple-400" />
-              <span>Guided Templates</span>
-            </div>
-            <ChevronDown size={12} className={`transition-transform ${showTemplatesDropdown ? 'rotate-180' : ''}`} />
+            <span className="flex items-center gap-1.5">
+              <ChevronDown size={14} className={`text-slate-400 transition-transform ${triggersOpen ? '' : '-rotate-90'}`} />
+              <span>Flow Triggers</span>
+            </span>
           </button>
 
-          {showTemplatesDropdown && (
+          {triggersOpen && (
+            <div className="grid grid-cols-2 gap-2.5 pt-0.5">
+              {/* Start Point Button (Replaces Settlement) */}
+              <button
+                type="button"
+                onClick={() => onAddTerminalNode('START', 'Start Point')}
+                className="p-3 rounded-xl bg-[#0c222b] border border-[#184457] hover:border-cyan-400 hover:bg-[#0e2a36] text-cyan-200 flex flex-col items-center justify-center gap-2 text-center cursor-pointer transition shadow-xs group"
+                title="Add Start Point Trigger"
+              >
+                <div className="p-1.5 rounded-lg bg-[#072422] text-[#00e5b3] group-hover:scale-110 transition shadow-xs">
+                  <Play size={16} className="fill-[#00e5b3] text-[#00e5b3]" />
+                </div>
+                <span className="text-xs font-medium text-slate-200 group-hover:text-white">Start Point</span>
+              </button>
+
+              {/* End Trigger Button */}
+              <button
+                type="button"
+                onClick={() => onAddTerminalNode('END', 'End Goal')}
+                className="p-3 rounded-xl bg-[#0c222b] border border-[#184457] hover:border-cyan-400 hover:bg-[#0e2a36] text-cyan-200 flex flex-col items-center justify-center gap-2 text-center cursor-pointer transition shadow-xs group"
+                title="Add Terminal End Trigger"
+              >
+                <div className="p-1.5 rounded-lg bg-[#0e212b] text-cyan-400 group-hover:scale-110 transition">
+                  <ArrowRightToLine size={16} />
+                </div>
+                <span className="text-xs font-medium text-slate-200 group-hover:text-white">End Trigger</span>
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* Section 2: Rules & Validations */}
+        <div className="space-y-2">
+          <button
+            type="button"
+            onClick={() => setRulesOpen(!rulesOpen)}
+            className="w-full flex items-center justify-between text-xs font-semibold text-slate-300 hover:text-white transition py-0.5 cursor-pointer"
+          >
+            <span className="flex items-center gap-1.5">
+              <ChevronDown size={14} className={`text-slate-400 transition-transform ${rulesOpen ? '' : '-rotate-90'}`} />
+              <span>Rules &amp; Validations</span>
+            </span>
+            <span className="text-[10px] font-mono text-cyan-400 px-1.5 py-0.2 rounded bg-[#0c222b] border border-[#184457]">
+              {filteredBoxes.length}
+            </span>
+          </button>
+
+          {rulesOpen && (
+            <div className="space-y-2 pt-0.5 max-h-[340px] overflow-y-auto pr-0.5">
+              {filteredBoxes.map(box => {
+                const isSearch = box.boxType === 'INGESTION_SEARCH';
+                return (
+                  <div
+                    key={box.id}
+                    onClick={() => onAddBoxNode(box)}
+                    className="p-2.5 rounded-xl bg-[#0a1e27] border border-[#163848] hover:border-cyan-400/80 hover:bg-[#0d2531] transition cursor-pointer flex items-start gap-2.5 shadow-xs group"
+                    title={`Add "${box.name}" block to canvas`}
+                  >
+                    <div className="w-7 h-7 rounded-lg bg-[#0c2e35] border border-[#144f56] text-[#00e5b3] flex items-center justify-center shrink-0 group-hover:scale-105 transition">
+                      {isSearch ? <Search size={14} /> : <Check size={14} strokeWidth={2.5} />}
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <h4 className="text-xs font-semibold text-white group-hover:text-cyan-200 truncate">
+                        {box.name}
+                      </h4>
+                      <p className="text-[10px] text-slate-400 truncate line-clamp-1 mt-0.5">
+                        {box.description || (box.targetTable ? `Table: ${box.targetTable}` : 'Attach explicit completeness, value range, duplicate, and i...')}
+                      </p>
+                    </div>
+                  </div>
+                );
+              })}
+
+              {filteredBoxes.length === 0 && (
+                <div className="p-4 text-center text-slate-500 italic text-[11px] rounded-xl border border-dashed border-[#163848]">
+                  No validation blocks found.
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+
+        {/* Section 3: Report Aggregator (Replaces Endpoints with same design card) */}
+        <div className="space-y-2">
+          <button
+            type="button"
+            onClick={() => setReportAggregatorOpen(!reportAggregatorOpen)}
+            className="w-full flex items-center justify-between text-xs font-semibold text-slate-300 hover:text-white transition py-0.5 cursor-pointer"
+          >
+            <span className="flex items-center gap-1.5">
+              <ChevronDown size={14} className={`text-slate-400 transition-transform ${reportAggregatorOpen ? '' : '-rotate-90'}`} />
+              <span>Report Aggregator</span>
+            </span>
+            <span className="text-[10px] font-mono text-[#00e5b3] px-2 py-0.2 rounded-full bg-[#072422] border border-[#00e5b3]/40 font-bold">
+              {aggregationsCount}
+            </span>
+          </button>
+
+          {reportAggregatorOpen && (
+            <div className="space-y-2 pt-0.5">
+              <div 
+                onClick={onOpenAggregators}
+                className="p-2.5 rounded-xl bg-[#0a1e27] border border-[#163848] hover:border-cyan-400/80 hover:bg-[#0d2531] transition cursor-pointer flex items-start gap-2.5 shadow-xs group"
+                title="Configure Report Aggregation Rules & Outcome Messages"
+              >
+                <div className="w-7 h-7 rounded-lg bg-[#181c38] border border-purple-500/50 text-purple-300 flex items-center justify-center shrink-0 group-hover:scale-105 transition shadow-xs">
+                  <FileSpreadsheet size={14} />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-xs font-semibold text-white group-hover:text-cyan-200 truncate">
+                      Report Aggregator
+                    </h4>
+                    <span className="text-[9px] font-mono text-cyan-400 uppercase font-bold">Config</span>
+                  </div>
+                  <p className="text-[10px] text-slate-400 truncate line-clamp-1 mt-0.5">
+                    Consolidated PASS/FAIL messages &amp; unified outcomes
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Section 4: Guided Templates */}
+        <div className="space-y-1.5 pt-2 border-t border-[#163848]">
+          <button
+            type="button"
+            onClick={() => setTemplatesOpen(!templatesOpen)}
+            className="w-full flex items-center justify-between text-[11px] font-semibold text-purple-300 hover:text-purple-200 transition py-1 cursor-pointer"
+          >
+            <span className="flex items-center gap-1.5">
+              <Sparkles size={13} className="text-purple-400" />
+              <span>Guided Templates</span>
+            </span>
+            <ChevronDown size={12} className={`transition-transform ${templatesOpen ? 'rotate-180' : ''}`} />
+          </button>
+
+          {templatesOpen && (
             <div className="space-y-1.5 pt-1">
               {[
                 { id: 'two_stage' as const, name: 'Two-Stage Reconciliation', desc: 'Search Auth + Tolerance Check' },
@@ -114,9 +267,9 @@ export const WorkflowPalette: React.FC<WorkflowPaletteProps> = ({
                   type="button"
                   onClick={() => {
                     onApplyTemplate(tpl.id);
-                    setShowTemplatesDropdown(false);
+                    setTemplatesOpen(false);
                   }}
-                  className="w-full text-left p-2 rounded-xl bg-purple-950/30 hover:bg-purple-900/40 border border-purple-800/40 text-purple-200 transition cursor-pointer space-y-0.5 shadow-2xs"
+                  className="w-full text-left p-2 rounded-xl bg-[#13112a] hover:bg-[#1a1738] border border-[#3b2b68] text-purple-200 transition cursor-pointer space-y-0.5 shadow-2xs"
                 >
                   <div className="font-bold text-[11px] font-mono">{tpl.name}</div>
                   <div className="text-[10px] text-slate-400 font-sans">{tpl.desc}</div>
@@ -125,107 +278,6 @@ export const WorkflowPalette: React.FC<WorkflowPaletteProps> = ({
             </div>
           )}
         </div>
-
-        {/* Flow Control Terminals */}
-        <div className="space-y-1.5">
-          <span className="text-[10px] font-bold text-slate-400 uppercase font-mono tracking-wider block">
-            Terminals
-          </span>
-          <div className="grid grid-cols-2 gap-2">
-            <button
-              type="button"
-              onClick={() => onAddTerminalNode('START', 'Transaction Ingress')}
-              className="p-2 rounded-xl border border-emerald-500/40 bg-emerald-950/40 hover:bg-emerald-900/60 text-emerald-300 text-left transition cursor-pointer flex items-center space-x-1.5 text-xs font-mono font-semibold"
-            >
-              <div className="w-2 h-2 rounded-full bg-emerald-400 shrink-0"></div>
-              <span className="truncate">Start Point</span>
-            </button>
-
-            <button
-              type="button"
-              onClick={() => onAddTerminalNode('END', 'Reconciliation Goal')}
-              className="p-2 rounded-xl border border-slate-700 bg-slate-950/50 hover:bg-slate-800 text-slate-300 text-left transition cursor-pointer flex items-center space-x-1.5 text-xs font-mono font-semibold"
-            >
-              <ShieldCheck size={13} className="text-slate-400 shrink-0" />
-              <span className="truncate">End Goal</span>
-            </button>
-          </div>
-        </div>
-
-        {/* Searchable Validation Blocks */}
-        <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <span className="text-[10px] font-bold text-slate-400 uppercase font-mono tracking-wider">
-              Validation Blocks
-            </span>
-            <span className="text-[10px] bg-slate-800 text-slate-300 px-1.5 py-0.2 rounded font-mono">
-              {filteredBoxes.length}
-            </span>
-          </div>
-
-          <div className="relative">
-            <Search size={11} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
-            <input
-              type="text"
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              placeholder="Search blocks..."
-              className="w-full pl-7 pr-2 py-1.5 text-xs bg-slate-950 border border-slate-700 rounded-xl text-white focus:outline-none focus:border-purple-500 font-sans shadow-inner"
-            />
-          </div>
-
-          <div className="space-y-1.5 max-h-[300px] overflow-y-auto pr-0.5">
-            {filteredBoxes.map(box => (
-              <div
-                key={box.id}
-                onClick={() => onAddBoxNode(box)}
-                className="p-2.5 bg-slate-950/60 hover:bg-purple-950/40 rounded-xl border border-slate-800 hover:border-purple-500/50 transition cursor-pointer group shadow-2xs space-y-1"
-              >
-                <div className="flex items-center justify-between">
-                  <span className={`px-1.5 py-0.2 rounded text-[9px] font-mono font-bold uppercase ${
-                    box.boxType === 'INGESTION_SEARCH' 
-                      ? 'bg-blue-950 text-blue-300 border border-blue-800' 
-                      : 'bg-emerald-950 text-emerald-300 border border-emerald-800'
-                  }`}>
-                    {box.boxType === 'INGESTION_SEARCH' ? 'Search' : 'Check'}
-                  </span>
-                  <Plus size={13} className="text-slate-400 group-hover:text-purple-400 transition" />
-                </div>
-                <h4 className="text-xs font-bold text-slate-200 group-hover:text-white truncate font-sans">
-                  {box.name}
-                </h4>
-                {box.targetTable && (
-                  <p className="text-[10px] text-slate-400 font-mono truncate">
-                    {box.targetTable}
-                  </p>
-                )}
-              </div>
-            ))}
-
-            {filteredBoxes.length === 0 && (
-              <div className="p-3 text-center text-slate-500 italic text-[11px]">
-                No validation blocks found.
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* 3. Footer: Message Aggregation Trigger */}
-      <div className="p-3 border-t border-slate-800 bg-slate-950/80">
-        <button
-          type="button"
-          onClick={onOpenAggregators}
-          className="w-full py-2 px-3 bg-slate-900 hover:bg-slate-800 border border-slate-700 rounded-xl text-xs font-mono font-bold text-slate-300 flex items-center justify-between cursor-pointer transition shadow-xs"
-        >
-          <div className="flex items-center space-x-2">
-            <SlidersHorizontal size={13} className="text-purple-400" />
-            <span>Aggregation Rules</span>
-          </div>
-          <span className="text-[10px] px-1.5 py-0.2 bg-purple-900/60 text-purple-200 border border-purple-700/60 rounded-full font-mono">
-            {aggregationsCount}
-          </span>
-        </button>
       </div>
     </aside>
   );

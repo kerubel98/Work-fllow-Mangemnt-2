@@ -84,10 +84,14 @@ export function buildQueryFromExtraction(
     ? extraction.keyMappings
     : [{ inputField: 'transaction_id', sourceField: 'transaction_id', required: true }];
 
-  // Extract composite candidate tuples from incoming inMemoryRecords
+  // Extract composite candidate tuples from incoming inMemoryRecords.
+  // NOTE: We intentionally do NOT deduplicate on business-key tuples here.
+  // Two different input rows may share identical business key values (e.g. twin $50.00
+  // charges at the same terminal). Deduplicating by key signature would silently DROP
+  // those rows, making them invisible to reconciliation (Bug Fix §8.1).
+  // Correlation is preserved via _row_number / row_num coordinates, not by business keys.
   const compositeTuples: Record<string, any>[] = [];
   if (inMemoryRecords && inMemoryRecords.length > 0) {
-    const seen = new Set<string>();
     for (const rec of inMemoryRecords) {
       const tupleObj: Record<string, any> = {};
       let hasAnyMappedField = false;
@@ -99,11 +103,7 @@ export function buildQueryFromExtraction(
         }
       }
       if (hasAnyMappedField) {
-        const signature = allMappings.map(m => String(tupleObj[m.sourceField] ?? '').trim().toLowerCase()).join(':::');
-        if (!seen.has(signature)) {
-          seen.add(signature);
-          compositeTuples.push(tupleObj);
-        }
+        compositeTuples.push(tupleObj);
       }
     }
   }
@@ -154,8 +154,10 @@ export function buildQueryFromExtraction(
       .map(id => typeof id === 'string' ? id.trim() : id)
       .filter(id => id !== undefined && id !== null && String(id).trim() !== '');
 
+    // Do NOT deduplicate here — twin transactions sharing the same primary key value
+    // are distinct rows in task_dataset_transactions and must each produce a mirror entry.
     const effectivePrimaryIds = primaryValsFromRecords.length > 0
-      ? Array.from(new Set(primaryValsFromRecords))
+      ? primaryValsFromRecords
       : cleanTransactionIds;
 
     if (effectivePrimaryIds.length === 1) {
@@ -192,6 +194,117 @@ export function buildQueryFromExtraction(
   }
 
   return { sql, parameters };
+}
+
+// ---------------------------------------------------------------------------
+// §8.2  VALUES Ingress Join Pattern (Row-Number Preserving Query)
+// ---------------------------------------------------------------------------
+/**
+ * Builds a parameterized VALUES-ingress SQL query that joins the external table
+ * against an inline VALUES list, preserving `row_num` per input row.
+ *
+ * Returned rows include `q.row_num` as the FIRST column so that each result
+ * can be correlated back to `task_dataset_transactions.row_number` and stored
+ * in the mirror as `_row_number` — enabling the deduplicated
+ * `(_task_id, _row_number)` join in `ruleSqlCompiler` §7.3.
+ *
+ * Supports up to 30,000 parameters total across key columns. Callers MUST
+ * chunk the input to respect this limit before calling.
+ *
+ * @param rows          Ordered input rows, each containing `_row_number` (required)
+ *                      plus any business key fields referenced by `keyMappings`.
+ * @param keyMappings   Array of {inputField, sourceField} mappings.
+ * @param targetTable   Physical external table name.
+ * @param selectedCols  Explicit columns to project (omit for all).
+ * @param dialect       PostgreSQL | MySQL
+ * @returns { sql, parameters } - sql uses $N positional placeholders.
+ */
+export function buildValuesIngressQuery(
+  rows: Array<Record<string, any> & { _row_number: number }>,
+  keyMappings: Array<{ inputField: string; sourceField: string }>,
+  targetTable: string,
+  selectedCols: string[] = [],
+  dialect: 'PostgreSQL' | 'MySQL' = 'PostgreSQL'
+): { sql: string; parameters: any[] } {
+  if (rows.length === 0 || keyMappings.length === 0) {
+    return { sql: '', parameters: [] };
+  }
+
+  const parameters: any[] = [];
+  let pIdx = 1;
+
+  const nextParam = (val: any): string => {
+    parameters.push(val);
+    return dialect === 'PostgreSQL' ? `$${pIdx++}` : '?';
+  };
+
+  // Build the external column projection
+  const projectedExternal = selectedCols.length > 0
+    ? selectedCols.map(c => `e.${quoteIdentifier(c, dialect)}`).join(', ')
+    : 'e.*';
+
+  // Build the VALUES list: each row contributes (row_num, key1, key2, ...)
+  // For PostgreSQL, cast row_num to INT to preserve ordering semantics;
+  // For MySQL, use ROW(...) syntax without PostgreSQL-specific ::int cast.
+  const valueRows: string[] = [];
+  for (const row of rows) {
+    const rowNums = nextParam(Number(row._row_number));
+    const keyPlaceholders = keyMappings.map(m => {
+      const v = getRowValueCaseInsensitive(row, m.inputField);
+      return nextParam(v ?? null);
+    });
+    if (dialect === 'MySQL') {
+      valueRows.push(`ROW(${rowNums}, ${keyPlaceholders.join(', ')})`);
+    } else {
+      valueRows.push(`(${rowNums}::int, ${keyPlaceholders.join(', ')})`);
+    }
+  }
+
+  // Build the VALUES alias column list: (row_num, col1, col2, ...)
+  const valuesAliasColumns = [
+    quoteIdentifier('row_num', dialect),
+    ...keyMappings.map(m => quoteIdentifier(m.sourceField, dialect))
+  ].join(', ');
+
+  // Build the JOIN ON condition
+  const joinConditions = keyMappings
+    .map(m => `e.${quoteIdentifier(m.sourceField, dialect)} = q.${quoteIdentifier(m.sourceField, dialect)}`)
+    .join(' AND ');
+
+  const quotedTargetTable = quoteIdentifier(targetTable, dialect);
+  const sql = [
+    `SELECT q.${quoteIdentifier('row_num', dialect)}, ${projectedExternal}`,
+    `FROM (VALUES`,
+    `  ${valueRows.join(',\n  ')}`,
+    `) AS q(${valuesAliasColumns})`,
+    `JOIN ${quotedTargetTable} e ON ${joinConditions}`,
+  ].join('\n');
+
+  return { sql, parameters };
+}
+
+/**
+ * Splits an input array into sub-chunks each staying under the 30,000-parameter
+ * ceiling required by §Rule 11 and §7.4 of the architecture spec.
+ *
+ * @param rows        Full list of input rows (must each have `_row_number`).
+ * @param numKeyColumns  Number of business key columns per row.
+ * @returns Array of chunks, each safe to pass to buildValuesIngressQuery.
+ */
+export function chunkRowsForValuesIngress<T>(
+  rows: T[],
+  numKeyColumns: number
+): T[][] {
+  // Each row consumes 1 parameter for row_num + numKeyColumns for the keys.
+  const paramsPerRow = numKeyColumns + 1;
+  const MAX_PARAMS = 30_000;
+  const maxRowsPerChunk = Math.max(1, Math.floor(MAX_PARAMS / paramsPerRow));
+
+  const chunks: T[][] = [];
+  for (let i = 0; i < rows.length; i += maxRowsPerChunk) {
+    chunks.push(rows.slice(i, i + maxRowsPerChunk));
+  }
+  return chunks;
 }
 
 /**

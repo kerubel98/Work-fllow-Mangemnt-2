@@ -20,7 +20,7 @@ import {
   Layers, SlidersHorizontal, ArrowUpDown, ChevronDown, ArrowUpAZ, ArrowDownZA,
   Sliders, ShieldAlert, CheckSquare, Square, RotateCcw, ShieldCheck, CheckCircle, Zap, Activity, GitBranch,
   MessageSquare, History, Undo2, Send, Bookmark, AtSign, CheckCheck, FileCode, Users, Sparkles,
-  Paperclip, FileText, FileDown, ExternalLink
+  Paperclip, FileText, FileDown, ExternalLink, Tag
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 
@@ -370,6 +370,59 @@ export default function ValidationOrchestratorWorkspace({
   // State for toggling only mapped columns (defaults to true for lean workspace excel)
   const [onlyMappedColumns, setOnlyMappedColumns] = useState<boolean>(true);
 
+  // Internal system/evaluation metadata keys that should never be appended as user data columns in the spreadsheet grid
+  const isInternalMetaKey = (k: string): boolean => {
+    if (!k || k.startsWith('_')) return true;
+    const normalized = k.toLowerCase().replace(/[^a-z0-9_]/g, '');
+    const INTERNAL_SYSTEM_KEYS = new Set([
+      'audittrail',
+      'stageresults',
+      'canonical_data',
+      'canonicaldata',
+      'raw_data',
+      'rawdata',
+      'task_id',
+      'taskid',
+      'batch_id',
+      'batchid',
+      'is_duplicate',
+      'isduplicate',
+      'duplicate_from_task_id',
+      'duplicatefromtaskid',
+      'was_previously_closed',
+      'waspreviouslyclosed',
+      'duplicate_status',
+      'duplicatestatus',
+      'duplicate_count',
+      'duplicatecount',
+      'alltaskids',
+      'all_task_ids',
+      'validationstatus',
+      'validation_status',
+      'validationdetails',
+      'validation_details',
+      'targetrecord',
+      'target_record',
+      'targetdb',
+      'target_db',
+      'targettable',
+      'target_table',
+      'workflow_id',
+      'workflowid',
+      'workflow_name',
+      'workflowname',
+      'sourcerecord',
+      'source_record',
+      'executionsummary',
+      'execution_summary',
+      'stepresults',
+      'step_results',
+      'intermediatereports',
+      'intermediate_reports'
+    ]);
+    return INTERNAL_SYSTEM_KEYS.has(normalized);
+  };
+
   // Clean, Abstracted Column Definitions showing only columns with mapped/populated values from this task's data
   const columnDefs = useMemo(() => {
     const formatLabel = (key: string) => {
@@ -379,11 +432,11 @@ export default function ValidationOrchestratorWorkspace({
     };
 
     if (effectiveRows.length > 0) {
-      // Find all keys that actually have at least one non-empty value across the rows of THIS task
+      // Find all keys that actually have at least one non-empty value across the rows of THIS task, excluding system metadata
       const populatedKeys = new Set<string>();
       effectiveRows.forEach(row => {
         Object.entries(row).forEach(([k, v]) => {
-          if (!k.startsWith('_') && v !== undefined && v !== null && String(v).trim() !== '') {
+          if (!isInternalMetaKey(k) && v !== undefined && v !== null && String(v).trim() !== '') {
             populatedKeys.add(k);
           }
         });
@@ -391,10 +444,10 @@ export default function ValidationOrchestratorWorkspace({
 
       let keysToUse = onlyMappedColumns && populatedKeys.size > 0
         ? Array.from(populatedKeys)
-        : Object.keys(effectiveRows[0]).filter(k => !k.startsWith('_'));
+        : Object.keys(effectiveRows[0]).filter(k => !isInternalMetaKey(k));
 
       if (keysToUse.length === 0 && effectiveRows.length > 0 && effectiveRows[0]) {
-        keysToUse = Object.keys(effectiveRows[0]);
+        keysToUse = Object.keys(effectiveRows[0]).filter(k => !isInternalMetaKey(k));
       }
 
       return keysToUse.map(key => ({
@@ -789,6 +842,40 @@ export default function ValidationOrchestratorWorkspace({
         }
         alert(`Reset to hashtag default workflow "${defWf.name}".`);
       }
+    }
+  };
+
+  // Universal Hashtags Dry-Run DB Scanner & Side-by-Side Diff State
+  const [isDryRunningHashtag, setIsDryRunningHashtag] = useState(false);
+  const [hashtagDiffResult, setHashtagDiffResult] = useState<{
+    runId: string;
+    rowsScanned: number;
+    anomaliesDetected: number;
+    anomalyRows: any[];
+    verdict: string;
+    executionDurationMs: number;
+    errors: string[];
+    tag: string;
+  } | null>(null);
+  const [showHashtagDiffModal, setShowHashtagDiffModal] = useState(false);
+
+  const handleRunHashtagDryRun = async () => {
+    const tag = selectedIssue?.linkedHashtag || (selectedIssue as any)?.hashtag;
+    if (!tag) return;
+    setIsDryRunningHashtag(true);
+    try {
+      const res = await api.executeHashtagScan(tag, {
+        executedBy: currentUser.id,
+        taskId: selectedIssue.id,
+        teamId: (selectedIssue as any).teamId,
+        isDryRun: true
+      });
+      setHashtagDiffResult({ ...res, tag });
+      setShowHashtagDiffModal(true);
+    } catch (err: any) {
+      alert(`Dry-run scan failed: ${err.message || 'Unknown error'}`);
+    } finally {
+      setIsDryRunningHashtag(false);
     }
   };
 
@@ -1888,13 +1975,43 @@ export default function ValidationOrchestratorWorkspace({
 
       // 1. Immediately update local dataset rows so UI updates instantly without requiring page reload
       if (res.records && Array.isArray(res.records) && res.records.length > 0) {
-        setTaskDatasetRows(res.records);
+        if (selectedBatchId !== 'ALL') {
+          // If a specific batch is selected, update matching records in-place so other batches are preserved
+          setTaskDatasetRows(prev => {
+            const next = [...prev];
+            const candidateKeyMap = new Map<string, any>();
+            res.records.forEach((r: any, idx: number) => {
+              const rNum = r._rowNumber ?? r.row_number;
+              if (rNum !== undefined) candidateKeyMap.set(`ROW-${rNum}`, r);
+              activeKeyFields.forEach(kf => {
+                if (r[kf] !== undefined && r[kf] !== null) candidateKeyMap.set(String(r[kf]), r);
+              });
+              candidateKeyMap.set(`ROW-${idx + 1}`, r);
+            });
+
+            return next.map((row, idx) => {
+              const rNum = row._rowNumber ?? row.row_number;
+              if (rNum !== undefined && candidateKeyMap.has(`ROW-${rNum}`)) {
+                return { ...row, ...candidateKeyMap.get(`ROW-${rNum}`) };
+              }
+              for (const kf of activeKeyFields) {
+                const val = row[kf] !== undefined && row[kf] !== null ? String(row[kf]) : '';
+                if (val && candidateKeyMap.has(val)) {
+                  return { ...row, ...candidateKeyMap.get(val) };
+                }
+              }
+              return row;
+            });
+          });
+        } else {
+          setTaskDatasetRows(res.records);
+        }
       }
 
       // 2. Immediately sync parent issue state so parent workspace and badges update instantly
       if (selectedIssue?.id) {
         onUpdateIssue(selectedIssue.id, {
-          firstLevelMappedData: res.records || effectiveRows,
+          firstLevelMappedData: selectedBatchId === 'ALL' ? (res.records || effectiveRows) : undefined,
           validationStatus: res.failedCount > 0 ? 'FAIL' : 'PASS'
         });
       }
@@ -2885,6 +3002,35 @@ export default function ValidationOrchestratorWorkspace({
               </button>
             )}
           </div>
+
+          {/* Universal Hashtag Directive Badge & Dry-Run Scan Trigger (GAP-10) */}
+          {(selectedIssue.linkedHashtag || (selectedIssue as any).hashtag) && (() => {
+            const tag = selectedIssue.linkedHashtag || (selectedIssue as any).hashtag;
+            const preset = hashtags.find(h => h.tag.toUpperCase() === tag.toUpperCase());
+            return (
+              <div className="flex items-center gap-1.5 ml-1">
+                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-200 border border-indigo-400/30 text-[11px] font-mono font-bold">
+                  <Tag size={11} className="text-indigo-300" />
+                  <span>{tag}</span>
+                  {preset?.hashtagType && (
+                    <span className="text-[9px] px-1 py-0.2 rounded bg-indigo-900/60 text-indigo-300 border border-indigo-700/50">
+                      {preset.hashtagType === 'DATABASE_DIRECT_SCANNER' ? 'DB-SCAN' : preset.hashtagType === 'EXTRACTION_STAGING' ? 'STAGING' : preset.hashtagType === 'AUDITING_GOVERNANCE' ? 'AUDIT' : 'INGEST'}
+                    </span>
+                  )}
+                </span>
+                <button
+                  type="button"
+                  onClick={handleRunHashtagDryRun}
+                  disabled={isDryRunningHashtag}
+                  className="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-400/40 rounded text-[11px] font-bold flex items-center gap-1 transition cursor-pointer"
+                  title="Execute dry-run hashtag rules & external database scan with side-by-side diff"
+                >
+                  <Play size={10} className={isDryRunningHashtag ? 'animate-spin' : 'text-amber-300'} />
+                  <span>{isDryRunningHashtag ? 'Checking DB...' : 'Test DB Checks (Dry-Run)'}</span>
+                </button>
+              </div>
+            );
+          })()}
 
           {/* Revert Staged Fixes & History */}
           <div className="flex items-center bg-rose-950/60 border border-rose-500/40 rounded overflow-hidden">
@@ -5444,6 +5590,175 @@ export default function ValidationOrchestratorWorkspace({
                 </div>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Universal Hashtags Result Diff Modal Drawer (GAP-10) */}
+      {showHashtagDiffModal && hashtagDiffResult && (
+        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-4xl max-h-[85vh] flex flex-col shadow-2xl overflow-hidden animate-in fade-in duration-200">
+            {/* Modal Header */}
+            <div className="p-4 bg-slate-950 border-b border-slate-800 flex items-center justify-between">
+              <div className="flex items-center space-x-2.5">
+                <span className="p-1.5 bg-amber-500/20 text-amber-300 rounded-lg">
+                  <Play size={16} />
+                </span>
+                <div>
+                  <div className="flex items-center space-x-2">
+                    <h3 className="text-sm font-bold text-white">
+                      Hashtag DB Scan & Result Diff: <span className="font-mono text-indigo-400">{hashtagDiffResult.tag}</span>
+                    </h3>
+                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wider ${
+                      hashtagDiffResult.verdict === 'PASS'
+                        ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
+                        : hashtagDiffResult.verdict === 'FLAG' || hashtagDiffResult.verdict === 'FAIL'
+                          ? 'bg-rose-500/20 text-rose-300 border border-rose-500/40'
+                          : 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+                    }`}>
+                      {hashtagDiffResult.verdict}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-slate-400">
+                    Execution Run ID: <span className="font-mono">{hashtagDiffResult.runId}</span> • Duration: {hashtagDiffResult.executionDurationMs}ms
+                  </p>
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setShowHashtagDiffModal(false)}
+                className="text-slate-400 hover:text-white p-1.5 rounded-lg hover:bg-slate-800 transition cursor-pointer"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            {/* Metrics Ribbon */}
+            <div className="grid grid-cols-3 divide-x divide-slate-800 bg-slate-900/80 border-b border-slate-800 text-center py-2.5">
+              <div>
+                <span className="text-[10px] uppercase text-slate-400 font-bold block">Rows Scanned</span>
+                <span className="text-sm font-bold font-mono text-white">{hashtagDiffResult.rowsScanned}</span>
+              </div>
+              <div>
+                <span className="text-[10px] uppercase text-slate-400 font-bold block">Discrepancies / Anomalies</span>
+                <span className={`text-sm font-bold font-mono ${hashtagDiffResult.anomaliesDetected > 0 ? 'text-rose-400' : 'text-emerald-400'}`}>
+                  {hashtagDiffResult.anomaliesDetected}
+                </span>
+              </div>
+              <div>
+                <span className="text-[10px] uppercase text-slate-400 font-bold block">Status Verdict</span>
+                <span className="text-sm font-bold font-mono text-indigo-300">{hashtagDiffResult.verdict}</span>
+              </div>
+            </div>
+
+            {/* Modal Body: Side-by-Side Diff Table */}
+            <div className="flex-1 overflow-y-auto p-4 space-y-4">
+              {hashtagDiffResult.errors && hashtagDiffResult.errors.length > 0 && (
+                <div className="p-3 bg-rose-950/40 border border-rose-500/40 rounded-xl text-rose-300 text-xs">
+                  <div className="font-bold flex items-center gap-1.5 mb-1">
+                    <AlertTriangle size={14} />
+                    <span>Scan Warnings & Errors</span>
+                  </div>
+                  <ul className="list-disc list-inside space-y-0.5 text-[11px]">
+                    {hashtagDiffResult.errors.map((e, idx) => <li key={idx}>{e}</li>)}
+                  </ul>
+                </div>
+              )}
+
+              <div className="space-y-2">
+                <div className="flex items-center justify-between text-xs text-slate-400">
+                  <span className="font-bold uppercase tracking-wider text-[10px]">
+                    Side-by-Side Comparative Diff: Task Input vs. External DB Mirror
+                  </span>
+                  <span className="text-[11px]">
+                    {hashtagDiffResult.anomalyRows.length} flagged comparison row(s)
+                  </span>
+                </div>
+
+                {hashtagDiffResult.anomalyRows.length === 0 ? (
+                  <div className="p-8 text-center bg-slate-950 rounded-xl border border-slate-800 text-slate-400 text-xs">
+                    <CheckCircle2 size={24} className="text-emerald-400 mx-auto mb-2" />
+                    <p className="font-semibold text-white">No Discrepancies Found in Dry-Run Scan</p>
+                    <p className="text-[11px] text-slate-500 mt-1">All scanned database records match the criteria expectations.</p>
+                  </div>
+                ) : (
+                  <div className="space-y-3">
+                    {hashtagDiffResult.anomalyRows.map((row, idx) => (
+                      <div key={idx} className="bg-slate-950 border border-slate-800 rounded-xl overflow-hidden text-xs">
+                        <div className="bg-slate-900 px-3 py-1.5 border-b border-slate-800 flex items-center justify-between text-[11px]">
+                          <span className="font-mono text-slate-300 font-bold">
+                            Record #{idx + 1} {row.id ? `(ID: ${row.id})` : ''}
+                          </span>
+                          <span className="text-rose-400 text-[10px] font-bold uppercase bg-rose-950/60 px-2 py-0.5 rounded border border-rose-800/40">
+                            Discrepancy Detected
+                          </span>
+                        </div>
+                        <div className="grid grid-cols-2 divide-x divide-slate-800">
+                          {/* Task / Input Side */}
+                          <div className="p-3 space-y-1.5 bg-blue-950/10">
+                            <span className="text-[10px] uppercase font-bold text-blue-400 tracking-wider block">
+                              Task Ingested Record (Source)
+                            </span>
+                            <div className="space-y-1 font-mono text-[11px]">
+                              {Object.entries(row)
+                                .filter(([k]) => !k.startsWith('_mirror_') && k !== '_discrepancies')
+                                .slice(0, 8)
+                                .map(([k, v]) => (
+                                  <div key={k} className="flex justify-between border-b border-slate-800/60 pb-0.5">
+                                    <span className="text-slate-400">{k}:</span>
+                                    <span className="text-slate-200 font-semibold">{String(v ?? 'null')}</span>
+                                  </div>
+                                ))}
+                            </div>
+                          </div>
+
+                          {/* External DB Mirror Side */}
+                          <div className="p-3 space-y-1.5 bg-amber-950/10">
+                            <span className="text-[10px] uppercase font-bold text-amber-400 tracking-wider block">
+                              External DB Mirror (Target)
+                            </span>
+                            <div className="space-y-1 font-mono text-[11px]">
+                              {Object.entries(row)
+                                .filter(([k]) => !k.startsWith('_mirror_') && k !== '_discrepancies')
+                                .slice(0, 8)
+                                .map(([k, v]) => {
+                                  const mirrorVal = (row as any)[`_mirror_${k}`] ?? (row as any)[k];
+                                  const isDiff = mirrorVal !== undefined && String(mirrorVal) !== String(v);
+                                  return (
+                                    <div key={k} className={`flex justify-between border-b border-slate-800/60 pb-0.5 ${isDiff ? 'bg-rose-950/40 text-rose-300 px-1 rounded' : ''}`}>
+                                      <span className="text-slate-400">{k}:</span>
+                                      <span className={isDiff ? 'text-rose-400 font-bold' : 'text-slate-200'}>
+                                        {String(mirrorVal ?? 'null')}
+                                      </span>
+                                    </div>
+                                  );
+                                })}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="p-4 bg-slate-950 border-t border-slate-800 flex items-center justify-between">
+              <span className="text-[11px] text-slate-500">
+                Dry-run results are observational and do not mutate production database records.
+              </span>
+              <div className="flex items-center space-x-2">
+                <button
+                  type="button"
+                  onClick={() => setShowHashtagDiffModal(false)}
+                  className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded-xl text-xs font-semibold cursor-pointer transition"
+                >
+                  Close Diff
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}

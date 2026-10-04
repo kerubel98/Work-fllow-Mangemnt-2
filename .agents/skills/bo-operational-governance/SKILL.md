@@ -196,6 +196,92 @@ When producing executive slide decks (`.pptx`), system introductions, or complia
 - **Re-executable Automation**: Store and maintain the Python compiler script (`build_presentation.py`) in the workspace. Any future modifications (slide re-ordering, text copy updates, replacing individual screenshot steps) must be executable with `python build_presentation.py` without re-extracting assets from scratch.
 - **No Disposable Presentation Materials**: Screenshots and slide generation routines are permanent deliverables, never to be stored solely in ephemeral logs or transient temp directories.
 
+### 3.19 Safe Database Maintenance, Seed Isolation & Zero Data Loss
+When performing database cleanups, schema maintenance, or test teardowns:
+- **No Blanket Deletions**: Never execute unconstrained `DELETE FROM <persistent_table>` or `DROP TABLE <persistent_table>` against persistent entities (`database_validation_workflows`, `validation_boxes`, `database_connections`, `database_table_mappings`, `issues`, `teams`, `users`, `workflow_bundles`).
+- **Explicit Provenance Scoping**: Any cleanup touching persistent records must use restrictive, reviewable identification (e.g., `WHERE id = ANY($1)` or `is_system_mock = true`). Names, creation dates, or appearance alone must never be treated as proof that a record is disposable.
+- **Mandatory 8-Step Dry-Run Execution Flow**:
+  ```text
+  1. IDENTIFY exact target records and tables
+          ↓
+  2. SELECT matching records via non-destructive read query
+          ↓
+  3. VERIFY ownership and provenance (confirm user-created records are NOT included)
+          ↓
+  4. DRY RUN: evaluate exact record count and IDs
+          ↓
+  5. REPORT affected records explicitly to the user
+          ↓
+  6. OBTAIN EXPLICIT APPROVAL before executing any destructive query
+          ↓
+  7. MODIFY / DELETE with scoped WHERE clause
+          ↓
+  8. VERIFY final state via post-operation verification query
+  ```
+  If ownership or provenance cannot be established: **Do not delete or overwrite the data.**
+- **Transient Data Verification**: Never assume a table is safe to drop merely because its name matches `mirror_%`. Verify from the repository and metadata that the object is truly a transient, generated structure before dropping.
+
+### 3.20 Canonical Validation Box Type System & Cross-Layer Consistency
+The validation platform enforces a strict separation between validation box container types and internal rule check types:
+1. **Canonical Container Types (`ValidationBoxType`)**:
+   - `INGESTION_SEARCH`: Ingress table existence and primary key discovery (`auth_log_tab`).
+   - `CONDITION_CHECK`: Inline field values, status checks, and ISO decline code validation.
+   - `RECONCILIATION`: Cross-table / cross-system mathematical matching and financial amounts (`sv_fin_tab`).
+   - `REPORT`: Diagnostic discrepancy emission.
+2. **Internal Rule Check Types (`CheckType`)**:
+   - Resides strictly within `rule_definition` or `steps[].checkType` (e.g., `EXISTENCE_CHECK`, `AMOUNT_MATCH`, `VALUE_MATCH`, `ISO_DECLINE_CODE`).
+   - Never set `validation_boxes.box_type` to a `CheckType` string (e.g. `box_type = 'EXISTENCE_CHECK'` is invalid).
+
+**Single Source of Truth & Cross-Layer Inspection**:
+Before modifying any enum, type, or persistent field, verify synchronization across the complete layer stack:
+```text
+Database schema (001_initial_schema.sql / migrations)
+        ↕
+Backend model / schema (backend/src/types.ts & postgresRepo.ts)
+        ↕
+API contract (routes/*.ts & client.ts)
+        ↕
+Frontend TypeScript type (frontend/src/types.ts)
+        ↕
+Frontend UI filtering & grouping (ValidationBoxManager.tsx)
+        ↕
+Seed routines & test fixtures (seedPostgres.ts)
+        ↕
+Existing persistent database records
+        ↕
+Automated test suites
+```
+Never update only the single layer where a visible symptom surfaced.
+
+### 3.21 Team-Private Database Connection Lifecycle & Credential Protection
+- **Creation & Ownership**: Teams configure private database connections via `POST /api/teams/:teamId/databases`. The backend sets `database_connections.team_id = :teamId` and `database_connections.scope = 'team'`.
+- **Strict Authorization Chain**: Access must verify:
+  ```text
+  User → Team Membership → Team → Database Connection → Allowed Operation
+  ```
+  A user must never gain query or mirror access to another team's connection simply by knowing a connection ID, database name, table name, or mirror table.
+- **Promotion Governance**: Promoting a connection from `team_id = <team>` to global (`team_id = NULL`, `scope = 'global'`) requires formal administrative authorization (`promotion_status = 'PENDING'` reviewed via `AdminTeamResourcesMonitor.tsx` or `db_access_requests`).
+- **Credential Protection**:
+  - Passwords and secrets must never be logged or returned in plaintext.
+  - API responses must mask passwords (`••••••••`).
+  - Metadata-only updates must preserve existing database secrets when no new password is submitted.
+### 3.22 Flowchart DAG State Synchronization & Four-Tier Field Invariance
+In visual workflow builders (such as `WorkflowStudioFlowchart.tsx`), workflows transition continuously between visual graph nodes (`FlowchartNode`), execution stages (`ProcessingStage`), individual checks (`ValidationCheckStep`), and PostgreSQL persistence (`database_validation_workflows`).
+
+Whenever introducing, updating, or debugging workflow or stage attributes:
+1. **Canvas Node Definition**: Ensure the attribute is declared in `FlowchartNode` in both `frontend/src/types.ts` and `backend/src/types.ts`.
+2. **Snapshot & Dirty Tracking**: Include the attribute in `createSnapshot` and `currentSnapshot` dependencies to preserve unsaved change detection.
+3. **Canvas Loading & Synthesis**: Ensure `convertStagesToFlowchart` transfers the attribute from incoming `stages` and `steps` to `FlowchartNode`.
+4. **Toolbox Instantiation**: Ensure `handleAddBoxNode` populates default values from the selected Validation Box or parent workflow.
+5. **Sanitization & Save Mapping**: Ensure `cleanNodes`, `stages` mapping, and `steps` mapping in `handleSaveWorkflow` do not strip the attribute before emitting the API payload.
+6. **Backend Ingestion & Hydration**: Verify `POST /api/workflows` and `PUT /api/workflows/:id` in `workflows.ts` do not strip the attribute, and update `hydrateWorkflowColumnConfigurations` if relational hydration is required.
+
+### 3.23 Pipeline & Stage Database Scoping Governance (`attachedDbConfigIds`)
+- **Workflow Scope (`targetDbId`, `targetTable`)**: Every workflow pipeline must declare its primary target database connection and default scope table in the studio header bar.
+- **Node-Level Rule Attachment (`attachedDbConfigIds`)**: Rather than executing unconstrained table scans, each validation node must explicitly reference registered `database_column_configurations` IDs (`attachedDbConfigIds`).
+- **Dynamic Rule Discovery**: The UI inspector must query `api.getColumnConfigurations(dbId, table)` to provide operators with live rule checkboxes, type badges, and active count indicators.
+- **Cardinality & Aggregation Contracts**: Multi-row queries must explicitly specify cardinality policy (`STRICT_SINGLE`, `ONE_TO_MANY`, `EXPLICIT_LATEST`, `EXPLICIT_FIRST`, `ALL_ROWS`) and aggregation strategy (`NONE`, `SUM`, `COUNT`, `MIN`, `MAX`) to prevent ambiguous result sets during external mirror reconciliation.
+
 ---
 
 ## 4. End-to-End Investigation Flow
@@ -232,52 +318,61 @@ When adding or modifying investigation features, trace and respect the complete 
 
 ---
 
-## 5. Mandatory Implementation Workflow
+## 5. Mandatory Implementation Workflow (Inspect → Plan → Approve → Modify → Verify)
 
-Before modifying or adding code in this repository, execute these phases:
+For changes involving persistent data, architecture, schema, authorization, or lifecycle behavior, execute this 6-phase workflow:
 
-### Phase A — Understand & Inspect
-- Locate all existing components, APIs, and models involved.
+### Phase 1 — Inspect
+- Read the repository and identify the current physical implementation.
+- Trace claims to actual source files in `backend/src/`, `frontend/src/`, and migration scripts.
 - Verify whether the capability is `EXISTS`, `PARTIALLY_EXISTS`, or `MISSING`.
-- Trace claims to actual files in `backend/src/` or `frontend/src/`.
 
-### Phase B — Impact Analysis
-Evaluate:
-- Frontend impact (React 19 components, API client methods).
-- Backend impact (Routes, controllers, services).
-- Database impact (PostgreSQL schema, indexes, migrations).
-- Performance impact (Ensure batching and set-based joins are preserved).
-- Backward compatibility (Ensure existing issues, workflows, and table mappings remain valid).
+### Phase 2 — Analyze
+- Identify current vs. intended behavior.
+- Evaluate cross-layer dependencies (Database, Backend, API, Frontend, Seeds, Tests).
+- Assess ownership, authorization, data impact, and architectural conflicts.
 
-### Phase C — Design
-- Specify exact files to change, APIs to expose, and database queries to execute.
-- Ensure business logic resides in backend domain services (`backend/src/services/`), not duplicated inside React component state.
+### Phase 3 — Plan
+- Produce the exact files, models, APIs, and data queries affected.
+- Clearly separate required changes from optional future improvements.
 
-### Phase D — Review & User Alignment
-- Confirm no unapproved infrastructure (Kafka, Redis, extra queues, MongoDB rewrites) is introduced.
-- Confirm no hard-coded external schema assumptions are introduced.
+### Phase 4 — Approval
+- For destructive, persistent-state, or high-impact operations, obtain explicit user approval before execution.
 
-### Phase E — Implement & Verify
-- Implement cleanly without modifying unrelated files.
-- Verify TypeScript compilation: `npm run lint` or `npx tsx` execution.
-- Run existing verification scripts in `backend/src/test-*.ts` or `scratch/`.
+### Phase 5 — Modify
+- Apply only the approved changes cleanly.
+- Do not expand scope or touch unrelated files.
+
+### Phase 6 — Verify
+- Inspect the diff for unintended changes.
+- Verify affected database records via explicit read queries.
+- Run relevant test suites (`npm test` or `npx tsx`).
+- Verify API contracts, frontend behavior, and authorization controls.
 
 ---
 
 ## 6. Forbidden Anti-Patterns
 
-1. **NEVER** treat MongoDB as the active primary database. The primary database is PostgreSQL (`operational_workflow_db`).
-2. **NEVER** store workflows in `localStorage`. Workflows must be persisted in PostgreSQL.
-3. **NEVER** run single-row `SELECT *` queries per transaction against external databases. Always use chunked parameter binding (`WHERE key IN (...)`) with minimal column projection.
-4. **NEVER** merge `ValidationResultStatus` (`PASS`/`FAIL`/`ERROR`) with `PipelineAction` (`CONTINUE`/`STOP`/`CLOSE`).
-5. **NEVER** assume Oracle database connectivity works without installing and configuring `oracledb`.
-6. **NEVER** embed large transaction arrays inside the `Issue` record. Use `task_dataset_transactions`.
-7. **NEVER** duplicate business execution logic in the frontend. The frontend is for presentation and flowchart canvas interactions; execution belongs to the backend orchestrator.
-8. **NEVER** introduce distributed queues or external caches (Kafka, Redis, RabbitMQ) unless explicitly justified and approved.
-9. **NEVER** use 32-bit `hashtext` for advisory locks. Always derive 64-bit MD5 bigint keys: `('x' || substr(md5($1), 1, 16))::bit(64)::bigint`.
-10. **NEVER** pass unbounded composite tuple lists to PostgreSQL without checking against the 65,535 parameter ceiling. Always chunk under 30,000 parameters.
-11. **NEVER** silently discard duplicate matched rows in external reconciliation. Always flag `DUPLICATE_EXTERNAL_MATCH` and preserve `_rawRows` in the evidence snapshot.
-12. **NEVER** acquire global table locks during task rollback. Always use task-scoped advisory locks (`task_revert_${taskId}`).
-13. **NEVER** require individual operational teams to supply or manage OAuth 2.0 Client IDs, Client Secrets, or Tenant IDs. Centralize enterprise provider credentials in the Admin Hub and bind team mailboxes via `adminOAuth2ConnectionId`.
-14. **NEVER** return plaintext OAuth 2.0 client secrets in API responses. Always mask secrets (`••••••••`) on read and preserve existing database secrets when updating with a masked payload.
-15. **NEVER** discard presentation screenshots, decoded media, or Python compilation scripts as disposable scratch. Persist them in `presentation_assets/` and maintain `build_presentation.py` for reproducible slide deck updates.
+1. **NEVER** execute blanket `DELETE FROM <persistent_table>` or unconstrained `DROP TABLE`.
+2. **NEVER** drop persistent application tables during ordinary test cleanup.
+3. **NEVER** treat user-created data as test data without verified provenance.
+4. **NEVER** modify persistent data simply to make a UI display correctly.
+5. **NEVER** assign `CheckType` values (`EXISTENCE_CHECK`, `AMOUNT_MATCH`) to `validation_boxes.box_type`.
+6. **NEVER** invent enum values or modify only the frontend/backend layer when a cross-layer type is involved.
+7. **NEVER** expose team-private database connections to another team or promote them to global without formal authorization.
+8. **NEVER** expose database credentials in logs or API responses in plaintext.
+9. **NEVER** assume a mirror/temporary table is disposable without verifying its lifecycle.
+10. **NEVER** repair data by guessing the intended state without evidence.
+11. **NEVER** bypass existing authorization, 4-eyes Maker-Checker controls, or anti-self-approval (`makerId !== checkerId`).
+12. **NEVER** modify unrelated persistent records while fixing a specific issue.
+13. **NEVER** claim a repository behavior exists without inspecting physical code.
+14. **NEVER** merge `ValidationResultStatus` (`PASS`/`FAIL`/`ERROR`) with `PipelineAction` (`CONTINUE`/`STOP`/`CLOSE`).
+15. **NEVER** acquire global table locks during task rollback. Always use task-scoped advisory locks (`task_revert_${taskId}`).
+16. **NEVER** use 32-bit `hashtext` for advisory locks. Always derive 64-bit MD5 bigint keys: `('x' || substr(md5($1), 1, 16))::bit(64)::bigint`.
+17. **NEVER** pass unbounded composite tuple lists to PostgreSQL without checking against the 65,535 parameter ceiling. Always chunk under 30,000 parameters.
+18. **NEVER** hardcode inner viewport heights (`h-[calc(100vh-...)]`) in workspace tabs. Always constrain full-screen views with `overflow-hidden flex-1 min-h-0` and `shrink-0` stationary headers.
+19. **NEVER** add or modify properties in `ProcessingStage` or `ValidationCheckStep` without updating `FlowchartNode`, `cleanNodes`, `convertStagesToFlowchart`, and `createSnapshot` in `WorkflowStudioFlowchart.tsx`. Doing so silently drops configurations during canvas interactions.
+20. **NEVER** save workflows without explicit `targetDbId` and `targetTable` scoping or execute validation blocks without explicit `attachedDbConfigIds` bindings.
+
+
+

@@ -38,7 +38,10 @@ import {
   Square,
   SlidersHorizontal,
   Users,
-  Share2
+  Share2,
+  Table,
+  GripVertical,
+  FileText
 } from 'lucide-react';
 import { api } from '../../api/client';
 import { globalMappingService } from '../../services/globalMappingService';
@@ -53,7 +56,9 @@ import {
   FlowchartOutputAction,
   ProcessingStage,
   ValidationCheckStep,
-  WorkflowMessageAggregationRule
+  WorkflowMessageAggregationRule,
+  MultiRowCardinalityPolicy,
+  AggregationStrategy
 } from '../../types';
 
 import { WorkflowPalette } from './workflow/WorkflowPalette';
@@ -73,6 +78,7 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
 }) => {
   const [workflows, setWorkflows] = useState<DatabaseValidationWorkflow[]>([]);
   const [validationBoxes, setValidationBoxes] = useState<ValidationBox[]>([]);
+  const [databases, setDatabases] = useState<any[]>([]);
   const [activeWorkflow, setActiveWorkflow] = useState<DatabaseValidationWorkflow | null>(null);
   const [loading, setLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
@@ -95,10 +101,13 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
   const [formSelectedStepIds, setFormSelectedStepIds] = useState<string[]>([]);
   const [aggregatorFeedback, setAggregatorFeedback] = useState<string>('');
 
-  // Workflow metadata
+  // Workflow metadata & Database configuration
   const [workflowName, setWorkflowName] = useState('Payment Reconciliation Pipeline');
   const [workflowCategory, setWorkflowCategory] = useState<'Settlement' | 'Fulfillment' | 'Compliance' | 'Reconciliation' | 'Custom'>('Settlement');
   const [workflowDescription, setWorkflowDescription] = useState('Vertical flowchart pipeline connecting search blocks and conditional checks.');
+  const [workflowDbId, setWorkflowDbId] = useState<string>('');
+  const [workflowTable, setWorkflowTable] = useState<string>('');
+  const [workflowAttachedDbConfigIds, setWorkflowAttachedDbConfigIds] = useState<string[]>([]);
 
   // Flowchart Canvas State (Vertical Layout)
   const [nodes, setNodes] = useState<FlowchartNode[]>([]);
@@ -129,18 +138,30 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
     wName: string,
     wCat: string,
     wDesc: string,
-    wAggs: WorkflowMessageAggregationRule[]
+    wAggs: WorkflowMessageAggregationRule[],
+    wDbId?: string,
+    wTbl?: string,
+    wAttachedDbConfigIds?: string[]
   ) => {
     return JSON.stringify({
       name: (wName || '').trim(),
       category: wCat || 'Settlement',
       description: (wDesc || '').trim(),
+      targetDbId: wDbId || '',
+      targetTable: wTbl || '',
+      attachedDbConfigIds: (wAttachedDbConfigIds || []).slice().sort(),
       nodes: (wNodes || []).map(n => ({
         id: n.id,
         name: n.name,
         type: n.type,
         x: Math.round(n.x),
         y: Math.round(n.y),
+        targetDbId: n.targetDbId,
+        targetTable: n.targetTable,
+        attachedDbConfigIds: n.attachedDbConfigIds,
+        cardinalityPolicy: n.cardinalityPolicy,
+        aggregationStrategy: n.aggregationStrategy,
+        orderByColumn: n.orderByColumn,
         onPassAction: n.onPassAction,
         onFailAction: n.onFailAction,
         reportColumnName: n.reportColumnName,
@@ -158,8 +179,18 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
   };
 
   const currentSnapshot = React.useMemo(() => {
-    return createSnapshot(nodes, connections, workflowName, workflowCategory, workflowDescription, messageAggregations);
-  }, [nodes, connections, workflowName, workflowCategory, workflowDescription, messageAggregations]);
+    return createSnapshot(
+      nodes,
+      connections,
+      workflowName,
+      workflowCategory,
+      workflowDescription,
+      messageAggregations,
+      workflowDbId,
+      workflowTable,
+      workflowAttachedDbConfigIds
+    );
+  }, [nodes, connections, workflowName, workflowCategory, workflowDescription, messageAggregations, workflowDbId, workflowTable, workflowAttachedDbConfigIds]);
 
   const hasUnsavedChanges = Boolean(savedSnapshot && savedSnapshot !== currentSnapshot);
 
@@ -180,14 +211,17 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
   const loadData = async () => {
     setLoading(true);
     try {
-      const [wfs, boxes] = await Promise.all([
+      const [wfs, boxes, dbs] = await Promise.all([
         api.getWorkflows(currentUser?.teamId),
-        api.getValidationBoxes(undefined, currentUser?.teamId)
+        api.getValidationBoxes(undefined, currentUser?.teamId),
+        api.getDatabases().catch(() => [])
       ]);
       const safeWfs = Array.isArray(wfs) ? wfs.filter(Boolean) : [];
       const safeBoxes = Array.isArray(boxes) ? boxes.filter(Boolean) : [];
+      const safeDbs = Array.isArray(dbs) ? dbs.filter(Boolean) : [];
       setWorkflows(safeWfs);
       setValidationBoxes(safeBoxes);
+      setDatabases(safeDbs);
 
       if (safeWfs.length > 0) {
         // Priority for active workflow selection:
@@ -275,6 +309,13 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
     setWorkflowName(wf.name || '');
     setWorkflowCategory(wf.category || 'Settlement');
     setWorkflowDescription(wf.description || '');
+    setWorkflowDbId(wf.targetDbId || '');
+    setWorkflowTable(wf.targetTable || '');
+    const safeAttachedConfigs = Array.isArray(wf.attachedDbConfigIds)
+      ? wf.attachedDbConfigIds.filter(Boolean)
+      : [];
+    setWorkflowAttachedDbConfigIds(safeAttachedConfigs);
+
     const rawAggs = wf.messageAggregations;
     const safeAggs = Array.isArray(rawAggs)
       ? rawAggs.filter(Boolean)
@@ -292,7 +333,10 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
         wf.name || '',
         wf.category || 'Settlement',
         wf.description || '',
-        safeAggs as WorkflowMessageAggregationRule[]
+        safeAggs as WorkflowMessageAggregationRule[],
+        wf.targetDbId || '',
+        wf.targetTable || '',
+        safeAttachedConfigs
       ));
     } else {
       // Synthesize vertical flowchart nodes from existing stages & steps
@@ -358,10 +402,14 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
           onFailAction: (step?.onFailAction as FlowchartOutputAction) || 'STOP',
           reportColumnName: step?.reportColumnName || (sIdx === 0 ? 'Auth Status' : undefined),
           reportField: step?.reportField,
-          targetDbId: step?.targetDbId || box?.targetDbId || stage?.targetDbId,
-          targetTable: step?.targetTable || box?.targetTable || stage?.targetDataSource,
+          targetDbId: step?.targetDbId || box?.targetDbId || stage?.targetDbId || wf.targetDbId,
+          targetTable: step?.targetTable || box?.targetTable || stage?.targetDataSource || wf.targetTable,
+          attachedDbConfigIds: (step as any)?.attachedDbConfigIds || step?.columnConfigurationIds || (box as any)?.attachedDbConfigIds || box?.columnConfigurationIds || stage?.attachedDbConfigIds || [],
           columnConfigurationIds: step?.columnConfigurationIds || box?.columnConfigurationIds || [],
-          columnConfigurations: step?.columnConfigurations || box?.columnConfigurations || []
+          columnConfigurations: step?.columnConfigurations || box?.columnConfigurations || [],
+          cardinalityPolicy: step?.cardinalityPolicy || stage?.cardinalityPolicy || 'STRICT_SINGLE',
+          aggregationStrategy: step?.aggregationStrategy || stage?.aggregationStrategy || 'NONE',
+          orderByColumn: step?.orderByColumn || stage?.orderByColumn
         });
 
         newConns.push({
@@ -398,10 +446,14 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
           onPassAction: 'CONTINUE',
           onFailAction: 'STOP',
           reportColumnName: sIdx === 0 ? 'Auth Status' : undefined,
-          targetDbId: box?.targetDbId || stage.targetDbId,
-          targetTable: box?.targetTable || stage.targetDataSource,
+          targetDbId: box?.targetDbId || stage.targetDbId || wf.targetDbId,
+          targetTable: box?.targetTable || stage.targetDataSource || wf.targetTable,
+          attachedDbConfigIds: stage.attachedDbConfigIds || (box as any)?.attachedDbConfigIds || box?.columnConfigurationIds || [],
           columnConfigurationIds: box?.columnConfigurationIds || [],
-          columnConfigurations: box?.columnConfigurations || []
+          columnConfigurations: box?.columnConfigurations || [],
+          cardinalityPolicy: stage.cardinalityPolicy || 'STRICT_SINGLE',
+          aggregationStrategy: stage.aggregationStrategy || 'NONE',
+          orderByColumn: stage.orderByColumn
         });
 
         newConns.push({
@@ -448,7 +500,10 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
       wf.name || '',
       wf.category || 'Settlement',
       wf.description || '',
-      safeAggs || []
+      safeAggs || [],
+      wf.targetDbId || '',
+      wf.targetTable || '',
+      Array.isArray(wf.attachedDbConfigIds) ? wf.attachedDbConfigIds.filter(Boolean) : []
     ));
   };
 
@@ -1107,10 +1162,14 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
       y: newY,
       onPassAction: initialPassAction,
       onFailAction: initialFailAction,
-      targetDbId: box.targetDbId,
-      targetTable: box.targetTable,
+      targetDbId: box.targetDbId || workflowDbId,
+      targetTable: box.targetTable || workflowTable,
+      attachedDbConfigIds: (box as any).attachedDbConfigIds || box.columnConfigurationIds || box.checkStep?.columnConfigurationIds || [],
       columnConfigurationIds: box.columnConfigurationIds || box.checkStep?.columnConfigurationIds || [],
-      columnConfigurations: box.columnConfigurations || box.checkStep?.columnConfigurations || []
+      columnConfigurations: box.columnConfigurations || box.checkStep?.columnConfigurations || [],
+      cardinalityPolicy: (box as any).cardinalityPolicy || 'STRICT_SINGLE',
+      aggregationStrategy: (box as any).aggregationStrategy || 'NONE',
+      orderByColumn: (box as any).orderByColumn
     };
     setNodes(prev => [...prev, newNode]);
 
@@ -1216,10 +1275,22 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
         description: String(n.description || ''),
         order: idx + 1,
         enabled: true,
-        targetDbId: String(n.targetDbId || ''),
-        targetDataSource: String(n.targetTable || 'transactions'),
+        targetDbId: String(n.targetDbId || workflowDbId || ''),
+        targetDataSource: String(n.targetTable || workflowTable || 'transactions'),
         businessMeaning: String(n.category || 'Validation Stage'),
-        ruleBlockIds: n.boxId ? [String(n.boxId)] : []
+        ruleBlockIds: n.boxId ? [String(n.boxId)] : [],
+        attachedDbConfigIds: (Array.isArray(n.attachedDbConfigIds) && n.attachedDbConfigIds.length > 0)
+          ? n.attachedDbConfigIds
+          : ((Array.isArray(n.columnConfigurationIds) && n.columnConfigurationIds.length > 0)
+              ? n.columnConfigurationIds
+              : (workflowAttachedDbConfigIds.length > 0 && (!n.targetDbId || n.targetDbId === workflowDbId) && (!n.targetTable || n.targetTable === workflowTable)
+                  ? workflowAttachedDbConfigIds
+                  : []
+                )
+            ),
+        cardinalityPolicy: n.cardinalityPolicy || 'STRICT_SINGLE',
+        aggregationStrategy: n.aggregationStrategy || 'NONE',
+        orderByColumn: n.orderByColumn
       }));
 
       const steps: ValidationCheckStep[] = validationNodes.map((n, idx) => {
@@ -1272,6 +1343,13 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
         const compareVal = (n as any).compareValue ?? dsc?.compareValue ?? box?.checkStep?.compareValue;
         const expectedVal = (n as any).expectedValue ?? dsc?.expectedValue ?? box?.checkStep?.expectedValue;
 
+        const effectiveStepAttachedConfigs = (Array.isArray(n.attachedDbConfigIds) && n.attachedDbConfigIds.length > 0)
+          ? n.attachedDbConfigIds
+          : ((Array.isArray(n.columnConfigurationIds) && n.columnConfigurationIds.length > 0)
+              ? n.columnConfigurationIds
+              : (box?.attachedDbConfigIds || (workflowAttachedDbConfigIds.length > 0 && (!n.targetDbId || n.targetDbId === workflowDbId) && (!n.targetTable || n.targetTable === workflowTable) ? workflowAttachedDbConfigIds : []))
+            );
+
         return {
           id: `step-${n.id || idx + 1}`,
           stepNumber: idx + 1,
@@ -1281,8 +1359,12 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
           checkType,
           dualSourceCondition: dsc ? JSON.parse(JSON.stringify(dsc)) : undefined,
           toleranceMargin: Number(dsc?.toleranceMargin ?? box?.checkStep?.toleranceMargin ?? box?.checkStep?.tolerance ?? 0.00),
-          targetDbId: String(n.targetDbId || box?.targetDbId || ''),
-          targetTable: String(n.targetTable || box?.targetTable || 'transactions'),
+          targetDbId: String(n.targetDbId || box?.targetDbId || workflowDbId || ''),
+          targetTable: String(n.targetTable || box?.targetTable || workflowTable || 'transactions'),
+          attachedDbConfigIds: effectiveStepAttachedConfigs,
+          cardinalityPolicy: n.cardinalityPolicy || (box as any)?.cardinalityPolicy || 'STRICT_SINGLE',
+          aggregationStrategy: n.aggregationStrategy || (box as any)?.aggregationStrategy || 'NONE',
+          orderByColumn: n.orderByColumn || (box as any)?.orderByColumn,
           sourceField: String(srcField),
           targetField: String(tgtField),
           comparator: (dsc?.comparator === 'EQUALS' ? '=' : (dsc?.comparator as any)) || box?.checkStep?.comparator || (box?.checkStep?.operator as any) || '=',
@@ -1290,7 +1372,7 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
           expectedValue: expectedVal !== undefined ? String(expectedVal) : undefined,
           regexPattern: box?.checkStep?.regexPattern || (n as any).regexPattern ? String(box?.checkStep?.regexPattern || (n as any).regexPattern) : undefined,
           sqlCondition: box?.checkStep?.sqlCondition || (n as any).sqlCondition ? String(box?.checkStep?.sqlCondition || (n as any).sqlCondition) : undefined,
-          columnConfigurationIds: n.columnConfigurationIds || box?.columnConfigurationIds || box?.checkStep?.columnConfigurationIds || [],
+          columnConfigurationIds: effectiveStepAttachedConfigs,
           columnConfigurations: n.columnConfigurations || box?.columnConfigurations || box?.checkStep?.columnConfigurations || [],
           onPassAction: n.onPassAction || (box?.checkStep?.onPassAction as any) || 'CONTINUE',
           onFailAction: n.onFailAction || (box?.checkStep?.onFailAction as any) || (box?.checkStep?.actionOnFailure as any) || 'STOP',
@@ -1328,6 +1410,13 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
           b.id === n.boxId || 
           (b.name && n.name && b.name.trim().toLowerCase() === n.name.trim().toLowerCase())
         ));
+        const effectiveNodeAttached = (Array.isArray(n.attachedDbConfigIds) && n.attachedDbConfigIds.length > 0)
+          ? n.attachedDbConfigIds
+          : ((Array.isArray(n.columnConfigurationIds) && n.columnConfigurationIds.length > 0)
+              ? n.columnConfigurationIds
+              : (box?.attachedDbConfigIds || (workflowAttachedDbConfigIds.length > 0 && (!n.targetDbId || n.targetDbId === workflowDbId) && (!n.targetTable || n.targetTable === workflowTable) ? workflowAttachedDbConfigIds : []))
+            );
+
         return {
           id: String(n.id || `node-${idx + 1}`),
           type: n.type,
@@ -1337,10 +1426,14 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
           category: n.category ? String(n.category) : undefined,
           x: Math.round(Number(n.x) || 0),
           y: Math.round(Number(n.y) || 0),
-          targetDbId: n.targetDbId ? String(n.targetDbId) : (box?.targetDbId ? String(box.targetDbId) : undefined),
-          targetTable: n.targetTable ? String(n.targetTable) : (box?.targetTable ? String(box.targetTable) : undefined),
-          columnConfigurationIds: n.columnConfigurationIds || box?.columnConfigurationIds || [],
+          targetDbId: n.targetDbId ? String(n.targetDbId) : (box?.targetDbId ? String(box.targetDbId) : (workflowDbId || undefined)),
+          targetTable: n.targetTable ? String(n.targetTable) : (box?.targetTable ? String(box.targetTable) : (workflowTable || undefined)),
+          attachedDbConfigIds: effectiveNodeAttached,
+          columnConfigurationIds: effectiveNodeAttached,
           columnConfigurations: n.columnConfigurations || box?.columnConfigurations || [],
+          cardinalityPolicy: n.cardinalityPolicy || (box as any)?.cardinalityPolicy || 'STRICT_SINGLE',
+          aggregationStrategy: n.aggregationStrategy || (box as any)?.aggregationStrategy || 'NONE',
+          orderByColumn: n.orderByColumn || (box as any)?.orderByColumn,
           onPassAction: n.onPassAction || 'CONTINUE',
           onFailAction: n.onFailAction || 'STOP',
           reportColumnName: n.reportColumnName ? String(n.reportColumnName) : undefined,
@@ -1381,6 +1474,9 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
         name: workflowName.trim(),
         category: workflowCategory,
         description: workflowDescription.trim(),
+        targetDbId: workflowDbId || undefined,
+        targetTable: workflowTable || undefined,
+        attachedDbConfigIds: workflowAttachedDbConfigIds,
         stages,
         steps,
         nodes: cleanNodes,
@@ -1470,20 +1566,20 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
   );
 
   const canvasSurfaceClasses = canvasTheme === 'dark'
-    ? 'bg-[#060A14] border-slate-800'
+    ? 'bg-[#071318] border-[#163848]'
     : 'bg-slate-100 border-slate-200';
   const canvasGridClasses = canvasTheme === 'dark'
-    ? 'bg-[radial-gradient(#334155_1px,transparent_1px)]'
+    ? 'bg-[radial-gradient(#1b4353_1.2px,transparent_1.2px)]'
     : 'bg-[radial-gradient(#cbd5e1_1px,transparent_1px)]';
 
   return (
-    <div className="space-y-3">
+    <div className="h-full flex flex-col min-h-0 overflow-hidden space-y-2">
       {/* Consolidated Workflow Navigation & Controls Card */}
-      <div className="bg-white border border-slate-200/90 rounded-2xl p-3 sm:p-3.5 text-slate-800 shadow-xs space-y-2.5" id="workflow-studio-header">
+      <div className="bg-[#091a22] border border-[#163848] rounded-2xl p-3 sm:p-3.5 text-white shadow-lg space-y-2.5 shrink-0" id="workflow-studio-header">
         <div className="flex flex-wrap items-center justify-between gap-2.5">
           {/* Workflow Identity & Metadata Inputs */}
           <div className="flex flex-wrap items-center gap-2 flex-1 min-w-[260px]">
-            <div className="p-1.5 bg-purple-50 text-purple-600 border border-purple-200/60 rounded-lg shrink-0">
+            <div className="p-1.5 bg-[#0e212b] text-cyan-400 border border-[#1b4353] rounded-lg shrink-0">
               <GitFork size={16} />
             </div>
 
@@ -1493,7 +1589,7 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
               value={workflowName}
               onChange={(e) => setWorkflowName(e.target.value)}
               placeholder="Workflow Pipeline Name..."
-              className="text-xs sm:text-sm font-bold text-slate-900 bg-slate-50 hover:bg-slate-100/70 focus:bg-white border border-slate-200 rounded-lg px-2.5 py-1 focus:outline-none focus:border-purple-500 focus:ring-1 focus:ring-purple-500/20 transition min-w-[180px] max-w-sm flex-1 font-sans"
+              className="text-xs sm:text-sm font-bold text-white bg-[#071318] hover:bg-[#0b1d26] focus:bg-[#071318] border border-[#163848] rounded-xl px-2.5 py-1 focus:outline-none focus:border-cyan-400 focus:ring-1 focus:ring-cyan-500/20 transition min-w-[180px] max-w-sm flex-1 font-sans"
               title="Click to rename workflow"
             />
 
@@ -1501,7 +1597,7 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
             <select
               value={workflowCategory}
               onChange={(e: any) => setWorkflowCategory(e.target.value)}
-              className="text-xs font-semibold bg-slate-50 border border-slate-200 rounded-lg px-2 py-1 text-slate-700 focus:outline-none focus:border-purple-500 cursor-pointer shadow-2xs"
+              className="text-xs font-semibold bg-[#071318] border border-[#163848] rounded-xl px-2.5 py-1 text-cyan-300 focus:outline-none focus:border-cyan-400 cursor-pointer shadow-2xs"
               title="Workflow Business Category"
             >
               <option value="Settlement">Settlement</option>
@@ -1511,8 +1607,75 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
               <option value="Custom">Custom</option>
             </select>
 
+            {/* Target Database & Scope Table Target Selection */}
+            <div className="flex items-center gap-1.5 bg-[#071318] border border-[#163848] rounded-xl px-2.5 py-1 text-xs text-slate-300 shadow-2xs">
+              <Database size={13} className="text-cyan-400 shrink-0" />
+              <select
+                value={workflowDbId}
+                onChange={(e) => {
+                  const newDbId = e.target.value;
+                  setWorkflowDbId(newDbId);
+                  const db = databases.find(d => String(d.id) === String(newDbId));
+                  const tbls: string[] = db?.availableTables || db?.allowedTables || (db?.metadata?.tables) || [];
+                  if (tbls.length > 0 && (!workflowTable || !tbls.includes(workflowTable))) {
+                    setWorkflowTable(tbls[0]);
+                  } else if (!newDbId) {
+                    setWorkflowTable('');
+                  }
+                }}
+                className="bg-transparent border-none text-xs font-semibold text-cyan-300 focus:outline-none cursor-pointer max-w-[130px] truncate"
+                title="Target Database Connection"
+              >
+                <option value="" className="bg-[#071318] text-slate-400">(No Target DB)</option>
+                {databases.map(db => (
+                  <option key={db.id} value={db.id} className="bg-[#071318] text-white">{db.name || db.database || db.id}</option>
+                ))}
+              </select>
+
+              {workflowDbId && (
+                <>
+                  <span className="text-slate-600">/</span>
+                  <Table size={12} className="text-slate-500 shrink-0" />
+                  <select
+                    value={workflowTable}
+                    onChange={(e) => setWorkflowTable(e.target.value)}
+                    className="bg-transparent border-none text-xs font-medium text-emerald-300 focus:outline-none cursor-pointer max-w-[120px] truncate"
+                    title="Scope Table"
+                  >
+                    <option value="" className="bg-[#071318] text-slate-400">(All Tables)</option>
+                    {(() => {
+                      const db = databases.find(d => String(d.id) === String(workflowDbId));
+                      const tbls: string[] = db?.availableTables || db?.allowedTables || (db?.metadata?.tables) || [];
+                      return tbls.map((tbl: string) => (
+                        <option key={tbl} value={tbl} className="bg-[#071318] text-white">{tbl}</option>
+                      ));
+                    })()}
+                  </select>
+                </>
+              )}
+            </div>
+
+            {/* Workflow DB Column Rules Acceptance Button */}
+            <button
+              type="button"
+              onClick={() => {
+                setSelectedNode(null);
+                setSelectedConnection(null);
+                setRightPanelCollapsed(false);
+              }}
+              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-xs font-mono font-semibold transition cursor-pointer border shadow-2xs ${
+                workflowAttachedDbConfigIds.length > 0
+                  ? 'bg-[#0c2e35] border-[#144f56] text-[#00e5b3] hover:bg-[#0e3b44]'
+                  : 'bg-[#071318] border-[#163848] text-slate-400 hover:text-white'
+              }`}
+              title="Open Workflow DB Column Configuration Acceptance Panel"
+            >
+              <ShieldCheck size={13} className={workflowAttachedDbConfigIds.length > 0 ? 'text-[#00e5b3]' : 'text-slate-400'} />
+              <span>DB Rules: {workflowAttachedDbConfigIds.length} Accepted</span>
+            </button>
+
             {/* Scoped Team Tag */}
-            <span className="text-[10px] font-mono text-slate-500 bg-slate-100 px-2 py-0.5 rounded border border-slate-200 whitespace-nowrap">
+            <span className="text-[10px] font-mono text-cyan-400 bg-[#0c222b] px-2 py-0.5 rounded-lg border border-[#184457] whitespace-nowrap">
               #{activeWorkflow?.teamId || currentUser?.teamId || 'team-cards'}
             </span>
 
@@ -1527,7 +1690,7 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
           {/* Actions: Save, Share & Delete */}
           <div className="flex items-center gap-2 shrink-0">
             {hasUnsavedChanges && (
-              <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-amber-500/15 text-amber-600 border border-amber-500/30 flex items-center gap-1.5 shadow-2xs">
+              <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-amber-500/15 text-amber-400 border border-amber-500/30 flex items-center gap-1.5 shadow-2xs">
                 <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse"></span>
                 <span>Unsaved</span>
               </span>
@@ -1537,10 +1700,10 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
               type="button"
               onClick={() => handleSaveWorkflow()}
               disabled={isSaving}
-              className={`px-3.5 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-xs transition disabled:opacity-50 ${
+              className={`px-3.5 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-xs transition disabled:opacity-50 ${
                 hasUnsavedChanges
                   ? 'bg-amber-600 hover:bg-amber-500 text-white ring-2 ring-amber-500/30 shadow-md'
-                  : 'bg-purple-600 hover:bg-purple-500 text-white'
+                  : 'bg-[#092b34] hover:bg-[#0c3844] text-cyan-300 border border-cyan-500/60 hover:border-cyan-400'
               }`}
             >
               <Save size={13} />
@@ -1551,10 +1714,10 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
               <button
                 type="button"
                 onClick={() => setShowShareModal(true)}
-                className="px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-lg text-xs font-semibold flex items-center gap-1.5 cursor-pointer shadow-xs transition"
+                className="px-3 py-1.5 bg-[#0d222b] hover:bg-[#122c38] text-cyan-300 border border-[#163848] hover:border-cyan-500/50 rounded-xl text-xs font-semibold flex items-center gap-1.5 cursor-pointer shadow-xs transition"
                 title={`Share workflow "${activeWorkflow.name}"`}
               >
-                <Share2 size={13} className="text-blue-600" />
+                <Share2 size={13} className="text-cyan-400" />
                 <span>Share</span>
               </button>
             )}
@@ -1563,7 +1726,7 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
               <button
                 type="button"
                 onClick={handleDeleteWorkflow}
-                className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 border border-transparent hover:border-rose-200 rounded-lg transition cursor-pointer"
+                className="p-1.5 text-slate-500 hover:text-rose-400 hover:bg-rose-950/40 border border-transparent hover:border-rose-900/60 rounded-xl transition cursor-pointer"
                 title={`Delete workflow "${activeWorkflow.name}"`}
               >
                 <Trash2 size={14} />
@@ -1573,29 +1736,29 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
         </div>
 
         {/* Compact Description Line */}
-        <div className="flex items-center gap-2 pt-2 border-t border-slate-100 text-xs">
-          <span className="text-[11px] font-medium text-slate-500 shrink-0">Description:</span>
+        <div className="flex items-center gap-2 pt-2 border-t border-[#163848] text-xs">
+          <span className="text-[11px] font-medium text-slate-400 shrink-0">Description:</span>
           <input
             type="text"
             value={workflowDescription}
             onChange={(e) => setWorkflowDescription(e.target.value)}
-            className="w-full bg-slate-50/60 border border-slate-200/70 rounded-lg px-2.5 py-1 text-xs text-slate-700 focus:outline-none focus:border-purple-500 focus:bg-white placeholder:text-slate-400 transition"
+            className="w-full bg-[#071318] border border-[#163848] rounded-xl px-2.5 py-1 text-xs text-slate-200 focus:outline-none focus:border-cyan-400 focus:bg-[#071318] placeholder:text-slate-500 transition"
             placeholder="Brief operational summary of this flowchart pipeline..."
           />
         </div>
 
         {saveSuccessMsg && (
-          <div className="p-2 bg-emerald-50 border border-emerald-200 rounded-lg text-emerald-800 text-xs flex items-center gap-2 animate-in fade-in">
-            <CheckCircle2 size={14} className="text-emerald-600 shrink-0" />
+          <div className="p-2 bg-emerald-950/80 border border-emerald-500/50 rounded-xl text-emerald-300 text-xs flex items-center gap-2 animate-in fade-in">
+            <CheckCircle2 size={14} className="text-[#00e5b3] shrink-0" />
             <span>{saveSuccessMsg}</span>
           </div>
         )}
       </div>
 
       {/* Main Studio Area: 3-Pane Power-User Architecture */}
-      <div className="flex flex-col xl:flex-row gap-0 bg-slate-950 rounded-2xl border border-slate-800 overflow-hidden min-h-[900px] shadow-2xl items-stretch">
+      <div className="flex-1 min-h-0 flex flex-col xl:flex-row gap-0 bg-[#071318] rounded-2xl border border-[#163848] overflow-hidden shadow-2xl items-stretch">
         {!leftPanelCollapsed && (
-          <div className="shrink-0">
+          <div className="shrink-0 h-full flex flex-col min-h-0">
             <WorkflowPalette
               workflows={workflows}
               activeWorkflow={activeWorkflow}
@@ -1615,112 +1778,86 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
         )}
 
         {/* Center: Interactive Vertical Flowchart Canvas */}
-        <div className={`relative flex-1 w-full ${canvasSurfaceClasses} flex flex-col h-[860px] max-h-[88vh] min-w-0 border ${!rightPanelCollapsed ? 'border-r border-slate-800' : 'border-slate-800'} ${canvasTheme === 'light' ? 'shadow-inner' : ''}`}>
+        <div className={`relative flex-1 w-full h-full min-h-0 ${canvasSurfaceClasses} flex flex-col min-w-0 ${!rightPanelCollapsed ? 'border-r border-[#163848]' : ''} ${canvasTheme === 'light' ? 'shadow-inner' : ''}`}>
           {/* Pre-Flight Validation Topology Bar */}
-          <div className={`p-2.5 border-b ${canvasTheme === 'dark' ? 'bg-slate-950/90 border-slate-800' : 'bg-slate-50 border-slate-200'}`}>
+          <div className={`p-2 border-b shrink-0 ${canvasTheme === 'dark' ? 'bg-[#09151d] border-[#163848]' : 'bg-slate-50 border-slate-200'}`}>
             <WorkflowValidationSummary nodes={nodes} connections={connections} />
           </div>
 
-          {/* Canvas Toolbar */}
-          <div className="bg-slate-950 px-4 py-2 border-b border-slate-800 flex items-center justify-between text-xs text-slate-300">
-            <div className="flex items-center gap-2.5">
-              <span className="font-mono text-slate-400 font-semibold flex items-center gap-1.5">
-                <Move size={13} className="text-purple-400" />
-                <span>DAG: {nodes.length} Nodes, {connections.length} Wires</span>
-              </span>
-              <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-slate-800 text-slate-300 border border-slate-700 flex items-center gap-1">
-                <span>Canvas: {canvasDimensions.height}px</span>
-                <ArrowDown size={10} className="text-emerald-400" />
-              </span>
+          {/* Canvas Floating / Top Bar Toolbar */}
+          <div className="bg-[#09151d] px-4 py-2 border-b border-[#163848] flex items-center justify-between text-xs text-slate-300 shrink-0">
+            {/* Left: View Mode Toggle */}
+            <div className="inline-flex items-center rounded-xl border border-[#163848] bg-[#0b1f28]/90 p-1 backdrop-blur-md shadow-xs">
+              {(['DAG', 'LIST'] as const).map(mode => (
+                <button
+                  key={mode}
+                  type="button"
+                  onClick={() => setWorkflowViewMode(mode)}
+                  className={`px-3 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${
+                    workflowViewMode === mode 
+                      ? 'bg-white text-slate-900 shadow-sm' 
+                      : 'text-cyan-300 hover:text-white'
+                  }`}
+                >
+                  {mode === 'DAG' ? 'DAG View' : 'List View'}
+                </button>
+              ))}
             </div>
 
+            {/* Center: DAG Counter Pill */}
+            <div className="px-4 py-1.5 rounded-xl bg-[#0b1f28]/90 border border-[#163848] text-cyan-300 text-xs font-mono backdrop-blur-md shadow-xs flex items-center gap-1.5">
+              <span>DAG: {nodes.length} Nodes, {connections.length} Wires</span>
+            </div>
+
+            {/* Right: 5 Square Action Buttons */}
             <div className="flex items-center gap-2">
-              <div className="inline-flex items-center rounded-lg border border-slate-700 bg-slate-900 p-0.5">
-                {(['DAG', 'LIST'] as const).map(mode => (
-                  <button
-                    key={mode}
-                    type="button"
-                    onClick={() => setWorkflowViewMode(mode)}
-                    className={`px-2.5 py-1 rounded-md text-[10px] font-bold transition ${workflowViewMode === mode ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-400 hover:text-white'}`}
-                  >
-                    {mode === 'DAG' ? 'DAG View' : 'List View'}
-                  </button>
-                ))}
-              </div>
-              <div className="inline-flex items-center rounded-lg border border-slate-700 bg-slate-900 p-0.5">
-                {(['dark', 'light'] as const).map(theme => (
-                  <button
-                    key={theme}
-                    type="button"
-                    onClick={() => setCanvasTheme(theme)}
-                    className={`px-2 py-1 rounded-md text-[10px] font-bold transition ${canvasTheme === theme ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-400 hover:text-white'}`}
-                    title={`Set canvas to ${theme === 'dark' ? 'dark' : 'light'} mode`}
-                  >
-                    {theme === 'dark' ? 'Dark' : 'Light'}
-                  </button>
-                ))}
-              </div>
               <button
                 type="button"
-                onClick={() => setLeftPanelCollapsed(v => !v)}
-                className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 rounded text-xs flex items-center gap-1.5 cursor-pointer transition shadow-xs"
-                title={leftPanelCollapsed ? 'Show left panel' : 'Hide left panel'}
+                onClick={handleCreateNewFlowchart}
+                className="w-8 h-8 rounded-xl bg-[#0b1f28]/90 border border-[#163848] hover:border-cyan-400 text-cyan-300 hover:text-white flex items-center justify-center transition cursor-pointer backdrop-blur-md shadow-xs"
+                title="Add New Flowchart Block"
               >
-                <Layers size={12} className="text-sky-400" />
-                <span>{leftPanelCollapsed ? 'Show Left' : 'Hide Left'}</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setRightPanelCollapsed(v => !v)}
-                className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 rounded text-xs flex items-center gap-1.5 cursor-pointer transition shadow-xs"
-                title={rightPanelCollapsed ? 'Show right panel' : 'Hide right panel'}
-              >
-                <SlidersHorizontal size={12} className="text-violet-400" />
-                <span>{rightPanelCollapsed ? 'Show Right' : 'Hide Right'}</span>
+                <Plus size={15} />
               </button>
               <button
                 type="button"
                 onClick={handleAutoAlignVertical}
-                className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white border border-slate-700 rounded text-xs flex items-center gap-1.5 cursor-pointer transition shadow-xs"
-                title="Auto-align all nodes vertically into a straight top-to-bottom layout"
+                className="w-8 h-8 rounded-xl bg-[#0b1f28]/90 border border-[#163848] hover:border-cyan-400 text-cyan-300 hover:text-white flex items-center justify-center transition cursor-pointer backdrop-blur-md shadow-xs"
+                title="Auto-align all nodes vertically into a straight layout"
               >
-                <AlignVerticalJustifyCenter size={12} className="text-purple-400" />
-                <span>Align Nodes</span>
+                <Move size={14} />
               </button>
               <button
                 type="button"
                 onClick={() => setExtraCanvasHeight(h => h + 600)}
-                className="px-2.5 py-1 bg-slate-800 hover:bg-slate-700 text-purple-300 border border-slate-700 rounded text-xs flex items-center gap-1 cursor-pointer transition shadow-xs"
-                title="Extend canvas height by +600px to build arbitrarily long workflows"
+                className="w-8 h-8 rounded-xl bg-[#0b1f28]/90 border border-[#163848] hover:border-cyan-400 text-cyan-300 hover:text-white flex items-center justify-center transition cursor-pointer backdrop-blur-md shadow-xs"
+                title="Extend Canvas Height (+600px)"
               >
-                <Plus size={12} />
-                <span>+600px Height</span>
+                <Maximize2 size={14} />
               </button>
               <button
                 type="button"
-                onClick={() => canvasRef.current?.scrollTo({ top: 0, behavior: 'smooth' })}
-                className="px-2 py-1 hover:bg-slate-800 text-slate-300 border border-slate-800 hover:border-slate-700 rounded transition cursor-pointer text-xs flex items-center gap-1"
-                title="Scroll to top of canvas"
+                onClick={() => setLeftPanelCollapsed(v => !v)}
+                className={`w-8 h-8 rounded-xl border flex items-center justify-center transition cursor-pointer backdrop-blur-md shadow-xs ${
+                  leftPanelCollapsed 
+                    ? 'bg-[#0b1f28]/90 border-[#163848] text-slate-500 hover:text-cyan-300' 
+                    : 'bg-[#0c2e35] border-[#144f56] text-[#00e5b3]'
+                }`}
+                title={leftPanelCollapsed ? 'Show Flow Catalog' : 'Hide Flow Catalog'}
               >
-                <ArrowDown size={12} className="rotate-180 text-blue-400" />
-                <span>Top</span>
+                <Eye size={14} />
               </button>
               <button
                 type="button"
-                onClick={() => canvasRef.current?.scrollTo({ top: canvasRef.current.scrollHeight, behavior: 'smooth' })}
-                className="px-2 py-1 hover:bg-slate-800 text-slate-300 border border-slate-800 hover:border-slate-700 rounded transition cursor-pointer text-xs flex items-center gap-1"
-                title="Scroll to bottom of canvas"
+                onClick={() => setRightPanelCollapsed(v => !v)}
+                className={`w-8 h-8 rounded-xl border flex items-center justify-center transition cursor-pointer backdrop-blur-md shadow-xs ${
+                  rightPanelCollapsed 
+                    ? 'bg-[#0b1f28]/90 border-[#163848] text-slate-500 hover:text-cyan-300' 
+                    : 'bg-[#0c2e35] border-[#144f56] text-[#00e5b3]'
+                }`}
+                title={rightPanelCollapsed ? 'Show Inspector' : 'Hide Inspector'}
               >
-                <ArrowDown size={12} className="text-blue-400" />
-                <span>Bottom</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setNodes([])}
-                className="px-2 py-1 hover:bg-slate-800 text-slate-400 hover:text-rose-400 rounded transition cursor-pointer text-xs"
-                title="Clear canvas"
-              >
-                Clear
+                <SlidersHorizontal size={14} />
               </button>
             </div>
           </div>
@@ -1798,9 +1935,38 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
               ref={canvasRef}
               onMouseMove={handleCanvasMouseMove}
               onMouseUp={handleCanvasMouseUp}
-              className={`relative flex-1 ${canvasGridClasses} [background-size:20px_20px] select-none overflow-auto p-6 ${canvasTheme === 'dark' ? 'bg-slate-900' : 'bg-slate-100'}`}
+              className={`relative flex-1 ${canvasGridClasses} [background-size:24px_24px] select-none overflow-auto p-6 bg-[#071318]`}
               style={{ minHeight: '600px' }}
             >
+              {/* Bottom-Left Floating Zoom Controls Pill */}
+              <div className="absolute bottom-5 left-5 z-30 flex items-center gap-2.5 px-3 py-1.5 rounded-xl bg-[#0b1f28]/90 border border-[#163848] text-cyan-300 text-xs backdrop-blur-md shadow-md">
+                <button
+                  type="button"
+                  onClick={() => setCanvasZoom(z => Math.max(0.4, Number((z - 0.1).toFixed(1))))}
+                  className="hover:text-white px-1 font-bold text-sm cursor-pointer"
+                  title="Zoom Out"
+                >
+                  -
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setCanvasZoom(z => Math.min(2, Number((z + 0.1).toFixed(1))))}
+                  className="hover:text-white px-1 font-bold text-sm cursor-pointer"
+                  title="Zoom In"
+                >
+                  +
+                </button>
+                <span className="font-mono font-semibold px-1">{Math.round(canvasZoom * 100)}%</span>
+                <button
+                  type="button"
+                  onClick={() => setCanvasZoom(1)}
+                  className="hover:text-white p-0.5 cursor-pointer"
+                  title="Reset Zoom"
+                >
+                  <Maximize2 size={12} />
+                </button>
+              </div>
+
               {/* Inner Sizing Wrapper: explicitly dictates scrollable width/height so scrolling is limitless */}
               <div
                 style={{
@@ -1815,17 +1981,20 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
                   style={{ width: `${canvasDimensions.width}px`, height: `${canvasDimensions.height}px` }}
                 >
                 <defs>
+                  <filter id="wire-glow" x="-20%" y="-20%" width="140%" height="140%">
+                    <feDropShadow dx="0" dy="0" stdDeviation="2" floodColor="#00e5b3" floodOpacity="0.5" />
+                  </filter>
                   <marker id="arrow-emerald" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
-                    <path d="M 0 0 L 10 5 L 0 10 z" fill="#10b981" />
+                    <path d="M 0 0 L 10 5 L 0 10 z" fill="#00e5b3" />
                   </marker>
                   <marker id="arrow-rose" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
-                    <path d="M 0 0 L 10 5 L 0 10 z" fill="#f43f5e" />
+                    <path d="M 0 0 L 10 5 L 0 10 z" fill="#ef4444" />
                   </marker>
                   <marker id="arrow-purple" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
                     <path d="M 0 0 L 10 5 L 0 10 z" fill="#a855f7" />
                   </marker>
                   <marker id="arrow-blue" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
-                    <path d="M 0 0 L 10 5 L 0 10 z" fill="#38bdf8" />
+                    <path d="M 0 0 L 10 5 L 0 10 z" fill="#00e5b3" />
                   </marker>
                 </defs>
 
@@ -1843,13 +2012,14 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
 
                   const isReport = conn.action === 'REPORT';
                   const isStop = conn.action === 'STOP';
-                  const strokeColor = isReport ? '#a855f7' : isStop ? '#f43f5e' : '#10b981';
+                  const strokeColor = isReport ? '#a855f7' : isStop ? '#ef4444' : '#00e5b3';
                   const markerId = isReport ? 'url(#arrow-purple)' : isStop ? 'url(#arrow-rose)' : 'url(#arrow-emerald)';
 
                   return (
                     <g key={conn.id} className="pointer-events-auto cursor-pointer group" onClick={() => {
                       setSelectedConnection(conn);
                       setSelectedNode(null);
+                      setRightPanelCollapsed(false);
                     }}>
                       {/* Background hit area for easier clicking */}
                       <path
@@ -1866,14 +2036,15 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
                         strokeWidth={isReport ? '3' : '2.5'}
                         strokeDasharray={isReport ? '5 3' : 'none'}
                         markerEnd={markerId}
+                        filter="url(#wire-glow)"
                         className="group-hover:stroke-white transition"
                       />
                       {/* Action badge on wire */}
                       <foreignObject x={midX - 48} y={midY - 14} width="96" height="28">
-                        <div className={`px-2 py-0.5 rounded text-[10px] font-bold font-mono text-center shadow-md border truncate ${
+                        <div className={`px-2 py-0.5 rounded-lg text-[10px] font-bold font-mono text-center shadow-md border truncate ${
                           isReport ? 'bg-purple-950 text-purple-200 border-purple-400' :
-                          isStop ? 'bg-rose-950 text-rose-200 border-rose-500' :
-                          'bg-emerald-950 text-emerald-200 border-emerald-500'
+                          isStop ? 'bg-[#271115] text-rose-300 border-rose-500' :
+                          'bg-[#072422] text-[#00e5b3] border border-[#00e5b3]/50'
                         }`}>
                           {conn.label || conn.action}
                         </div>
@@ -1887,28 +2058,28 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
                   <path
                     d={`M ${wireSource.startX} ${wireSource.startY} C ${wireSource.startX} ${wireSource.startY + 50}, ${mousePos.x} ${mousePos.y - 50}, ${mousePos.x} ${mousePos.y}`}
                     fill="none"
-                    stroke="#38bdf8"
+                    stroke="#00e5b3"
                     strokeWidth="2.5"
                     strokeDasharray="5 3"
-                    markerEnd="url(#arrow-blue)"
+                    markerEnd="url(#arrow-emerald)"
                   />
                 )}
               </svg>
 
               {nodes.length === 0 && (
                 <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-auto">
-                  <div className="bg-slate-800/90 border border-slate-700 rounded-2xl p-8 max-w-md text-center shadow-2xl backdrop-blur-xs">
-                    <div className="w-12 h-12 rounded-xl bg-slate-700/80 text-emerald-400 flex items-center justify-center mx-auto mb-3">
+                  <div className="bg-[#0b1f28]/95 border border-[#163848] rounded-2xl p-8 max-w-md text-center shadow-2xl backdrop-blur-xs">
+                    <div className="w-12 h-12 rounded-xl bg-[#0c2e35] text-[#00e5b3] flex items-center justify-center mx-auto mb-3">
                       <GitFork size={24} />
                     </div>
                     <h3 className="text-sm font-bold text-white mb-1">No Flowchart Pipeline Configured</h3>
                     <p className="text-xs text-slate-400 mb-5">
-                      There are no active flowchart workflows. Create a new pipeline or drag blocks from the left palette to begin.
+                      There are no active flowchart workflows. Create a new pipeline or drag blocks from the left catalog to begin.
                     </p>
                     <button
                       type="button"
                       onClick={handleCreateNewFlowchart}
-                      className="px-4 py-2 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold rounded-lg shadow-sm transition inline-flex items-center gap-2 cursor-pointer"
+                      className="px-4 py-2 bg-[#092b34] hover:bg-[#0c3844] text-cyan-300 border border-cyan-500/60 hover:border-cyan-400 text-xs font-bold rounded-xl shadow-sm transition inline-flex items-center gap-2 cursor-pointer"
                     >
                       <Plus size={14} />
                       <span>Create New Flowchart Pipeline</span>
@@ -1921,7 +2092,6 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
               {nodes.map(node => {
                 const isStart = node.type === 'START';
                 const isEnd = node.type === 'END';
-                const isSearch = isNodeSearchBox(node);
                 const hasReportColumn = Boolean(node.reportColumnName);
 
                 // 1. TERMINAL NODES (START / END) - Flowchart Stadium Oval
@@ -1931,34 +2101,32 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
                       key={node.id}
                       style={{ transform: `translate(${node.x}px, ${node.y}px)` }}
                       onMouseDown={(e) => handleNodeMouseDown(e, node.id)}
-                      className={`absolute w-[220px] h-[60px] rounded-full select-none z-10 transition-shadow shadow-xl flex items-center justify-between px-4 border-2 cursor-grab active:cursor-grabbing ${
-                        isStart
-                          ? 'bg-gradient-to-r from-emerald-950 via-emerald-900 to-emerald-950 border-emerald-400 text-white'
-                          : 'bg-gradient-to-r from-slate-900 via-slate-800 to-slate-900 border-slate-500 text-white'
-                      }`}
+                      className="absolute w-[240px] h-[56px] rounded-full select-none z-10 transition-shadow shadow-xl flex items-center justify-between px-4 border-2 cursor-grab active:cursor-grabbing bg-[#0c242e] border-[#184556] hover:border-cyan-400 text-white"
                     >
                       {/* Top Input Port (End only) */}
                       {isEnd && (
                         <div
                           title="Input Port (Drop wire here)"
                           onMouseUp={(e) => handleCompleteWire(e, node.id)}
-                          className="absolute -top-3 left-1/2 -translate-x-1/2 w-6 h-6 rounded-full bg-slate-800 border-2 border-slate-300 hover:border-purple-400 hover:scale-125 flex items-center justify-center transition cursor-pointer z-20 shadow-md"
+                          className="absolute -top-2.5 left-1/2 -translate-x-1/2 w-5 h-5 rounded-full bg-[#071318] border-2 border-cyan-400 hover:border-white hover:scale-125 flex items-center justify-center transition cursor-pointer z-20 shadow-md"
                         >
-                          <div className="w-2 h-2 rounded-full bg-white"></div>
+                          <div className="w-1.5 h-1.5 rounded-full bg-cyan-300"></div>
                         </div>
                       )}
 
-                      <div className="flex items-center gap-2 min-w-0">
+                      <div className="flex items-center gap-2.5 min-w-0">
                         {isStart ? (
-                          <div className="w-3 h-3 rounded-full bg-emerald-400 animate-pulse shrink-0"></div>
+                          <div className="w-2.5 h-2.5 rounded-full bg-[#00e5b3] shadow-[0_0_8px_#00e5b3] shrink-0"></div>
                         ) : (
-                          <ShieldCheck size={16} className="text-slate-400 shrink-0" />
+                          <div className="w-3.5 h-3.5 rounded bg-purple-500/30 border border-purple-400 flex items-center justify-center shrink-0">
+                            <div className="w-1.5 h-1.5 bg-purple-300 rounded-xs"></div>
+                          </div>
                         )}
                         <div className="min-w-0">
-                          <div className="text-[9px] font-mono font-bold uppercase tracking-wider text-emerald-300">
+                          <div className="text-[9px] font-mono font-bold uppercase tracking-wider text-slate-400">
                             {isStart ? 'TERMINAL START' : 'TERMINAL END'}
                           </div>
-                          <h4 className="font-bold text-xs truncate">{node.name}</h4>
+                          <h4 className="font-bold text-xs truncate text-white">{node.name}</h4>
                         </div>
                       </div>
 
@@ -1968,7 +2136,7 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
                           e.stopPropagation();
                           handleDeleteNode(node.id);
                         }}
-                        className="p-1 hover:bg-rose-500/20 rounded-full text-slate-400 hover:text-rose-400 transition"
+                        className="p-1 hover:bg-rose-500/20 rounded-full text-slate-500 hover:text-rose-400 transition cursor-pointer"
                         title="Remove Terminal"
                       >
                         <Trash2 size={12} />
@@ -1979,217 +2147,61 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
                         <div
                           title="Drag downwards to connect start of pipeline"
                           onMouseDown={(e) => handleStartWire(e, node.id, 'output')}
-                          className="absolute -bottom-3 left-1/2 -translate-x-1/2 w-6 h-6 rounded-full bg-emerald-600 border-2 border-white hover:scale-125 flex items-center justify-center transition cursor-crosshair z-20 shadow-md"
+                          className="absolute -bottom-2.5 left-1/2 -translate-x-1/2 w-5 h-5 rounded-full bg-[#071318] border-2 border-cyan-400 hover:border-[#00e5b3] hover:scale-125 flex items-center justify-center transition cursor-crosshair z-20 shadow-md"
                         >
-                          <ArrowDown size={11} className="text-white" />
+                          <div className="w-1.5 h-1.5 rounded-full bg-cyan-400"></div>
                         </div>
                       )}
                     </div>
                   );
                 }
 
-                // 2. SEARCH & INGESTION BOX - Flowchart RECTANGLE (Process Block)
-                if (isSearch) {
-                  return (
-                    <div
-                      key={node.id}
-                      style={{ transform: `translate(${node.x}px, ${node.y}px)` }}
-                      onMouseDown={(e) => handleNodeMouseDown(e, node.id)}
-                      className="absolute w-[260px] min-h-[140px] rounded-lg select-none z-10 bg-slate-900/95 backdrop-blur-sm border-2 border-emerald-500/80 hover:border-emerald-400 shadow-2xl text-white flex flex-col justify-between transition-shadow cursor-grab active:cursor-grabbing group"
-                    >
-                      {/* Top Input Port */}
-                      <div
-                        title="Input Port (Drop wire here)"
-                        onMouseUp={(e) => handleCompleteWire(e, node.id)}
-                        className="absolute -top-3 left-1/2 -translate-x-1/2 w-6 h-6 rounded-full bg-slate-800 border-2 border-emerald-400 hover:border-white hover:scale-125 flex items-center justify-center transition cursor-pointer z-20 shadow-md"
-                      >
-                        <div className="w-2 h-2 rounded-full bg-emerald-300"></div>
-                      </div>
+                // 2. PROCESS / CONDITION / RECONCILIATION / REPORT BOX (Structured Card from design)
+                const boxTypeLabel = node.boxType === 'INGESTION_SEARCH'
+                  ? 'SEARCH & INGEST'
+                  : node.boxType === 'RECONCILIATION'
+                  ? 'RECONCILIATION'
+                  : node.boxType === 'REPORT'
+                  ? 'REPORT'
+                  : 'CONDITION CHECK';
 
-                      {/* Rectangle Header */}
-                      <div className="p-2.5 pb-2 border-b border-emerald-500/20 bg-emerald-950/40 flex items-center justify-between rounded-t-md">
-                        <div className="flex items-center gap-1.5 truncate">
-                          <Database size={13} className="text-emerald-400 shrink-0" />
-                          <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-emerald-300 truncate">
-                            SEARCH & INGEST
-                          </span>
-                        </div>
-                        <div className="flex items-center gap-1">
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              setSelectedNode(node);
-                            }}
-                            className="p-1 hover:bg-white/10 rounded text-slate-400 hover:text-white transition"
-                            title="Configure Block"
-                          >
-                            <Sliders size={12} />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              handleDeleteNode(node.id);
-                            }}
-                            className="p-1 hover:bg-rose-500/20 rounded text-slate-400 hover:text-rose-400 transition"
-                            title="Remove Block"
-                          >
-                            <Trash2 size={12} />
-                          </button>
-                        </div>
-                      </div>
-
-                      {/* Rectangle Body */}
-                      <div className="p-3 space-y-1.5 text-xs">
-                        <h3 className="font-bold text-slate-100 text-xs tracking-tight line-clamp-1">
-                          {node.name}
-                        </h3>
-                        {node.targetTable && (
-                          <div className="flex items-center gap-1 text-[10px] text-emerald-400 font-mono">
-                            <span className="text-slate-500">Target:</span>
-                            <span className="bg-emerald-950/80 px-1.5 py-0.2 rounded border border-emerald-800/40 font-semibold truncate">
-                              {node.targetTable}
-                            </span>
-                          </div>
-                        )}
-                        {((node.columnConfigurationIds && node.columnConfigurationIds.length > 0) || (node.columnConfigurations && node.columnConfigurations.length > 0)) && (
-                          <div className="flex items-center gap-1 text-[10px] text-emerald-400 font-mono">
-                            <span className="bg-emerald-950/80 px-1.5 py-0.2 rounded border border-emerald-500/40 font-semibold truncate flex items-center gap-1">
-                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
-                              {node.columnConfigurationIds?.length || node.columnConfigurations?.length} Table Rules
-                            </span>
-                          </div>
-                        )}
-                        <p className="text-[10px] text-slate-400 line-clamp-2 leading-relaxed">
-                          {node.description || 'Database query & parameter mapping'}
-                        </p>
-
-                        {hasReportColumn && (
-                          <div className="p-1 bg-purple-950/80 border border-purple-500/40 rounded flex items-center justify-between gap-1 text-[9px]">
-                            <span className="text-purple-300 font-bold truncate flex items-center gap-1 font-mono">
-                              <FileSpreadsheet size={10} className="text-purple-400" />
-                              <span>Col: "{node.reportColumnName}"</span>
-                            </span>
-                            <span className="px-1 py-0.2 rounded bg-purple-700 text-white font-mono text-[8px] font-bold">
-                              GRID
-                            </span>
-                          </div>
-                        )}
-                      </div>
-
-                      {/* Rectangle Bottom Egress Ports */}
-                      <div className="p-2 border-t border-emerald-500/20 flex items-center justify-between text-[10px] font-mono bg-emerald-950/20 rounded-b-md">
-                        <button
-                          type="button"
-                          title="Drag downwards on PASS"
-                          onMouseDown={(e) => handleStartWire(e, node.id, 'pass')}
-                          className="px-2.5 py-1 rounded-md bg-emerald-950/90 text-emerald-300 border border-emerald-500 hover:bg-emerald-800 hover:scale-105 flex items-center gap-1 cursor-crosshair transition shadow-xs"
-                        >
-                          <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse"></div>
-                          <span>PASS ➔</span>
-                        </button>
-
-                        <button
-                          type="button"
-                          title="Drag downwards on FAIL"
-                          onMouseDown={(e) => handleStartWire(e, node.id, 'fail')}
-                          className="px-2.5 py-1 rounded-md bg-rose-950/90 text-rose-300 border border-rose-500 hover:bg-rose-800 hover:scale-105 flex items-center gap-1 cursor-crosshair transition shadow-xs"
-                        >
-                          <div className="w-1.5 h-1.5 rounded-full bg-rose-400"></div>
-                          <span>FAIL ✕</span>
-                        </button>
-                      </div>
-                    </div>
-                  );
-                }
-
-                // 3. CONDITION CHECK BOX - Flowchart RHOMBUS / DIAMOND (Decision Block)
                 return (
                   <div
                     key={node.id}
                     style={{ transform: `translate(${node.x}px, ${node.y}px)` }}
                     onMouseDown={(e) => handleNodeMouseDown(e, node.id)}
-                    className="absolute w-[240px] h-[210px] select-none z-10 flex flex-col items-center justify-center cursor-grab active:cursor-grabbing group"
+                    className="absolute w-[270px] rounded-xl select-none z-10 bg-[#0a1e27] border-2 border-[#184457] hover:border-cyan-400 shadow-2xl text-white flex flex-col justify-between transition cursor-grab active:cursor-grabbing group overflow-hidden"
                   >
-                    {/* SVG Rhombus Background */}
-                    <svg className="absolute inset-0 w-full h-full pointer-events-none drop-shadow-2xl" viewBox="0 0 240 210">
-                      <polygon
-                        points="120,6 234,105 120,204 6,105"
-                        fill="#0b1329"
-                        stroke="#3b82f6"
-                        strokeWidth="2.5"
-                        strokeLinejoin="round"
-                      />
-                      <polygon
-                        points="120,14 224,105 120,196 16,105"
-                        fill="none"
-                        stroke="#1d4ed8"
-                        strokeWidth="1"
-                        strokeOpacity="0.35"
-                        strokeDasharray="4 2"
-                      />
-                    </svg>
-
-                    {/* Top Input Port (Top Diamond Vertex) */}
+                    {/* Top Input Port */}
                     <div
                       title="Input Port (Drop wire here)"
                       onMouseUp={(e) => handleCompleteWire(e, node.id)}
-                      className="absolute -top-2.5 left-1/2 -translate-x-1/2 w-6 h-6 rounded-full bg-slate-900 border-2 border-blue-400 hover:border-white hover:scale-125 flex items-center justify-center transition cursor-pointer z-30 shadow-md"
+                      className="absolute -top-2.5 left-1/2 -translate-x-1/2 w-5 h-5 rounded-full bg-[#071318] border-2 border-cyan-400 hover:border-white hover:scale-125 flex items-center justify-center transition cursor-pointer z-20 shadow-md"
                     >
-                      <div className="w-2 h-2 rounded-full bg-blue-300"></div>
+                      <div className="w-1.5 h-1.5 rounded-full bg-cyan-300"></div>
                     </div>
 
-                    {/* Centered Rhombus Content */}
-                    <div className="w-[154px] z-10 text-center space-y-1 my-auto">
-                      <div className="flex items-center justify-center gap-1 text-[9px] font-bold font-mono uppercase tracking-wider text-blue-300 bg-blue-950/80 px-2 py-0.5 rounded-full border border-blue-500/40 w-fit mx-auto shadow-xs">
-                        <CheckCircle2 size={10} className="text-blue-400" />
-                        <span>DECISION</span>
+                    {/* Header */}
+                    <div className="px-3.5 py-2 border-b border-[#143949] bg-[#091a22] flex items-center justify-between">
+                      <div className="flex items-center gap-1.5 truncate">
+                        <FileText size={13} className="text-cyan-400 shrink-0" />
+                        <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-cyan-300 truncate">
+                          {boxTypeLabel}
+                        </span>
                       </div>
-
-                      <h3 className="font-bold text-white text-xs tracking-tight truncate max-w-[150px] mx-auto" title={node.name}>
-                        {node.name}
-                      </h3>
-
-                      <p className="text-[10px] text-blue-200 font-mono truncate px-1.5 py-0.5 bg-slate-950/90 rounded border border-blue-900/60 max-w-[150px] mx-auto">
-                        {node.description || 'Condition check'}
-                      </p>
-
-                      {node.onPassAction === 'STOP' && (
-                        <span className="inline-block text-[8px] font-mono font-bold text-rose-300 bg-rose-950/90 px-1.5 py-0.2 rounded border border-rose-500/50">
-                          Pass ➔ STOP
-                        </span>
-                      )}
-
-                      {node.onFailAction === 'CONTINUE' && (
-                        <span className="inline-block text-[8px] font-mono font-bold text-amber-300 bg-amber-950/90 px-1.5 py-0.2 rounded border border-amber-500/50">
-                          Fail ➔ CONTINUE
-                        </span>
-                      )}
-
-                      {hasReportColumn && (
-                        <span className="inline-block text-[8px] font-mono text-purple-300 bg-purple-950/80 px-1 py-0.2 rounded border border-purple-500/40">
-                          Col: {node.reportColumnName}
-                        </span>
-                      )}
-
-                      {((node.columnConfigurationIds && node.columnConfigurationIds.length > 0) || (node.columnConfigurations && node.columnConfigurations.length > 0)) && (
-                        <span className="inline-block text-[8px] font-mono font-bold text-emerald-300 bg-emerald-950/80 px-1.5 py-0.2 rounded border border-emerald-500/40">
-                          {node.columnConfigurationIds?.length || node.columnConfigurations?.length} Table Rules
-                        </span>
-                      )}
-
-                      <div className="flex items-center justify-center gap-1 pt-0.5">
+                      <div className="flex items-center gap-1">
                         <button
                           type="button"
                           onClick={(e) => {
                             e.stopPropagation();
                             setSelectedNode(node);
+                            setSelectedConnection(null);
+                            setRightPanelCollapsed(false);
                           }}
-                          className="p-1 hover:bg-white/10 rounded text-slate-400 hover:text-white transition"
-                          title="Configure Check"
+                          className="p-1 hover:bg-white/10 rounded text-slate-400 hover:text-white transition cursor-pointer"
+                          title="Configure Block"
                         >
-                          <Sliders size={11} />
+                          <Sliders size={12} />
                         </button>
                         <button
                           type="button"
@@ -2197,44 +2209,95 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
                             e.stopPropagation();
                             handleDeleteNode(node.id);
                           }}
-                          className="p-1 hover:bg-rose-500/20 rounded text-slate-400 hover:text-rose-400 transition"
-                          title="Remove Check"
+                          className="p-1 hover:bg-rose-500/20 rounded text-slate-400 hover:text-rose-400 transition cursor-pointer"
+                          title="Remove Block"
                         >
-                          <Trash2 size={11} />
+                          <Trash2 size={12} />
                         </button>
+                        <GripVertical size={13} className="text-slate-500 ml-0.5 cursor-grab" />
                       </div>
                     </div>
 
-                    {/* Bottom Ports for Decision Rhombus: PASS on left, FAIL on right */}
-                    <button
-                      type="button"
-                      title={`Drag downwards on PASS (Configured: ${node.onPassAction || 'CONTINUE'})`}
-                      style={{ left: '20px', bottom: '12px' }}
-                      onMouseDown={(e) => handleStartWire(e, node.id, 'pass')}
-                      className={`absolute z-20 px-2 py-0.5 rounded-md text-[9px] font-mono font-bold shadow-md transition flex items-center gap-1 cursor-crosshair hover:scale-105 ${
-                        node.onPassAction === 'STOP'
-                          ? 'bg-rose-950/95 text-rose-300 border border-rose-500 hover:bg-rose-800'
-                          : 'bg-emerald-950/95 text-emerald-300 border border-emerald-500 hover:bg-emerald-800'
-                      }`}
-                    >
-                      <div className={`w-1.5 h-1.5 rounded-full ${node.onPassAction === 'STOP' ? 'bg-rose-400' : 'bg-emerald-400 animate-pulse'}`}></div>
-                      <span>PASS {node.onPassAction === 'STOP' ? '✕' : '➔'}</span>
-                    </button>
+                    {/* Body */}
+                    <div className="p-3.5 space-y-1.5 text-xs">
+                      <h3 className="font-bold text-white text-xs tracking-tight line-clamp-1">
+                        {node.name}
+                      </h3>
+                      <p className="text-[11px] text-cyan-400/70 line-clamp-2 leading-relaxed">
+                        {node.description || (node.targetTable ? `Ingestion and mirror lookup (${node.targetTable})` : 'Ingestion and mirror lookup')}
+                      </p>
 
-                    <button
-                      type="button"
-                      title={`Drag downwards on FAIL (Configured: ${node.onFailAction || 'STOP'})`}
-                      style={{ right: '20px', bottom: '12px' }}
-                      onMouseDown={(e) => handleStartWire(e, node.id, 'fail')}
-                      className={`absolute z-20 px-2 py-0.5 rounded-md text-[9px] font-mono font-bold shadow-md transition flex items-center gap-1 cursor-crosshair hover:scale-105 ${
-                        node.onFailAction === 'CONTINUE'
-                          ? 'bg-amber-950/95 text-amber-300 border border-amber-500 hover:bg-amber-800'
-                          : 'bg-rose-950/95 text-rose-300 border border-rose-500 hover:bg-rose-800'
-                      }`}
-                    >
-                      <div className={`w-1.5 h-1.5 rounded-full ${node.onFailAction === 'CONTINUE' ? 'bg-amber-400' : 'bg-rose-400'}`}></div>
-                      <span>FAIL {node.onFailAction === 'CONTINUE' ? '➔' : '✕'}</span>
-                    </button>
+                      {node.targetTable && (
+                        <div className="flex items-center gap-1 text-[10px] text-cyan-300 font-mono">
+                          <span className="text-slate-500">Target:</span>
+                          <span className="bg-[#0c222b] px-1.5 py-0.2 rounded border border-[#184457] font-semibold truncate">
+                            {node.targetTable}
+                          </span>
+                        </div>
+                      )}
+
+                      {Boolean(node.attachedDbConfigIds?.length || node.columnConfigurationIds?.length || node.columnConfigurations?.length) && (
+                        <div className="flex items-center gap-1 text-[10px] text-[#00e5b3] font-mono">
+                          <span className="bg-[#072422] px-1.5 py-0.2 rounded border border-[#00e5b3]/40 font-semibold truncate flex items-center gap-1">
+                            <span className="w-1.5 h-1.5 rounded-full bg-[#00e5b3]"></span>
+                            {node.attachedDbConfigIds?.length || node.columnConfigurationIds?.length || node.columnConfigurations?.length} Table Rules
+                          </span>
+                        </div>
+                      )}
+
+                      {hasReportColumn && (
+                        <div className="p-1 bg-purple-950/80 border border-purple-500/40 rounded flex items-center justify-between gap-1 text-[9px]">
+                          <span className="text-purple-300 font-bold truncate flex items-center gap-1 font-mono">
+                            <FileSpreadsheet size={10} className="text-purple-400" />
+                            <span>Col: "{node.reportColumnName}"</span>
+                          </span>
+                          <span className="px-1 py-0.2 rounded bg-purple-700 text-white font-mono text-[8px] font-bold">
+                            GRID
+                          </span>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Bottom Egress Ports: PASS and FAIL */}
+                    <div className="px-3 pb-3 pt-1 border-t border-[#143949] bg-[#071720] flex items-center justify-between gap-3 text-[10px] font-mono">
+                      {/* Left: PASS port pill */}
+                      <div className="relative">
+                        <button
+                          type="button"
+                          title="Drag downwards on PASS"
+                          onMouseDown={(e) => handleStartWire(e, node.id, 'pass')}
+                          className="px-2.5 py-1 rounded-lg bg-[#072422] text-[#00e5b3] border border-[#00e5b3]/50 hover:border-[#00e5b3] hover:bg-[#093532] flex items-center gap-1.5 cursor-crosshair transition shadow-xs"
+                        >
+                          <div className="w-1.5 h-1.5 rounded-full bg-[#00e5b3] shadow-[0_0_4px_#00e5b3]"></div>
+                          <span className="font-bold">PASS ➔</span>
+                        </button>
+                        <div
+                          onMouseDown={(e) => handleStartWire(e, node.id, 'pass')}
+                          className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 w-3.5 h-3.5 rounded-full bg-[#071318] border border-[#00e5b3] flex items-center justify-center cursor-crosshair hover:scale-125 transition"
+                        >
+                          <div className="w-1 h-1 rounded-full bg-[#00e5b3]"></div>
+                        </div>
+                      </div>
+
+                      {/* Right: FAIL port pill */}
+                      <div className="relative">
+                        <button
+                          type="button"
+                          title="Drag downwards on FAIL"
+                          onMouseDown={(e) => handleStartWire(e, node.id, 'fail')}
+                          className="px-2.5 py-1 rounded-lg bg-[#271115] text-rose-400 border border-rose-500/50 hover:border-rose-400 hover:bg-[#38161c] flex items-center gap-1.5 cursor-crosshair transition shadow-xs"
+                        >
+                          <div className="w-1.5 h-1.5 rounded-full bg-rose-500"></div>
+                          <span className="font-bold">FAIL ✕</span>
+                        </button>
+                        <div
+                          onMouseDown={(e) => handleStartWire(e, node.id, 'fail')}
+                          className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 w-3.5 h-3.5 rounded-full bg-[#071318] border border-rose-500 flex items-center justify-center cursor-crosshair hover:scale-125 transition"
+                        >
+                          <div className="w-1 h-1 rounded-full bg-rose-500"></div>
+                        </div>
+                      </div>
+                    </div>
                   </div>
                 );
               })}
@@ -2244,7 +2307,7 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
         </div>
 
         {!rightPanelCollapsed && (
-          <div className="shrink-0">
+          <div className="shrink-0 h-full flex flex-col min-h-0">
             <WorkflowInspector
               selectedNode={selectedNode}
               onUpdateNode={(updated) => {
@@ -2272,6 +2335,27 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
                 setRightPanelCollapsed(true);
               }}
               validationBoxes={validationBoxes}
+              databases={databases}
+              defaultWorkflowDbId={workflowDbId}
+              defaultWorkflowTable={workflowTable}
+              workflowName={workflowName}
+              workflowCategory={workflowCategory}
+              workflowDescription={workflowDescription}
+              workflowDbId={workflowDbId}
+              workflowTable={workflowTable}
+              workflowAttachedDbConfigIds={workflowAttachedDbConfigIds}
+              onUpdateWorkflowDbConfig={({ targetDbId, targetTable, attachedDbConfigIds }) => {
+                if (targetDbId !== undefined) {
+                  setWorkflowDbId(targetDbId);
+                }
+                if (targetTable !== undefined) {
+                  setWorkflowTable(targetTable);
+                }
+                if (attachedDbConfigIds !== undefined) {
+                  setWorkflowAttachedDbConfigIds(attachedDbConfigIds);
+                }
+              }}
+              onCloseInspector={() => setRightPanelCollapsed(true)}
             />
           </div>
         )}

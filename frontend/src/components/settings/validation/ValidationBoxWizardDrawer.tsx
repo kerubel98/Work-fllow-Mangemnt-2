@@ -22,7 +22,13 @@ import {
   Sparkles
 } from 'lucide-react';
 import { api } from '../../../api/client';
-import { ValidationBox, ValidationBoxType, DatabaseConnection, DatabaseColumnConfiguration } from '../../../types';
+import {
+  ValidationBox,
+  ValidationBoxType,
+  DatabaseConnection,
+  DatabaseColumnConfiguration,
+  MultiRowCardinalityPolicy
+} from '../../../types';
 import { globalMappingService } from '../../../services/globalMappingService';
 import { showSystemAlert } from '../../common/MessageModal';
 
@@ -90,7 +96,7 @@ export const ValidationBoxWizardDrawer: React.FC<ValidationBoxWizardDrawerProps>
   // Reconciliation
   const [matchKeyInput, setMatchKeyInput] = useState('transaction_id');
   const [matchKeyExternal, setMatchKeyExternal] = useState('transaction_id');
-  const [multiRowPolicy, setMultiRowPolicy] = useState<'COMPOSITE_BUNDLE' | 'LATEST' | 'EARLIEST' | 'AGGREGATE_SUM' | 'STRICT_SINGLE'>('COMPOSITE_BUNDLE');
+  const [multiRowPolicy, setMultiRowPolicy] = useState<MultiRowCardinalityPolicy>('STRICT_SINGLE');
   const [isGroupedEnabled, setIsGroupedEnabled] = useState(false);
   const [groupIdField, setGroupIdField] = useState('group_id');
   const [eventPhaseField, setEventPhaseField] = useState('event_type');
@@ -190,7 +196,9 @@ export const ValidationBoxWizardDrawer: React.FC<ValidationBoxWizardDrawerProps>
 
       if (editingBox.matchKeyInput) setMatchKeyInput(editingBox.matchKeyInput);
       if (editingBox.matchKeyExternal) setMatchKeyExternal(editingBox.matchKeyExternal);
-      if (editingBox.multiRowPolicy) setMultiRowPolicy(editingBox.multiRowPolicy);
+      if (editingBox.cardinalityPolicy || editingBox.multiRowPolicy) {
+        setMultiRowPolicy(editingBox.cardinalityPolicy || editingBox.multiRowPolicy!);
+      }
       if (editingBox.groupConfig) {
         setIsGroupedEnabled(true);
         setGroupIdField(editingBox.groupConfig.groupIdField || 'group_id');
@@ -378,7 +386,9 @@ export const ValidationBoxWizardDrawer: React.FC<ValidationBoxWizardDrawerProps>
         searchParameters: boxType === 'INGESTION_SEARCH' ? searchParams : [],
         matchKeyInput: boxType === 'RECONCILIATION' ? matchKeyInput : undefined,
         matchKeyExternal: boxType === 'RECONCILIATION' ? matchKeyExternal : undefined,
-        multiRowPolicy: boxType === 'RECONCILIATION' ? multiRowPolicy : undefined,
+        multiRowPolicy,
+        cardinalityPolicy: multiRowPolicy,
+        attachedDbConfigIds: selectedColumnConfigIds,
         groupConfig: (boxType === 'RECONCILIATION' && isGroupedEnabled) ? {
           groupIdField,
           eventPhaseField,
@@ -1221,17 +1231,21 @@ export const ValidationBoxWizardDrawer: React.FC<ValidationBoxWizardDrawerProps>
                     </div>
 
                     <div>
-                      <label className="block text-xs font-semibold text-slate-300 mb-1">Multi-Row Policy</label>
+                      <label className="block text-xs font-semibold text-slate-300 mb-1">
+                        Multi-Row Cardinality Policy
+                      </label>
                       <select
                         value={multiRowPolicy}
-                        onChange={(e) => setMultiRowPolicy(e.target.value as any)}
+                        onChange={(e) => setMultiRowPolicy(e.target.value as MultiRowCardinalityPolicy)}
                         className="w-full bg-slate-950 border border-slate-800 rounded-lg px-3 py-2 text-xs text-white"
                       >
-                        <option value="COMPOSITE_BUNDLE">Composite Bundle</option>
-                        <option value="LATEST">Latest Record</option>
-                        <option value="EARLIEST">Earliest Record</option>
-                        <option value="AGGREGATE_SUM">Aggregate Sum</option>
-                        <option value="STRICT_SINGLE">Strict Single Match</option>
+                        <option value="STRICT_SINGLE">Strict Single Match (Assert 1:1)</option>
+                        <option value="ONE_TO_MANY">One-to-Many (Fan out downstream)</option>
+                        <option value="EXPLICIT_LATEST">Explicit Latest Record</option>
+                        <option value="EXPLICIT_FIRST">Explicit First / Earliest Record</option>
+                        <option value="SUM_AND_COLLAPSE">Aggregate Sum & Collapse</option>
+                        <option value="REQUIRE_MANUAL_SELECTION">Require Maker-Checker Selection</option>
+                        <option value="COMPOSITE_BUNDLE">Composite Bundle (Legacy)</option>
                       </select>
                     </div>
                   </div>

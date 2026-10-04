@@ -230,6 +230,31 @@ messagesRouter.post('/providers/:id/fetch', async (req, res) => {
         return res.status(500).json({ error: err.message });
     }
 });
+// POST /api/messages/teams/:teamId/fetch - Trigger on-demand message fetch across all active providers for a team
+messagesRouter.post('/teams/:teamId/fetch', async (req, res) => {
+    try {
+        const { stagingService } = await import('../services/messaging/stagingService.js');
+        const { teamId } = req.params;
+        const providers = await stagingService.getProviderConnections(teamId);
+        const active = providers.filter(p => p.status === 'ACTIVE');
+        const results = [];
+        let totalStaged = 0;
+        for (const p of active) {
+            try {
+                const fetchRes = await stagingService.fetchProviderMessages(p.id);
+                totalStaged += fetchRes.stagedCount || 0;
+                results.push({ providerId: p.id, displayName: p.displayName, ...fetchRes });
+            }
+            catch (err) {
+                results.push({ providerId: p.id, displayName: p.displayName, error: err.message });
+            }
+        }
+        return res.json({ success: true, totalStaged, providerCount: active.length, results });
+    }
+    catch (err) {
+        return res.status(500).json({ error: err.message });
+    }
+});
 // POST /api/messages/oauth2/test - Direct test of OAuth2 credentials & token acquisition
 messagesRouter.post('/oauth2/test', async (req, res) => {
     try {

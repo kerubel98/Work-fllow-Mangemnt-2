@@ -132,16 +132,22 @@ export const ruleSqlCompiler = {
         baseSql = `LOWER(COALESCE(${exprA}::text, '')) = LOWER(COALESCE(${exprB}::text, ''))`;
       }
     } else {
-      const targetCol = sanitizeCol(rule.targetField || rule.sourceField || '');
+      const targetCol = sanitizeCol(rule.targetField || rule.sourceField || (rule as any).inputField || '');
       if (!targetCol && checkType !== 'SQL_CONDITION' && checkType !== 'EXISTENCE_CHECK') {
         baseSql = 'TRUE';
       } else {
         const colExpr = resolveColExpr(targetCol, mirrorColPrefix, validColumns);
 
-        switch (checkType) {
+        switch (checkType as string) {
           case 'EXISTENCE_CHECK':
             baseSql = `${mirrorColPrefix}._mirror_id IS NOT NULL`;
             break;
+
+          case 'VALUE_MATCH': {
+            const expected = String(rule.compareValue ?? rule.expectedValue ?? '').replace(/'/g, "''");
+            baseSql = `LOWER(COALESCE(${colExpr}::text, '')) = LOWER('${expected}')`;
+            break;
+          }
 
           case 'AMOUNT_MATCH': {
             const margin = Number(rule.toleranceMargin ?? rule.tolerance ?? 0.00);
@@ -314,14 +320,27 @@ export const ruleSqlCompiler = {
    */
   compileBlockUpdateSql(
     mirrorTableName: string,
-    keyField: string,
+    ruleBlockId: string,
     rules: ValidationCheckStep[],
-    validColumns?: string[]
+    validColumns?: string[],
+    options?: {
+      cardinalityPolicy?: string;
+      aggregationStrategy?: string;
+      orderByColumn?: string;
+    }
   ): CompiledBlockSql {
     // Build WHEN branches for failure checks
     const statusWhenBranches: string[] = [];
     const actionWhenBranches: string[] = [];
     const detailFields: string[] = [];
+
+    // Phase 8: Set-Based Cardinality Breach Check
+    if (options?.cardinalityPolicy === 'STRICT_SINGLE') {
+      const countSubquery = `(SELECT COUNT(*) FROM ${mirrorTableName} _cnt WHERE _cnt._batch_id = m._batch_id AND _cnt._task_id = m._task_id AND _cnt._row_number = m._row_number)`;
+      statusWhenBranches.push(`WHEN ${countSubquery} > 1 THEN 'FAIL'`);
+      actionWhenBranches.push(`WHEN ${countSubquery} > 1 THEN '${rules[0]?.onFailAction || 'STOP'}'`);
+      detailFields.push(`'cardinality', jsonb_build_object('status', CASE WHEN ${countSubquery} > 1 THEN 'CARDINALITY_BREACH' ELSE 'EXACT_MATCH' END, 'breach', (${countSubquery} > 1), 'policy', 'STRICT_SINGLE')`);
+    }
 
     if (!rules || rules.length === 0) {
       statusWhenBranches.push(`WHEN m._mirror_id IS NOT NULL THEN 'PASS'`);
@@ -337,16 +356,20 @@ export const ruleSqlCompiler = {
         detailFields.push(`'${rule.id || failLabel}', jsonb_build_object('rule', '${rule.name ? rule.name.replace(/'/g, "''") : failLabel}', 'passed', (${condition}), 'action', '${rule.onFailAction || 'STOP'}')`);
       }
 
-      // Default pass fallback
+      // Default pass fallback preserving configured onPassAction
+      const defaultPassAction = rules[0]?.onPassAction || 'CONTINUE';
       statusWhenBranches.push(`ELSE 'PASS'`);
-      actionWhenBranches.push(`ELSE 'CONTINUE'`);
+      actionWhenBranches.push(`ELSE '${defaultPassAction}'`);
     }
 
     const statusCaseSql = `CASE\n          ${statusWhenBranches.join('\n          ')}\n        END`;
     const actionCaseSql = `CASE\n          ${actionWhenBranches.join('\n          ')}\n        END`;
     const detailsJsonSql = `jsonb_build_object(${detailFields.join(', ')})`;
 
-    // Generate self-contained set-based batch update query
+    // Generate self-contained set-based batch update query.
+    // §Rule 13 / §7.3: Scope by BOTH _batch_id AND _rule_block_id to prevent
+    // cross-task contamination when multiple tasks share the same _batch_id string.
+    // $1 = batchId, $2 = ruleBlockId
     const fullUpdateSql = `
       UPDATE ${mirrorTableName} m
       SET 
@@ -354,7 +377,8 @@ export const ruleSqlCompiler = {
         _validation_action = ${actionCaseSql},
         _validation_details = ${detailsJsonSql},
         _mirrored_at = NOW()
-      WHERE m._batch_id = $1;
+      WHERE m._batch_id = $1
+        AND m._rule_block_id = $2;
     `;
 
     return {

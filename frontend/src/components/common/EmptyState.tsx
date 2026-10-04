@@ -23,14 +23,15 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
 }) => {
   return (
     <div
-      className={`flex flex-col items-center justify-center p-8 text-center rounded-xl bg-slate-50/50 border border-dashed border-slate-200 ${className}`}
+      role="status"
+      className={`flex flex-col items-center justify-center p-8 text-center rounded-ds-lg bg-ds-surface/60 border border-dashed border-ds-border ${className}`}
     >
-      <div className="w-12 h-12 rounded-xl bg-slate-100 flex items-center justify-center text-slate-400 mb-3 shadow-inner">
-        {icon || <Inbox size={22} className="text-slate-400" />}
+      <div className="w-12 h-12 rounded-ds-lg bg-ds-elevated flex items-center justify-center text-ds-muted mb-3">
+        {icon || <Inbox size={22} aria-hidden="true" />}
       </div>
-      <h3 className="text-sm font-semibold text-slate-800 mb-1">{title}</h3>
+      <h3 className="text-sm font-semibold text-ds-text mb-1">{title}</h3>
       {description && (
-        <p className="text-xs text-slate-500 max-w-sm mb-4 leading-relaxed">{description}</p>
+        <p className="text-xs text-ds-muted max-w-sm mb-4 leading-relaxed">{description}</p>
       )}
       {action && <div className="mt-1">{action}</div>}
     </div>

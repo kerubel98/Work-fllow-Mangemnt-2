@@ -202,7 +202,7 @@ investigationsRouter.post('/resume-paused', async (req: Request, res: Response) 
 // POST /api/investigations/execute-universal - Universal workflow runner for Sandbox, Panel, or API
 investigationsRouter.post('/execute-universal', async (req: Request, res: Response) => {
   try {
-    const { workflowId, records, sourceType, sourceId, keyField, keyFields, priority, options, forceRerun, executedBy } = req.body;
+    const { workflowId, records, sourceType, sourceId, keyField, keyFields, priority, options, forceRerun, executedBy, useNewPipeline } = req.body;
     if (!workflowId) {
       return res.status(400).json({ error: 'workflowId is required' });
     }
@@ -211,7 +211,9 @@ investigationsRouter.post('/execute-universal', async (req: Request, res: Respon
     }
 
     const { investigationOrchestratorService } = await import('../services/investigationOrchestratorService.js');
-    const result = await investigationOrchestratorService.executeUniversalWorkflow({
+    
+    // Unconditional execution via compiled ExecutablePipeline (§3.2, §7.2)
+    const result = await investigationOrchestratorService.executeViaNewPipeline({
       workflowId,
       records,
       sourceType: sourceType || 'QUERY_SANDBOX',
@@ -228,6 +230,34 @@ investigationsRouter.post('/execute-universal', async (req: Request, res: Respon
   } catch (err: any) {
     console.error('Error in execute-universal:', err);
     return res.status(500).json({ error: err.message || 'Internal workflow execution error' });
+  }
+});
+
+// POST /api/investigations/execute-pipeline - Canonical DAG pipeline execution endpoint (§3.2, §7.2)
+investigationsRouter.post('/execute-pipeline', async (req: Request, res: Response) => {
+  try {
+    const { workflowId, records, sourceType, sourceId, options, executedBy } = req.body;
+    if (!workflowId) {
+      return res.status(400).json({ error: 'workflowId is required' });
+    }
+    if (!records || !Array.isArray(records) || records.length === 0) {
+      return res.status(400).json({ error: 'records array is required and must not be empty' });
+    }
+
+    const { investigationOrchestratorService } = await import('../services/investigationOrchestratorService.js');
+    const result = await investigationOrchestratorService.executeViaNewPipeline({
+      workflowId,
+      records,
+      sourceType: sourceType || 'PIPELINE_DIRECT',
+      sourceId,
+      options,
+      executedBy: executedBy || (req as any).user?.name || (req as any).user?.username || 'investigator'
+    } as any);
+
+    return res.json(result);
+  } catch (err: any) {
+    console.error('Error in execute-pipeline:', err);
+    return res.status(500).json({ error: err.message || 'Pipeline execution error' });
   }
 });
 

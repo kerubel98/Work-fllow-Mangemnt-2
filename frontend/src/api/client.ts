@@ -3,7 +3,10 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { DatabaseColumnConfiguration, WorkspaceSettingProposal, TeamEscalationTarget, TeamAdminPrivileges, WorkflowBundle, MailboxResponse } from '../types';
+import { 
+  DatabaseColumnConfiguration, WorkspaceSettingProposal, TeamEscalationTarget, 
+  TeamAdminPrivileges, WorkflowBundle, MailboxResponse, HashtagPreset, HashtagExecutionRun 
+} from '../types';
 
 const API_BASE_URL = '/api';
 
@@ -184,8 +187,6 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(data)
     }),
-  getHashtagAnalytics: () =>
-    fetchApi<{ hashtagAnalytics: any[]; issuesAwaitingSolution: any[]; totalTrackedTags: number }>('/hashtags/analytics'),
   executeResolutionScript: (issueId: string, executedBy?: string) =>
     fetchApi<any>(`/issues/${issueId}/execute-script`, {
       method: 'POST',
@@ -603,12 +604,6 @@ export const api = {
     }),
 
   // ================= Misc =================
-  getHashtags: () => fetchApi<any[]>('/hashtags'),
-  createHashtag: (hashtagData: any) =>
-    fetchApi<any>('/hashtags', {
-      method: 'POST',
-      body: JSON.stringify(hashtagData)
-    }),
   getPlugins: () => fetchApi<any[]>('/plugins'),
   togglePlugin: (id: string, enabled?: boolean) =>
     fetchApi<any>(`/plugins/${id}/toggle`, {
@@ -1167,6 +1162,11 @@ export const api = {
       method: 'POST'
     }),
 
+  fetchTeamMessages: (teamId: string) =>
+    fetchApi<{ success: boolean; totalStaged: number; providerCount: number; results: any[] }>(`/messages/teams/${encodeURIComponent(teamId)}/fetch`, {
+      method: 'POST'
+    }),
+
   getStagedMessages: (params?: { teamId?: string; assignedUserId?: string; status?: string; urgency?: string; limit?: number }) => {
     const query = new URLSearchParams();
     if (params?.teamId) query.append('teamId', params.teamId);
@@ -1325,9 +1325,78 @@ export const api = {
         method: 'POST',
         body: JSON.stringify(payload)
       }
+    ),
+
+  // ================= Universal Hashtags =================
+  getHashtags: (filter?: { type?: string; teamId?: string }) =>
+    fetchApi<HashtagPreset[]>(`/hashtags${filter?.type ? `?type=${encodeURIComponent(filter.type)}` : ''}`),
+
+  getHashtagByTag: (tag: string) =>
+    fetchApi<HashtagPreset>(`/hashtags/${encodeURIComponent(tag)}`),
+
+  createHashtag: (preset: HashtagPreset) =>
+    fetchApi<HashtagPreset>('/hashtags', {
+      method: 'POST',
+      body: JSON.stringify(preset)
+    }),
+
+  executeHashtagScan: (tag: string, payload: { executedBy: string; taskId?: string; teamId?: string; isDryRun?: boolean }) =>
+    fetchApi<{ runId: string; rowsScanned: number; anomaliesDetected: number; anomalyRows: any[]; verdict: string; executionDurationMs: number; errors: string[] }>(
+      `/hashtags/${encodeURIComponent(tag)}/execute-scan`,
+      {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      }
+    ),
+
+  testHashtagPreflight: (tag: string, sampleRows?: any[]) =>
+    fetchApi<{
+      success: boolean;
+      matchedRows: number;
+      totalScanned: number;
+      columnValidation: { column: string; valid: boolean; nullCount: number; typeIssues: number }[];
+      lookupResolution: { mapping: string; resolved: number; failed: number; samples: any[] }[];
+      sampleRows: any[];
+      errors: string[];
+    }>('/hashtags/test-preflight', {
+      method: 'POST',
+      body: JSON.stringify({ tag, sampleRows })
+    }),
+
+  getHashtagRuns: (tag: string, limit?: number) =>
+    fetchApi<HashtagExecutionRun[]>(`/hashtags/${encodeURIComponent(tag)}/runs${limit ? `?limit=${limit}` : ''}`),
+
+  provisionHashtagTable: (tag: string, executedBy: string) =>
+    fetchApi<{ rowsExtracted: number; rowsInserted: number; stagedTableName: string; verdict: string; errors: string[] }>(
+      `/hashtags/${encodeURIComponent(tag)}/provision-table`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ executedBy })
+      }
+    ),
+
+  getTeamHashtagReport: (teamId: string) =>
+    fetchApi<{ teamId: string; generatedAt: string; hashtagMetrics: any[] }>(
+      `/hashtags/reports/team/${encodeURIComponent(teamId)}`
+    ),
+
+  getPersonalHashtagReport: (userId: string) =>
+    fetchApi<{ userId: string; generatedAt: string; hashtagMetrics: any[] }>(
+      `/hashtags/reports/personal/${encodeURIComponent(userId)}`
+    ),
+
+  lookupBankCode: (bankCode: string) =>
+    fetchApi<{ bankCode: string; bankName: string | null }>(
+      `/hashtags/lookup/bank/${encodeURIComponent(bankCode)}`
+    ),
+
+  getHashtagAnalytics: () =>
+    fetchApi<{ hashtagAnalytics: any[]; issuesAwaitingSolution: any[]; totalTrackedTags: number }>(
+      '/hashtags/analytics'
     )
 };
 
+export const apiClient = api;
 
 
 

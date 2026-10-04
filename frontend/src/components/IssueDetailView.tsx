@@ -11,6 +11,7 @@ import WorkspaceSettings from './WorkspaceSettings';
 import ErrorBoundary from './ErrorBoundary';
 import InvestigationWorkspace from './investigation/InvestigationWorkspace';
 import WorkspaceTaskCreator from './issue/WorkspaceTaskCreator';
+import HashtagManager from './issue/HashtagManager';
 import { globalMappingService } from '../services/globalMappingService';
 import { api } from '../api/client';
 import { 
@@ -2057,7 +2058,7 @@ export default function IssueDetailView({
           systemId: sys.id,
           systemName: sys.name,
           environment: 'production',
-          tableName: sandboxTable || sys?.allowedTables?.[0] || '',
+          tableName: sandboxTable || (sys as any)?.allowedTables?.[0] || '',
           query: customSql,
           requesterId: currentUser.id,
           requesterName: currentUser.username,
@@ -3763,124 +3764,14 @@ export default function IssueDetailView({
         );
       })()}
 
-      {/* Minimal Hashtag Table View */}
+      {/* Universal Hashtag Manager View */}
       {currentMode === 'hashtags' && selectedHashtagTag === null && (
-        <div className="space-y-3">
-          {/* Header Banner for Hashtags Catalog */}
-          <div className="bg-[#0F172B] border border-slate-800 rounded-xl p-3 sm:p-3.5 text-white shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-3">
-            <div className="space-y-1">
-              <div className="flex items-center space-x-2">
-                <span className="p-1 bg-blue-500/20 rounded-md text-blue-400">
-                  <Tag size={16} />
-                </span>
-                <h2 className="text-sm font-bold">Hashtags & Resolution Shortcuts Catalog</h2>
-                <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-[#155DFC]/20 text-blue-300 border border-[#155DFC]/30">
-                  {hashtags.length} Presets
-                </span>
-              </div>
-              <p className="text-[11px] text-slate-300 max-w-2xl leading-relaxed">
-                Search, view, and create shortcut presets for automated batch transaction reconciliation. Click any hashtag item to view its complete specifications and associated tasks.
-              </p>
-            </div>
-
-            <div className="flex items-center space-x-2 shrink-0">
-              <button
-                type="button"
-                onClick={() => setCurrentMode('create_hashtag')}
-                className="px-3.5 py-1.5 bg-[#155DFC] hover:bg-[#155DFC]/90 text-white text-xs font-bold rounded-lg flex items-center space-x-1.5 shadow-xs transition-all cursor-pointer"
-              >
-                <Plus size={14} />
-                <span>+ Create Hashtag</span>
-              </button>
-            </div>
-          </div>
-
-          {/* Search Bar */}
-          <div className="bg-white border border-slate-200/80 rounded-xl p-2.5 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
-            <div className="relative flex-1 max-w-md">
-              <Search size={14} className="absolute left-3 top-2.5 text-slate-400" />
-              <input
-                type="text"
-                placeholder="Search hashtags by tag code, author, description..."
-                value={hashtagSearchTerm}
-                onChange={(e) => setHashtagSearchTerm(e.target.value)}
-                className="w-full bg-slate-50 border border-slate-200 rounded-xl py-2 pl-9 pr-3 text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:border-blue-500 focus:bg-white transition-all"
-              />
-            </div>
-
-            <div className="text-xs text-slate-500 font-medium">
-              Showing <strong className="text-slate-800">{filteredHashtagList.length}</strong> of <strong className="text-slate-800">{hashtags.length}</strong> presets
-            </div>
-          </div>
-
-          {/* Minimal Hashtag Table */}
-          <div className="bg-white border border-slate-200/80 rounded-2xl shadow-sm overflow-hidden">
-            <div className="p-4 border-b border-slate-100 flex items-center justify-between">
-              <div className="flex items-center space-x-2">
-                <Tag size={16} className="text-blue-600" />
-                <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wider">
-                  Hashtag Shortcuts ({filteredHashtagList.length})
-                </h3>
-              </div>
-              <span className="text-[11px] text-slate-500 hidden sm:inline">
-                Click any row to view full hashtag details & associated tasks
-              </span>
-            </div>
-
-            <div className="overflow-x-auto">
-              <table className="w-full text-left border-collapse text-xs">
-                <thead>
-                  <tr className="bg-slate-50/80 border-b border-slate-200 text-[10px] font-bold text-slate-500 uppercase tracking-wider">
-                    <th className="py-3 px-4">Hashtag Code</th>
-                    <th className="py-3 px-4">Author</th>
-                    <th className="py-3 px-4">Description</th>
-                    <th className="py-3 px-4 text-right">Actions</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {filteredHashtagList.length === 0 ? (
-                    <tr>
-                      <td colSpan={4} className="py-12 text-center text-slate-400 italic">
-                        No hashtags found matching current search.
-                      </td>
-                    </tr>
-                  ) : (
-                    filteredHashtagList.map((item) => (
-                      <tr 
-                        key={item.tag} 
-                        onClick={() => setSelectedHashtagTag(item.tag)}
-                        className="hover:bg-blue-50/40 transition-all cursor-pointer group"
-                      >
-                        <td className="py-3.5 px-4 font-mono font-bold text-blue-700 whitespace-nowrap">
-                          <span className="inline-flex items-center px-2.5 py-1 rounded-lg bg-blue-50 text-blue-700 text-xs font-bold border border-blue-200 gap-1.5 group-hover:border-blue-400 group-hover:bg-blue-100/60 transition-all">
-                            <Tag size={12} className="text-blue-600" />
-                            <span>{item.tag}</span>
-                          </span>
-                        </td>
-                        <td className="py-3.5 px-4 whitespace-nowrap text-[11px] text-slate-600">
-                          <span className="font-semibold text-slate-700">@{item.author || 'System'}</span>
-                        </td>
-                        <td className="py-3.5 px-4">
-                          <div className="font-medium text-slate-800 text-xs leading-snug line-clamp-2">{item.description}</div>
-                        </td>
-                        <td className="py-3.5 px-4 text-right whitespace-nowrap space-x-2" onClick={(e) => e.stopPropagation()}>
-                          <button
-                            type="button"
-                            onClick={() => setSelectedHashtagTag(item.tag)}
-                            className="px-3 py-1.5 bg-blue-50 hover:bg-blue-600 hover:text-white text-blue-700 font-semibold rounded-lg text-xs transition-all cursor-pointer border border-blue-200 inline-flex items-center space-x-1"
-                          >
-                            <span>View Details</span>
-                            <ChevronRight size={13} />
-                          </button>
-                        </td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </div>
-          </div>
-        </div>
+        <HashtagManager
+          hashtags={hashtags}
+          currentUser={currentUser}
+          onCreatePreset={onCreateHashtagPreset}
+          databases={databases}
+        />
       )}
 
       {/* =========================================================================
@@ -3908,134 +3799,14 @@ export default function IssueDetailView({
           CREATE HASHTAG WORKSPACE VIEW
           ========================================================================= */}
       {currentMode === 'create_hashtag' && (
-        <div className="space-y-3">
-          {/* Header Banner for Create Hashtag */}
-          <div className="bg-[#0F172B] border border-slate-800 rounded-xl p-3 sm:p-3.5 text-white shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-3">
-            <div className="space-y-1">
-              <div className="flex items-center space-x-2">
-                <span className="p-1 bg-blue-500/20 rounded-md text-blue-400">
-                  <Tag size={16} />
-                </span>
-                <h2 className="text-sm font-bold">Create # Resolution Preset & Rule Shortcut</h2>
-              </div>
-              <p className="text-[11px] text-slate-300 max-w-2xl leading-relaxed">
-                Define reusable determination rules, expected file structure headers, and SQL resolution scripts for batch transaction processing directly in your workspace.
-              </p>
-            </div>
-
-            <button
-              type="button"
-              onClick={() => setCurrentMode('hashtags')}
-              className="px-3.5 py-1.5 bg-slate-800/90 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold rounded-lg flex items-center space-x-1.5 transition-all cursor-pointer self-start md:self-center"
-            >
-              <ArrowLeft size={13} />
-              <span>Back to Hashtags</span>
-            </button>
-          </div>
-
-          {/* Form Container */}
-          <div className="bg-white border border-slate-200/80 rounded-xl p-4 sm:p-5 shadow-xs space-y-4">
-            <form onSubmit={handleSaveHashtagPreset} className="space-y-4">
-              <div>
-                <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">
-                  HASHTAG CODE (e.g. #REVERSED_FEE) <span className="text-rose-500">*</span>
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={newTag}
-                  onChange={(e) => setNewTag(e.target.value)}
-                  placeholder="#STUCK_TERMINAL"
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs text-slate-800 uppercase focus:outline-none focus:border-blue-500 font-mono font-bold"
-                />
-              </div>
-
-              <div>
-                <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">
-                  SHORT DESCRIPTION <span className="text-rose-500">*</span>
-                </label>
-                <input
-                  type="text"
-                  required
-                  value={newDesc}
-                  onChange={(e) => setNewDesc(e.target.value)}
-                  placeholder="Resolves hardware related ledger offsets"
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs text-slate-800 focus:outline-none focus:border-blue-500"
-                />
-              </div>
-
-              <div>
-                <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">
-                  DETERMINATION CRITERIA RULES
-                </label>
-                <textarea
-                  rows={2}
-                  value={newCriteria}
-                  onChange={(e) => setNewCriteria(e.target.value)}
-                  placeholder="Amount > 500 && status == 'PENDING'"
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs text-slate-800 focus:outline-none focus:border-blue-500 font-mono"
-                />
-              </div>
-
-              <div>
-                <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">
-                  EXPECTED FILE COLUMN COLS (COMMA SEPARATED)
-                </label>
-                <input
-                  type="text"
-                  value={newExpectedCols}
-                  onChange={(e) => setNewExpectedCols(e.target.value)}
-                  placeholder="Transaction_ID, Card_Number, Amount_USD, Auth_Time"
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs text-slate-800 focus:outline-none focus:border-blue-500 font-mono"
-                />
-              </div>
-
-              <div>
-                <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">
-                  SQL RECONCILIATION TEMPLATE <span className="text-rose-500">*</span>
-                </label>
-                <textarea
-                  rows={4}
-                  required
-                  value={newSqlTemplate}
-                  onChange={(e) => setNewSqlTemplate(e.target.value)}
-                  placeholder="UPDATE transactions SET status = 'SETTLED' WHERE txn_id = '{{Transaction_ID}}';"
-                  className="w-full bg-slate-900 border border-slate-800 rounded-xl p-3 text-xs text-emerald-400 focus:outline-none focus:border-blue-500 font-mono"
-                />
-              </div>
-
-              <div className="flex items-center space-x-2 border-t border-slate-100 pt-3">
-                <input
-                  type="checkbox"
-                  id="workspace-criteria-auth"
-                  checked={criteriaAuthorized}
-                  onChange={(e) => setCriteriaAuthorized(e.target.checked)}
-                  className="accent-blue-600 cursor-pointer w-4 h-4"
-                />
-                <label htmlFor="workspace-criteria-auth" className="text-xs text-slate-600 cursor-pointer">
-                  Authorize rules and templates structure for automated batch consumption.
-                </label>
-              </div>
-
-              <div className="flex justify-end items-center space-x-3 pt-3 border-t border-slate-100">
-                <button
-                  type="button"
-                  onClick={() => setCurrentMode('hashtags')}
-                  className="px-5 py-2.5 border border-slate-200 text-slate-600 hover:bg-slate-50 text-xs font-bold rounded-xl transition-all cursor-pointer"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  className="px-6 py-2.5 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl text-xs transition-colors cursor-pointer shadow-sm flex items-center space-x-2"
-                >
-                  <Tag size={14} />
-                  <span>Save # Shortcut Preset Template</span>
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
+        <HashtagManager
+          hashtags={hashtags}
+          currentUser={currentUser}
+          onCreatePreset={onCreateHashtagPreset}
+          databases={databases}
+          initialCreating={true}
+          onClose={() => setCurrentMode('hashtags')}
+        />
       )}
 
       {/* DEDICATED INDEPENDENT WORKSPACE SETTINGS VIEW */}

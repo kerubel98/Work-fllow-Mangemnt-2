@@ -9,6 +9,77 @@ import { approvalService } from '../approvalService.js';
 import { outboundDispatchService } from './outboundDispatchService.js';
 import { stagingService } from './stagingService.js';
 import { eventService } from '../events.js';
+/**
+ * Thread correlation helper functions and Disjoint-Set union-find
+ * for grouping multi-channel messages into canonical threads.
+ */
+export function normalizeSubject(subject) {
+    if (!subject)
+        return '';
+    let s = subject.trim();
+    s = s.replace(/^\[(external|secure|spam|bulk|ext|sandbox)\]\s*/i, '');
+    let prev = '';
+    while (prev !== s) {
+        prev = s;
+        s = s.replace(/^(re|fwd|fw|aw|sv|antw)(\[\d+\])?:\s*/i, '').trim();
+        s = s.replace(/^\[(external|secure|spam|bulk|ext|sandbox)\]\s*/i, '').trim();
+    }
+    return s.replace(/\s+/g, ' ').toLowerCase();
+}
+export function cleanMessageId(id) {
+    if (!id)
+        return null;
+    const trimmed = String(id).trim();
+    if (!trimmed)
+        return null;
+    return trimmed.replace(/^<+/, '').replace(/>+$/, '').trim().toLowerCase();
+}
+export function extractReferenceIds(references) {
+    if (!references)
+        return [];
+    if (Array.isArray(references)) {
+        return references.map(cleanMessageId).filter(Boolean);
+    }
+    const str = String(references);
+    const matches = str.match(/<[^>]+>/g);
+    if (matches && matches.length > 0) {
+        return matches.map(cleanMessageId).filter(Boolean);
+    }
+    return str.split(/\s+/).map(cleanMessageId).filter(Boolean);
+}
+export function extractTaskKey(text) {
+    if (!text)
+        return null;
+    const match = text.match(/#(ISS[-_]?[0-9a-zA-Z]+|[0-9a-zA-Z_-]{5,32})/i) || text.match(/\b(ISS[-_]?[0-9]+)\b/i);
+    return match ? match[1].toUpperCase() : null;
+}
+export const GENERIC_SUBJECTS = new Set([
+    'notification', 'operational notification', 'no subject', 'update', 'status update',
+    'inbound message', 'message', 'alert', 'support', 'inquiry', 'general inquiry'
+]);
+export class DisjointSet {
+    parent = new Map();
+    find(item) {
+        if (!this.parent.has(item)) {
+            this.parent.set(item, item);
+            return item;
+        }
+        const root = this.parent.get(item);
+        if (root !== item) {
+            const canonical = this.find(root);
+            this.parent.set(item, canonical);
+            return canonical;
+        }
+        return item;
+    }
+    union(a, b) {
+        const rootA = this.find(a);
+        const rootB = this.find(b);
+        if (rootA !== rootB) {
+            this.parent.set(rootB, rootA);
+        }
+    }
+}
 export class MessageIntakeService {
     /**
      * Main entrypoint for processing any canonical MessageEnvelope.
@@ -71,7 +142,11 @@ export class MessageIntakeService {
                 envelope.priority || 'normal',
                 envelope.textBody || '',
                 envelope.htmlBody || null,
-                JSON.stringify(envelope.rawPayload || {}),
+                JSON.stringify({
+                    ...(envelope.rawPayload || {}),
+                    subject: envelope.metadata?.subject || envelope.rawPayload?.subject,
+                    metadata: envelope.metadata || envelope.rawPayload?.metadata
+                }),
                 envelope.dedupeKey,
                 linkedIssueId || null
             ]);
@@ -188,6 +263,64 @@ export class MessageIntakeService {
         }
         if (envelope.metadata?.linkedIssueId) {
             return envelope.metadata.linkedIssueId;
+        }
+        // Check thread / reply linkage to existing task-linked messages
+        const rawCandidates = [
+            envelope.conversationId,
+            envelope.threadId,
+            envelope.inReplyTo,
+            envelope.rawPayload?.inReplyTo,
+            envelope.rawPayload?.['in-reply-to'],
+            envelope.rawPayload?.in_reply_to,
+            ...(Array.isArray(envelope.rawPayload?.references) ? envelope.rawPayload.references : (envelope.rawPayload?.references ? [envelope.rawPayload.references] : []))
+        ].filter(Boolean);
+        const candidateIds = Array.from(new Set([
+            ...rawCandidates,
+            ...rawCandidates.map(cleanMessageId).filter(Boolean),
+            ...rawCandidates.map(c => {
+                const clean = cleanMessageId(c);
+                return clean ? `<${clean}>` : null;
+            }).filter(Boolean)
+        ]));
+        if (candidateIds.length > 0) {
+            const linkRes = await client.query(`SELECT linked_issue_id FROM incoming_messages 
+         WHERE linked_issue_id IS NOT NULL 
+           AND (
+             source_message_id = ANY($1::varchar[]) 
+             OR LOWER(TRIM(BOTH '<>' FROM source_message_id)) = ANY($1::varchar[])
+             OR id = ANY($1::varchar[]) 
+             OR conversation_id = ANY($1::varchar[])
+           )
+         UNION
+         SELECT linked_issue_id FROM staged_messages
+         WHERE linked_issue_id IS NOT NULL 
+           AND (
+             source_message_id = ANY($1::varchar[]) 
+             OR LOWER(TRIM(BOTH '<>' FROM source_message_id)) = ANY($1::varchar[])
+             OR id = ANY($1::varchar[]) 
+             OR conversation_id = ANY($1::varchar[])
+           )
+         LIMIT 1;`, [candidateIds]);
+            if (linkRes.rows.length > 0 && linkRes.rows[0].linked_issue_id) {
+                return linkRes.rows[0].linked_issue_id;
+            }
+        }
+        // Check normalized subject correlation
+        const subj = envelope.metadata?.subject || envelope.rawPayload?.subject;
+        if (subj) {
+            const norm = normalizeSubject(subj);
+            if (norm.length >= 4 && !GENERIC_SUBJECTS.has(norm)) {
+                const teamId = envelope.teamId;
+                if (teamId) {
+                    const subjRes = await client.query(`SELECT linked_issue_id FROM staged_messages 
+             WHERE team_id = $1 AND linked_issue_id IS NOT NULL
+               AND LOWER(TRIM(REGEXP_REPLACE(subject, '^((re|fwd|fw|aw|sv|antw)(\\[\\d+\\])?:\\s*)+', '', 'i'))) = $2
+             LIMIT 1;`, [teamId, norm]);
+                    if (subjRes.rows.length > 0 && subjRes.rows[0].linked_issue_id) {
+                        return subjRes.rows[0].linked_issue_id;
+                    }
+                }
+            }
         }
         return undefined;
     }
@@ -313,6 +446,8 @@ export class MessageIntakeService {
             createdIssueId = saved.id;
             linkedIssueId = saved.id;
             replyText = `Task created successfully: #${saved.id} ("${saved.title}"). Status: ${saved.status}. View in workspace.`;
+            const pool = getPostgresPool();
+            await pool.query(`UPDATE incoming_messages SET linked_issue_id = $1 WHERE id = $2;`, [saved.id, envelope.messageId]);
         }
         // E. GENERAL FOLLOW-UP / SYNC TO CHAT
         if (linkedIssueId) {
@@ -536,7 +671,29 @@ export class MessageIntakeService {
        ORDER BY created_at ASC;`, [teamId]);
         const incomingMessages = inRes.rows;
         const incomingIds = incomingMessages.map(m => m.id);
-        // 2. Fetch attachments for incoming messages
+        // 2. Fetch staged external customer requests for this team
+        const stagedRes = await pool.query(`SELECT 
+        id, channel, source_message_id, conversation_id, thread_id,
+        sender_address, sender_name, 'external' AS sender_type,
+        assigned_user_id AS resolved_user_id,
+        team_id AS resolved_team_id,
+        category AS intent,
+        urgency AS priority,
+        subject,
+        text_body,
+        COALESCE(raw_payload->>'htmlBody', raw_payload->>'html', text_body) AS html_body,
+        raw_payload,
+        status,
+        dedupe_key,
+        COALESCE(created_issue_id, linked_issue_id) AS linked_issue_id,
+        created_at,
+        'inbound' AS direction
+       FROM staged_messages
+       WHERE team_id = $1
+       ORDER BY created_at ASC;`, [teamId]);
+        const stagedMessages = stagedRes.rows;
+        const stagedIds = stagedMessages.map(m => m.id);
+        // 3. Fetch attachments for incoming and staged messages
         const attachmentsMap = {};
         if (incomingIds.length > 0) {
             const attRes = await pool.query(`SELECT 
@@ -566,11 +723,43 @@ export class MessageIntakeService {
                 });
             }
         }
+        if (stagedIds.length > 0) {
+            const sAttRes = await pool.query(`SELECT 
+          id, staged_message_id AS message_id, filename, mime_type, size_bytes,
+          storage_path, checksum, content_type, parsing_status AS ingestion_status,
+          parsed_data, raw_base64, created_at
+         FROM staged_message_attachments
+         WHERE staged_message_id = ANY($1::text[])
+         ORDER BY created_at ASC;`, [stagedIds]);
+            for (const a of sAttRes.rows) {
+                if (!attachmentsMap[a.message_id]) {
+                    attachmentsMap[a.message_id] = [];
+                }
+                attachmentsMap[a.message_id].push({
+                    id: a.id,
+                    messageId: a.message_id,
+                    filename: a.filename,
+                    mimeType: a.mime_type,
+                    sizeBytes: Number(a.size_bytes) || 0,
+                    storagePath: a.storage_path,
+                    checksum: a.checksum,
+                    contentType: a.content_type,
+                    ingestionStatus: a.ingestion_status,
+                    parsedData: a.parsed_data,
+                    rawBase64: a.raw_base64,
+                    createdAt: a.created_at
+                });
+            }
+        }
         // Attach to incoming messages
         for (const m of incomingMessages) {
             m.attachments = attachmentsMap[m.id] || [];
         }
-        // 3. Fetch outgoing messages for this team
+        // Attach to staged messages
+        for (const m of stagedMessages) {
+            m.attachments = attachmentsMap[m.id] || [];
+        }
+        // 4. Fetch outgoing messages for this team
         const outRes = await pool.query(`SELECT
         id, channel, recipient_address, subject, text_body,
         linked_issue_id, linked_message_id, status, retry_count,
@@ -583,8 +772,18 @@ export class MessageIntakeService {
             ...m,
             attachments: []
         }));
-        // 4. Combine all messages and group into threads
-        const allMessages = [...incomingMessages, ...outgoingMessages];
+        // Deduplicate inbound messages across incoming and staged tables (favor canonical incoming_messages)
+        const seenInbound = new Set();
+        const deduplicatedInbound = [];
+        for (const m of [...incomingMessages, ...stagedMessages]) {
+            const key = m.dedupe_key || (m.channel && m.source_message_id ? `${m.channel}:${m.source_message_id}` : m.id);
+            if (!seenInbound.has(key)) {
+                seenInbound.add(key);
+                deduplicatedInbound.push(m);
+            }
+        }
+        // 5. Combine all messages and group into threads
+        const allMessages = [...deduplicatedInbound, ...outgoingMessages];
         const extractCleanSubject = (msg) => {
             if (msg.raw_payload?.subject)
                 return msg.raw_payload.subject;
@@ -598,69 +797,141 @@ export class MessageIntakeService {
                 return firstLine;
             return `${(msg.channel || 'message').toUpperCase()} Message - ${new Date(msg.created_at).toLocaleDateString()}`;
         };
-        const normalizeSubject = (subj) => {
-            return subj.replace(/^(re|fwd|fw):\s*/i, '').trim();
-        };
-        const threadMap = {};
+        const ds = new DisjointSet();
         for (const msg of allMessages) {
-            const subj = extractCleanSubject(msg);
-            const normSubj = normalizeSubject(subj);
-            const threadKey = msg.conversation_id || msg.thread_id || msg.linked_message_id || `thread-${normSubj.toLowerCase()}`;
-            if (!threadMap[threadKey]) {
-                threadMap[threadKey] = {
-                    threadId: threadKey,
-                    subject: subj,
-                    normalizedSubject: normSubj,
-                    channel: msg.channel,
-                    messages: [],
-                    latestMessageAt: msg.created_at,
-                    linkedIssueId: msg.linked_issue_id || null,
-                    taskCreated: Boolean(msg.linked_issue_id),
-                    participants: [],
-                    attachments: [],
-                    hasAttachments: false,
-                    snippet: '',
-                    unread: false
-                };
+            const mKey = `msg:${msg.id}`;
+            ds.find(mKey);
+            // 1. Direct message identifiers
+            const idAliases = [
+                msg.id,
+                cleanMessageId(msg.source_message_id),
+                cleanMessageId(msg.raw_payload?.messageId),
+                cleanMessageId(msg.raw_payload?.internetMessageId),
+                cleanMessageId(msg.raw_payload?.metadata?.internetMessageId)
+            ].filter(Boolean);
+            for (const alias of idAliases) {
+                ds.union(mKey, `id:${alias}`);
             }
-            const thread = threadMap[threadKey];
-            thread.messages.push(msg);
+            // 2. Direct parent / reply reference links
+            const inReplyTo = cleanMessageId(msg.raw_payload?.inReplyTo ||
+                msg.raw_payload?.['in-reply-to'] ||
+                msg.raw_payload?.metadata?.inReplyTo ||
+                msg.raw_payload?.in_reply_to);
+            if (inReplyTo) {
+                ds.union(mKey, `id:${inReplyTo}`);
+            }
+            if (msg.linked_message_id) {
+                const linkedClean = cleanMessageId(msg.linked_message_id);
+                if (linkedClean) {
+                    ds.union(mKey, `id:${linkedClean}`);
+                }
+            }
+            const refs = extractReferenceIds(msg.raw_payload?.references ||
+                msg.raw_payload?.metadata?.references);
+            for (const ref of refs) {
+                ds.union(mKey, `id:${ref}`);
+            }
+            // 3. Provider thread / conversation ID
+            if (msg.conversation_id && msg.conversation_id !== msg.source_message_id && msg.conversation_id !== msg.id) {
+                ds.union(mKey, `conv:${msg.conversation_id}`);
+            }
+            if (msg.thread_id && msg.thread_id !== msg.source_message_id && msg.thread_id !== msg.id) {
+                ds.union(mKey, `conv:${msg.thread_id}`);
+            }
+            // 4. Linked Issue / Task
             if (msg.linked_issue_id) {
-                thread.linkedIssueId = msg.linked_issue_id;
-                thread.taskCreated = true;
+                ds.union(mKey, `task:${msg.linked_issue_id.toUpperCase()}`);
             }
-            if (new Date(msg.created_at) > new Date(thread.latestMessageAt)) {
-                thread.latestMessageAt = msg.created_at;
-                thread.snippet = (msg.text_body || '').slice(0, 140);
-                thread.channel = msg.channel;
+            const subj = extractCleanSubject(msg);
+            const taskInSubj = extractTaskKey(subj) || extractTaskKey(msg.text_body);
+            if (taskInSubj) {
+                ds.union(mKey, `task:${taskInSubj.toUpperCase()}`);
             }
-            if (msg.attachments && msg.attachments.length > 0) {
-                thread.hasAttachments = true;
-                thread.attachments.push(...msg.attachments);
-            }
-            if (msg.direction === 'inbound' && msg.status === 'RECEIVED') {
-                thread.unread = true;
-            }
-            const addr = msg.direction === 'inbound' ? msg.sender_address : msg.recipient_address;
-            const name = msg.direction === 'inbound' ? (msg.sender_name || addr) : addr;
-            if (!thread.participants.some(p => p.address === addr)) {
-                thread.participants.push({ name, address: addr, direction: msg.direction });
+            // 5. Normalized Subject Correlation
+            const normSubj = normalizeSubject(subj);
+            if (normSubj.length >= 4 && !GENERIC_SUBJECTS.has(normSubj)) {
+                const channelKey = (msg.channel || 'email').toLowerCase();
+                ds.union(mKey, `subj:${channelKey}:${normSubj}`);
             }
         }
-        let threadList = Object.values(threadMap).map(t => {
-            t.messages.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
-            if (!t.snippet && t.messages.length > 0) {
-                const lastMsg = t.messages[t.messages.length - 1];
-                t.snippet = (lastMsg.text_body || '').slice(0, 140);
+        // Group messages by their canonical root
+        const clusters = new Map();
+        for (const msg of allMessages) {
+            const root = ds.find(`msg:${msg.id}`);
+            if (!clusters.has(root)) {
+                clusters.set(root, []);
             }
-            return t;
-        });
+            clusters.get(root).push(msg);
+        }
+        let threadList = [];
+        for (const [_, clusterMessages] of clusters.entries()) {
+            // Sort messages chronologically
+            clusterMessages.sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+            const earliest = clusterMessages[0];
+            const latest = clusterMessages[clusterMessages.length - 1];
+            const subj = extractCleanSubject(earliest);
+            const normSubj = normalizeSubject(subj);
+            const channel = earliest.channel || latest.channel || 'email';
+            // Find any explicit external conversation/thread ID
+            const explicitConvId = clusterMessages.find(m => (m.conversation_id && m.conversation_id !== m.source_message_id && m.conversation_id !== m.id))?.conversation_id || clusterMessages.find(m => (m.thread_id && m.thread_id !== m.source_message_id && m.thread_id !== m.id))?.thread_id;
+            // Find linked issue ID if any message in thread is linked
+            const linkedIssueId = clusterMessages.find(m => m.linked_issue_id)?.linked_issue_id || null;
+            const taskCreated = Boolean(linkedIssueId);
+            // Canonical threadId
+            let threadId;
+            if (explicitConvId) {
+                threadId = explicitConvId;
+            }
+            else if (linkedIssueId) {
+                threadId = `task-${linkedIssueId.toLowerCase()}`;
+            }
+            else if (normSubj.length >= 4 && !GENERIC_SUBJECTS.has(normSubj)) {
+                threadId = `thread-${channel}-${normSubj.replace(/[^a-z0-9_-]/g, '-').slice(0, 45)}`;
+            }
+            else {
+                threadId = earliest.source_message_id || earliest.id;
+            }
+            // Collect participants
+            const participants = [];
+            for (const msg of clusterMessages) {
+                const addr = msg.direction === 'inbound' ? msg.sender_address : msg.recipient_address;
+                const name = msg.direction === 'inbound' ? (msg.sender_name || addr) : addr;
+                if (addr && !participants.some(p => p.address === addr)) {
+                    participants.push({ name, address: addr, direction: msg.direction });
+                }
+            }
+            // Collect attachments
+            const attachments = [];
+            for (const msg of clusterMessages) {
+                if (msg.attachments && msg.attachments.length > 0) {
+                    attachments.push(...msg.attachments);
+                }
+            }
+            // Unread status: true if any inbound message is in RECEIVED, NEW, or STAGED
+            const unread = clusterMessages.some(m => m.direction === 'inbound' && (m.status === 'RECEIVED' || m.status === 'NEW' || m.status === 'STAGED'));
+            const snippet = (latest.text_body || earliest.text_body || '').slice(0, 140);
+            threadList.push({
+                threadId,
+                subject: subj,
+                normalizedSubject: normSubj,
+                channel,
+                messages: clusterMessages,
+                latestMessageAt: latest.created_at,
+                linkedIssueId,
+                taskCreated,
+                participants,
+                attachments,
+                hasAttachments: attachments.length > 0,
+                snippet,
+                unread
+            });
+        }
         // 5. Apply Filter
         if (filter === 'inbound') {
-            threadList = threadList.filter(t => t.messages.some(m => m.direction === 'inbound'));
+            threadList = threadList.filter(t => t.messages.some((m) => m.direction === 'inbound'));
         }
         else if (filter === 'outbound') {
-            threadList = threadList.filter(t => t.messages.some(m => m.direction === 'outbound'));
+            threadList = threadList.filter(t => t.messages.some((m) => m.direction === 'outbound'));
         }
         else if (filter === 'unassigned') {
             threadList = threadList.filter(t => !t.linkedIssueId);
@@ -669,8 +940,8 @@ export class MessageIntakeService {
         if (search && search.trim()) {
             const q = search.trim().toLowerCase();
             threadList = threadList.filter(t => t.subject.toLowerCase().includes(q) ||
-                t.participants.some(p => p.name.toLowerCase().includes(q) || p.address.toLowerCase().includes(q)) ||
-                t.messages.some(m => (m.text_body || '').toLowerCase().includes(q)));
+                t.participants.some((p) => p.name.toLowerCase().includes(q) || p.address.toLowerCase().includes(q)) ||
+                t.messages.some((m) => (m.text_body || '').toLowerCase().includes(q)));
         }
         threadList.sort((a, b) => new Date(b.latestMessageAt).getTime() - new Date(a.latestMessageAt).getTime());
         const unreadCount = threadList.filter(t => t.unread).length;
@@ -688,8 +959,38 @@ export class MessageIntakeService {
      */
     async linkMessageToIssue(messageId, issueId) {
         const pool = getPostgresPool();
-        const msgRes = await pool.query(`SELECT conversation_id, thread_id FROM incoming_messages WHERE id = $1;`, [messageId]);
-        const convId = msgRes.rows[0]?.conversation_id || msgRes.rows[0]?.thread_id;
+        // 1. Fetch message details to find its identifiers
+        const msgRes = await pool.query(`SELECT id, channel, source_message_id, conversation_id, thread_id, (raw_payload->>'subject') AS subject, raw_payload, resolved_team_id AS team_id
+       FROM incoming_messages WHERE id = $1
+       UNION
+       SELECT id, channel, source_message_id, conversation_id, thread_id, subject, raw_payload, team_id
+       FROM staged_messages WHERE id = $1;`, [messageId]);
+        const targetMsg = msgRes.rows[0];
+        const teamId = targetMsg?.team_id;
+        if (teamId) {
+            // Fetch full mailbox to resolve all related message IDs in the cluster
+            const mailbox = await this.getTeamMailbox(teamId, 'all');
+            const thread = mailbox.threads.find(t => t.messages.some((m) => m.id === messageId || m.source_message_id === messageId));
+            if (thread) {
+                const allIds = thread.messages.map((m) => m.id).filter(Boolean);
+                const allSourceIds = thread.messages.map((m) => m.source_message_id).filter(Boolean);
+                const combinedIds = Array.from(new Set([...allIds, ...allSourceIds]));
+                if (combinedIds.length > 0) {
+                    await pool.query(`UPDATE incoming_messages 
+             SET linked_issue_id = $1, conversation_id = COALESCE(conversation_id, $2)
+             WHERE id = ANY($3::varchar[]) OR source_message_id = ANY($3::varchar[]);`, [issueId, thread.threadId, combinedIds]);
+                    await pool.query(`UPDATE staged_messages 
+             SET status = 'CONVERTED_TO_TASK', created_issue_id = $1, linked_issue_id = $1, updated_at = NOW() 
+             WHERE id = ANY($2::varchar[]) OR source_message_id = ANY($2::varchar[]);`, [issueId, combinedIds]);
+                    await pool.query(`UPDATE outgoing_messages
+             SET linked_issue_id = $1
+             WHERE linked_message_id = ANY($2::varchar[]) OR conversation_id = $3;`, [issueId, combinedIds, thread.threadId]);
+                    return true;
+                }
+            }
+        }
+        // Fallback if not grouped or no teamId
+        const convId = targetMsg?.conversation_id || targetMsg?.thread_id;
         if (convId) {
             await pool.query(`UPDATE incoming_messages 
          SET linked_issue_id = $1 
@@ -697,15 +998,18 @@ export class MessageIntakeService {
             await pool.query(`UPDATE outgoing_messages
          SET linked_issue_id = $1
          WHERE conversation_id = $2;`, [issueId, convId]);
+            await pool.query(`UPDATE staged_messages 
+         SET status = 'CONVERTED_TO_TASK', created_issue_id = $1, linked_issue_id = $1, updated_at = NOW() 
+         WHERE conversation_id = $2 OR thread_id = $2 OR source_message_id = $2 OR id = $3;`, [issueId, convId, messageId]);
         }
         else {
             await pool.query(`UPDATE incoming_messages 
          SET linked_issue_id = $1 
          WHERE id = $2;`, [issueId, messageId]);
+            await pool.query(`UPDATE staged_messages 
+         SET status = 'CONVERTED_TO_TASK', created_issue_id = $1, linked_issue_id = $1, updated_at = NOW() 
+         WHERE id = $2;`, [issueId, messageId]);
         }
-        await pool.query(`UPDATE staged_messages 
-       SET status = 'CONVERTED_TO_TASK', created_issue_id = $1, linked_issue_id = $1, updated_at = NOW() 
-       WHERE conversation_id = $2 OR thread_id = $2 OR source_message_id = $2;`, [issueId, convId || messageId]);
         return true;
     }
     /**

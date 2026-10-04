@@ -7,7 +7,7 @@ import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { 
   X, Send, ShieldAlert, Sparkles, Terminal, ArrowRight, 
   CheckCircle2, AlertTriangle, Hash, Clock, Users, Play,
-  FileCheck, Shield, RefreshCw
+  FileCheck, Shield, RefreshCw, Tag
 } from 'lucide-react';
 import { User, Team, Issue } from '../../types';
 import { api } from '../../api/client';
@@ -22,7 +22,7 @@ export interface EscalationMessage {
   content: string;
   timestamp: string;
   isCommand?: boolean;
-  commandType?: 'escalate_issue' | 'run_sandbox' | 'request_approval' | 'unknown';
+  commandType?: 'escalate_issue' | 'run_sandbox' | 'request_approval' | 'create_hashtag' | 'unknown';
   commandArgs?: Record<string, string>;
   commandStatus?: 'staged' | 'executed' | 'failed';
   commandOutput?: string;
@@ -67,7 +67,7 @@ export const EscalationRoomModal: React.FC<EscalationRoomModalProps> = ({
   onExecuteSandbox,
   onIssueUpdated
 }) => {
-  const { refreshProposals } = useGovernance();
+  const { refetchProposals } = useGovernance();
   const [messages, setMessages] = useState<EscalationMessage[]>([]);
   const [inputText, setInputText] = useState('');
   const [isProcessingCommand, setIsProcessingCommand] = useState(false);
@@ -110,21 +110,21 @@ export const EscalationRoomModal: React.FC<EscalationRoomModalProps> = ({
 
   if (!isOpen || !issue) return null;
 
-  // Command parser
+  // Command parser with slash and at directives
   const parseCommand = (text: string): { 
     isCommand: boolean; 
-    type?: 'escalate_issue' | 'run_sandbox' | 'request_approval' | 'unknown'; 
+    type?: 'escalate_issue' | 'run_sandbox' | 'request_approval' | 'create_hashtag' | 'unknown'; 
     args: Record<string, string>;
   } => {
     const trimmed = text.trim();
-    if (!trimmed.startsWith('@')) {
+    if (!trimmed.startsWith('@') && !trimmed.startsWith('/')) {
       return { isCommand: false, args: {} };
     }
 
     const tokens = trimmed.split(/\s+/);
     const commandTrigger = tokens[0].toLowerCase();
 
-    if (commandTrigger === '@escalate_issue') {
+    if (commandTrigger === '@escalate_issue' || commandTrigger === '/escalate' || commandTrigger === '@escalate') {
       const targetTeam = tokens[1] || '';
       const reason = tokens.slice(2).join(' ') || 'Operational escalation requested via Escalation Room';
       return {
@@ -134,7 +134,7 @@ export const EscalationRoomModal: React.FC<EscalationRoomModalProps> = ({
       };
     }
 
-    if (commandTrigger === '@run_sandbox') {
+    if (commandTrigger === '@run_sandbox' || commandTrigger === '/run_sandbox' || commandTrigger === '/sandbox') {
       const workflowId = tokens[1] || (issue.workflowId || 'default_workflow');
       return {
         isCommand: true,
@@ -143,12 +143,23 @@ export const EscalationRoomModal: React.FC<EscalationRoomModalProps> = ({
       };
     }
 
-    if (commandTrigger === '@request_approval') {
+    if (commandTrigger === '@request_approval' || commandTrigger === '/request_approval' || commandTrigger === '/approve') {
       const solution = tokens.slice(1).join(' ') || 'Resolution proposal requested via chat';
       return {
         isCommand: true,
         type: 'request_approval',
         args: { solution }
+      };
+    }
+
+    if (commandTrigger === '/create-hashtag' || commandTrigger === '@create-hashtag' || commandTrigger === '/create_hashtag' || commandTrigger === '/hashtag') {
+      const rawTag = tokens[1] || (issue.linkedHashtag || issue.hashtag || '#AD_HOC_FIX');
+      const tag = rawTag.startsWith('#') ? rawTag.toUpperCase() : `#${rawTag.toUpperCase()}`;
+      const description = tokens.slice(2).join(' ') || `Resolution preset automatically registered from team escalation for ${issue.key}`;
+      return {
+        isCommand: true,
+        type: 'create_hashtag',
+        args: { tag, description }
       };
     }
 
@@ -277,10 +288,11 @@ export const EscalationRoomModal: React.FC<EscalationRoomModalProps> = ({
         const solutionText = parsed.args.solution;
         
         await api.createWorkspaceSettingProposal({
+          title: `Resolution for ${issue.key}`,
           settingKey: `issue_resolution_${issue.id}`,
-          settingType: 'SYSTEM_CONFIG',
-          currentValue: { issueId: issue.id, status: issue.status },
-          proposedValue: { 
+          settingType: 'WORKSPACE_CONFIG',
+          currentSnapshot: { issueId: issue.id, status: issue.status },
+          proposedChanges: { 
             issueId: issue.id, 
             status: 'RESOLVED',
             action: 'MANUAL_OVERRIDE',
@@ -289,13 +301,13 @@ export const EscalationRoomModal: React.FC<EscalationRoomModalProps> = ({
           },
           makerId: currentUser.id,
           makerName: currentUser.username,
-          makerTeamId: currentTeam?.id || 'general',
-          makerTeamName: currentTeam?.name || 'General Team',
-          rationale: `Escalation Room proposal for ${issue.key} [${issueHashtag}]: ${solutionText}`
+          teamId: currentTeam?.id || 'general',
+          teamName: currentTeam?.name || 'General Team',
+          justification: `Escalation Room proposal for ${issue.key} [${issueHashtag}]: ${solutionText}`
         });
 
         executedCommandKeys.current.add(idempotencyKey);
-        await refreshProposals();
+        await refetchProposals();
 
         setMessages(prev => prev.map(m => m.id === newMsgId ? {
           ...m,
@@ -307,11 +319,42 @@ export const EscalationRoomModal: React.FC<EscalationRoomModalProps> = ({
           type: 'success',
           message: `Maker proposal staged! Available in Governance Center for dual approval.`
         });
+      } else if (parsed.type === 'create_hashtag') {
+        const tag = parsed.args.tag || '#AUTO_RESOLUTION';
+        const description = parsed.args.description || `Solution created from task ${issue.key}`;
+        
+        await api.createHashtag({
+          tag,
+          description,
+          criteria: 'status == "DISCREPANCY"',
+          expectedFileStructure: ['transaction_id', 'bank_code', 'amount', 'status'],
+          solutionTemplate: issue.remedySql || `UPDATE transactions SET status = 'RESOLVED' WHERE id = '{{id}}';`,
+          author: currentUser.username,
+          createdAt: new Date().toISOString(),
+          hashtagType: 'FILE_INGESTION',
+          workflowId: issue.workflowId,
+          minimumRequiredColumns: ['transaction_id', 'amount'],
+          dictionaryLookupMappings: {
+            bank_code: { sourceCol: 'bank_code', targetCol: 'bank_name', lookupTable: 'global_banks' }
+          }
+        });
+
+        executedCommandKeys.current.add(idempotencyKey);
+        setMessages(prev => prev.map(m => m.id === newMsgId ? {
+          ...m,
+          commandStatus: 'executed',
+          commandOutput: `Universal Hashtag preset [${tag}] created and staged into registry with dictionary resolution and column validation rules.`
+        } : m));
+
+        setCommandFeedback({
+          type: 'success',
+          message: `Hashtag ${tag} created! Accessible across workspace pipelines.`
+        });
       } else {
         setMessages(prev => prev.map(m => m.id === newMsgId ? {
           ...m,
           commandStatus: 'failed',
-          commandOutput: `Unrecognized command. Valid commands: @escalate_issue [team] [reason], @run_sandbox [workflowId], @request_approval [solution]`
+          commandOutput: `Unrecognized command. Valid commands: /escalate [team] [reason], /sandbox [workflowId], /approve [solution], /create-hashtag [tag] [desc]`
         } : m));
       }
     } catch (err: any) {
@@ -380,25 +423,32 @@ export const EscalationRoomModal: React.FC<EscalationRoomModalProps> = ({
             <Terminal size={14} className="text-slate-500" />
             <span className="font-bold text-slate-700">Quick Commands:</span>
             <button
-              onClick={() => insertCommandTemplate(`@escalate_issue ${availableTeams[0]?.name || 'Settlements'} Re-reconciliation discrepancy`)}
+              onClick={() => insertCommandTemplate(`/escalate ${availableTeams[0]?.name || 'Settlements'} Discrepancy re-investigation`)}
               className="px-2 py-1 bg-white hover:bg-slate-100 border border-slate-200 text-slate-700 rounded text-[11px] transition-colors cursor-pointer flex items-center gap-1"
             >
               <Users size={12} className="text-blue-600" />
-              @escalate_issue
+              /escalate
             </button>
             <button
               onClick={() => insertCommandTemplate(`@run_sandbox ${issue.workflowId || 'wf_settlement'}`)}
               className="px-2 py-1 bg-white hover:bg-slate-100 border border-slate-200 text-slate-700 rounded text-[11px] transition-colors cursor-pointer flex items-center gap-1"
             >
               <Play size={12} className="text-emerald-600" />
-              @run_sandbox
+              /sandbox
             </button>
             <button
-              onClick={() => insertCommandTemplate(`@request_approval Force match approved based on bank statement audit`)}
+              onClick={() => insertCommandTemplate(`/approve Force match approved based on bank statement audit`)}
               className="px-2 py-1 bg-white hover:bg-slate-100 border border-slate-200 text-slate-700 rounded text-[11px] transition-colors cursor-pointer flex items-center gap-1"
             >
               <Shield size={12} className="text-purple-600" />
-              @request_approval
+              /approve
+            </button>
+            <button
+              onClick={() => insertCommandTemplate(`/create-hashtag #${(issue.key || 'TASK').replace(/-/g, '_')}_RESOLVED Automated resolution preset from escalation room`)}
+              className="px-2 py-1 bg-white hover:bg-slate-100 border border-indigo-200 text-indigo-700 rounded text-[11px] transition-colors cursor-pointer flex items-center gap-1"
+            >
+              <Tag size={12} className="text-indigo-600" />
+              /create-hashtag
             </button>
           </div>
 

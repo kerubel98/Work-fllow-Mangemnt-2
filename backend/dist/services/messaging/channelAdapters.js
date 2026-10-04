@@ -64,12 +64,16 @@ export class EmailAdapter {
         const fullContent = `${subject} ${textBody}`.trim();
         const hash = computeMessageHash(fullContent);
         const dedupeKey = `email:${sourceMessageId}:${hash}`;
+        const inReplyTo = raw.inReplyTo || raw['in-reply-to'] || raw.in_reply_to || undefined;
+        const references = raw.references || raw.References || undefined;
+        const threadId = raw.threadId || raw.conversationId || undefined;
+        const conversationId = raw.conversationId || raw.threadId || inReplyTo || undefined;
         return {
             messageId: `msg-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
             sourceChannel: 'email',
             sourceMessageId,
-            conversationId: raw.inReplyTo || raw.threadId || sourceMessageId,
-            threadId: raw.threadId || undefined,
+            conversationId,
+            threadId,
             senderAddress: sender,
             senderName: raw.fromName || raw.senderName || sender.split('@')[0],
             senderType: 'person',
@@ -77,7 +81,13 @@ export class EmailAdapter {
             textBody: fullContent,
             htmlBody,
             attachments,
-            metadata: { subject, ...raw.metadata },
+            metadata: {
+                subject,
+                inReplyTo,
+                references,
+                internetMessageId: raw.internetMessageId || raw.messageId || undefined,
+                ...raw.metadata
+            },
             rawPayload: raw,
             dedupeKey
         };
@@ -117,7 +127,7 @@ export class TeamsAdapter {
             messageId: `msg-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
             sourceChannel: 'teams',
             sourceMessageId,
-            conversationId: conversation.id || sourceMessageId,
+            conversationId: conversation.id || undefined,
             threadId: conversation.conversationType === 'channel' ? conversation.id : undefined,
             senderAddress: sender,
             senderName: fromUser.name || 'Teams Operator',

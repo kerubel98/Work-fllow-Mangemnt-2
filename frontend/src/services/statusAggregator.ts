@@ -217,3 +217,108 @@ export function aggregateParentIssueStatus(
     summaryText
   };
 }
+
+export interface MultiStageDiscrepancyClassification {
+  discrepancyCode: 'CLEAN_VERIFIED' | 'ORPHAN_SETTLEMENT' | 'UNSETTLED_AUTHORIZATION' | 'SETTLEMENT_AMOUNT_MISMATCH' | 'GHOST_TRANSACTION' | 'GENERIC_DISCREPANCY';
+  riskSeverity: 'NONE' | 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+  businessDescription: string;
+  makerCheckerRecommended: boolean;
+}
+
+/**
+ * Classifies multi-stage operational discrepancies from the complete stage traversal trace.
+ * Implements PIPELINE_ENGINE_MASTER_ARCHITECTURE.md §6 and §11.
+ */
+export function classifyMultiStageDiscrepancy(
+  transaction: Record<string, any>
+): MultiStageDiscrepancyClassification {
+  const stageResults: any[] =
+    transaction.auditTrail ||
+    transaction._stage_results ||
+    transaction._validation_details?.stageResults ||
+    transaction.stagesTraversed ||
+    [];
+
+  if (stageResults.length < 2) {
+    const rawStatus = (transaction._validation_status || transaction.finalResult || '').toUpperCase();
+    if (rawStatus === 'PASS' || rawStatus === 'VERIFIED_MATCH') {
+      return {
+        discrepancyCode: 'CLEAN_VERIFIED',
+        riskSeverity: 'NONE',
+        businessDescription: 'Transaction verified and matched cleanly.',
+        makerCheckerRecommended: false
+      };
+    }
+    return {
+      discrepancyCode: 'GENERIC_DISCREPANCY',
+      riskSeverity: 'MEDIUM',
+      businessDescription: 'Single-stage discrepancy flagged for operator review.',
+      makerCheckerRecommended: true
+    };
+  }
+
+  // Multi-stage inspection
+  const stage1 = stageResults[0];
+  const stage2 = stageResults[1];
+
+  const stage1Pass = stage1.validationResult === 'PASS' || stage1.status === 'PASS';
+  const stage2Pass = stage2.validationResult === 'PASS' || stage2.status === 'PASS';
+
+  // Check if records were physically matched in each external database
+  const stage1Match = stage1.matchFound !== false && (stage1Pass || stage1.existence !== 'NOT_FOUND_IN_TARGET_DB');
+  const stage2Match = stage2.matchFound !== false && (stage2Pass || stage2.existence !== 'NOT_FOUND_IN_TARGET_DB');
+
+  // Check for amount variance or numeric discrepancy between legs
+  const hasAmountVariance =
+    (stage2.checkType === 'AMOUNT_MATCH' && !stage2Pass && stage2Match) ||
+    Boolean(stage2.discrepancyReasons?.some((r: string) => /amount|variance|mismatch|fee/i.test(r))) ||
+    Boolean(stage2.message && /amount|variance|mismatch/i.test(stage2.message));
+
+  if (stage1Pass && stage2Pass && !hasAmountVariance) {
+    return {
+      discrepancyCode: 'CLEAN_VERIFIED',
+      riskSeverity: 'NONE',
+      businessDescription: 'Clean multi-system match across authorization and financial settlement.',
+      makerCheckerRecommended: false
+    };
+  }
+
+  // Case A: Both found, but settlement amount or fee diverges
+  if (stage1Match && stage2Match && (hasAmountVariance || (!stage2Pass && stage1Pass))) {
+    return {
+      discrepancyCode: 'SETTLEMENT_AMOUNT_MISMATCH',
+      riskSeverity: 'HIGH',
+      businessDescription: 'Settlement Amount Mismatch: Transaction authorized and settled, but ledger amounts or rules diverge.',
+      makerCheckerRecommended: true
+    };
+  }
+
+  // Case B: Missing Auth + Found in Settlement (ORPHAN SETTLEMENT)
+  if (!stage1Pass && stage2Match) {
+    return {
+      discrepancyCode: 'ORPHAN_SETTLEMENT',
+      riskSeverity: 'CRITICAL',
+      businessDescription: '⚠️ Orphan Settlement: Money cleared in financial ledger without valid gateway authorization!',
+      makerCheckerRecommended: true
+    };
+  }
+
+  // Case C: Authorized + Missing in Settlement (UNSETTLED AUTHORIZATION)
+  if (stage1Pass && !stage2Match) {
+    return {
+      discrepancyCode: 'UNSETTLED_AUTHORIZATION',
+      riskSeverity: 'HIGH',
+      businessDescription: 'Unsettled Authorization: Transaction approved by gateway but missing in financial ledger.',
+      makerCheckerRecommended: true
+    };
+  }
+
+  // Case D: Missing in all systems
+  return {
+    discrepancyCode: 'GHOST_TRANSACTION',
+    riskSeverity: 'HIGH',
+    businessDescription: 'Ghost Record: Missing or failed validation in all external database stages.',
+    makerCheckerRecommended: true
+  };
+}
+

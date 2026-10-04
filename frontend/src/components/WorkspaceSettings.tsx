@@ -11,7 +11,8 @@ import {
   FileSpreadsheet, Volume2, 
   ArrowLeft, CheckCircle2, AlertTriangle, ShieldCheck,
   Boxes, GitFork, AlertCircle,
-  Database, GitBranch, Layout, ChevronRight
+  Database, GitBranch, Layout, ChevronRight,
+  Home, Users, Rocket, Share2
 } from 'lucide-react';
 import ErrorBoundary from './ErrorBoundary';
 import { lazyWithRetry } from '../utils/lazyWithRetry';
@@ -150,44 +151,54 @@ export default function WorkspaceSettings({
   const isDedicatedScreen = activeTab === 'db_config' || activeTab === 'validation_box' || activeTab === 'workflow_studio';
 
   return (
-    <div className={`space-y-4 ${isDedicatedScreen ? 'w-full' : 'max-w-7xl mx-auto'}`} id="workspace-settings-container">
-      {/* 1. Header with Title, Environment Badge, and 3-Tier Action Bar */}
-      <header className="bg-white border border-slate-200/90 rounded-2xl px-5 py-3.5 text-slate-800 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-3" id="workspace-settings-header">
+    <div 
+      className={`flex flex-col ${isDedicatedScreen ? 'w-full h-[calc(100vh-2.25rem)] min-h-0 overflow-hidden' : 'max-w-7xl mx-auto space-y-4'}`} 
+      id="workspace-settings-container"
+    >
+      {/* 1. Header with Title and Environment Badge */}
+      <header className={`${isDedicatedScreen ? 'bg-[#0b1a22] border-[#163848] text-white shrink-0 mb-2' : 'bg-white border-slate-200/90 text-slate-800'} border rounded-2xl px-5 py-3 shadow-xs flex items-center justify-between gap-3`} id="workspace-settings-header">
         <div className="flex items-center space-x-3">
-          {isDedicatedScreen && (
+          {isDedicatedScreen ? (
             <button
               type="button"
               onClick={() => {
-                if (activeTab === 'workflow_studio') setActiveTab('workflow');
+                if (onNavigateToWorkspace) onNavigateToWorkspace();
+                else if (activeTab === 'workflow_studio') setActiveTab('workflow');
                 else setActiveTab('general');
               }}
-              className="p-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl transition cursor-pointer border border-slate-200 shrink-0"
-              title="Back to Settings"
+              className="p-2.5 bg-[#0e212b] hover:bg-[#122834] text-purple-400 hover:text-purple-300 rounded-xl transition cursor-pointer border border-[#1b4353] hover:border-purple-400/50 shrink-0"
+              title="Home / Back"
             >
-              <ArrowLeft size={16} />
+              <Home size={18} />
             </button>
+          ) : (
+            <div className="p-2.5 bg-blue-50 text-[#155DFC] rounded-xl border border-blue-200/60 shrink-0">
+              <Settings size={20} />
+            </div>
           )}
-          <div className="p-2.5 bg-blue-50 text-[#155DFC] rounded-xl border border-blue-200/60 shrink-0">
-            <Settings size={20} />
-          </div>
           <div>
             <div className="flex items-center space-x-2">
-              <h1 className="text-base font-bold text-slate-900 tracking-tight font-mono">Workspace Settings</h1>
-              <span className={`text-[10px] font-mono px-2 py-0.5 rounded-full font-bold border ${envBadgeStyles}`}>
+              <h1 className={`text-base font-bold tracking-tight ${isDedicatedScreen ? 'text-white' : 'text-slate-900 font-mono'}`}>
+                Workspace Settings
+              </h1>
+              <span className={`text-[10px] font-mono px-2.5 py-0.5 rounded-full font-bold border ${
+                isDedicatedScreen
+                  ? 'bg-emerald-950/60 border-emerald-500/40 text-emerald-400'
+                  : envBadgeStyles
+              }`}>
                 {config.environmentMode}
               </span>
             </div>
-            <p className="text-xs text-slate-500 hidden sm:block">
-              Operational preferences, SLA governance, and rule engineering.
+            <p className={`text-xs ${isDedicatedScreen ? 'text-slate-400' : 'text-slate-500'} hidden sm:block`}>
+              Workspaces, Settlements, SLA governances, and rule engineering.
             </p>
           </div>
         </div>
-
       </header>
 
       {/* Global Feedback Banner */}
       {feedbackBanner && (
-        <div className={`p-3 rounded-xl border text-xs font-mono font-medium flex items-center space-x-2 ${
+        <div className={`p-3 rounded-xl border text-xs font-mono font-medium flex items-center space-x-2 shrink-0 mb-2 ${
           feedbackBanner.type === 'success' ? 'bg-emerald-50 text-emerald-800 border-emerald-200' : 'bg-rose-50 text-rose-800 border-rose-200'
         }`}>
           {feedbackBanner.type === 'success' ? <CheckCircle2 size={16} /> : <AlertCircle size={16} />}
@@ -197,8 +208,8 @@ export default function WorkspaceSettings({
 
       {/* 2. Main Content vs Dedicated Screen Switch */}
       {isDedicatedScreen ? (
-        <div className="bg-white rounded-2xl border border-slate-200/90 shadow-xs overflow-hidden" id="dedicated-screen-container">
-          <div className="p-1.5 sm:p-2.5">
+        <div className={`flex-1 min-h-0 rounded-2xl border shadow-xs overflow-hidden flex flex-col ${activeTab === 'workflow_studio' ? 'bg-[#071318] border-[#163848]' : 'bg-white border-slate-200/90'}`} id="dedicated-screen-container">
+          <div className={`h-full flex flex-col min-h-0 ${activeTab === 'workflow_studio' ? 'p-0' : 'p-1.5 sm:p-2.5 overflow-auto'}`}>
             {activeTab === 'db_config' && (
               <ErrorBoundary fallbackTitle="Column Configuration Error" fallbackMessage="Could not render Database Column Configuration Studio. You can retry or refresh.">
                 <Suspense fallback={<StudioLoadingFallback />}>
@@ -268,9 +279,9 @@ export default function WorkspaceSettings({
                         <div className="text-[10px] text-slate-600 font-sans">{item.desc}</div>
                       </div>
                     </div>
-                    {typeof item.count === 'number' && item.count > 0 && (
+                    {typeof (item as any).count === 'number' && (item as any).count > 0 && (
                       <span className="px-2 py-0.5 bg-amber-500 text-white font-mono font-bold text-[10px] rounded-full shadow-2xs">
-                        {item.count}
+                        {(item as any).count}
                       </span>
                     )}
                   </button>

@@ -2,7 +2,8 @@ import React, { useState } from 'react';
 import { Team, TeamTask, User } from '../../types';
 import { 
   CheckSquare, Plus, Search, Filter, Calendar, 
-  Trash2, User as UserIcon, ArrowRight, CheckCircle2, Clock
+  Trash2, User as UserIcon, ArrowRight, CheckCircle2, Clock,
+  ExternalLink, Globe
 } from 'lucide-react';
 import { NoTasksEmptyState } from './TeamEmptyStates';
 
@@ -14,6 +15,7 @@ interface TeamTasksTabProps {
   onAddTaskClick: () => void;
   onUpdateTaskStatus: (taskId: string, status: 'To Do' | 'In Progress' | 'Done') => void;
   onDeleteTask: (taskId: string) => void;
+  onOpenIssueInWorkspace?: (issueId: string) => void;
 }
 
 export const TeamTasksTab: React.FC<TeamTasksTabProps> = ({
@@ -23,7 +25,8 @@ export const TeamTasksTab: React.FC<TeamTasksTabProps> = ({
   currentUser,
   onAddTaskClick,
   onUpdateTaskStatus,
-  onDeleteTask
+  onDeleteTask,
+  onOpenIssueInWorkspace
 }) => {
   const safeTasks = Array.isArray(tasks) ? tasks : [];
   const safeUsers = Array.isArray(teamUsers) ? teamUsers : [];
@@ -148,6 +151,8 @@ export const TeamTasksTab: React.FC<TeamTasksTabProps> = ({
                   ) : (
                     colTasks.map(task => {
                       const isCritical = task.priority === 'Critical' || task.priority === 'High';
+                      const sourceIssueId = (task as any).sourceIssueId;
+                      const isOperationalPublic = (task as any).isOperationalPublicTask;
 
                       return (
                         <div 
@@ -172,6 +177,28 @@ export const TeamTasksTab: React.FC<TeamTasksTabProps> = ({
                             <p className="text-[11px] text-slate-500 line-clamp-2">
                               {task.description}
                             </p>
+                          )}
+
+                          {/* Team Public / Operational Issue Link Chips */}
+                          {(isOperationalPublic || sourceIssueId) && (
+                            <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                              {isOperationalPublic && (
+                                <span className="inline-flex items-center px-1.5 py-0.5 rounded-md bg-emerald-50 text-emerald-700 border border-emerald-200 text-[10px] font-mono font-bold">
+                                  TEAM PUBLIC
+                                </span>
+                              )}
+                              {sourceIssueId && (
+                                <button
+                                  type="button"
+                                  onClick={() => onOpenIssueInWorkspace && onOpenIssueInWorkspace(sourceIssueId)}
+                                  className="inline-flex items-center space-x-1 px-1.5 py-0.5 rounded-md bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 text-[10px] font-mono font-bold transition-colors cursor-pointer"
+                                  title="Open operational task in workspace"
+                                >
+                                  <ExternalLink size={10} />
+                                  <span>✓ Task #{sourceIssueId}</span>
+                                </button>
+                              )}
+                            </div>
                           )}
 
                           <div className="flex items-center justify-between pt-2 border-t border-slate-100 text-[10px] font-mono">

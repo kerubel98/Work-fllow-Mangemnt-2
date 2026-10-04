@@ -17,6 +17,16 @@ import {
   DatabaseColumnConfiguration
 } from '../types.js';
 
+// ============================================================================
+// WAVE 3: Pipeline Architecture Integration
+// Imports the compiled pipeline builder for structured DAG execution.
+// The legacy procedural executeWorkflowForTransaction is preserved for backward
+// compatibility; new callers should use executeWorkflowWithPipeline.
+// @see RULE_TO_METHOD_PIPELINE_ARCHITECTURE.md §3.1, §2.10
+// ============================================================================
+import { workflowPipelineBuilder } from './pipeline/index.js';
+import type { ValidationExecutionContext, PipelineExecutionReport } from './pipeline/index.js';
+
 /**
  * Evaluates attached Database Table Column Configurations (Completeness, Value Ranges, Patterns, Value Labels, and Uniqueness)
  * against the target/canonical record data.
@@ -1536,4 +1546,134 @@ export function executeBatchInvestigation(
     }
   });
   return result;
+}
+
+// ============================================================================
+// WAVE 3: executeWorkflowWithPipeline
+// Structured DAG-based execution path using WorkflowPipelineBuilder.
+// @see RULE_TO_METHOD_PIPELINE_ARCHITECTURE.md §2.10, §3.1
+// ============================================================================
+
+/**
+ * Executes a workflow against a single transaction record using the compiled
+ * DAG pipeline. New callers should prefer this over executeWorkflowForTransaction.
+ *
+ * @param transactionRecord  The canonical input record.
+ * @param workflow           The fully-hydrated DatabaseValidationWorkflow.
+ * @param options            Optional overrides (taskId, rowNumber, ruleBlockId).
+ * @returns PipelineExecutionReport with full immutable lineage.
+ */
+export async function executeWorkflowWithPipeline(
+  transactionRecord: Record<string, any>,
+  workflow: DatabaseValidationWorkflow,
+  options?: { taskId?: string; rowNumber?: number; ruleBlockId?: string }
+): Promise<PipelineExecutionReport> {
+  const transactionId: string =
+    transactionRecord.transaction_id ??
+    transactionRecord.canonical_data?.transaction_id ??
+    transactionRecord.id ??
+    transactionRecord.canonical_data?.id ??
+    `tx-unknown-${Date.now()}`;
+
+  const taskId = options?.taskId ?? transactionRecord._task_id ?? `task-${Date.now()}`;
+  const rowNumber = options?.rowNumber ?? transactionRecord._row_number ?? 0;
+  const ruleBlockId = options?.ruleBlockId ?? `rb-${workflow.id}-${rowNumber}`;
+
+  let pipeline;
+  try {
+    pipeline = workflowPipelineBuilder.compile(workflow);
+  } catch (compileErr: any) {
+    console.error(
+      `[InvestigationEngine] Pipeline compile error for workflow "${workflow.name}":`,
+      compileErr.message
+    );
+    return {
+      taskId,
+      rowNumber,
+      transactionId,
+      finalResult: 'ERROR',
+      finalAction: 'STOP',
+      lineageHistory: [],
+      durationMs: 0,
+    } as PipelineExecutionReport;
+  }
+
+  // Build the execution context (§2.9)
+  const context: ValidationExecutionContext = {
+    taskId,
+    rowNumber,
+    transactionId,
+    ruleBlockId,
+    batchId: `batch-${taskId}-${Date.now()}`,
+    workflowId: workflow.id,
+    stageId: '',
+    stageName: '',
+    validationId: '',
+    initialRecord: transactionRecord,
+    lineageHistory: [],
+    targetDbId: workflow.targetDbId,
+    targetTable: workflow.targetTable,
+    isDiagnosticOnly: false,
+  };
+
+  return pipeline.executeRow(context);
+}
+
+/**
+ * Bridges PipelineExecutionReport to the legacy TransactionExecutionSummary shape.
+ * Allows route handlers to migrate incrementally without breaking existing contracts.
+ *
+ * §3 — Lifecycle Separation: pipeline finalResult maps to TransactionInvestigationStatus.
+ */
+export function pipelineReportToTransactionSummary(
+  report: PipelineExecutionReport,
+  _workflow: DatabaseValidationWorkflow
+): TransactionExecutionSummary {
+  const auditTrail: RuleExecutionAuditEntry[] = report.lineageHistory.map(record => ({
+    transactionId: report.transactionId,
+    stageId: record.stageId,
+    stageName: record.stageName,
+    ruleId: record.validationId,
+    ruleName: record.stageName ?? record.stageId,
+    checkType: (record as any).stageType ?? 'UNKNOWN',
+    validationResult: record.validationResult,
+    pipelineAction: record.pipelineAction,
+    executedAt: record.executedAt ?? new Date().toISOString(),
+    message: record.message ?? '',
+    durationMs: record.durationMs ?? 0,
+    errorDetail: record.errorDetail,
+    dataSnapshot: record.producedValues,
+  }));
+
+  const isHalted = report.finalAction === 'STOP' || report.finalAction === 'CLOSE';
+  const isClosed = report.finalAction === 'CLOSE';
+  const hasTechnicalError = report.finalResult === 'ERROR';
+
+  let investigationStatus: TransactionInvestigationStatus;
+  if (report.finalResult === 'PASS') {
+    investigationStatus = 'VERIFIED_MATCH';
+  } else if (isClosed) {
+    investigationStatus = 'CLOSED_RESOLVED';
+  } else if (report.finalResult === 'FAIL') {
+    investigationStatus = 'FLAGGED_DISCREPANCY';
+  } else if (report.finalResult === 'PAUSED_DB_OFFLINE') {
+    investigationStatus = 'CIRCUIT_BREAKER_PAUSED';
+  } else {
+    investigationStatus = 'INVESTIGATING';
+  }
+
+  return {
+    transactionId: report.transactionId,
+    initialStatus: 'PENDING',
+    investigationStatus,
+    auditTrail,
+    lastStageEvaluated: auditTrail[auditTrail.length - 1]?.stageName,
+    lastRuleEvaluated: auditTrail[auditTrail.length - 1]?.ruleName,
+    isHalted,
+    haltReason: isHalted
+      ? `Pipeline halted via ${report.finalAction} after ${report.finalResult}`
+      : undefined,
+    isClosed,
+    hasTechnicalError,
+  };
 }

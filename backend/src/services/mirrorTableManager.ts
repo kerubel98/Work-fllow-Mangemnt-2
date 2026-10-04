@@ -105,6 +105,18 @@ export const mirrorTableManager = {
         [mirrorName]
       );
       if (checkRes.rows && checkRes.rows.length > 0) {
+        try {
+          await queryPg(`
+            ALTER TABLE ${mirrorName}
+            ADD COLUMN IF NOT EXISTS _row_number INT,
+            ADD COLUMN IF NOT EXISTS _task_id VARCHAR(64),
+            ADD COLUMN IF NOT EXISTS _batch_id VARCHAR(64),
+            ADD COLUMN IF NOT EXISTS _rule_block_id VARCHAR(64),
+            ADD COLUMN IF NOT EXISTS _validation_status VARCHAR(32) DEFAULT 'PENDING',
+            ADD COLUMN IF NOT EXISTS _validation_action VARCHAR(32) DEFAULT 'CONTINUE',
+            ADD COLUMN IF NOT EXISTS _validation_details JSONB DEFAULT '{}'::jsonb;
+          `);
+        } catch {}
         setTableCached(mirrorName);
         return mirrorName;
       }
@@ -123,7 +135,9 @@ export const mirrorTableManager = {
     // Build column definitions
     const colDefs: string[] = [
       `_mirror_id UUID DEFAULT gen_random_uuid() PRIMARY KEY`,
+      `_task_id VARCHAR(64)`,
       `_batch_id VARCHAR(64) NOT NULL`,
+      `_row_number INT`,
       `_rule_block_id VARCHAR(64) NOT NULL`,
       `_validation_status VARCHAR(32) NOT NULL DEFAULT 'PENDING'`,
       `_validation_action VARCHAR(32) DEFAULT 'CONTINUE'`,
@@ -147,18 +161,24 @@ export const mirrorTableManager = {
       );
       CREATE INDEX IF NOT EXISTS idx_${mirrorName}_batch ON ${mirrorName}(_batch_id);
       CREATE INDEX IF NOT EXISTS idx_${mirrorName}_status ON ${mirrorName}(_rule_block_id, _validation_status);
+      CREATE INDEX IF NOT EXISTS idx_${mirrorName}_task_row ON ${mirrorName}(_task_id, _row_number);
+      CREATE INDEX IF NOT EXISTS idx_${mirrorName}_context ON ${mirrorName}(_batch_id, _task_id, _rule_block_id, _row_number);
     `;
 
     await queryPg(ddl);
     try {
       await queryPg(`ALTER TABLE ${mirrorName} ADD COLUMN IF NOT EXISTS _mirror_id UUID DEFAULT gen_random_uuid();`);
+      await queryPg(`ALTER TABLE ${mirrorName} ADD COLUMN IF NOT EXISTS _task_id VARCHAR(64);`);
       await queryPg(`ALTER TABLE ${mirrorName} ADD COLUMN IF NOT EXISTS _batch_id VARCHAR(64);`);
+      await queryPg(`ALTER TABLE ${mirrorName} ADD COLUMN IF NOT EXISTS _row_number INT;`);
       await queryPg(`ALTER TABLE ${mirrorName} ADD COLUMN IF NOT EXISTS _rule_block_id VARCHAR(64);`);
       await queryPg(`ALTER TABLE ${mirrorName} ADD COLUMN IF NOT EXISTS _validation_status VARCHAR(32) DEFAULT 'PENDING';`);
       await queryPg(`ALTER TABLE ${mirrorName} ADD COLUMN IF NOT EXISTS _validation_action VARCHAR(32) DEFAULT 'CONTINUE';`);
       await queryPg(`ALTER TABLE ${mirrorName} ADD COLUMN IF NOT EXISTS _validation_details JSONB DEFAULT '{}'::jsonb;`);
       await queryPg(`ALTER TABLE ${mirrorName} ADD COLUMN IF NOT EXISTS _mirrored_at TIMESTAMPTZ DEFAULT NOW();`);
       await queryPg(`ALTER TABLE ${mirrorName} ADD COLUMN IF NOT EXISTS payload JSONB DEFAULT '{}'::jsonb;`);
+      await queryPg(`CREATE INDEX IF NOT EXISTS idx_${mirrorName}_task_row ON ${mirrorName}(_task_id, _row_number);`);
+      await queryPg(`CREATE INDEX IF NOT EXISTS idx_${mirrorName}_context ON ${mirrorName}(_batch_id, _task_id, _rule_block_id, _row_number);`);
     } catch {}
     setTableCached(mirrorName);
     console.log(`[MirrorManager] Mirror table verified: ${mirrorName} with ${columns.length} columns.`);
@@ -190,9 +210,16 @@ export const mirrorTableManager = {
     const insertCols: string[] = ['_batch_id', '_rule_block_id', '_validation_status'];
     const recordFieldMap: Record<string, string> = {};
 
+    if (validColumns.has('_task_id') && !insertCols.includes('_task_id')) {
+      insertCols.push('_task_id');
+    }
+    if (validColumns.has('_row_number') && !insertCols.includes('_row_number')) {
+      insertCols.push('_row_number');
+    }
+
     for (const rawKey of Object.keys(sample)) {
       const sanitized = sanitizeIdentifier(rawKey);
-      if (sanitized === '_staging_id' || sanitized === '_mirror_id') continue;
+      if (sanitized === '_staging_id' || sanitized === '_mirror_id' || sanitized === '_task_id' || sanitized === '_row_number') continue;
       if (validColumns.has(sanitized) && !insertCols.includes(sanitized)) {
         insertCols.push(sanitized);
         recordFieldMap[sanitized] = rawKey;
@@ -233,6 +260,13 @@ export const mirrorTableManager = {
           if (colName === 'payload') {
             rowPlaceholders.push(`$${pIdx++}`);
             values.push(JSON.stringify(rec));
+          } else if (colName === '_task_id') {
+            rowPlaceholders.push(`$${pIdx++}`);
+            values.push(rec._task_id ?? rec.taskId ?? rec.task_id ?? null);
+          } else if (colName === '_row_number') {
+            rowPlaceholders.push(`$${pIdx++}`);
+            const rn = rec._row_number ?? rec._rowNumber ?? rec.row_number ?? rec.row_num;
+            values.push(rn !== undefined && rn !== null ? Number(rn) : null);
           } else {
             const rawKey = recordFieldMap[colName] || colName;
             const val = rec[rawKey] !== undefined ? rec[rawKey] : null;

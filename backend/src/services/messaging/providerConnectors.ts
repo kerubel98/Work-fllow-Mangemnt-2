@@ -139,21 +139,48 @@ export class EmailProviderConnector implements MessageProviderConnector {
             let textContent = msg.summary || msg.snippet || '';
             let attachments: any[] = [];
 
-            // Retrieve attachment metadata if message has attachments
+            // Retrieve attachment metadata and content if message has attachments
             if (msg.hasAttachment === '1' || msg.hasAttachment === 1 || msg.hasAttachment === true) {
               try {
-                const attRes = await fetch(`${baseUrl}/accounts/${accountId}/messages/${msg.messageId}/attachmentinfo`, {
+                const targetFolderId = msg.folderId || account.folderId || '8629089000000008014';
+                const attRes = await fetch(`${baseUrl}/accounts/${accountId}/folders/${targetFolderId}/messages/${msg.messageId}/attachmentinfo`, {
                   headers: { 'Authorization': `Zoho-oauthtoken ${accessToken}` }
                 });
                 if (attRes.ok) {
                   const attData = await attRes.json() as any;
                   const attList = attData?.data?.attachments || attData?.data || [];
-                  attachments = attList.map((a: any, i: number) => ({
-                    filename: a.attachmentName || a.fileName || a.name || `attachment-${i}`,
-                    mimeType: a.contentType || 'application/octet-stream',
-                    size: Number(a.attachmentSize || a.size || 0),
-                    attachmentId: a.attachmentId
-                  }));
+                  for (let i = 0; i < attList.length; i++) {
+                    const a = attList[i];
+                    const filename = a.attachmentName || a.fileName || a.name || `attachment-${i}`;
+                    const mimeType = a.contentType || 'application/octet-stream';
+                    const sizeBytes = Number(a.attachmentSize || a.size || 0);
+                    let rawBase64: string | undefined = undefined;
+
+                    // Download attachment content if smaller than 25MB
+                    if (a.attachmentId && sizeBytes < 25 * 1024 * 1024) {
+                      try {
+                        const dlRes = await fetch(
+                          `${baseUrl}/accounts/${accountId}/folders/${targetFolderId}/messages/${msg.messageId}/attachments/${a.attachmentId}`,
+                          { headers: { 'Authorization': `Zoho-oauthtoken ${accessToken}` } }
+                        );
+                        if (dlRes.ok) {
+                          const arrBuf = await dlRes.arrayBuffer();
+                          rawBase64 = Buffer.from(arrBuf).toString('base64');
+                        }
+                      } catch (dlErr: any) {
+                        console.warn(`[EmailProviderConnector] Could not download content for attachment ${a.attachmentId}:`, dlErr.message);
+                      }
+                    }
+
+                    attachments.push({
+                      filename,
+                      mimeType,
+                      size: sizeBytes,
+                      sizeBytes,
+                      attachmentId: a.attachmentId,
+                      rawBase64
+                    });
+                  }
                 }
               } catch (attErr: any) {
                 console.warn(`[EmailProviderConnector] Attachment inspection warning for ${msg.messageId}:`, attErr.message);
@@ -164,6 +191,9 @@ export class EmailProviderConnector implements MessageProviderConnector {
               from: msg.fromAddress || msg.sender,
               senderName: msg.sender || msg.fromAddress,
               sourceMessageId: msg.messageId,
+              threadId: msg.threadId || msg.conversationId || undefined,
+              conversationId: msg.conversationId || msg.threadId || undefined,
+              inReplyTo: msg.inReplyTo || undefined,
               subject: msg.subject || 'Zoho Inbound Operational Request',
               text: textContent,
               timestamp: new Date(msgTime).toISOString(),
@@ -180,8 +210,8 @@ export class EmailProviderConnector implements MessageProviderConnector {
         if (preset === 'MICROSOFT_365') {
           const user = config.userEmail || config.user || 'me';
           const endpoint = user === 'me'
-            ? 'https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages?$top=25&$select=id,from,subject,bodyPreview,body,hasAttachments,receivedDateTime'
-            : `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(user)}/mailFolders/inbox/messages?$top=25&$select=id,from,subject,bodyPreview,body,hasAttachments,receivedDateTime`;
+            ? 'https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages?$top=25&$select=id,from,subject,bodyPreview,body,hasAttachments,receivedDateTime,conversationId,conversationIndex,internetMessageId'
+            : `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(user)}/mailFolders/inbox/messages?$top=25&$select=id,from,subject,bodyPreview,body,hasAttachments,receivedDateTime,conversationId,conversationIndex,internetMessageId`;
 
           const graphRes = await fetch(endpoint, {
             headers: { 'Authorization': `Bearer ${accessToken}`, 'Accept': 'application/json' }
@@ -190,15 +220,52 @@ export class EmailProviderConnector implements MessageProviderConnector {
           if (graphRes.ok) {
             const graphData = await graphRes.json() as any;
             const messages = graphData?.value || [];
-            return messages.map((m: any) => ({
-              from: m.from?.emailAddress?.address || 'unknown@domain.com',
-              senderName: m.from?.emailAddress?.name,
-              sourceMessageId: m.id,
-              subject: m.subject,
-              text: m.body?.content || m.bodyPreview || '',
-              timestamp: m.receivedDateTime,
-              rawPayload: m
-            }));
+            const fetched: any[] = [];
+            for (const m of messages) {
+              const atts: any[] = [];
+              if (m.hasAttachments) {
+                try {
+                  const attEndpoint = user === 'me'
+                    ? `https://graph.microsoft.com/v1.0/me/messages/${encodeURIComponent(m.id)}/attachments`
+                    : `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(user)}/messages/${encodeURIComponent(m.id)}/attachments`;
+                  const gAttRes = await fetch(attEndpoint, {
+                    headers: { 'Authorization': `Bearer ${accessToken}`, 'Accept': 'application/json' }
+                  });
+                  if (gAttRes.ok) {
+                    const gAttData = await gAttRes.json() as any;
+                    for (const a of (gAttData?.value || [])) {
+                      if (a['@odata.type'] === '#microsoft.graph.fileAttachment') {
+                        atts.push({
+                          filename: a.name,
+                          mimeType: a.contentType || 'application/octet-stream',
+                          size: a.size,
+                          sizeBytes: a.size,
+                          attachmentId: a.id,
+                          rawBase64: a.contentBytes
+                        });
+                      }
+                    }
+                  }
+                } catch (gAttErr: any) {
+                  console.warn(`[EmailProviderConnector] Graph attachments error:`, gAttErr.message);
+                }
+              }
+
+              fetched.push({
+                from: m.from?.emailAddress?.address || 'unknown@domain.com',
+                senderName: m.from?.emailAddress?.name,
+                sourceMessageId: m.id,
+                conversationId: m.conversationId || undefined,
+                threadId: m.conversationId || undefined,
+                internetMessageId: m.internetMessageId || undefined,
+                subject: m.subject,
+                text: m.body?.content || m.bodyPreview || '',
+                timestamp: m.receivedDateTime,
+                attachments: atts,
+                rawPayload: m
+              });
+            }
+            return fetched;
           }
         }
       } catch (oauthErr: any) {

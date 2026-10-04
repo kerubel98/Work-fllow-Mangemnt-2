@@ -12,8 +12,14 @@ import {
   Layers, User as UserIcon, CheckSquare, Filter, ArrowLeft, Download, ShieldCheck,
   Eye, EyeOff, ChevronDown, ChevronUp, Tag, DollarSign, Calendar, Mail, 
   Store, Hash, CheckCircle2, AlertCircle, X, ExternalLink, SlidersHorizontal,
-  FileSpreadsheet, ArrowRightLeft, Sparkles, Copy, Check
+  FileSpreadsheet, ArrowRightLeft, Sparkles, Copy, Check,
+  ChevronLeft, ChevronRight, ArrowUpDown, ArrowUp, ArrowDown
 } from 'lucide-react';
+import { Button } from './common/Button';
+import { Badge } from './common/Badge';
+import { Modal } from './common/Overlay';
+import { ConfirmDialog } from './common/Feedback';
+import { EmptyState } from './common/EmptyState';
 
 interface WorkspaceTableProps {
   currentUser?: User;
@@ -54,6 +60,20 @@ export default function WorkspaceTable({
   const [selectedRecordForDetail, setSelectedRecordForDetail] = useState<WorkspaceTableRecord | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [deleteAlert, setDeleteAlert] = useState<string | null>(null);
+  const [confirmClearOpen, setConfirmClearOpen] = useState(false);
+  const [sortField, setSortField] = useState<string>('created_at');
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc');
+  const [currentPage, setCurrentPage] = useState<number>(1);
+  const [pageSize, setPageSize] = useState<number>(25);
+
+  const handleToggleSort = (field: string) => {
+    if (sortField === field) {
+      setSortDirection(prev => (prev === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSortField(field);
+      setSortDirection('asc');
+    }
+  };
 
   // Column visibility state for global schema columns
   const [visibleColumns, setVisibleColumns] = useState<Record<string, boolean>>({
@@ -109,8 +129,8 @@ export default function WorkspaceTable({
     }
   };
 
-  const handleClearAll = async () => {
-    if (!window.confirm('Are you sure you want to clear all Centralized Uploaded Data records?')) return;
+  const executeClearAll = async () => {
+    setConfirmClearOpen(false);
     setRecords([]);
     localStorage.removeItem('workspace_table_records');
     setDeleteAlert('All centralized collection records have been cleared.');
@@ -120,6 +140,10 @@ export default function WorkspaceTable({
     } catch (e) {
       console.warn('Backend clear workspace table error:', e);
     }
+  };
+
+  const handleClearAll = () => {
+    setConfirmClearOpen(true);
   };
 
   const handleCopyValue = (text: string, id: string) => {
@@ -238,6 +262,45 @@ export default function WorkspaceTable({
     });
   }, [records, searchTerm, tagFilter, userFilter, fileFilter, statusFilter]);
 
+  // Reset page on filter or sort change
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchTerm, tagFilter, userFilter, fileFilter, statusFilter, sortField, sortDirection]);
+
+  // Sorted Records
+  const sortedRecords = useMemo(() => {
+    if (!sortField) return filteredRecords;
+    return [...filteredRecords].sort((a, b) => {
+      let valA = a[sortField];
+      let valB = b[sortField];
+      if (valA === undefined && a.transformed_data) {
+        valA = a.transformed_data[sortField];
+      }
+      if (valB === undefined && b.transformed_data) {
+        valB = b.transformed_data[sortField];
+      }
+      if (valA === valB) return 0;
+      if (valA === null || valA === undefined) return 1;
+      if (valB === null || valB === undefined) return -1;
+
+      const numA = Number(valA);
+      const numB = Number(valB);
+      if (!isNaN(numA) && !isNaN(numB) && typeof valA !== 'boolean') {
+        return sortDirection === 'asc' ? numA - numB : numB - numA;
+      }
+
+      const strA = String(valA).toLowerCase();
+      const strB = String(valB).toLowerCase();
+      return sortDirection === 'asc' ? strA.localeCompare(strB) : strB.localeCompare(strA);
+    });
+  }, [filteredRecords, sortField, sortDirection]);
+
+  const totalPages = Math.max(1, Math.ceil(sortedRecords.length / pageSize));
+  const paginatedRecords = useMemo(() => {
+    const start = (currentPage - 1) * pageSize;
+    return sortedRecords.slice(start, start + pageSize);
+  }, [sortedRecords, currentPage, pageSize]);
+
   // Aggregate Stats
   const totalVolume = useMemo(() => {
     return filteredRecords.reduce((sum, r) => {
@@ -250,27 +313,12 @@ export default function WorkspaceTable({
   const renderStatusBadge = (status: string) => {
     const s = String(status || 'PENDING').toUpperCase();
     if (s.includes('AUTH') || s.includes('SETTLE') || s.includes('SUCCESS') || s.includes('CLEAR')) {
-      return (
-        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
-          <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 mr-1" />
-          {s}
-        </span>
-      );
+      return <Badge variant="pass" size="sm">{s}</Badge>;
     }
     if (s.includes('DECLIN') || s.includes('FAIL') || s.includes('REVERS') || s.includes('ERROR')) {
-      return (
-        <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-50 text-rose-700 border border-rose-200">
-          <span className="w-1.5 h-1.5 rounded-full bg-rose-500 mr-1" />
-          {s}
-        </span>
-      );
+      return <Badge variant="critical" size="sm">{s}</Badge>;
     }
-    return (
-      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-50 text-amber-700 border border-amber-200">
-        <span className="w-1.5 h-1.5 rounded-full bg-amber-500 mr-1" />
-        {s || 'PENDING'}
-      </span>
-    );
+    return <Badge variant="investigating" size="sm">{s || 'PENDING'}</Badge>;
   };
 
   // Helper for Tag Badge styling
@@ -281,6 +329,18 @@ export default function WorkspaceTable({
         <Tag size={10} className="mr-1 text-indigo-500" />
         {formatted}
       </span>
+    );
+  };
+
+
+  const renderSortIndicator = (field: string) => {
+    if (sortField !== field) {
+      return <ArrowUpDown size={11} className="text-slate-400 opacity-40 group-hover:opacity-100 transition-opacity" />;
+    }
+    return sortDirection === 'asc' ? (
+      <ArrowUp size={11} className="text-ds-primary" />
+    ) : (
+      <ArrowDown size={11} className="text-ds-primary" />
     );
   };
 
@@ -720,37 +780,61 @@ export default function WorkspaceTable({
                 <tr className="bg-slate-50/90 border-b border-slate-200 text-[11px] font-bold text-slate-600 uppercase tracking-wider font-mono">
                   {/* METADATA COLUMNS */}
                   {visibleColumns.file_name && (
-                    <th className="py-3.5 px-4 min-w-[160px]">
-                      <div className="flex items-center space-x-1.5 text-blue-700">
-                        <FileText size={13} />
-                        <span>File Name</span>
+                    <th 
+                      onClick={() => handleToggleSort('file_name')}
+                      className="py-3.5 px-4 min-w-[160px] cursor-pointer select-none hover:bg-slate-100/80 transition-colors group"
+                    >
+                      <div className="flex items-center justify-between space-x-1.5 text-blue-700">
+                        <div className="flex items-center space-x-1.5">
+                          <FileText size={13} />
+                          <span>File Name</span>
+                        </div>
+                        {renderSortIndicator('file_name')}
                       </div>
                     </th>
                   )}
 
                   {visibleColumns.user && (
-                    <th className="py-3.5 px-4 min-w-[120px]">
-                      <div className="flex items-center space-x-1.5 text-amber-700">
-                        <UserIcon size={13} />
-                        <span>User</span>
+                    <th 
+                      onClick={() => handleToggleSort('user')}
+                      className="py-3.5 px-4 min-w-[120px] cursor-pointer select-none hover:bg-slate-100/80 transition-colors group"
+                    >
+                      <div className="flex items-center justify-between space-x-1.5 text-amber-700">
+                        <div className="flex items-center space-x-1.5">
+                          <UserIcon size={13} />
+                          <span>User</span>
+                        </div>
+                        {renderSortIndicator('user')}
                       </div>
                     </th>
                   )}
 
                   {visibleColumns.tag && (
-                    <th className="py-3.5 px-4 min-w-[130px]">
-                      <div className="flex items-center space-x-1.5 text-indigo-700">
-                        <Tag size={13} />
-                        <span>Tag</span>
+                    <th 
+                      onClick={() => handleToggleSort('tag')}
+                      className="py-3.5 px-4 min-w-[130px] cursor-pointer select-none hover:bg-slate-100/80 transition-colors group"
+                    >
+                      <div className="flex items-center justify-between space-x-1.5 text-indigo-700">
+                        <div className="flex items-center space-x-1.5">
+                          <Tag size={13} />
+                          <span>Tag</span>
+                        </div>
+                        {renderSortIndicator('tag')}
                       </div>
                     </th>
                   )}
 
                   {visibleColumns.task_id && (
-                    <th className="py-3.5 px-4 min-w-[110px]">
-                      <div className="flex items-center space-x-1.5 text-sky-700">
-                        <CheckSquare size={13} />
-                        <span>Task ID</span>
+                    <th 
+                      onClick={() => handleToggleSort('task_id')}
+                      className="py-3.5 px-4 min-w-[110px] cursor-pointer select-none hover:bg-slate-100/80 transition-colors group"
+                    >
+                      <div className="flex items-center justify-between space-x-1.5 text-sky-700">
+                        <div className="flex items-center space-x-1.5">
+                          <CheckSquare size={13} />
+                          <span>Task ID</span>
+                        </div>
+                        {renderSortIndicator('task_id')}
                       </div>
                     </th>
                   )}
@@ -759,16 +843,24 @@ export default function WorkspaceTable({
                   {standardFields.map(field => {
                     if (visibleColumns[field.key] === false) return null;
                     return (
-                      <th key={field.key} className="py-3.5 px-4 min-w-[140px]" title={field.description}>
-                        <div className="flex items-center space-x-1.5 text-slate-700">
-                          {field.key === 'transaction_id' && <Hash size={13} className="text-blue-600" />}
-                          {field.key === 'card_number' && <ShieldCheck size={13} className="text-purple-600" />}
-                          {field.key === 'amount_usd' && <DollarSign size={13} className="text-emerald-600" />}
-                          {field.key === 'status_state' && <CheckCircle2 size={13} className="text-teal-600" />}
-                          {field.key === 'created_at' && <Calendar size={13} className="text-orange-600" />}
-                          {field.key === 'user_email' && <Mail size={13} className="text-pink-600" />}
-                          {field.key === 'merchant_id' && <Store size={13} className="text-amber-600" />}
-                          <span>{field.label}</span>
+                      <th 
+                        key={field.key} 
+                        onClick={() => handleToggleSort(field.key)}
+                        className="py-3.5 px-4 min-w-[140px] cursor-pointer select-none hover:bg-slate-100/80 transition-colors group" 
+                        title={field.description}
+                      >
+                        <div className="flex items-center justify-between space-x-1.5 text-slate-700">
+                          <div className="flex items-center space-x-1.5">
+                            {field.key === 'transaction_id' && <Hash size={13} className="text-blue-600" />}
+                            {field.key === 'card_number' && <ShieldCheck size={13} className="text-purple-600" />}
+                            {field.key === 'amount_usd' && <DollarSign size={13} className="text-emerald-600" />}
+                            {field.key === 'status_state' && <CheckCircle2 size={13} className="text-teal-600" />}
+                            {field.key === 'created_at' && <Calendar size={13} className="text-orange-600" />}
+                            {field.key === 'user_email' && <Mail size={13} className="text-pink-600" />}
+                            {field.key === 'merchant_id' && <Store size={13} className="text-amber-600" />}
+                            <span>{field.label}</span>
+                          </div>
+                          {renderSortIndicator(field.key)}
                         </div>
                       </th>
                     );
@@ -778,22 +870,38 @@ export default function WorkspaceTable({
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 font-sans text-slate-800">
-                {filteredRecords.length === 0 ? (
+                {sortedRecords.length === 0 ? (
                   <tr>
-                    <td colSpan={15} className="py-16 text-center text-slate-400">
-                      <div className="w-14 h-14 rounded-2xl bg-slate-100 text-slate-400 flex items-center justify-center mx-auto mb-3">
-                        <Table size={28} />
-                      </div>
-                      <p className="font-bold text-slate-700 text-sm">No Centralized Records Found</p>
-                      <p className="text-xs text-slate-500 mt-1 max-w-md mx-auto">
-                        {searchTerm || tagFilter !== 'all' || userFilter !== 'all'
-                          ? 'No records match your active search and filter parameters.'
-                          : 'Upload a batch file when creating a task to automatically populate this centralized collection table with transformed global schema columns.'}
-                      </p>
+                    <td colSpan={20} className="p-8">
+                      <EmptyState
+                        title="No Centralized Records Found"
+                        description={
+                          searchTerm || tagFilter !== 'all' || userFilter !== 'all' || fileFilter !== 'all' || statusFilter !== 'all'
+                            ? "No records match your active search and filter criteria."
+                            : "Upload a batch file when creating a task to automatically populate this centralized collection table with transformed global schema columns."
+                        }
+                        action={
+                          (searchTerm || tagFilter !== 'all' || userFilter !== 'all' || fileFilter !== 'all' || statusFilter !== 'all') ? (
+                            <Button
+                              variant="secondary"
+                              size="sm"
+                              onClick={() => {
+                                setSearchTerm('');
+                                setTagFilter('all');
+                                setUserFilter('all');
+                                setFileFilter('all');
+                                setStatusFilter('all');
+                              }}
+                            >
+                              Clear All Filters
+                            </Button>
+                          ) : undefined
+                        }
+                      />
                     </td>
                   </tr>
                 ) : (
-                  filteredRecords.map((rec) => {
+                  paginatedRecords.map((rec) => {
                     const trans = rec.transformed_data || {};
                     const raw = rec.raw_data || {};
 
@@ -963,63 +1071,95 @@ export default function WorkspaceTable({
             </table>
           </div>
 
-          {/* Footer Bar */}
-          <div className="p-4 border-t border-slate-100 bg-slate-50 flex flex-col sm:flex-row items-center justify-between text-xs text-slate-500 gap-2">
-            <span className="font-mono">
-              Showing <strong>{filteredRecords.length}</strong> of <strong>{records.length}</strong> centralized records
-            </span>
-            <div className="flex items-center space-x-2 text-[11px]">
-              <span className="w-2 h-2 rounded-full bg-emerald-500" />
-              <span>Transformed via Global Column Dictionary</span>
+          {/* Footer Bar with Full Pagination Controls */}
+          <div className="p-3.5 border-t border-slate-200 bg-slate-50 flex flex-col sm:flex-row items-center justify-between text-xs text-slate-600 gap-3">
+            <div className="flex items-center space-x-4">
+              <span className="font-mono text-[11px]">
+                Showing <strong>{sortedRecords.length === 0 ? 0 : (currentPage - 1) * pageSize + 1}</strong> - <strong>{Math.min(currentPage * pageSize, sortedRecords.length)}</strong> of <strong>{sortedRecords.length}</strong> records
+                {records.length !== sortedRecords.length && <span className="text-slate-400 ml-1">({records.length} total)</span>}
+              </span>
+
+              <div className="flex items-center space-x-1.5 text-[11px]">
+                <span className="text-slate-500">Rows per page:</span>
+                <select
+                  value={pageSize}
+                  onChange={e => setPageSize(Number(e.target.value))}
+                  className="bg-white border border-slate-200 rounded-md px-2 py-0.5 text-xs font-semibold text-slate-700 cursor-pointer focus:outline-none"
+                >
+                  <option value={10}>10</option>
+                  <option value={25}>25</option>
+                  <option value={50}>50</option>
+                  <option value={100}>100</option>
+                </select>
+              </div>
+            </div>
+
+            {/* Pagination Buttons */}
+            <div className="flex items-center space-x-2">
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={currentPage <= 1}
+                onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                leftIcon={<ChevronLeft size={13} />}
+              >
+                Previous
+              </Button>
+
+              <span className="px-2 font-mono text-xs text-slate-700 font-semibold">
+                Page {currentPage} of {totalPages}
+              </span>
+
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={currentPage >= totalPages}
+                onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                rightIcon={<ChevronRight size={13} />}
+              >
+                Next
+              </Button>
             </div>
           </div>
         </div>
       )}
 
-      {/* Detail Inspection Modal */}
+      {/* Detail Inspection Modal using accessible shared Modal */}
       {selectedRecordForDetail && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
-          <div className="bg-white border border-slate-200 rounded-2xl max-w-3xl w-full p-6 space-y-5 shadow-2xl animate-fadeIn max-h-[90vh] overflow-y-auto">
-            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-              <div className="flex items-center space-x-2.5">
-                <div className="p-2 bg-blue-100 text-blue-700 rounded-xl">
-                  <Database size={18} />
-                </div>
-                <div>
-                  <h3 className="text-sm font-bold text-slate-900">Transaction Record Inspector</h3>
-                  <p className="text-[11px] text-slate-500 font-mono">ID: {selectedRecordForDetail.id}</p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setSelectedRecordForDetail(null)}
-                className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-xl transition-colors cursor-pointer"
-              >
-                <X size={16} />
-              </button>
-            </div>
-
+        <Modal
+          open={Boolean(selectedRecordForDetail)}
+          onClose={() => setSelectedRecordForDetail(null)}
+          title="Transaction Record Inspector"
+          description={`Record ID: ${selectedRecordForDetail.id}`}
+          size="lg"
+          footer={
+            <Button variant="secondary" onClick={() => setSelectedRecordForDetail(null)}>
+              Close Inspector
+            </Button>
+          }
+        >
+          <div className="space-y-4">
             {/* Metadata Summary Banner */}
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-slate-50 p-3.5 rounded-xl border border-slate-200 text-xs">
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 bg-ds-surface-elevated/40 p-3.5 rounded-ds-md border border-ds-border text-xs">
               <div>
-                <span className="text-[10px] font-bold text-slate-400 uppercase block">Source File</span>
-                <span className="font-mono font-semibold text-slate-800 truncate block" title={selectedRecordForDetail.file_name}>
+                <span className="text-[10px] font-bold text-ds-muted uppercase block">Source File</span>
+                <span className="font-mono font-semibold text-ds-text truncate block" title={selectedRecordForDetail.file_name}>
                   {selectedRecordForDetail.file_name}
                 </span>
               </div>
               <div>
-                <span className="text-[10px] font-bold text-slate-400 uppercase block">Uploaded User</span>
-                <span className="font-mono font-semibold text-slate-800">
+                <span className="text-[10px] font-bold text-ds-muted uppercase block">Uploaded User</span>
+                <span className="font-mono font-semibold text-ds-text">
                   @{selectedRecordForDetail.user || selectedRecordForDetail.user_id}
                 </span>
               </div>
               <div>
-                <span className="text-[10px] font-bold text-slate-400 uppercase block">Category Tag</span>
+                <span className="text-[10px] font-bold text-ds-muted uppercase block">Category Tag</span>
                 <div>{renderTagBadge(selectedRecordForDetail.tag)}</div>
               </div>
               <div>
-                <span className="text-[10px] font-bold text-slate-400 uppercase block">Associated Task</span>
-                <span className="font-mono font-bold text-blue-700">{selectedRecordForDetail.task_id}</span>
+                <span className="text-[10px] font-bold text-ds-muted uppercase block">Associated Task</span>
+                <span className="font-mono font-bold text-ds-primary">{selectedRecordForDetail.task_id}</span>
               </div>
             </div>
 
@@ -1027,15 +1167,15 @@ export default function WorkspaceTable({
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               {/* Transformed Global Schema Values */}
               <div className="space-y-2">
-                <div className="flex items-center space-x-1.5 text-xs font-bold text-indigo-700">
+                <div className="flex items-center space-x-1.5 text-xs font-bold text-ds-primary">
                   <Sparkles size={14} />
                   <span>Transformed Global Schema Fields</span>
                 </div>
-                <div className="bg-indigo-50/50 border border-indigo-100 rounded-xl p-3 space-y-2 text-xs max-h-72 overflow-y-auto">
+                <div className="bg-ds-surface-elevated/30 border border-ds-border rounded-ds-md p-3 space-y-2 text-xs max-h-72 overflow-y-auto">
                   {Object.entries(selectedRecordForDetail.transformed_data || {}).map(([key, val]) => (
-                    <div key={key} className="flex justify-between items-center py-1 border-b border-indigo-100/60 last:border-0 font-mono text-[11px]">
-                      <span className="text-slate-600 font-semibold">{key}:</span>
-                      <span className="font-bold text-slate-900 max-w-[200px] truncate" title={String(val)}>
+                    <div key={key} className="flex justify-between items-center py-1 border-b border-ds-border/60 last:border-0 font-mono text-[11px]">
+                      <span className="text-ds-muted font-semibold">{key}:</span>
+                      <span className="font-bold text-ds-text max-w-[200px] truncate" title={String(val)}>
                         {String(val || '')}
                       </span>
                     </div>
@@ -1045,41 +1185,43 @@ export default function WorkspaceTable({
 
               {/* Raw Uploaded Row Values */}
               <div className="space-y-2">
-                <div className="flex items-center space-x-1.5 text-xs font-bold text-slate-700">
+                <div className="flex items-center space-x-1.5 text-xs font-bold text-ds-muted">
                   <FileText size={14} />
                   <span>Original Raw Uploaded Row</span>
                 </div>
-                <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 space-y-2 text-xs max-h-72 overflow-y-auto">
+                <div className="bg-ds-surface-elevated/30 border border-ds-border rounded-ds-md p-3 space-y-2 text-xs max-h-72 overflow-y-auto">
                   {Object.entries(selectedRecordForDetail.raw_data || {}).length > 0 ? (
                     Object.entries(selectedRecordForDetail.raw_data || {}).map(([key, val]) => (
-                      <div key={key} className="flex justify-between items-center py-1 border-b border-slate-200/60 last:border-0 font-mono text-[11px]">
-                        <span className="text-slate-500">{key}:</span>
-                        <span className="text-slate-800 max-w-[200px] truncate" title={String(val)}>
+                      <div key={key} className="flex justify-between items-center py-1 border-b border-ds-border/60 last:border-0 font-mono text-[11px]">
+                        <span className="text-ds-muted">{key}:</span>
+                        <span className="text-ds-text max-w-[200px] truncate" title={String(val)}>
                           {String(val || '')}
                         </span>
                       </div>
                     ))
                   ) : (
-                    <div className="text-slate-400 italic text-[11px] py-4 text-center">
+                    <div className="text-ds-muted italic text-[11px] py-4 text-center">
                       No raw row snapshot preserved.
                     </div>
                   )}
                 </div>
               </div>
             </div>
-
-            <div className="flex justify-end pt-2">
-              <button
-                type="button"
-                onClick={() => setSelectedRecordForDetail(null)}
-                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white text-xs font-bold rounded-xl transition-colors cursor-pointer"
-              >
-                Close Inspector
-              </button>
-            </div>
           </div>
-        </div>
+        </Modal>
       )}
+
+      {/* Accessible Confirm Dialog for Clear All */}
+      <ConfirmDialog
+        open={confirmClearOpen}
+        title="Clear Centralized Records"
+        message="Are you sure you want to clear all Centralized Uploaded Data records? This action cannot be undone."
+        confirmLabel="Clear All Records"
+        cancelLabel="Cancel"
+        tone="danger"
+        onConfirm={executeClearAll}
+        onCancel={() => setConfirmClearOpen(false)}
+      />
     </div>
   );
 }

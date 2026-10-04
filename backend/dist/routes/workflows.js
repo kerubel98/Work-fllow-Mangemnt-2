@@ -2,15 +2,28 @@ import { Router } from 'express';
 import { repo } from '../store/repository.js';
 import { executeLiveQueryOnDb } from '../services/dbConnectionManager.js';
 export const workflowsRouter = Router();
-// Helper to batch-hydrate attached column configurations onto workflow steps
+// Helper to batch-hydrate attached column configurations onto workflow steps and stages
 async function hydrateWorkflowColumnConfigurations(wf) {
     if (!wf)
         return wf;
     const allConfigIds = [];
     const steps = Array.isArray(wf.steps) ? wf.steps : [];
+    const stages = Array.isArray(wf.stages) ? wf.stages : [];
+    const wfConfigIds = Array.isArray(wf.attachedDbConfigIds) ? wf.attachedDbConfigIds : [];
+    for (const cid of wfConfigIds) {
+        if (cid && !allConfigIds.includes(cid))
+            allConfigIds.push(cid);
+    }
     for (const s of steps) {
-        if (Array.isArray(s.columnConfigurationIds)) {
-            for (const cid of s.columnConfigurationIds) {
+        const ids = [...(s.columnConfigurationIds || []), ...(s.attachedDbConfigIds || [])];
+        for (const cid of ids) {
+            if (cid && !allConfigIds.includes(cid))
+                allConfigIds.push(cid);
+        }
+    }
+    for (const st of stages) {
+        if (Array.isArray(st.attachedDbConfigIds)) {
+            for (const cid of st.attachedDbConfigIds) {
                 if (cid && !allConfigIds.includes(cid))
                     allConfigIds.push(cid);
             }
@@ -21,23 +34,46 @@ async function hydrateWorkflowColumnConfigurations(wf) {
         const fetched = await repo.getColumnConfigurationsByIds(allConfigIds);
         configMap = new Map(fetched.map(c => [c.id, c]));
     }
-    const hydratedSteps = await Promise.all(steps.map(async (s) => {
-        let cfgs = (s.columnConfigurationIds || [])
+    const hydratedSteps = steps.map(s => {
+        let ids = [...(s.columnConfigurationIds || []), ...(s.attachedDbConfigIds || [])];
+        // Strictly inherit workflow-level accepted configurations if step does not specify overrides
+        if (ids.length === 0 && wfConfigIds.length > 0) {
+            const matchDb = !s.targetDbId || s.targetDbId === wf.targetDbId;
+            const matchTable = !s.targetTable || s.targetTable === wf.targetTable;
+            if (matchDb && matchTable) {
+                ids = wfConfigIds;
+            }
+        }
+        const cfgs = ids
             .map(id => configMap.get(id))
             .filter(Boolean);
-        if (cfgs.length === 0 && (s.targetDbId || wf.targetDbId) && (s.targetTable || wf.targetTable)) {
-            try {
-                cfgs = await repo.getColumnConfigurations(s.targetDbId || wf.targetDbId, s.targetTable || wf.targetTable);
-            }
-            catch { }
-        }
         return {
             ...s,
             columnConfigurations: cfgs
         };
-    }));
+    });
+    const hydratedStages = stages.map(st => {
+        let ids = Array.isArray(st.attachedDbConfigIds) && st.attachedDbConfigIds.length > 0
+            ? st.attachedDbConfigIds
+            : [];
+        if (ids.length === 0 && wfConfigIds.length > 0) {
+            const matchDb = !st.targetDbId || st.targetDbId === wf.targetDbId;
+            const matchTable = !st.targetDataSource || st.targetDataSource === wf.targetTable;
+            if (matchDb && matchTable) {
+                ids = wfConfigIds;
+            }
+        }
+        const stageCfgs = ids
+            .map(id => configMap.get(id))
+            .filter(Boolean);
+        return {
+            ...st,
+            attachedDbConfigs: stageCfgs
+        };
+    });
     return {
         ...wf,
+        stages: hydratedStages,
         steps: hydratedSteps
     };
 }
@@ -85,6 +121,11 @@ workflowsRouter.post('/', async (req, res) => {
                 targetDbId: st?.targetDbId || data.targetDbId || '',
                 targetDataSource: st?.targetDataSource || data.targetTable || '',
                 businessMeaning: st?.businessMeaning,
+                attachedDbConfigIds: Array.isArray(st?.attachedDbConfigIds) ? st.attachedDbConfigIds : (Array.isArray(st?.columnConfigurationIds) ? st.columnConfigurationIds : []),
+                cardinalityPolicy: st?.cardinalityPolicy || 'STRICT_SINGLE',
+                aggregationStrategy: st?.aggregationStrategy || 'NONE',
+                orderByColumn: st?.orderByColumn,
+                mappingConfigId: st?.mappingConfigId,
                 createdAt: new Date().toISOString()
             }))
             : [
@@ -96,7 +137,10 @@ workflowsRouter.post('/', async (req, res) => {
                     enabled: true,
                     targetDbId: data.targetDbId || '',
                     targetDataSource: data.targetTable || '',
-                    businessMeaning: 'Primary Ingress'
+                    businessMeaning: 'Primary Ingress',
+                    attachedDbConfigIds: [],
+                    cardinalityPolicy: 'STRICT_SINGLE',
+                    aggregationStrategy: 'NONE'
                 }
             ];
         const defaultStageId = stages[0]?.id || `stage-${workflowId}-1`;
@@ -134,7 +178,12 @@ workflowsRouter.post('/', async (req, res) => {
                 reportField: s?.reportField,
                 successMessage: s?.successMessage || 'Check passed successfully.',
                 failureMessage: s?.failureMessage || 'Check failed criteria.',
-                severityOnFailure: s?.severityOnFailure || 'WARNING'
+                severityOnFailure: s?.severityOnFailure || 'WARNING',
+                columnConfigurationIds: Array.isArray(s?.columnConfigurationIds) ? s.columnConfigurationIds : (Array.isArray(s?.attachedDbConfigIds) ? s.attachedDbConfigIds : []),
+                attachedDbConfigIds: Array.isArray(s?.attachedDbConfigIds) ? s.attachedDbConfigIds : (Array.isArray(s?.columnConfigurationIds) ? s.columnConfigurationIds : []),
+                cardinalityPolicy: s?.cardinalityPolicy,
+                aggregationStrategy: s?.aggregationStrategy,
+                orderByColumn: s?.orderByColumn
             }))
             : [];
         const newWorkflow = {
@@ -144,6 +193,7 @@ workflowsRouter.post('/', async (req, res) => {
             targetDbId: data.targetDbId || defaultTargetDb,
             targetTable: data.targetTable || defaultDataSource,
             category: data.category || 'Reconciliation',
+            attachedDbConfigIds: Array.isArray(data.attachedDbConfigIds) ? data.attachedDbConfigIds : [],
             stages,
             steps,
             nodes: Array.isArray(data.nodes) ? data.nodes.filter(Boolean) : [],
