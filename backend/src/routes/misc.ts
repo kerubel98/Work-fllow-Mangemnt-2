@@ -17,8 +17,13 @@ miscRouter.get('/hashtags', async (_req: Request, res: Response) => {
 miscRouter.post('/hashtags', async (req: Request, res: Response) => {
   try {
     const newTag: HashtagPreset = req.body;
-    if (!newTag.tag || !newTag.solutionTemplate) {
-      return res.status(400).json({ error: 'Tag name and solution template are required' });
+    if (!newTag.tag) {
+      return res.status(400).json({ error: 'Tag name is required' });
+    }
+    const isFileIngestion = !newTag.hashtagType || newTag.hashtagType === 'FILE_INGESTION';
+    const requiresSolutionTemplate = isFileIngestion || newTag.conditionalAction?.onPass === 'EXECUTE_SQL';
+    if (requiresSolutionTemplate && !newTag.solutionTemplate) {
+      return res.status(400).json({ error: 'Solution template is required for file ingestion or SQL conditional remediation' });
     }
     const saved = await repo.createHashtag(newTag);
     return res.status(201).json(saved);
@@ -229,7 +234,45 @@ miscRouter.post('/hashtags/:tag/execute-scan', async (req: Request, res: Respons
       });
     }
 
-    const scanResult = await executeDatabaseDirectScan(preset as any, executedBy, isDryRun ?? true);
+    const isDryRunBool = isDryRun !== undefined ? Boolean(isDryRun) : true;
+    const scanResult = await executeDatabaseDirectScan(preset as any, executedBy, isDryRunBool);
+
+    let makerProposalId: string | null = null;
+
+    // Rule 7 Maker-Checker auto-staging: if live run passes with conditionalAction configured
+    if (!isDryRunBool && scanResult.verdict === 'PASS' && preset.conditionalAction) {
+      const action = preset.conditionalAction.onPass;
+      if (action === 'EXECUTE_SQL' || action === 'STAGE_PROPOSAL') {
+        try {
+          const { approvalService } = await import('../services/approvalService.js');
+          const proposal = await approvalService.submitProposal({
+            type: 'WORKSPACE_SETTING',
+            settingKey: normalized,
+            title: `Automated Remediation for ${normalized}`,
+            justification: `Automated scan completed with PASS verdict. Conditional action triggered: ${action}`,
+            makerId: executedBy,
+            makerName: executedBy,
+            teamId: teamId || 'default-team',
+            proposedChanges: {
+              action,
+              sql: preset.solutionTemplate || null,
+              hashtag: normalized
+            },
+            evidenceSnapshot: {
+              scanResult: {
+                rowsScanned: scanResult.rowsScanned,
+                anomaliesDetected: scanResult.anomaliesDetected,
+                verdict: scanResult.verdict,
+                executionDurationMs: scanResult.executionDurationMs
+              }
+            }
+          });
+          makerProposalId = proposal.id;
+        } catch (propErr: any) {
+          console.warn(`[execute-scan] Could not stage Maker proposal: ${propErr.message}`);
+        }
+      }
+    }
 
     // Record the run in PostgreSQL
     const runId = `run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -239,20 +282,104 @@ miscRouter.post('/hashtags/:tag/execute-scan', async (req: Request, res: Respons
       taskId: taskId || null,
       teamId: teamId || null,
       executedBy,
-      executionMode: isDryRun ? 'DRY_RUN_PARTIAL' : 'LIVE_FULL',
+      executionMode: isDryRunBool ? 'DRY_RUN_PARTIAL' : 'LIVE_FULL',
       rowsScanned: scanResult.rowsScanned,
       anomaliesDetected: scanResult.anomaliesDetected,
       verdict: scanResult.verdict,
+      makerProposalId,
       resultSnapshot: {
         anomalyRows: scanResult.anomalyRows.slice(0, 100),
         errors: scanResult.errors,
-        executionDurationMs: scanResult.executionDurationMs
+        executionDurationMs: scanResult.executionDurationMs,
+        makerProposalId
       },
-      isDiagnosticOnly: isDryRun ?? true,
+      isDiagnosticOnly: isDryRunBool,
       executedAt: new Date().toISOString()
     });
 
-    return res.json({ runId, ...scanResult });
+    return res.json({ runId, stagedProposalId: makerProposalId, ...scanResult });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/hashtags/:tag/execute-file
+// Executes Type A (File-Ingestion) validation and enrichment on uploaded records
+miscRouter.post('/hashtags/:tag/execute-file', async (req: Request, res: Response) => {
+  try {
+    const { executeFileIngestionHashtag } = await import('../services/hashtagService.js');
+    const { executedBy, fileRows, taskId, teamId } = req.body;
+    if (!executedBy) return res.status(400).json({ error: 'executedBy is required' });
+    if (!Array.isArray(fileRows)) return res.status(400).json({ error: 'fileRows array is required' });
+
+    const normalized = normalizeHashtagParam(req.params.tag);
+    const preset = await repo.getHashtagByTag(normalized);
+    if (!preset) return res.status(404).json({ error: `Hashtag '${normalized}' not found` });
+
+    const result = await executeFileIngestionHashtag(preset, fileRows);
+    const runId = `run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+    await repo.recordHashtagRun({
+      id: runId,
+      hashtagTag: normalized,
+      taskId: taskId || null,
+      teamId: teamId || null,
+      executedBy,
+      executionMode: 'LIVE_FULL',
+      rowsScanned: fileRows.length,
+      anomaliesDetected: result.valid ? 0 : result.missingColumns.length,
+      verdict: result.valid ? 'PASS' : 'FAIL',
+      resultSnapshot: {
+        enrichedCount: result.enrichedRecords.length,
+        missingColumns: result.missingColumns,
+        errors: result.errors
+      },
+      isDiagnosticOnly: false,
+      executedAt: new Date().toISOString()
+    });
+
+    return res.json({ runId, ...result });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/hashtags/:tag/execute-audit
+// Executes Type D (Auditing & Governance) sweep with diagnostic taint tracking
+miscRouter.post('/hashtags/:tag/execute-audit', async (req: Request, res: Response) => {
+  try {
+    const { executeAuditingGovernance } = await import('../services/hashtagService.js');
+    const { executedBy, teamId, taskId } = req.body;
+    if (!executedBy) return res.status(400).json({ error: 'executedBy is required' });
+
+    const normalized = normalizeHashtagParam(req.params.tag);
+    const preset = await repo.getHashtagByTag(normalized);
+    if (!preset) return res.status(404).json({ error: `Hashtag '${normalized}' not found` });
+
+    const result = await executeAuditingGovernance(preset, teamId);
+    const runId = `run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+
+    await repo.recordHashtagRun({
+      id: runId,
+      hashtagTag: normalized,
+      taskId: taskId || null,
+      teamId: teamId || null,
+      executedBy,
+      executionMode: 'LIVE_FULL',
+      rowsScanned: result.auditRows.length,
+      anomaliesDetected: result.slaBreachedCount,
+      verdict: result.verdict,
+      resultSnapshot: {
+        slaCompliantCount: result.slaCompliantCount,
+        slaBreachedCount: result.slaBreachedCount,
+        makerCheckerAdherenceRate: result.makerCheckerAdherenceRate,
+        auditRowCount: result.auditRows.length
+      },
+      isDiagnosticOnly: true,
+      executedAt: new Date().toISOString()
+    });
+
+    return res.json({ runId, ...result });
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
   }

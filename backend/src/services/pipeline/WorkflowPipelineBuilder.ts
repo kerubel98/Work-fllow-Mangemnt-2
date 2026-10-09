@@ -43,6 +43,7 @@ import {
   ConditionCheckMethod,
   ReconciliationMethod,
   DiagnosticReportMethod,
+  DbConfigValidationMethod,
 } from './methods/index.js';
 
 // ---------------------------------------------------------------------------
@@ -176,6 +177,31 @@ export class WorkflowPipelineBuilder {
         ...inheritedWfConfigIds
       ]));
 
+      // Gather attached DatabaseColumnConfiguration objects
+      const attachedConfigs: any[] = [
+        ...((stage as any).attachedDbConfigs || []),
+        ...effectiveSteps.flatMap((s: any) => s.columnConfigurations || []),
+        ...(((workflow as any).columnConfigurations || []).filter((c: any) =>
+          attachedDbConfigIds.includes(c.id)
+        ))
+      ];
+
+      const uniqueConfigMap = new Map<string, any>();
+      for (const cfg of attachedConfigs) {
+        if (cfg && cfg.id && !uniqueConfigMap.has(cfg.id)) {
+          uniqueConfigMap.set(cfg.id, cfg);
+        }
+      }
+
+      const dbConfigMethods: DbConfigValidationMethod[] = Array.from(uniqueConfigMap.values()).map(cfg =>
+        new DbConfigValidationMethod(
+          cfg,
+          stage.order ?? 1,
+          stage.targetDbId || workflow.targetDbId,
+          stage.targetDataSource || workflow.targetTable
+        )
+      );
+
       executableStages.push(new ExecutableStage(
         stage.id,
         stage.name,
@@ -185,7 +211,8 @@ export class WorkflowPipelineBuilder {
         validationMethods,
         effectiveSteps,
         stage.aggregationStrategy,
-        attachedDbConfigIds
+        attachedDbConfigIds,
+        dbConfigMethods
       ));
     }
 

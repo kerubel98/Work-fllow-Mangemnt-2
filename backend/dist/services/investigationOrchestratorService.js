@@ -15,7 +15,7 @@ import { dbLivenessService } from './dbLivenessService.js';
 import { mirrorTableManager } from './mirrorTableManager.js';
 import { ruleSqlCompiler } from './ruleSqlCompiler.js';
 import { workflowEngineSingleton } from './workflowEngineSingleton.js';
-import { queryPg } from '../config/postgres.js';
+import { queryPg, getPostgresPool, isPostgresConnected } from '../config/postgres.js';
 import { nextStageInputResolver } from './nextStageInputResolver.js';
 import { validationPipelineBuilder } from './validationPipelineBuilder.js';
 import { workflowPipelineBuilder } from './pipeline/index.js';
@@ -246,7 +246,7 @@ export const investigationOrchestratorService = {
         }
         // Wait on any in-flight promises from other users and place at original indices
         if (inFlight.length > 0) {
-            const inFlightResults = await Promise.allSettled(inFlight.map(i => i.promise));
+            const inFlightResults = await Promise.allSettled(inFlight.map((i) => i.promise));
             for (let i = 0; i < inFlight.length; i++) {
                 const item = inFlight[i];
                 const res = inFlightResults[i];
@@ -1095,137 +1095,183 @@ export const investigationOrchestratorService = {
             freshCount: (records || []).length,
             cachedHits: 0
         });
-        const pipeline = workflowPipelineBuilder.compile(workflow);
-        // Ensure all records carry universal row coordinates (_row_number, _task_id)
-        const inputRows = (records || []).map((r, idx) => ({
-            ...r,
-            _row_number: Number(r._row_number ?? r.row_number ?? (idx + 1)),
-            _task_id: taskId,
-        }));
-        const batchCtx = {
-            taskId,
-            batchId: jobId,
-            ruleBlockId: `rb-${workflow.id}`,
-            stageId: '',
-            stageName: '',
-            totalRecords: inputRows.length,
-            executionTimestamp: new Date().toISOString(),
-        };
-        const dbLookup = async (id) => repo.getDatabaseConnectionById(id);
-        const batchReport = await pipeline.executeBatch(batchCtx, inputRows, dbLookup);
-        // Phase 4: Map each input row to its individual evaluated outcome using batchReport.rowOutcomes
-        const outcomeMap = new Map((batchReport.rowOutcomes || []).map((o) => [Number(o.rowNumber), o]));
-        const evaluatedRecords = inputRows.map((r) => {
-            const rowNum = Number(r._row_number);
-            const outcome = outcomeMap.get(rowNum);
-            const stepEntries = (workflow.stages && workflow.stages.length > 0)
-                ? workflow.stages.flatMap(stg => (stg.steps || []).map((st) => ({
-                    ruleId: st.id,
-                    ruleName: st.name || stg.name,
-                    stageId: stg.id,
-                    stageName: stg.name,
-                    targetDb: stg.targetDbId || '',
-                    targetTable: stg.targetDataSource || '',
-                    validationResult: outcome?.validationStatus || 'PASS',
-                    pipelineAction: outcome?.validationAction || 'CONTINUE',
-                    executionTimestamp: new Date().toISOString(),
-                    details: outcome?.details,
-                })))
-                : (workflow.steps || []).map((st) => ({
-                    ruleId: st.id,
-                    ruleName: st.name || workflow.name,
-                    stageId: 'default-stage',
-                    stageName: 'Default Stage',
-                    targetDb: workflow.targetDbId || '',
-                    targetTable: workflow.targetTable || '',
-                    validationResult: outcome?.validationStatus || 'PASS',
-                    pipelineAction: outcome?.validationAction || 'CONTINUE',
-                    executionTimestamp: new Date().toISOString(),
-                    details: outcome?.details,
-                }));
-            return {
-                ...r,
-                _validation_status: outcome?.validationStatus || (batchReport.failedCount === 0 ? 'PASS' : 'FAIL'),
-                _validation_action: outcome?.validationAction || (batchReport.failedCount === 0 ? 'CONTINUE' : 'STOP'),
-                _validation_details: outcome?.details || {
-                    totalEvaluated: batchReport.totalEvaluated,
-                    passedCount: batchReport.passedCount,
-                    failedCount: batchReport.failedCount,
-                    stageResults: batchReport.stageResults,
-                },
-                _target_record: outcome?.targetRecord || r._target_record || null,
-                _validation_workflow_id: workflowId,
-                _validation_workflow_name: workflow.name,
-                auditTrail: stepEntries,
-            };
-        });
-        eventService.broadcastEvent('workflow:completed', {
-            jobId,
-            workflowId,
-            totalRecords: records.length,
-            passedCount: batchReport.passedCount,
-            failedCount: batchReport.failedCount,
-            durationMs: Date.now() - startTime
-        });
-        if (sourceId) {
+        let lockClient = null;
+        if (isPostgresConnected && sourceId) {
             try {
-                const resultMap = {};
-                for (const rec of evaluatedRecords) {
-                    const k = String(rec.transaction_id ?? rec.id ?? rec._row_number);
-                    const evalEntry = {
-                        status: rec._validation_status,
-                        action: rec._validation_action,
-                        details: rec._validation_details,
-                        targetRecord: rec._target_record,
-                        auditTrail: rec.auditTrail,
-                    };
-                    resultMap[k] = evalEntry;
-                    resultMap[`ROW-${rec._row_number}`] = evalEntry;
-                }
-                await repo.recordTaskWorkflowExecution({
-                    taskId: sourceId,
-                    workflowId,
-                    workflowName: workflow.name,
-                    status: 'COMPLETED',
-                    totalRecords: records.length,
-                    passedCount: batchReport.passedCount,
-                    failedCount: batchReport.failedCount,
-                    durationMs: Date.now() - startTime,
-                    executedBy: envelope.executedBy || 'SYSTEM',
-                    executionSummary: {
-                        total: records.length,
-                        passed: batchReport.passedCount,
-                        failed: batchReport.failedCount,
-                        results: resultMap,
-                    },
-                });
-                await repo.updateTaskDatasetValidationStatus(sourceId, workflowId, workflow.name, evaluatedRecords.map((r) => ({
-                    key: `ROW-${r._row_number}`,
-                    status: r._validation_status,
-                    details: r._validation_details,
-                    targetRecord: r._target_record,
-                    targetDb: workflow.targetDbId || '',
-                    targetTable: workflow.targetTable || '',
-                    auditTrail: r.auditTrail,
-                    stageResults: r.auditTrail,
-                })));
+                const pool = getPostgresPool();
+                lockClient = await pool.connect();
+                await lockClient.query(`SELECT pg_advisory_lock(('x' || substr(md5('task_exec_' || $1), 1, 16))::bit(64)::bigint)`, [sourceId]);
             }
-            catch (saveErr) {
-                console.warn(`[executeViaNewPipeline] Persistence notice: ${saveErr.message}`);
+            catch (lockErr) {
+                console.warn(`[executeViaNewPipeline] Advisory lock notice: ${lockErr.message}`);
+                if (lockClient) {
+                    try {
+                        lockClient.release();
+                    }
+                    catch { }
+                    lockClient = null;
+                }
             }
         }
-        return {
-            jobId,
-            sourceType: sourceType || 'DIRECT_API',
-            workflowId,
-            totalRecords: records.length,
-            processedRecords: records.length,
-            passedCount: batchReport.passedCount,
-            failedCount: batchReport.failedCount,
-            cachedHits: 0,
-            durationMs: Date.now() - startTime,
-            records: evaluatedRecords,
-        };
+        try {
+            const pipeline = workflowPipelineBuilder.compile(workflow);
+            // Ensure all records carry universal row coordinates (_row_number, _task_id) and clean string keys
+            const inputRows = (records || []).map((r, idx) => {
+                const rowNum = Number(r._row_number ?? r.row_number ?? (idx + 1));
+                const rowObj = {
+                    ...r,
+                    _row_number: rowNum,
+                    _task_id: taskId,
+                };
+                for (const k of Object.keys(rowObj)) {
+                    if (/utrnno|refnum|reference|terminal_id|tran_id|rrn|acct/i.test(k) && typeof rowObj[k] === 'number') {
+                        rowObj[k] = String(rowObj[k]).trim();
+                    }
+                }
+                return rowObj;
+            });
+            const batchCtx = {
+                taskId,
+                batchId: jobId,
+                ruleBlockId: `rb-${workflow.id}`,
+                stageId: '',
+                stageName: '',
+                totalRecords: inputRows.length,
+                executionTimestamp: new Date().toISOString(),
+            };
+            const dbLookup = async (id) => repo.getDatabaseConnectionById(id);
+            const batchReport = await pipeline.executeBatch(batchCtx, inputRows, dbLookup);
+            // Phase 4: Map each input row to its individual evaluated outcome using batchReport.rowOutcomes
+            const outcomeMap = new Map((batchReport.rowOutcomes || []).map((o) => [Number(o.rowNumber), o]));
+            const evaluatedRecords = inputRows.map((r) => {
+                const rowNum = Number(r._row_number);
+                const outcome = outcomeMap.get(rowNum);
+                const stepEntries = (workflow.stages && workflow.stages.length > 0)
+                    ? workflow.stages.flatMap(stg => (stg.steps || []).map((st) => ({
+                        ruleId: st.id,
+                        ruleName: st.name || stg.name,
+                        stageId: stg.id,
+                        stageName: stg.name,
+                        targetDb: stg.targetDbId || '',
+                        targetTable: stg.targetDataSource || '',
+                        validationResult: outcome?.validationStatus || 'PASS',
+                        pipelineAction: outcome?.validationAction || 'CONTINUE',
+                        executionTimestamp: new Date().toISOString(),
+                        details: outcome?.details,
+                    })))
+                    : (workflow.steps || []).map((st) => ({
+                        ruleId: st.id,
+                        ruleName: st.name || workflow.name,
+                        stageId: 'default-stage',
+                        stageName: 'Default Stage',
+                        targetDb: workflow.targetDbId || '',
+                        targetTable: workflow.targetTable || '',
+                        validationResult: outcome?.validationStatus || 'PASS',
+                        pipelineAction: outcome?.validationAction || 'CONTINUE',
+                        executionTimestamp: new Date().toISOString(),
+                        details: outcome?.details,
+                    }));
+                return {
+                    ...r,
+                    _validation_status: outcome?.validationStatus || 'FAIL',
+                    _validation_action: outcome?.validationAction || 'STOP',
+                    _validation_details: outcome?.details || {
+                        existence: 'UNPROCESSED_COORDINATE_IN_PIPELINE',
+                        reason: 'Row coordinate was not processed or missing from pipeline stages',
+                        totalEvaluated: batchReport.totalEvaluated,
+                        passedCount: batchReport.passedCount,
+                        failedCount: batchReport.failedCount,
+                        stageResults: batchReport.stageResults,
+                    },
+                    _target_record: outcome?.targetRecord || r._target_record || null,
+                    _validation_workflow_id: workflowId,
+                    _validation_workflow_name: workflow.name,
+                    auditTrail: stepEntries,
+                };
+            });
+            eventService.broadcastEvent('workflow:completed', {
+                jobId,
+                workflowId,
+                totalRecords: records.length,
+                passedCount: batchReport.passedCount,
+                failedCount: batchReport.failedCount,
+                durationMs: Date.now() - startTime
+            });
+            if (sourceId) {
+                try {
+                    const resultMap = {};
+                    for (const rec of evaluatedRecords) {
+                        const k = String(rec.transaction_id ?? rec.id ?? rec._row_number);
+                        const evalEntry = {
+                            status: rec._validation_status,
+                            action: rec._validation_action,
+                            details: rec._validation_details,
+                            targetRecord: rec._target_record,
+                            auditTrail: rec.auditTrail,
+                        };
+                        resultMap[k] = evalEntry;
+                        resultMap[`ROW-${rec._row_number}`] = evalEntry;
+                    }
+                    await repo.recordTaskWorkflowExecution({
+                        taskId: sourceId,
+                        workflowId,
+                        workflowName: workflow.name,
+                        status: 'COMPLETED',
+                        totalRecords: records.length,
+                        passedCount: batchReport.passedCount,
+                        failedCount: batchReport.failedCount,
+                        durationMs: Date.now() - startTime,
+                        executedBy: envelope.executedBy || 'SYSTEM',
+                        executionSummary: {
+                            total: records.length,
+                            passed: batchReport.passedCount,
+                            failed: batchReport.failedCount,
+                            totalCount: records.length,
+                            passedCount: batchReport.passedCount,
+                            failedCount: batchReport.failedCount,
+                            results: resultMap,
+                        },
+                    });
+                    await repo.updateTaskDatasetValidationStatus(sourceId, workflowId, workflow.name, evaluatedRecords.map((r) => ({
+                        key: `ROW-${r._row_number}`,
+                        status: r._validation_status,
+                        details: r._validation_details,
+                        targetRecord: r._target_record,
+                        targetDb: workflow.targetDbId || '',
+                        targetTable: workflow.targetTable || '',
+                        auditTrail: r.auditTrail,
+                        stageResults: r.auditTrail,
+                    })));
+                }
+                catch (saveErr) {
+                    console.warn(`[executeViaNewPipeline] Persistence notice: ${saveErr.message}`);
+                }
+            }
+            return {
+                jobId,
+                sourceType: sourceType || 'DIRECT_API',
+                workflowId,
+                totalRecords: records.length,
+                processedRecords: records.length,
+                passedCount: batchReport.passedCount,
+                failedCount: batchReport.failedCount,
+                cachedHits: 0,
+                durationMs: Date.now() - startTime,
+                records: evaluatedRecords,
+            };
+        }
+        finally {
+            if (lockClient) {
+                try {
+                    await lockClient.query(`SELECT pg_advisory_unlock(('x' || substr(md5('task_exec_' || $1), 1, 16))::bit(64)::bigint)`, [sourceId]);
+                }
+                catch { }
+                try {
+                    lockClient.release();
+                }
+                catch { }
+            }
+        }
     },
     /**
      * Executes an investigation task across batched external queries,

@@ -304,7 +304,8 @@ export interface ConditionEvaluationResult {
 export function evaluateRuleCondition(
   record: Record<string, any>,
   rule: ValidationCheckStep,
-  stage?: ProcessingStage
+  stage?: ProcessingStage,
+  workflow?: DatabaseValidationWorkflow
 ): ConditionEvaluationResult {
   try {
     // Gather ALL parameters configured for this validation box / rule
@@ -362,6 +363,8 @@ export function evaluateRuleCondition(
     );
 
     const isTargetDbConfigured = Boolean(
+      workflow?.targetDbId ||
+      workflow?.targetTable ||
       stage?.targetDbId ||
       rule.targetDbId ||
       stage?.targetDataSource ||
@@ -1080,7 +1083,7 @@ export function executeWorkflowForTransaction(
       }
 
       // Evaluate condition against active working record
-      const evalResult = evaluateRuleCondition(currentWorkingRecord, rule, stage);
+      const evalResult = evaluateRuleCondition(currentWorkingRecord, rule, stage, workflow);
       const action = resolveRuleAction(evalResult.status, rule);
       const durationMs = Date.now() - startTime;
 

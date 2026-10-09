@@ -450,7 +450,9 @@ export const dataSanitizerService = {
           }
         } else {
           // String / text
-          cleanRow[targetKey] = typeof rawVal === 'string' ? rawVal.trim() : rawVal;
+          cleanRow[targetKey] = typeof rawVal === 'string'
+            ? rawVal.trim()
+            : (rawVal !== null && rawVal !== undefined ? String(rawVal).trim() : rawVal);
         }
       }
 

@@ -1341,8 +1341,26 @@ export const api = {
     }),
 
   executeHashtagScan: (tag: string, payload: { executedBy: string; taskId?: string; teamId?: string; isDryRun?: boolean }) =>
-    fetchApi<{ runId: string; rowsScanned: number; anomaliesDetected: number; anomalyRows: any[]; verdict: string; executionDurationMs: number; errors: string[] }>(
+    fetchApi<{ runId: string; stagedProposalId?: string | null; rowsScanned: number; anomaliesDetected: number; anomalyRows: any[]; verdict: string; executionDurationMs: number; errors: string[] }>(
       `/hashtags/${encodeURIComponent(tag)}/execute-scan`,
+      {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      }
+    ),
+
+  executeHashtagFile: (tag: string, payload: { executedBy: string; fileRows: any[]; taskId?: string; teamId?: string }) =>
+    fetchApi<{ runId: string; valid: boolean; missingColumns: string[]; enrichedRecords: any[]; errors: string[] }>(
+      `/hashtags/${encodeURIComponent(tag)}/execute-file`,
+      {
+        method: 'POST',
+        body: JSON.stringify(payload)
+      }
+    ),
+
+  executeHashtagAudit: (tag: string, payload: { executedBy: string; teamId?: string; taskId?: string }) =>
+    fetchApi<{ runId: string; slaCompliantCount: number; slaBreachedCount: number; makerCheckerAdherenceRate: number; auditRows: any[]; verdict: string; isDiagnosticOnly: boolean }>(
+      `/hashtags/${encodeURIComponent(tag)}/execute-audit`,
       {
         method: 'POST',
         body: JSON.stringify(payload)

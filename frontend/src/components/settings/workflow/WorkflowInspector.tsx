@@ -695,9 +695,16 @@ export const WorkflowInspector: React.FC<WorkflowInspectorProps> = ({
                             <span className={`font-semibold truncate text-[11px] ${isAttached ? 'text-white' : 'text-slate-300'}`}>
                               {cfg.name}
                             </span>
-                            <span className={`text-[8px] font-mono uppercase px-1 py-0.2 rounded border ${badge.bg}`}>
-                              {badge.label}
-                            </span>
+                            <div className="flex items-center gap-1 shrink-0">
+                              {cfg.statusBehavior === 'REPORT_ONLY' && (
+                                <span className="text-[7px] font-mono uppercase px-1 py-0.2 rounded bg-purple-950/80 text-purple-300 border border-purple-500/40">
+                                  REPORT ONLY
+                                </span>
+                              )}
+                              <span className={`text-[8px] font-mono uppercase px-1 py-0.2 rounded border ${badge.bg}`}>
+                                {badge.label}
+                              </span>
+                            </div>
                           </div>
                           <div className="text-[9px] text-slate-400 truncate font-mono">
                             {cfg.columns?.map(c => c.columnName).join(', ') || cfg.tableName}
@@ -1067,9 +1074,16 @@ export const WorkflowInspector: React.FC<WorkflowInspectorProps> = ({
                           {cfg.name}
                         </span>
                       </div>
-                      <span className={`text-[9px] font-mono px-1 py-0.2 rounded border shrink-0 ${badge.bg}`}>
-                        {badge.label}
-                      </span>
+                      <div className="flex items-center gap-1 shrink-0">
+                        {cfg.statusBehavior === 'REPORT_ONLY' && (
+                          <span className="text-[7px] font-mono uppercase px-1 py-0.2 rounded bg-purple-950/80 text-purple-300 border border-purple-500/40">
+                            REPORT ONLY
+                          </span>
+                        )}
+                        <span className={`text-[9px] font-mono px-1 py-0.2 rounded border shrink-0 ${badge.bg}`}>
+                          {badge.label}
+                        </span>
+                      </div>
                     </div>
 
                     {colNames.length > 0 && (

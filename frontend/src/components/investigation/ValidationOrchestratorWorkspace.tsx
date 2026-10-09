@@ -604,6 +604,7 @@ export default function ValidationOrchestratorWorkspace({
   const [showValidationDropdown, setShowValidationDropdown] = useState(false);
   const [inspectingRow, setInspectingRow] = useState<OrchestratedRow | null>(null);
   const [outcomeDrilldownRow, setOutcomeDrilldownRow] = useState<any | null>(null);
+  const [drilldownLegIndex, setDrilldownLegIndex] = useState<number>(0);
   const [copiedId, setCopiedId] = useState<string | null>(null);
 
   // Manual Transaction Investigation Status Overrides
@@ -1150,7 +1151,9 @@ export default function ValidationOrchestratorWorkspace({
       }
       const tuple = wfParamsPresent.map(p => String(row[p] ?? '').trim()).filter(Boolean).join(':::');
       if (tuple && !keys.includes(tuple)) keys.push(tuple);
-      keys.push(`ROW-${rowIdx + 1}`);
+      const rowNum = row._rowNumber ?? row._row_number ?? (rowIdx + 1);
+      keys.push(`ROW-${rowNum}`);
+      keys.push(String(rowNum));
       return keys;
     };
 
@@ -1948,7 +1951,9 @@ export default function ValidationOrchestratorWorkspace({
           .filter(Boolean)
           .join(':::');
         if (tupleKey && !candidateKeys.includes(tupleKey)) candidateKeys.push(tupleKey);
-        candidateKeys.push(`ROW-${idx + 1}`);
+        const rowNum = r._rowNumber ?? r._row_number ?? (idx + 1);
+        candidateKeys.push(`ROW-${rowNum}`);
+        candidateKeys.push(String(rowNum));
 
         candidateKeys.forEach(k => {
           serverMap[k] = r;
@@ -2302,8 +2307,10 @@ export default function ValidationOrchestratorWorkspace({
       let detail = res?.badgeText || res?.summary;
 
       // CRITICAL: If target database was queried and returned 0 matching records,
+      // or workflow requires a target table and targetRecord is not present,
       // any EXISTENCE_CHECK step MUST evaluate to FAIL:
-      if (step.checkType === 'EXISTENCE_CHECK' && hasTargetRecordExplicit && !targetRecord) {
+      const isMissingInTarget = !targetRecord && (Boolean(workflow.targetTable) || step.checkType === 'EXISTENCE_CHECK');
+      if (isMissingInTarget && isEvaluated) {
         stepStatus = 'FAIL';
         actionTaken = step.onFailAction || 'STOP';
         detail = `Record not found in target database (${targetDbName}.${targetTableName})`;
@@ -2326,7 +2333,8 @@ export default function ValidationOrchestratorWorkspace({
     });
 
     if (!hasAnyResults) {
-      if (hasTargetRecordExplicit && !targetRecord) {
+      const isMissingInTarget = !targetRecord && (Boolean(workflow.targetTable) || workflow.steps.some(s => s.checkType === 'EXISTENCE_CHECK'));
+      if (isMissingInTarget && isEvaluated) {
         const failMsg = `Record not found in target database (${targetDbName}.${targetTableName})`;
         return {
           status: 'FAIL',
@@ -2349,7 +2357,7 @@ export default function ValidationOrchestratorWorkspace({
       // Check if this row was already evaluated in a conducted workflow from the database
       const rowValStatus = isServerRecMatch ? serverRec._validation_status : (isRowWfMatch ? (row?.sourceRecord?._validation_status || row?._validation_status) : null);
 
-      if (rowValStatus === 'PASS') {
+      if (rowValStatus === 'PASS' && (!workflow.targetTable || targetRecord)) {
         return {
           status: 'PASS',
           message: 'All Checks Passed',
@@ -2525,10 +2533,30 @@ export default function ValidationOrchestratorWorkspace({
   const renderConsolidatedWorkflowOutcome = (row: any, workflow: DatabaseValidationWorkflow | null) => {
     const outcome = evaluateWorkflowOutcome(row, workflow);
 
+    const reconStatus = row.sourceRecord?.reconciliation_status 
+      || row.canonical_data?.reconciliation_status 
+      || row.reconciliation_status;
+
+    const returnedData = row.returned_data 
+      || row.sourceRecord?.returned_data 
+      || row.canonical_data?.returned_data;
+
+    let legCount = 0;
+    if (returnedData && typeof returnedData === 'object') {
+      const wfLegs = workflow?.id ? returnedData[workflow.id] : null;
+      if (wfLegs && typeof wfLegs === 'object') {
+        const tableLegs = Object.values(wfLegs);
+        for (const t of tableLegs) {
+          if (Array.isArray(t)) legCount += t.length;
+          else if (t) legCount += 1;
+        }
+      }
+    }
+
     if (outcome.status === 'PENDING') {
       return (
         <span
-          onClick={() => setOutcomeDrilldownRow(row)}
+          onClick={() => { setDrilldownLegIndex(0); setOutcomeDrilldownRow(row); }}
           className="px-2 py-0.5 rounded text-[10px] font-mono text-slate-400 bg-slate-100 border border-slate-200 cursor-pointer hover:bg-slate-200 transition"
           title="Click to inspect validation steps"
         >
@@ -2542,7 +2570,7 @@ export default function ValidationOrchestratorWorkspace({
 
     return (
       <div
-        onClick={() => setOutcomeDrilldownRow(row)}
+        onClick={() => { setDrilldownLegIndex(0); setOutcomeDrilldownRow(row); }}
         className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-xs font-semibold cursor-pointer transition shadow-2xs hover:shadow-xs select-none ${isFail
             ? isCritical
               ? 'bg-rose-50 border-rose-300 text-rose-800 hover:bg-rose-100'
@@ -2557,10 +2585,27 @@ export default function ValidationOrchestratorWorkspace({
           <CheckCircle2 size={13} className="text-emerald-600 shrink-0" />
         )}
 
-        <span className="max-w-[260px] truncate text-[11px] font-bold">
+        <span className="max-w-[180px] truncate text-[11px] font-bold">
           {typeof outcome.message === 'string' ? outcome.message : formatValidationDetail(outcome.message, 'Validation Discrepancy')}
         </span>
 
+        {/* Level 1 Reconciliation Presence Badge */}
+        {reconStatus && (
+          <span className={`px-1 py-0.2 rounded text-[8px] font-mono font-bold shrink-0 ${
+            reconStatus === 'PASS' ? 'bg-teal-100 text-teal-800 border border-teal-300' : 'bg-rose-100 text-rose-800 border border-rose-300'
+          }`} title="Level 1 Mirror Presence Discovery">
+            R:{reconStatus}
+          </span>
+        )}
+
+        {/* Multi-Leg Count Badge */}
+        {legCount > 1 && (
+          <span className="px-1.5 py-0.2 rounded text-[8px] font-mono font-bold bg-indigo-100 text-indigo-800 border border-indigo-300 shrink-0" title={`${legCount} Multi-Leg records discovered in external ledger`}>
+            {legCount} Legs
+          </span>
+        )}
+
+        {/* Level 2 Business Validation Status Badge */}
         <span className={`px-1.5 py-0.2 rounded-full text-[9px] font-mono font-bold shrink-0 ${isFail
             ? isCritical ? 'bg-rose-200 text-rose-900' : 'bg-amber-200 text-amber-900'
             : 'bg-emerald-200 text-emerald-900'
@@ -4566,14 +4611,27 @@ export default function ValidationOrchestratorWorkspace({
           outcomeDrilldownRow.canonical_data?._validation_workflow_id === activeWorkflow.id
         );
 
-        const targetRecord = (isServerRecMatch ? serverRec?._target_record : null)
-          ?? (isRowWfMatch ? outcomeDrilldownRow._target_record : null)
-          ?? (isRowWfMatch ? outcomeDrilldownRow.sourceRecord?._target_record : null)
-          ?? (isRowWfMatch ? outcomeDrilldownRow.canonical_data?._target_record : null)
-          ?? (isRowWfMatch ? outcomeDrilldownRow.sourceRecord?.canonical_data?._target_record : null)
-          ?? null;
         const targetDbName = (isServerRecMatch && serverRec?._target_db) || (isRowWfMatch && outcomeDrilldownRow._target_db) || (isRowWfMatch && outcomeDrilldownRow.sourceRecord?._target_db) || activeWorkflow.targetDbId || 'Target Database';
         const targetTableName = (isServerRecMatch && serverRec?._target_table) || (isRowWfMatch && outcomeDrilldownRow._target_table) || (isRowWfMatch && outcomeDrilldownRow.sourceRecord?._target_table) || activeWorkflow.targetTable || 'transactions';
+
+        // Extract multi-leg array from returned_data in task_dataset_transactions
+        const modalReturnedData = outcomeDrilldownRow.returned_data
+          || outcomeDrilldownRow.canonical_data?.returned_data
+          || outcomeDrilldownRow.sourceRecord?.returned_data
+          || outcomeDrilldownRow.sourceRecord?.canonical_data?.returned_data
+          || {};
+        const modalWfData = modalReturnedData[activeWorkflow.id] || modalReturnedData;
+        const modalRawLegs = modalWfData[targetTableName] || modalWfData[activeWorkflow.targetTable || ''] || modalReturnedData[targetTableName] || modalReturnedData[activeWorkflow.targetTable || ''];
+        const returnedLegs: any[] = Array.isArray(modalRawLegs) ? modalRawLegs : (modalRawLegs ? [modalRawLegs] : []);
+
+        const targetRecord = (returnedLegs.length > 0 && returnedLegs[drilldownLegIndex])
+          ? returnedLegs[drilldownLegIndex]
+          : ((isServerRecMatch ? serverRec?._target_record : null)
+            ?? (isRowWfMatch ? outcomeDrilldownRow._target_record : null)
+            ?? (isRowWfMatch ? outcomeDrilldownRow.sourceRecord?._target_record : null)
+            ?? (isRowWfMatch ? outcomeDrilldownRow.canonical_data?._target_record : null)
+            ?? (isRowWfMatch ? outcomeDrilldownRow.sourceRecord?.canonical_data?._target_record : null)
+            ?? null);
 
         const getCaseInsensitiveVal = (obj: any, key: string) => {
           if (!obj || typeof obj !== 'object' || !key) return undefined;
@@ -4753,6 +4811,37 @@ export default function ValidationOrchestratorWorkspace({
                       )}
                     </div>
                   </div>
+
+                  {/* Multi-Leg Inspector Accordion / Tab Strip */}
+                  {returnedLegs.length > 1 && (
+                    <div className="flex flex-wrap items-center gap-2 p-2.5 bg-blue-50/70 border border-blue-200 rounded-xl">
+                      <div className="flex items-center gap-1.5 text-xs font-bold text-blue-900 shrink-0">
+                        <Layers size={14} className="text-blue-600" />
+                        <span>Multi-Leg Transaction ({returnedLegs.length} Legs Detected in {targetTableName}):</span>
+                      </div>
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        {returnedLegs.map((leg, idx) => {
+                          const isSelected = drilldownLegIndex === idx;
+                          const legKey = leg.refnum || leg.utrnno || leg.id || leg.amount || `Leg #${idx + 1}`;
+                          return (
+                            <button
+                              key={`leg-tab-${idx}`}
+                              type="button"
+                              onClick={() => setDrilldownLegIndex(idx)}
+                              className={`px-2.5 py-1 rounded-lg text-xs font-mono font-bold transition cursor-pointer flex items-center gap-1.5 ${
+                                isSelected
+                                  ? 'bg-blue-600 text-white shadow-xs'
+                                  : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-100'
+                              }`}
+                            >
+                              <span>Leg #{idx + 1}</span>
+                              <span className="text-[10px] opacity-80">({String(legKey).slice(0, 14)})</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
 
                   {targetRecord ? (
                     <div className="border border-slate-200 rounded-xl overflow-hidden shadow-xs">

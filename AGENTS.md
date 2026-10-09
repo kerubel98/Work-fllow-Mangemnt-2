@@ -114,5 +114,21 @@ Whenever modifying, designing, reviewing, or analyzing features in this reposito
     - **Explicit Database & Table Scoping**: Workflows must never execute queries against external tables with ambiguous or hardcoded references. Every workflow must specify its `targetDbId` and `targetTable` at the pipeline level, and each stage/node must bind strictly to registered database column configurations via `attachedDbConfigIds`.
     - **Execution Policy Preservation**: Multi-row cardinality policies (`cardinalityPolicy`), aggregation strategies (`aggregationStrategy`), and ordering columns (`orderByColumn`) must be preserved during conversion between stages, steps, and flowchart nodes.
 
+22. **Mandatory Architectural Entry Point & End-to-End Sign-Off Traceability**:
+    - **Authoritative Entry Point (`MASTER_ARCHITECTURE_INDEX.md`)**: The repository maintains a single grand entry point document, [`MASTER_ARCHITECTURE_INDEX.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/MASTER_ARCHITECTURE_INDEX.md), collecting and indexing all master architectural specifications, implementation plans, acceptance reports, audits, and decision logs across all subsystems.
+    - **Single Master Specification Anchor**: In all architectural modifications, features, or system refactors, engineering work MUST be governed by a designated primary Master Architectural Specification document (e.g. [`UNIVERSAL_HASHTAG_ARCHITECTURE_AND_SPECIFICATION.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/UNIVERSAL_HASHTAG_ARCHITECTURE_AND_SPECIFICATION.md), [`PIPELINE_ENGINE_MASTER_ARCHITECTURE.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/PIPELINE_ENGINE_MASTER_ARCHITECTURE.md)).
+    - **In-Document Architectural Change Summaries**: Whenever architectural changes are made, a structured change summary (Date, Scope, Rationale, and Physical Code Impact) MUST be appended directly under that master document's dedicated Changelog section AND mirrored in [`MASTER_ARCHITECTURE_INDEX.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/MASTER_ARCHITECTURE_INDEX.md).
+    - **Unified Lifecycle Reference Hub**: That primary architectural document MUST contain a dedicated, continuously maintained traceability section (`Implementation Flow: Architectural Roadmap, Acceptance & Audit Traceability`) indexing every related document across the entire lifecycle until final sign-off:
+      1. *Master Specifications & Domain Blueprints*
+      2. *Engineering Implementation Plans*
+      3. *Implementation Acceptance Reports*
+      4. *Independent Verification Audits & Code-Level Reality Checks*
+      5. *UI/UX Design System Audits*
+      6. *Architecture Decision Records (ADRs) & Decision Logs*
+    - **Summaries & Clickable Links**: Every referenced document MUST be hyperlinked using markdown links (`[Document](file:///...)`) and accompanied by concise, bullet-pointed summaries of its scope, findings, and key architectural points.
+    - **Anti-Premature Certification (Zero-Assumption Reality Gate)**: No architectural modification may be declared "100% Certified" or signed off based solely on passing unit tests or acceptance claims. Final sign-off requires a rigorous physical code audit verifying that all runtime execution bridges, API routes, scheduled triggers, and test assertion loops physically execute non-vacuously (preventing false-green tests and disconnected schema fields).
+
+
+
 
 

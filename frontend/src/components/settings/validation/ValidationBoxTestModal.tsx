@@ -127,87 +127,18 @@ export const ValidationBoxTestModal: React.FC<ValidationBoxTestModalProps> = ({
         setIsRunning(false);
         return;
       }
-    } catch (err) {
-      // Fallback to client-side deterministic evaluation below
-    }
-
-    // Deterministic client-side evaluation simulation:
-    setTimeout(() => {
-      const endTime = performance.now();
-      const elapsed = Math.round(endTime - startTime) || 12;
-
-      let verdict: 'PASS' | 'FAIL' | 'ERROR' = 'PASS';
-      let message = 'Validation condition met successfully.';
-      const details: Record<string, any> = {
-        boxId: box.id,
-        boxType: box.boxType,
-        targetTable: box.targetTable
-      };
-
-      if (box.boxType === 'INGESTION_SEARCH') {
-        const requiredParams = (box.searchParameters || []).filter(p => p.required);
-        const missing = requiredParams.filter(p => !parsedInput[p.inputField]);
-        if (missing.length > 0) {
-          verdict = 'FAIL';
-          message = `Missing required input fields: ${missing.map(m => m.inputField).join(', ')}`;
-        } else {
-          message = `Found matching record in target table '${box.targetTable}'. All required parameters satisfied.`;
-        }
-      } else if (box.boxType === 'RECONCILIATION') {
-        const inKey = box.matchKeyInput || 'reference_number';
-        const outKey = box.matchKeyExternal || 'ref_id';
-        const inVal = parsedInput[inKey];
-        const mirrorRows = Array.isArray(parsedMirror) ? parsedMirror : [parsedMirror];
-        const matched = mirrorRows.filter((r: any) => r[outKey] == inVal);
-
-        if (matched.length === 0) {
-          verdict = 'FAIL';
-          message = `Zero records matched in external mirror on (${inKey} = '${inVal}' <-> ${outKey}).`;
-        } else {
-          message = `Successfully matched ${matched.length} record(s) on ${inKey} = ${outKey}.`;
-          details.matchedRows = matched;
-        }
-      } else if (box.boxType === 'CONDITION_CHECK') {
-        if (box.dualSourceCondition) {
-          const { sourceA, sourceB, comparator, toleranceMargin } = box.dualSourceCondition;
-          const valA = sourceA?.origin === 'INPUT_PAYLOAD' ? parsedInput[sourceA?.field] : parsedMirror[0]?.[sourceA?.field];
-          const valB = sourceB?.origin === 'MIRROR_RECORD' ? (Array.isArray(parsedMirror) ? parsedMirror[0]?.[sourceB?.field] : parsedMirror?.[sourceB?.field]) : parsedInput[sourceB?.field];
-
-          let match = false;
-          if (comparator === 'EQUALS') {
-            match = valA == valB;
-          } else if (comparator === 'NOT_EQUALS') {
-            match = valA != valB;
-          } else if (comparator === 'GREATER_THAN') {
-            match = Number(valA) > Number(valB);
-          } else if (comparator === 'LESS_THAN') {
-            match = Number(valA) < Number(valB);
-          } else if (comparator === 'NUMERIC_DIFF_WITHIN_TOLERANCE') {
-            match = Math.abs(Number(valA) - Number(valB)) <= (toleranceMargin || 0);
-          }
-
-          if (!match) {
-            verdict = 'FAIL';
-            message = `Dual source condition failed: [${valA}] ${comparator} [${valB}] evaluated to FALSE.`;
-          } else {
-            message = `Dual source condition passed: [${valA}] ${comparator} [${valB}] evaluated to TRUE.`;
-          }
-          details.comparison = { valA, valB, comparator, match };
-        }
-      }
-
+    } catch (err: any) {
       setResult({
-        verdict,
-        action: verdict === 'PASS' 
-          ? (box.checkStep?.actionOnSuccess || box.checkStep?.onPassAction || 'CONTINUE')
-          : (box.checkStep?.actionOnFailure || box.checkStep?.onFailAction || 'FLAG'),
-        severity: verdict === 'PASS' ? 'INFO' : (box.checkStep?.severityOnFailure || 'CRITICAL'),
-        executionTimeMs: elapsed,
-        message,
-        details
+        verdict: 'ERROR',
+        action: 'STOP',
+        severity: 'HIGH',
+        executionTimeMs: Math.round(performance.now() - startTime),
+        message: `Live validation execution error: ${err.message || 'Unable to query target database.'}`,
+        details: { error: err.message || 'Server connection error' }
       });
       setIsRunning(false);
-    }, 250);
+      return;
+    }
   };
 
   return (

@@ -66,7 +66,7 @@ export const ruleSqlCompiler = {
     /**
      * Compiles an individual rule step into a SQL boolean condition expression.
      */
-    compileStepCondition(rule, mirrorColPrefix = 'm', validColumns, inputColPrefix = 't') {
+    compileStepCondition(rule, mirrorColPrefix = 'm', validColumns, inputColPrefix = 't', mirrorTableName) {
         const checkType = rule.checkType;
         let baseSql = 'TRUE';
         if (checkType === 'DUAL_SOURCE_COMPARISON' && rule.dualSourceCondition) {
@@ -269,9 +269,93 @@ export const ruleSqlCompiler = {
                     }
                 }
                 else if ((cfg.ruleType === 'DUPLICATE_CHECK' || cfg.ruleType === 'UNIQUE_CONSTRAINT') && Array.isArray(cfg.columns)) {
-                    for (const col of cfg.columns) {
-                        const colExp = resolveColExpr(sanitizeCol(col.columnName), mirrorColPrefix, validColumns);
-                        colConfigConditions.push(`COALESCE(${colExp}::text, '') != ''`);
+                    if (mirrorTableName) {
+                        // Build filter condition clauses for both outer row and subquery
+                        const outerFilters = [];
+                        const innerFilters = [];
+                        if (Array.isArray(cfg.filterConditions) && cfg.filterConditions.length > 0) {
+                            for (const fc of cfg.filterConditions) {
+                                if (!fc.columnName)
+                                    continue;
+                                const colName = sanitizeCol(fc.columnName);
+                                const outerColExp = resolveColExpr(colName, mirrorColPrefix, validColumns);
+                                const innerColExp = `_dup."${colName.toLowerCase()}"`;
+                                const op = String(fc.operator || '=');
+                                const val = String(fc.value ?? '').replace(/'/g, "''");
+                                if (op === '=' || op === '==') {
+                                    outerFilters.push(`LOWER(COALESCE(${outerColExp}::text, '')) = LOWER('${val}')`);
+                                    innerFilters.push(`LOWER(COALESCE(${innerColExp}::text, '')) = LOWER('${val}')`);
+                                }
+                                else if (op === '!=' || op === '<>') {
+                                    outerFilters.push(`COALESCE(${outerColExp}::text, '') != '${val}'`);
+                                    innerFilters.push(`COALESCE(${innerColExp}::text, '') != '${val}'`);
+                                }
+                                else if (op === 'LIKE' || op === 'CONTAINS') {
+                                    outerFilters.push(`LOWER(COALESCE(${outerColExp}::text, '')) LIKE '%' || LOWER('${val}') || '%'`);
+                                    innerFilters.push(`LOWER(COALESCE(${innerColExp}::text, '')) LIKE '%' || LOWER('${val}') || '%'`);
+                                }
+                                else if (op === '>' || op === '>=' || op === '<' || op === '<=') {
+                                    outerFilters.push(`COALESCE((${outerColExp})::numeric, 0) ${op} ${Number(val) || 0}`);
+                                    innerFilters.push(`COALESCE((${innerColExp})::numeric, 0) ${op} ${Number(val) || 0}`);
+                                }
+                            }
+                        }
+                        // Identify matching grouping columns
+                        const matchColNames = [];
+                        if (Array.isArray(cfg.groupByColumns) && cfg.groupByColumns.length > 0) {
+                            matchColNames.push(...cfg.groupByColumns);
+                        }
+                        else {
+                            const filterColSet = new Set((cfg.filterConditions || []).map((f) => (f.columnName || '').toLowerCase()));
+                            for (const col of cfg.columns) {
+                                const cName = (col.columnName || '').toLowerCase();
+                                if (filterColSet.has(cName))
+                                    continue;
+                                if (col.isPrimary || col.role === 'PRIMARY_KEY' || col.role === 'MATCH_KEY' || col.role === 'DISCRIMINATOR') {
+                                    matchColNames.push(col.columnName);
+                                }
+                            }
+                            if (matchColNames.length === 0 && cfg.primaryKeyColumn && !filterColSet.has(cfg.primaryKeyColumn.toLowerCase())) {
+                                matchColNames.push(cfg.primaryKeyColumn);
+                            }
+                        }
+                        const joinEqs = [];
+                        for (const colName of matchColNames) {
+                            const sCol = sanitizeCol(colName);
+                            const outerExp = resolveColExpr(sCol, mirrorColPrefix, validColumns);
+                            joinEqs.push(`_dup."${sCol.toLowerCase()}" = ${outerExp}`);
+                        }
+                        const countRule = (Array.isArray(cfg.aggregationRules) && cfg.aggregationRules.find((a) => a.function === 'COUNT'))
+                            || { function: 'COUNT', operator: '>', value: 1 };
+                        const threshold = Number(countRule.value ?? 1);
+                        const whereClauses = [
+                            `_dup._batch_id = ${mirrorColPrefix}._batch_id`,
+                            `_dup._task_id = ${mirrorColPrefix}._task_id`,
+                            ...joinEqs,
+                            ...innerFilters
+                        ];
+                        const subquery = `(SELECT COUNT(*) FROM ${mirrorTableName} _dup WHERE ${whereClauses.join(' AND ')})`;
+                        if (outerFilters.length > 0) {
+                            colConfigConditions.push(`CASE WHEN (${outerFilters.join(' AND ')}) THEN (${subquery} <= ${threshold}) ELSE TRUE END`);
+                        }
+                        else {
+                            colConfigConditions.push(`(${subquery} <= ${threshold})`);
+                        }
+                    }
+                    else {
+                        for (const col of cfg.columns) {
+                            // Discriminator or payload columns are nullable and must never be enforced as non-empty in duplicate checks
+                            if (col.role === 'DISCRIMINATOR' || col.role === 'PAYLOAD')
+                                continue;
+                            if (col.isPrimary || col.role === 'PRIMARY_KEY' || col.role === 'MATCH_KEY') {
+                                const colExp = resolveColExpr(sanitizeCol(col.columnName), mirrorColPrefix, validColumns);
+                                colConfigConditions.push(`COALESCE(${colExp}::text, '') != ''`);
+                            }
+                        }
+                        if (cfg.primaryKeyColumn) {
+                            const pkExp = resolveColExpr(sanitizeCol(cfg.primaryKeyColumn), mirrorColPrefix, validColumns);
+                            colConfigConditions.push(`COALESCE(${pkExp}::text, '') != ''`);
+                        }
                     }
                 }
                 else if (cfg.ruleType === 'GROUPING_CHECK') {
@@ -324,7 +408,7 @@ export const ruleSqlCompiler = {
         }
         else {
             for (const rule of rules) {
-                const condition = this.compileStepCondition(rule, 'm', validColumns);
+                const condition = this.compileStepCondition(rule, 'm', validColumns, 't', mirrorTableName);
                 const failLabel = rule.name ? rule.name.toUpperCase().replace(/[^A-Z0-9_]/g, '_') : 'CRITERIA_FAILED';
                 statusWhenBranches.push(`WHEN NOT (${condition}) THEN 'FAIL'`);
                 actionWhenBranches.push(`WHEN NOT (${condition}) THEN '${rule.onFailAction || 'STOP'}'`);

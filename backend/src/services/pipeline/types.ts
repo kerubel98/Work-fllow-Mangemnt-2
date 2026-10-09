@@ -93,6 +93,10 @@ export interface StageExecutionRecord {
   durationMs?: number;
   /** Optional detailed comparison evidence for Maker-Checker review. */
   details?: Record<string, any>;
+  stepId?: string;
+  isDiagnosticOnly?: boolean;
+  evaluationDetails?: Record<string, any>;
+  timestamp?: string;
 }
 
 /**
@@ -171,6 +175,8 @@ export interface BatchExecutionContext {
   /** 64-bit advisory lock key derived via derive64BitAdvisoryLockSql(). */
   advisoryLockKey?: string;
   executionTimestamp: string;
+  workflowId?: string;
+  targetTable?: string;
 }
 
 /**

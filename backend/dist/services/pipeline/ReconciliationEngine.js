@@ -263,7 +263,7 @@ export class ReconciliationEngine {
         // §9.5 Propagate verdict to task_dataset_transactions via deterministic (_task_id, _row_number) join
         if (context.taskId) {
             try {
-                await reconciliationService.reconcileByRowNumber(context.taskId, context.batchId, context.ruleBlockId, mirrorTable, context.stageId);
+                await reconciliationService.reconcileByRowNumber(context.taskId, context.batchId, context.ruleBlockId, mirrorTable, context.stageId, context.workflowId || 'default', context.targetTable || '');
             }
             catch (err) {
                 console.warn(`[ReconciliationEngine] task_dataset_transactions reconciliation notice: ${err.message}`);

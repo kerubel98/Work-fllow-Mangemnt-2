@@ -17,7 +17,7 @@ import { dbLivenessService } from './dbLivenessService.js';
 import { mirrorTableManager } from './mirrorTableManager.js';
 import { ruleSqlCompiler } from './ruleSqlCompiler.js';
 import { workflowEngineSingleton, ValidationPayloadEnvelope, WorkflowJobResult } from './workflowEngineSingleton.js';
-import { queryPg } from '../config/postgres.js';
+import { queryPg, getPostgresPool, isPostgresConnected } from '../config/postgres.js';
 import { nextStageInputResolver } from './nextStageInputResolver.js';
 import { validationPipelineBuilder, CompiledValidationPlan } from './validationPipelineBuilder.js';
 import { workflowPipelineBuilder } from './pipeline/index.js';
@@ -285,7 +285,7 @@ export const investigationOrchestratorService = {
 
     // Wait on any in-flight promises from other users and place at original indices
     if (inFlight.length > 0) {
-      const inFlightResults = await Promise.allSettled(inFlight.map(i => i.promise));
+      const inFlightResults = await Promise.allSettled(inFlight.map((i: any) => i.promise));
       for (let i = 0; i < inFlight.length; i++) {
         const item = inFlight[i];
         const res = inFlightResults[i];
@@ -1264,14 +1264,42 @@ export const investigationOrchestratorService = {
       cachedHits: 0
     });
 
-    const pipeline = workflowPipelineBuilder.compile(workflow);
+    let lockClient: any = null;
+    if (isPostgresConnected && sourceId) {
+      try {
+        const pool = getPostgresPool();
+        lockClient = await pool.connect();
+        await lockClient.query(
+          `SELECT pg_advisory_lock(('x' || substr(md5('task_exec_' || $1), 1, 16))::bit(64)::bigint)`,
+          [sourceId]
+        );
+      } catch (lockErr: any) {
+        console.warn(`[executeViaNewPipeline] Advisory lock notice: ${lockErr.message}`);
+        if (lockClient) {
+          try { lockClient.release(); } catch {}
+          lockClient = null;
+        }
+      }
+    }
 
-    // Ensure all records carry universal row coordinates (_row_number, _task_id)
-    const inputRows = (records || []).map((r: any, idx: number) => ({
-      ...r,
-      _row_number: Number(r._row_number ?? r.row_number ?? (idx + 1)),
-      _task_id: taskId,
-    }));
+    try {
+      const pipeline = workflowPipelineBuilder.compile(workflow);
+
+    // Ensure all records carry universal row coordinates (_row_number, _task_id) and clean string keys
+    const inputRows = (records || []).map((r: any, idx: number) => {
+      const rowNum = Number(r._row_number ?? r.row_number ?? (idx + 1));
+      const rowObj: any = {
+        ...r,
+        _row_number: rowNum,
+        _task_id: taskId,
+      };
+      for (const k of Object.keys(rowObj)) {
+        if (/utrnno|refnum|reference|terminal_id|tran_id|rrn|acct/i.test(k) && typeof rowObj[k] === 'number') {
+          rowObj[k] = String(rowObj[k]).trim();
+        }
+      }
+      return rowObj;
+    });
 
     const batchCtx = {
       taskId,
@@ -1323,9 +1351,11 @@ export const investigationOrchestratorService = {
 
       return {
         ...r,
-        _validation_status: outcome?.validationStatus || (batchReport.failedCount === 0 ? 'PASS' : 'FAIL'),
-        _validation_action: outcome?.validationAction || (batchReport.failedCount === 0 ? 'CONTINUE' : 'STOP'),
+        _validation_status: outcome?.validationStatus || 'FAIL',
+        _validation_action: outcome?.validationAction || 'STOP',
         _validation_details: outcome?.details || {
+          existence: 'UNPROCESSED_COORDINATE_IN_PIPELINE',
+          reason: 'Row coordinate was not processed or missing from pipeline stages',
           totalEvaluated: batchReport.totalEvaluated,
           passedCount: batchReport.passedCount,
           failedCount: batchReport.failedCount,
@@ -1376,6 +1406,9 @@ export const investigationOrchestratorService = {
             total: records.length,
             passed: batchReport.passedCount,
             failed: batchReport.failedCount,
+            totalCount: records.length,
+            passedCount: batchReport.passedCount,
+            failedCount: batchReport.failedCount,
             results: resultMap,
           },
         });
@@ -1411,6 +1444,19 @@ export const investigationOrchestratorService = {
       durationMs: Date.now() - startTime,
       records: evaluatedRecords,
     };
+    } finally {
+      if (lockClient) {
+        try {
+          await lockClient.query(
+            `SELECT pg_advisory_unlock(('x' || substr(md5('task_exec_' || $1), 1, 16))::bit(64)::bigint)`,
+            [sourceId]
+          );
+        } catch {}
+        try {
+          lockClient.release();
+        } catch {}
+      }
+    }
   },
 
   /**

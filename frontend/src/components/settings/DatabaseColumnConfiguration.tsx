@@ -3762,7 +3762,7 @@ export default function DatabaseColumnConfigurationStudio({ currentUser, teams =
                   Violation Action & Severity
                 </h4>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                   <div>
                     <label className="block text-xs font-bold text-slate-700 mb-1">
                       Pipeline Action on Violation
@@ -3781,6 +3781,20 @@ export default function DatabaseColumnConfigurationStudio({ currentUser, teams =
 
                   <div>
                     <label className="block text-xs font-bold text-slate-700 mb-1">
+                      Status Behavior <span className="text-blue-600 font-mono">(Two-Level)</span>
+                    </label>
+                    <select
+                      value={editingConfig.statusBehavior || 'MUTATE_STATUS'}
+                      onChange={(e) => setEditingConfig({ ...editingConfig, statusBehavior: e.target.value as any })}
+                      className="w-full text-xs p-2 bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:outline-none focus:ring-1 focus:ring-blue-500 font-semibold"
+                    >
+                      <option value="MUTATE_STATUS">MUTATE_STATUS (Fail & Stop)</option>
+                      <option value="REPORT_ONLY">REPORT_ONLY (Keep PASS, Log Details)</option>
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 mb-1">
                       Severity Level
                     </label>
                     <select
@@ -3793,6 +3807,19 @@ export default function DatabaseColumnConfigurationStudio({ currentUser, teams =
                       <option value="INFO">INFO</option>
                     </select>
                   </div>
+                </div>
+
+                <div className="flex items-center gap-2 pt-1">
+                  <input
+                    type="checkbox"
+                    id="affectsReconStatus"
+                    checked={editingConfig.affectsReconciliationStatus !== false}
+                    onChange={(e) => setEditingConfig({ ...editingConfig, affectsReconciliationStatus: e.target.checked })}
+                    className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500 cursor-pointer"
+                  />
+                  <label htmlFor="affectsReconStatus" className="text-xs text-slate-700 font-medium cursor-pointer">
+                    Affects Level 1 Reconciliation Status (if unchecked, evaluated purely as Level 2 Business Rule)
+                  </label>
                 </div>
 
                 <div>

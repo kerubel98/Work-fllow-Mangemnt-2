@@ -6,11 +6,12 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { connectPostgres } from '../../config/postgres.js';
 import { postgresRepo } from '../../store/postgresRepo.js';
-import { hashtagService } from '../hashtagService.js';
+import { hashtagService, derive64BitAdvisoryLockBigInt } from '../hashtagService.js';
 import { approvalService } from '../approvalService.js';
+import { hashtagSchedulerService } from '../hashtagSchedulerService.js';
 import { HashtagPreset } from '../../types.js';
 
-describe('Universal Hashtag Engine Full Integration & Governance Suite (GAP-14)', () => {
+describe('Universal Hashtag Engine Full Integration & Governance Suite (GAP-14 Remediation)', () => {
   beforeAll(async () => {
     await connectPostgres();
   });
@@ -89,7 +90,11 @@ describe('Universal Hashtag Engine Full Integration & Governance Suite (GAP-14)'
       hashtagType: 'DATABASE_DIRECT_SCANNER',
       dataSourceMode: 'DATABASE_DIRECT',
       targetDbId: null, // Scans internal operational DB
-      targetTableName: 'transactions'
+      targetTableName: 'transactions',
+      conditionalAction: {
+        onPass: 'EXECUTE_SQL',
+        onFail: 'FLAG_INVESTIGATION'
+      }
     };
 
     it('registers Type B scanner hashtag in repository', async () => {
@@ -143,7 +148,7 @@ describe('Universal Hashtag Engine Full Integration & Governance Suite (GAP-14)'
     });
   });
 
-  describe('4. Type D Auditing & Governance: Observational Sweep with Diagnostic Taint Tracking', () => {
+  describe('4. Type D Auditing & Governance: Observational Sweep with Diagnostic Taint Tracking (AGAP-01 & Rule 12)', () => {
     const typeDTag: HashtagPreset = {
       tag: '#TEST_AUDIT_GOVERNANCE',
       description: 'Test Type D compliance and governance audit with diagnostic-only flags',
@@ -163,7 +168,7 @@ describe('Universal Hashtag Engine Full Integration & Governance Suite (GAP-14)'
       expect(created.hashtagType).toBe('AUDITING_GOVERNANCE');
     });
 
-    it('executes audit sweep and enforces isDiagnosticOnly: true on the verdict and all rows', async () => {
+    it('executes audit sweep and enforces isDiagnosticOnly: true on verdict and all rows (non-vacuous)', async () => {
       const auditResult = await hashtagService.executeAuditingGovernance(
         typeDTag,
         'team_audit'
@@ -172,6 +177,8 @@ describe('Universal Hashtag Engine Full Integration & Governance Suite (GAP-14)'
       expect(auditResult).toBeDefined();
       expect(auditResult.isDiagnosticOnly).toBe(true);
       expect(Array.isArray(auditResult.auditRows)).toBe(true);
+      // Non-vacuous check: auditRows must NOT be empty (AGAP-01 verification)
+      expect(auditResult.auditRows.length).toBeGreaterThan(0);
 
       for (const rec of auditResult.auditRows) {
         expect(rec._isDiagnosticOnly).toBe(true);
@@ -219,6 +226,75 @@ describe('Universal Hashtag Engine Full Integration & Governance Suite (GAP-14)'
 
       expect(approved.status).toBe('APPROVED');
       expect(approved.checkerId).toBe('checker_supervisor_02');
+    });
+  });
+
+  describe('6. 64-Bit Cryptographic Advisory Locking & Parameterization (AGAP-05, Rule 10/11)', () => {
+    it('generates consistent signed 64-bit BigInt string from any identifier', () => {
+      const lockKey1 = derive64BitAdvisoryLockBigInt('provision_staging_app_stage_test');
+      const lockKey2 = derive64BitAdvisoryLockBigInt('provision_staging_app_stage_test');
+      expect(lockKey1).toBe(lockKey2);
+      expect(typeof lockKey1).toBe('string');
+      // Validate that BigInt can parse it without error
+      const parsed = BigInt(lockKey1);
+      expect(typeof parsed).toBe('bigint');
+    });
+  });
+
+  describe('7. Pre-Flight Test Engine (AGAP-06)', () => {
+    it('validates pre-flight schema inspection for Type A with sample rows', async () => {
+      const typeATag = await postgresRepo.getHashtagByTag('#TEST_FILE_INGEST');
+      expect(typeATag).toBeDefined();
+
+      const sampleRows = [
+        { transaction_id: 'TXN-001', amount: 500, bank_code: '001' }
+      ];
+
+      const preFlightRes = await hashtagService.testPreFlight(typeATag!, sampleRows);
+      expect(preFlightRes).toBeDefined();
+      expect(preFlightRes.success).toBe(true);
+      expect(preFlightRes.columnValidation.length).toBeGreaterThan(0);
+    });
+  });
+
+  describe('8. Autonomous Hashtag Scheduler (AGAP-03)', () => {
+    it('executes scheduled cron hashtags synchronously on demand', async () => {
+      const cronTag: HashtagPreset = {
+        tag: '#TEST_CRON_SCAN',
+        description: 'Automated test cron scanner',
+        criteria: 'status = \'PENDING\'',
+        expectedFileStructure: [],
+        solutionTemplate: "SELECT 1;",
+        author: 'scheduler_tester',
+        createdAt: new Date().toISOString(),
+        hashtagType: 'DATABASE_DIRECT_SCANNER',
+        dataSourceMode: 'DATABASE_DIRECT',
+        targetDbId: null,
+        targetTableName: 'transactions',
+        executionTrigger: 'SCHEDULED_CRON',
+        scheduleCron: '*/15 * * * *'
+      };
+
+      await postgresRepo.createHashtag(cronTag);
+
+      const schedRes = await hashtagSchedulerService.runDueScheduledHashtags(true);
+      expect(schedRes).toBeDefined();
+      expect(schedRes.executedCount).toBeGreaterThan(0);
+      expect(schedRes.results.some(r => r.tag === '#TEST_CRON_SCAN')).toBe(true);
+    });
+  });
+
+  describe('9. Team Hashtag Report MTTD & MTTR Lifecycle Calculation (AGAP-08)', () => {
+    it('returns genuine lifecycle-based mttd_hours and mttr_hours in getTeamHashtagReport', async () => {
+      const report = await postgresRepo.getTeamHashtagReport('team-cards');
+      expect(report).toBeDefined();
+      expect(report.teamId).toBe('team-cards');
+      expect(Array.isArray(report.hashtagMetrics)).toBe(true);
+
+      for (const metric of report.hashtagMetrics) {
+        expect(metric).toHaveProperty('mttd_hours');
+        expect(metric).toHaveProperty('mttr_hours');
+      }
     });
   });
 });

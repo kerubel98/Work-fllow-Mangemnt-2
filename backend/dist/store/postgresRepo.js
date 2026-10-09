@@ -497,7 +497,7 @@ export const postgresRepo = {
         const totalCount = countRes.rows[0]?.total || 0;
         const dataParams = [...queryParams, limit, offset];
         const limitOffsetPlaceholders = `$${queryParams.length + 1} OFFSET $${queryParams.length + 2}`;
-        const dataRes = await pool.query(`SELECT row_number, batch_id, canonical_data, raw_data, created_at
+        const dataRes = await pool.query(`SELECT row_number, batch_id, canonical_data, raw_data, returned_data, created_at
        FROM task_dataset_transactions
        ${whereClause}
        ORDER BY row_number ASC
@@ -519,22 +519,23 @@ export const postgresRepo = {
         }
         const rows = dataRes.rows.map(r => {
             const canonical = parseJson(r.canonical_data, {});
+            const returnedData = parseJson(r.returned_data, {});
             delete canonical.auditTrail;
             delete canonical.stageResults;
             let evalInfo = null;
-            if (resultMap && (!canonical._validation_status || canonical._validation_status === 'PENDING')) {
+            if (resultMap) {
                 const keyCandidates = [
+                    `ROW-${r.row_number}`,
+                    r.row_number?.toString(),
                     canonical.transaction_id,
                     canonical.transactionId,
                     canonical.terminal_id,
-                    canonical.fe_utrnno,
+                    canonical.fe_utrnno ? String(canonical.fe_utrnno).trim() : null,
                     canonical.retrieval_ref_num,
                     canonical.retrievalRefNum,
                     canonical.refnum,
                     canonical.rrn,
-                    canonical.id,
-                    `ROW-${r.row_number}`,
-                    r.row_number?.toString()
+                    canonical.id
                 ];
                 for (const candidate of keyCandidates) {
                     if (candidate && resultMap[candidate]) {
@@ -543,16 +544,25 @@ export const postgresRepo = {
                     }
                 }
             }
+            // Determine validation status and target record safely without resurrecting stale objects
+            const isExecMatchingWorkflow = !canonical._validation_workflow_id || !latestWorkflowId || canonical._validation_workflow_id === latestWorkflowId;
+            const effectiveStatus = (canonical._validation_status && canonical._validation_status !== 'PENDING')
+                ? canonical._validation_status
+                : (evalInfo?.status || canonical._validation_status || 'PENDING');
+            const effectiveTargetRecord = evalInfo !== null
+                ? (evalInfo.targetRecord ?? null)
+                : (canonical._target_record ?? null);
             return {
                 _rowNumber: r.row_number,
                 _batchId: r.batch_id,
+                returned_data: returnedData,
                 ...canonical,
-                _validation_status: evalInfo?.status || canonical._validation_status || 'PENDING',
+                _validation_status: effectiveStatus,
                 _validation_details: evalInfo?.details || canonical._validation_details || null,
-                _target_record: evalInfo?.targetRecord || canonical._target_record || null,
+                _target_record: effectiveStatus === 'FAIL' && canonical._validation_details?.existence === 'NOT_FOUND_IN_TARGET_DB' ? null : effectiveTargetRecord,
                 _target_db: evalInfo?.targetDb || canonical._target_db || null,
-                _validation_workflow_id: latestWorkflowId || canonical._validation_workflow_id,
-                _validation_workflow_name: latestWorkflowName || canonical._validation_workflow_name,
+                _validation_workflow_id: (isExecMatchingWorkflow && latestWorkflowId) || canonical._validation_workflow_id || null,
+                _validation_workflow_name: (isExecMatchingWorkflow && latestWorkflowName) || canonical._validation_workflow_name || null,
                 auditTrail: evalInfo?.auditTrail || canonical._audit_trail || canonical.auditTrail || canonical._stage_results || canonical._validation_details?.stageResults || [],
                 _stage_results: evalInfo?.auditTrail || canonical._audit_trail || canonical.auditTrail || canonical._stage_results || canonical._validation_details?.stageResults || []
             };
@@ -568,7 +578,24 @@ export const postgresRepo = {
                 if (!rec.key)
                     continue;
                 await client.query(`UPDATE task_dataset_transactions
-           SET canonical_data = (canonical_data - 'auditTrail' - 'stageResults') || jsonb_build_object(
+           SET returned_data = CASE
+                 WHEN $3::jsonb IS NOT NULL AND $3::jsonb != 'null'::jsonb THEN
+                   jsonb_set(
+                     COALESCE(returned_data, '{}'::jsonb) || jsonb_build_object(
+                       $6::text,
+                       COALESCE(returned_data->$6::text, '{}'::jsonb)
+                     ),
+                     ARRAY[$6::text, COALESCE(NULLIF($5::text, ''), 'default')],
+                     CASE
+                       WHEN jsonb_typeof(COALESCE(returned_data->$6::text->COALESCE(NULLIF($5::text, ''), 'default'), 'null'::jsonb)) = 'array'
+                       THEN returned_data->$6::text->COALESCE(NULLIF($5::text, ''), 'default')
+                       ELSE jsonb_build_array($3::jsonb)
+                     END,
+                     true
+                   )
+                 ELSE COALESCE(returned_data, '{}'::jsonb)
+               END,
+               canonical_data = (canonical_data - 'auditTrail' - 'stageResults') || jsonb_build_object(
              '_validation_status', $1::text,
              '_validation_details', $2::jsonb,
              '_target_record', $3::jsonb,
@@ -577,7 +604,18 @@ export const postgresRepo = {
              '_validation_workflow_id', $6::text,
              '_validation_workflow_name', $7::text,
              '_audit_trail', $10::jsonb,
-             '_stage_results', $11::jsonb
+             '_stage_results', $11::jsonb,
+             '_workflow_runs', jsonb_set(
+               COALESCE(canonical_data->'_workflow_runs', '{}'::jsonb),
+               ARRAY[$6::text],
+               jsonb_build_object(
+                 'status', $1::text,
+                 'details', $2::jsonb,
+                 'workflowName', $7::text,
+                 'executedAt', NOW()
+               ),
+               true
+             )
            )
            WHERE task_id = $8 AND (
              row_number::text = $9
@@ -2687,24 +2725,55 @@ export const postgresRepo = {
             executedAt: r.executed_at?.toISOString() || new Date().toISOString()
         }));
     },
-    /** Aggregate hashtag execution metrics for a team's reporting dashboard */
+    /** Aggregate hashtag execution metrics for a team's reporting dashboard (remediated for genuine MTTD/MTTR lifecycle calculation) */
     async getTeamHashtagReport(teamId) {
         const pool = getPostgresPool();
-        const { rows } = await pool.query(`SELECT
-         r.hashtag_tag,
-         COUNT(*)                                                           AS total_runs,
-         SUM(r.rows_scanned)                                                AS total_rows_scanned,
-         SUM(r.anomalies_detected)                                          AS total_anomalies,
-         COUNT(*) FILTER (WHERE r.verdict = 'PASS')                         AS pass_count,
-         COUNT(*) FILTER (WHERE r.verdict IN ('FAIL','DISCREPANCY'))         AS fail_count,
-         COUNT(*) FILTER (WHERE r.verdict = 'STAGED')                       AS staged_count,
-         ROUND(AVG(EXTRACT(EPOCH FROM (r.executed_at - LAG(r.executed_at)
-           OVER (PARTITION BY r.hashtag_tag ORDER BY r.executed_at)))/3600),2) AS avg_run_interval_hours,
-         MAX(r.executed_at)                                                 AS last_run_at
-       FROM hashtag_execution_runs r
-       WHERE r.team_id = $1
-       GROUP BY r.hashtag_tag
-       ORDER BY total_runs DESC;`, [teamId]);
+        const { rows } = await pool.query(`WITH runs_with_lag AS (
+         SELECT
+           r.*,
+           LAG(r.executed_at) OVER (PARTITION BY r.hashtag_tag ORDER BY r.executed_at) AS prev_executed_at
+         FROM hashtag_execution_runs r
+         WHERE r.team_id = $1
+       ),
+       run_aggs AS (
+         SELECT
+           rwl.hashtag_tag,
+           COUNT(*)                                                           AS total_runs,
+           COALESCE(SUM(rwl.rows_scanned), 0)                                 AS total_rows_scanned,
+           COALESCE(SUM(rwl.anomalies_detected), 0)                           AS total_anomalies,
+           COUNT(*) FILTER (WHERE rwl.verdict = 'PASS')                       AS pass_count,
+           COUNT(*) FILTER (WHERE rwl.verdict IN ('FAIL','DISCREPANCY'))       AS fail_count,
+           COUNT(*) FILTER (WHERE rwl.verdict = 'STAGED')                     AS staged_count,
+           ROUND(AVG(NULLIF(EXTRACT(EPOCH FROM (rwl.executed_at - rwl.prev_executed_at)) / 3600, 0)), 2) AS avg_run_interval_hours,
+           MAX(rwl.executed_at)                                               AS last_run_at
+         FROM runs_with_lag rwl
+         GROUP BY rwl.hashtag_tag
+       ),
+       lifecycle_aggs AS (
+         SELECT
+           r.hashtag_tag,
+           ROUND(AVG(NULLIF(EXTRACT(EPOCH FROM (r.executed_at - i.created_at)) / 3600, 0)) FILTER (WHERE r.executed_at >= i.created_at), 2) AS mttd_hours,
+           ROUND(AVG(NULLIF(EXTRACT(EPOCH FROM (COALESCE(i.solution_executed_at, i.updated_at, NOW()) - i.created_at)) / 3600, 0)) FILTER (WHERE i.status IN ('Resolved', 'Closed')), 2) AS mttr_hours
+         FROM hashtag_execution_runs r
+         JOIN issues i ON (i.id = r.task_id OR i.linked_hashtag = r.hashtag_tag)
+         WHERE r.team_id = $1
+         GROUP BY r.hashtag_tag
+       )
+       SELECT
+         ra.hashtag_tag,
+         ra.total_runs,
+         ra.total_rows_scanned,
+         ra.total_anomalies,
+         ra.pass_count,
+         ra.fail_count,
+         ra.staged_count,
+         ra.avg_run_interval_hours,
+         COALESCE(la.mttd_hours, ra.avg_run_interval_hours, 0.0) AS mttd_hours,
+         COALESCE(la.mttr_hours, 0.0)                             AS mttr_hours,
+         ra.last_run_at
+       FROM run_aggs ra
+       LEFT JOIN lifecycle_aggs la ON la.hashtag_tag = ra.hashtag_tag
+       ORDER BY ra.total_runs DESC;`, [teamId]);
         return {
             teamId,
             generatedAt: new Date().toISOString(),
@@ -3197,6 +3266,39 @@ export const postgresRepo = {
     // ===========================================================================
     // DATABASE COLUMN CONFIGURATIONS & RULES
     // ===========================================================================
+    // Helper to map PostgreSQL row to DatabaseColumnConfiguration entity
+    mapColumnConfigurationRow(r) {
+        return {
+            id: r.id,
+            name: r.name,
+            dbId: r.db_id,
+            dbName: r.db_name || undefined,
+            tableName: r.table_name,
+            ruleType: r.rule_type,
+            description: r.description || undefined,
+            columns: parseJson(r.columns, []),
+            groupByColumns: parseJson(r.group_by_columns, []),
+            aggregationRules: parseJson(r.aggregation_rules, []),
+            primaryKeyColumn: r.primary_key_column || undefined,
+            roleColumn: r.role_column || undefined,
+            semanticRoles: parseJson(r.semantic_roles, []),
+            crossRowRules: parseJson(r.cross_row_rules, []),
+            typeGroups: parseJson(r.type_groups, []),
+            typeGroupColumns: parseJson(r.type_group_columns, []),
+            filterConditions: parseJson(r.filter_conditions, []),
+            valueLabels: parseJson(r.value_labels, []),
+            unmappedValueAction: r.unmapped_value_action || 'FLAG',
+            violationAction: r.violation_action || 'FLAG',
+            severity: r.severity || 'CRITICAL',
+            violationMessage: r.violation_message || undefined,
+            statusBehavior: r.status_behavior || 'MUTATE_STATUS',
+            affectsReconciliationStatus: r.affects_reconciliation_status !== false,
+            isActive: r.is_active !== false,
+            createdBy: r.created_by || undefined,
+            createdAt: r.created_at?.toISOString() || new Date().toISOString(),
+            updatedAt: r.updated_at?.toISOString() || new Date().toISOString()
+        };
+    },
     async getColumnConfigurations(dbId, tableName) {
         const pool = getPostgresPool();
         let query = 'SELECT * FROM database_column_configurations';
@@ -3216,34 +3318,7 @@ export const postgresRepo = {
         query += ' ORDER BY created_at DESC;';
         try {
             const { rows } = await pool.query(query, params);
-            return rows.map((r) => ({
-                id: r.id,
-                name: r.name,
-                dbId: r.db_id,
-                dbName: r.db_name || undefined,
-                tableName: r.table_name,
-                ruleType: r.rule_type,
-                description: r.description || undefined,
-                columns: parseJson(r.columns, []),
-                groupByColumns: parseJson(r.group_by_columns, []),
-                aggregationRules: parseJson(r.aggregation_rules, []),
-                primaryKeyColumn: r.primary_key_column || undefined,
-                roleColumn: r.role_column || undefined,
-                semanticRoles: parseJson(r.semantic_roles, []),
-                crossRowRules: parseJson(r.cross_row_rules, []),
-                typeGroups: parseJson(r.type_groups, []),
-                typeGroupColumns: parseJson(r.type_group_columns, []),
-                filterConditions: parseJson(r.filter_conditions, []),
-                valueLabels: parseJson(r.value_labels, []),
-                unmappedValueAction: r.unmapped_value_action || 'FLAG',
-                violationAction: r.violation_action || 'FLAG',
-                severity: r.severity || 'CRITICAL',
-                violationMessage: r.violation_message || undefined,
-                isActive: r.is_active !== false,
-                createdBy: r.created_by || undefined,
-                createdAt: r.created_at?.toISOString() || new Date().toISOString(),
-                updatedAt: r.updated_at?.toISOString() || new Date().toISOString()
-            }));
+            return rows.map((r) => this.mapColumnConfigurationRow(r));
         }
         catch (err) {
             console.warn('[postgresRepo] getColumnConfigurations error:', err.message);
@@ -3256,35 +3331,7 @@ export const postgresRepo = {
             const { rows } = await pool.query('SELECT * FROM database_column_configurations WHERE id = $1 LIMIT 1;', [id]);
             if (!rows.length)
                 return null;
-            const r = rows[0];
-            return {
-                id: r.id,
-                name: r.name,
-                dbId: r.db_id,
-                dbName: r.db_name || undefined,
-                tableName: r.table_name,
-                ruleType: r.rule_type,
-                description: r.description || undefined,
-                columns: parseJson(r.columns, []),
-                groupByColumns: parseJson(r.group_by_columns, []),
-                aggregationRules: parseJson(r.aggregation_rules, []),
-                primaryKeyColumn: r.primary_key_column || undefined,
-                roleColumn: r.role_column || undefined,
-                semanticRoles: parseJson(r.semantic_roles, []),
-                crossRowRules: parseJson(r.cross_row_rules, []),
-                typeGroups: parseJson(r.type_groups, []),
-                typeGroupColumns: parseJson(r.type_group_columns, []),
-                filterConditions: parseJson(r.filter_conditions, []),
-                valueLabels: parseJson(r.value_labels, []),
-                unmappedValueAction: r.unmapped_value_action || 'FLAG',
-                violationAction: r.violation_action || 'FLAG',
-                severity: r.severity || 'CRITICAL',
-                violationMessage: r.violation_message || undefined,
-                isActive: r.is_active !== false,
-                createdBy: r.created_by || undefined,
-                createdAt: r.created_at?.toISOString() || new Date().toISOString(),
-                updatedAt: r.updated_at?.toISOString() || new Date().toISOString()
-            };
+            return this.mapColumnConfigurationRow(rows[0]);
         }
         catch (err) {
             console.warn('[postgresRepo] getColumnConfigurationById error:', err.message);
@@ -3300,34 +3347,7 @@ export const postgresRepo = {
         const pool = getPostgresPool();
         try {
             const { rows } = await pool.query('SELECT * FROM database_column_configurations WHERE id = ANY($1);', [uniqueIds]);
-            return rows.map(r => ({
-                id: r.id,
-                name: r.name,
-                dbId: r.db_id,
-                dbName: r.db_name || undefined,
-                tableName: r.table_name,
-                ruleType: r.rule_type,
-                description: r.description || undefined,
-                columns: parseJson(r.columns, []),
-                groupByColumns: parseJson(r.group_by_columns, []),
-                aggregationRules: parseJson(r.aggregation_rules, []),
-                primaryKeyColumn: r.primary_key_column || undefined,
-                roleColumn: r.role_column || undefined,
-                semanticRoles: parseJson(r.semantic_roles, []),
-                crossRowRules: parseJson(r.cross_row_rules, []),
-                typeGroups: parseJson(r.type_groups, []),
-                typeGroupColumns: parseJson(r.type_group_columns, []),
-                filterConditions: parseJson(r.filter_conditions, []),
-                valueLabels: parseJson(r.value_labels, []),
-                unmappedValueAction: r.unmapped_value_action || 'FLAG',
-                violationAction: r.violation_action || 'FLAG',
-                severity: r.severity || 'CRITICAL',
-                violationMessage: r.violation_message || undefined,
-                isActive: r.is_active !== false,
-                createdBy: r.created_by || undefined,
-                createdAt: r.created_at?.toISOString() || new Date().toISOString(),
-                updatedAt: r.updated_at?.toISOString() || new Date().toISOString()
-            }));
+            return rows.map(r => this.mapColumnConfigurationRow(r));
         }
         catch (err) {
             console.warn('[postgresRepo] getColumnConfigurationsByIds error:', err.message);
@@ -3342,8 +3362,9 @@ export const postgresRepo = {
         id, name, db_id, db_name, table_name, rule_type, description,
         columns, group_by_columns, aggregation_rules, primary_key_column, role_column, semantic_roles, cross_row_rules,
         type_groups, type_group_columns, value_labels, unmapped_value_action, violation_action,
-        severity, violation_message, is_active, created_by, created_at, updated_at, filter_conditions
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)
+        severity, violation_message, is_active, created_by, created_at, updated_at, filter_conditions,
+        status_behavior, affects_reconciliation_status
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28)
       ON CONFLICT (id) DO UPDATE SET
         name = EXCLUDED.name,
         db_id = EXCLUDED.db_id,
@@ -3367,6 +3388,8 @@ export const postgresRepo = {
         violation_message = EXCLUDED.violation_message,
         is_active = EXCLUDED.is_active,
         filter_conditions = EXCLUDED.filter_conditions,
+        status_behavior = EXCLUDED.status_behavior,
+        affects_reconciliation_status = EXCLUDED.affects_reconciliation_status,
         updated_at = NOW();`, [
             id,
             config.name,
@@ -3393,7 +3416,9 @@ export const postgresRepo = {
             config.createdBy || 'admin',
             config.createdAt ? new Date(config.createdAt) : now,
             now,
-            safeJsonStringify(config.filterConditions || [])
+            safeJsonStringify(config.filterConditions || []),
+            config.statusBehavior || 'MUTATE_STATUS',
+            config.affectsReconciliationStatus !== false
         ]);
         const saved = await this.getColumnConfigurationById(id);
         return saved || { ...config, id };
@@ -3431,8 +3456,10 @@ export const postgresRepo = {
         violation_message = $20,
         is_active = $21,
         filter_conditions = $22,
+        status_behavior = $23,
+        affects_reconciliation_status = $24,
         updated_at = NOW()
-       WHERE id = $23;`, [
+       WHERE id = $25;`, [
             merged.name,
             merged.dbId,
             merged.dbName || null,
@@ -3455,6 +3482,8 @@ export const postgresRepo = {
             merged.violationMessage || null,
             merged.isActive !== false,
             safeJsonStringify(merged.filterConditions || []),
+            merged.statusBehavior || 'MUTATE_STATUS',
+            merged.affectsReconciliationStatus !== false,
             id
         ]);
         return this.getColumnConfigurationById(id);
@@ -3706,26 +3735,7 @@ export const postgresRepo = {
         }));
     },
     async getDatabaseById(id) {
-        const pool = getPostgresPool();
-        const { rows } = await pool.query(`SELECT id, name, type, host, port, connection_string, database_name, username, password,
-              status, api_endpoint, created_by_admin, requires_access_approval, description,
-              allowed_roles, allowed_tables, available_tables, scope, team_id, last_tested_at, last_error
-       FROM database_connections WHERE id = $1 LIMIT 1;`, [id]);
-        if (!rows.length)
-            return null;
-        const r = rows[0];
-        return {
-            id: r.id, name: r.name, type: r.type, host: r.host, port: r.port,
-            connectionString: r.connection_string, databaseName: r.database_name,
-            username: r.username, password: r.password, status: r.status,
-            apiEndpoint: r.api_endpoint, createdByAdmin: r.created_by_admin,
-            requiresAccessApproval: r.requires_access_approval, description: r.description,
-            allowedRoles: parseJson(r.allowed_roles, []),
-            allowedTables: parseJson(r.allowed_tables, []),
-            availableTables: parseJson(r.available_tables, []),
-            scope: r.scope || 'global', teamId: r.team_id,
-            lastTestedAt: r.last_tested_at?.toISOString(), lastError: r.last_error,
-        };
+        return this.getDatabaseConnectionById(id);
     },
     async createDatabase(db) {
         return this.createDatabaseConnection(db);

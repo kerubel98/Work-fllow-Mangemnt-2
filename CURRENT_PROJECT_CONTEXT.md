@@ -51,6 +51,7 @@ Historical documentation (`SYSTEM_ARCHITECTURE.md`, earlier meeting transcripts,
 2. **Investigation & Rule Execution**: The application features a dynamic **Rule-to-SQL compiler** (`backend/src/services/ruleSqlCompiler.ts`), auto-provisioned **UNLOGGED mirror tables** in PostgreSQL (`backend/src/services/mirrorTableManager.ts`), in-flight execution deduplication (`backend/src/services/workflowEngineSingleton.ts`), pre-flight database liveness circuit breakers (`backend/src/services/dbLivenessService.ts`), and set-based relational reconciliation.
 3. **Workflow Studio Flowchart**: The frontend features a visual vertical flowchart builder (`frontend/src/components/settings/WorkflowStudioFlowchart.tsx`) that links **Search Blocks** (rectangles) to **Condition Check Blocks** (rhombuses) into a Directed Acyclic Graph (DAG) pipeline with persistent backend synchronization.
 4. **Data Isolation**: Large task datasets are separated from issue metadata and stored in an indexed standalone relational table (`task_dataset_transactions`), supporting streaming pagination without memory bloat.
+5. **Master Architecture Entry Point**: All subsystem specifications, implementation plans, acceptance reports, and changelogs are centrally indexed in [`MASTER_ARCHITECTURE_INDEX.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/MASTER_ARCHITECTURE_INDEX.md).
 
 This report serves as the authoritative, definitive guide for subsequent development and AI assistance.
 

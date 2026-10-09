@@ -1546,6 +1546,7 @@ export default function TeamWorkspace({
                   <TeamHashtagReportsTab
                     teamId={currentTeam.id}
                     teamName={currentTeam.name}
+                    currentUser={currentUser}
                   />
                 )}
               </div>

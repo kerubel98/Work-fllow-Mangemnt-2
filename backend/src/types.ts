@@ -1579,14 +1579,43 @@ export interface DatabaseColumnConfiguration {
   filterConditions?: TypeColumnCondition[]; // Filtering conditions within common grouping column(s) for conditional count / duplicate evaluation
   // Value constant labeling and interpretation
   valueLabels?: ColumnValueLabelMapping[]; // User labels and interpretation when column value equals a constant
-  unmappedValueAction?: 'FLAG' | 'ALLOW' | 'IGNORE'; // How to handle values without a defined label
   violationAction: 'FLAG' | 'STOP' | 'CONTINUE' | 'REPORT';
   severity: 'CRITICAL' | 'WARNING' | 'INFO';
   violationMessage?: string;
+  statusBehavior?: 'MUTATE_STATUS' | 'REPORT_ONLY'; // Whether to alter transaction status or log report only
+  affectsReconciliationStatus?: boolean; // Whether duplicate/column breaches alter Level 1 reconciliation status
+  unmappedValueAction?: 'FLAG' | 'PASS' | 'FAIL';
   isActive: boolean;
   createdBy?: string;
   createdAt?: string;
   updatedAt?: string;
+}
+
+export interface TaskDatasetTransactionEntity {
+  id: string;
+  task_id: string;
+  row_number: number;
+  batch_id?: string;
+  returned_data?: Record<string, Record<string, Array<Record<string, any>>>> | Array<Record<string, any>>;
+  canonical_data: {
+    _rowNumber?: number;
+    _task_id?: string;
+    reconciliation_status?: 'PASS' | 'FAIL' | 'PENDING';
+    validation_status?: 'PASS' | 'FAIL' | 'ERROR' | 'PENDING';
+    _validation_status?: 'PASS' | 'FAIL' | 'ERROR' | 'PENDING';
+    _target_record?: Record<string, any> | null;
+    _target_record_count?: number;
+    _workflow_runs?: Record<string, {
+      reconciliation_status: 'PASS' | 'FAIL' | 'PENDING';
+      validation_status: 'PASS' | 'FAIL' | 'ERROR' | 'PENDING';
+      reconciled_at: string;
+      details?: Record<string, any>;
+    }>;
+    _active_workflow_id?: string;
+    [key: string]: any;
+  };
+  raw_data?: Record<string, any>;
+  created_at?: string;
 }
 
 export interface ResolutionApprovalRequest {

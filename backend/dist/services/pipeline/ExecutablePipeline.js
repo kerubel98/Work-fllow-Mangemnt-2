@@ -35,7 +35,8 @@ export class ExecutableStage {
     compiledRules;
     aggregationStrategy;
     attachedDbConfigIds;
-    constructor(stageId, stageName, stageType, cardinalityPolicy, orderByColumn, validations, compiledRules, aggregationStrategy, attachedDbConfigIds) {
+    dbConfigMethods;
+    constructor(stageId, stageName, stageType, cardinalityPolicy, orderByColumn, validations, compiledRules, aggregationStrategy, attachedDbConfigIds, dbConfigMethods) {
         this.stageId = stageId;
         this.stageName = stageName;
         this.stageType = stageType;
@@ -45,6 +46,7 @@ export class ExecutableStage {
         this.compiledRules = compiledRules;
         this.aggregationStrategy = aggregationStrategy;
         this.attachedDbConfigIds = attachedDbConfigIds;
+        this.dbConfigMethods = dbConfigMethods;
     }
     /**
      * Runs all ValidationMethods in this stage sequentially.
@@ -74,6 +76,94 @@ export class ExecutableStage {
                 aggregationStrategy: this.aggregationStrategy,
             }, methodCtx);
             records.push(reconResult.executionRecord);
+        }
+        // §6.7 DB Column Config execution:
+        // Attached DB configs execute LAST in the stage after mirror reconciliation is completed,
+        // operating strictly on passed rows.
+        const allPassed = records.length > 0 && records.every(r => r.validationResult === 'PASS');
+        if (allPassed && this.dbConfigMethods && this.dbConfigMethods.length > 0) {
+            for (const colMethod of this.dbConfigMethods) {
+                const colMethodCtx = {
+                    ...context,
+                    validationId: colMethod.id,
+                    stageId: this.stageId,
+                    stageName: this.stageName,
+                };
+                const dataResult = await colMethod.execute(colMethodCtx, inputs);
+                const evalResult = colMethod.evaluateConfig(dataResult.rawRows, inputs);
+                if (evalResult.status === 'FAIL') {
+                    if (colMethod.statusBehavior === 'MUTATE_STATUS') {
+                        records.push({
+                            stageId: this.stageId,
+                            stageName: this.stageName,
+                            validationId: colMethod.id,
+                            stepId: colMethod.id,
+                            validationResult: 'FAIL',
+                            pipelineAction: evalResult.action || 'FLAG',
+                            cardinalityStatus: 'EXACT_MATCH',
+                            isDiagnosticOnly: false,
+                            producedValues: {},
+                            evaluatedAt: new Date().toISOString(),
+                            timestamp: new Date().toISOString(),
+                            evaluationDetails: {
+                                ...evalResult.details,
+                                message: evalResult.message,
+                                dataKeys: evalResult.dataKeys,
+                                statusBehavior: 'MUTATE_STATUS',
+                            },
+                        });
+                        if (evalResult.action === 'STOP' || evalResult.action === 'CLOSE') {
+                            break;
+                        }
+                    }
+                    else {
+                        // REPORT_ONLY
+                        records.push({
+                            stageId: this.stageId,
+                            stageName: this.stageName,
+                            validationId: colMethod.id,
+                            stepId: colMethod.id,
+                            validationResult: 'PASS',
+                            pipelineAction: 'CONTINUE',
+                            cardinalityStatus: 'EXACT_MATCH',
+                            isDiagnosticOnly: true,
+                            producedValues: {},
+                            evaluatedAt: new Date().toISOString(),
+                            timestamp: new Date().toISOString(),
+                            evaluationDetails: {
+                                ...evalResult.details,
+                                message: evalResult.message,
+                                dataKeys: evalResult.dataKeys,
+                                statusBehavior: 'REPORT_ONLY',
+                                reportOnly: true,
+                                violationReport: evalResult.message,
+                            },
+                        });
+                    }
+                }
+                else {
+                    // PASS
+                    records.push({
+                        stageId: this.stageId,
+                        stageName: this.stageName,
+                        validationId: colMethod.id,
+                        stepId: colMethod.id,
+                        validationResult: 'PASS',
+                        pipelineAction: 'CONTINUE',
+                        cardinalityStatus: 'EXACT_MATCH',
+                        isDiagnosticOnly: false,
+                        producedValues: {},
+                        evaluatedAt: new Date().toISOString(),
+                        timestamp: new Date().toISOString(),
+                        evaluationDetails: {
+                            ...evalResult.details,
+                            message: evalResult.message,
+                            dataKeys: evalResult.dataKeys,
+                            statusBehavior: colMethod.statusBehavior,
+                        },
+                    });
+                }
+            }
         }
         return records;
     }
@@ -256,16 +346,93 @@ export class ExecutablePipeline {
                       to_jsonb(m.*) - '_batch_id' - '_rule_block_id' - '_task_id' - '_row_number' - '_validation_status' - '_validation_action' - '_validation_details' AS target_record
                FROM ${mirrorTable} m
                WHERE _batch_id = $1 AND _rule_block_id = $2`, [batchCtx.batchId, batchCtx.ruleBlockId]);
+                        const stagedRowNumbers = new Set();
+                        const rowsByRowNum = new Map();
+                        const metaByRowNum = new Map();
                         for (const r of mirrorOutcomeRes.rows || []) {
                             const rNum = Number(r._row_number);
+                            stagedRowNumbers.add(rNum);
+                            if (!rowsByRowNum.has(rNum)) {
+                                rowsByRowNum.set(rNum, []);
+                                metaByRowNum.set(rNum, r);
+                            }
+                            if (r.target_record) {
+                                rowsByRowNum.get(rNum).push(r.target_record);
+                            }
+                        }
+                        for (const [rNum, targetRows] of rowsByRowNum.entries()) {
+                            const rMeta = metaByRowNum.get(rNum);
+                            let valStatus = (rMeta._validation_status || 'PASS');
+                            let valAction = (rMeta._validation_action || 'CONTINUE');
+                            let valDetails = rMeta._validation_details || {};
+                            // If stage has attached dbConfigMethods, evaluate on passed rows across all candidate legs
+                            if (valStatus === 'PASS' && stage.dbConfigMethods && stage.dbConfigMethods.length > 0) {
+                                const inputRow = currentRows.find(cr => Number(cr._row_number) === rNum) || {};
+                                for (const colMethod of stage.dbConfigMethods) {
+                                    const evalResult = colMethod.evaluateConfig(targetRows, inputRow);
+                                    if (evalResult.status === 'FAIL') {
+                                        if (colMethod.statusBehavior === 'MUTATE_STATUS') {
+                                            valStatus = 'FAIL';
+                                            valAction = evalResult.action || 'FLAG';
+                                            valDetails = {
+                                                ...valDetails,
+                                                tableRuleViolation: evalResult.message,
+                                                tableRuleDetails: evalResult.details,
+                                                dataKeys: evalResult.dataKeys,
+                                                statusBehavior: 'MUTATE_STATUS',
+                                            };
+                                            batchResult.passedCount = Math.max(0, batchResult.passedCount - 1);
+                                            batchResult.failedCount += 1;
+                                            totalPass = Math.max(0, totalPass - 1);
+                                            totalFail += 1;
+                                            break;
+                                        }
+                                        else {
+                                            // REPORT_ONLY: record details without changing pass verdict
+                                            valDetails = {
+                                                ...valDetails,
+                                                tableRuleReport: evalResult.message,
+                                                tableRuleDetails: evalResult.details,
+                                                dataKeys: evalResult.dataKeys,
+                                                statusBehavior: 'REPORT_ONLY',
+                                                reportOnly: true,
+                                            };
+                                        }
+                                    }
+                                }
+                            }
                             cumulativeRowOutcomes.set(rNum, {
                                 rowNumber: rNum,
                                 stageId: stage.stageId,
-                                validationStatus: r._validation_status || 'PASS',
-                                validationAction: r._validation_action || 'CONTINUE',
-                                details: r._validation_details,
-                                targetRecord: r.target_record,
+                                stageName: stage.stageName,
+                                validationStatus: valStatus,
+                                validationAction: valAction,
+                                details: valDetails,
+                                targetRecord: targetRows[0] || rMeta.target_record,
                             });
+                        }
+                        // Synthesize explicit FAIL for any input row that was NOT returned by external query
+                        if (db && targetTable) {
+                            for (const r of currentRows) {
+                                const rNum = Number(r._row_number);
+                                if (!stagedRowNumbers.has(rNum)) {
+                                    cumulativeRowOutcomes.set(rNum, {
+                                        rowNumber: rNum,
+                                        stageId: stage.stageId,
+                                        stageName: stage.stageName,
+                                        validationStatus: 'FAIL',
+                                        validationAction: rule0?.onFailAction || 'STOP',
+                                        details: {
+                                            existence: 'NOT_FOUND_IN_TARGET_DB',
+                                            reason: `Record not found in target database ${db.name || db.id} (${targetTable}).`,
+                                        },
+                                        targetRecord: null,
+                                    });
+                                    batchResult.totalEvaluated += 1;
+                                    batchResult.failedCount += 1;
+                                    totalFail += 1;
+                                }
+                            }
                         }
                     }
                     catch { }
@@ -297,6 +464,12 @@ export class ExecutablePipeline {
              WHERE _batch_id = $1 AND _rule_block_id = $2
                AND _validation_action IN ('STOP', 'CLOSE')`, [batchCtx.batchId, batchCtx.ruleBlockId]);
                     const stoppedRowNums = new Set((stoppedRes.rows || []).map((r) => Number(r._row_number)));
+                    // Also include synthesized STOP/CLOSE rows from cumulative outcomes
+                    for (const [rNum, outcome] of cumulativeRowOutcomes.entries()) {
+                        if (outcome.validationAction === 'STOP' || outcome.validationAction === 'CLOSE') {
+                            stoppedRowNums.add(rNum);
+                        }
+                    }
                     if (stoppedRowNums.size > 0) {
                         currentRows = currentRows.filter(r => !stoppedRowNums.has(Number(r._row_number)));
                     }

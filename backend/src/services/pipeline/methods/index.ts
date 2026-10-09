@@ -14,3 +14,4 @@ export { IngestionSearchMethod } from './IngestionSearchMethod.js';
 export { ConditionCheckMethod } from './ConditionCheckMethod.js';
 export { ReconciliationMethod } from './ReconciliationMethod.js';
 export { DiagnosticReportMethod } from './DiagnosticReportMethod.js';
+export { DbConfigValidationMethod } from './DbConfigValidationMethod.js';

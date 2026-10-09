@@ -193,7 +193,7 @@ investigationsRouter.post('/execute-universal', async (req, res) => {
             keyFields: Array.isArray(keyFields) ? keyFields : undefined,
             priority: priority || 'HIGH',
             options,
-            forceRerun: !!forceRerun,
+            forceRerun: forceRerun !== false,
             executedBy: executedBy || req.user?.name || req.user?.username || 'investigator'
         });
         return res.json(result);
@@ -206,7 +206,7 @@ investigationsRouter.post('/execute-universal', async (req, res) => {
 // POST /api/investigations/execute-pipeline - Canonical DAG pipeline execution endpoint (§3.2, §7.2)
 investigationsRouter.post('/execute-pipeline', async (req, res) => {
     try {
-        const { workflowId, records, sourceType, sourceId, options, executedBy } = req.body;
+        const { workflowId, records, sourceType, sourceId, options, executedBy, forceRerun } = req.body;
         if (!workflowId) {
             return res.status(400).json({ error: 'workflowId is required' });
         }
@@ -220,6 +220,7 @@ investigationsRouter.post('/execute-pipeline', async (req, res) => {
             sourceType: sourceType || 'PIPELINE_DIRECT',
             sourceId,
             options,
+            forceRerun: forceRerun !== false,
             executedBy: executedBy || req.user?.name || req.user?.username || 'investigator'
         });
         return res.json(result);

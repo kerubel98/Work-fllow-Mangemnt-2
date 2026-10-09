@@ -3,3 +3,11 @@ frontend/node_modules
 env
 
 node_modules
+
+# Local configuration & credentials
+opencode.json
+*.local
+
+# Scratch and ad-hoc inspection scripts
+scratch/
+backend/check_*.mjs

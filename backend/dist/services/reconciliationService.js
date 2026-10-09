@@ -203,50 +203,65 @@ export const reconciliationService = {
      * @param mirrorTable   Physical mirror table name (e.g. mirror_core_auth)
      * @param stageId       Current stage identifier
      */
-    async reconcileByRowNumber(taskId, batchId, ruleBlockId, mirrorTable, stageId = '') {
+    async reconcileByRowNumber(taskId, batchId, ruleBlockId, mirrorTable, stageId = '', workflowId = 'default', targetTable = '') {
         const startTime = Date.now();
         if (!isPostgresConnected) {
             return { taskId, batchId, totalUpdated: 0, passCount: 0, failCount: 0, durationMs: 0 };
         }
         const pool = getPostgresPool();
         const safeMirror = mirrorTable.toLowerCase().replace(/[^a-z0-9_]/g, '_');
+        const effectiveTable = targetTable || safeMirror.replace(/^mirror_/, '');
         try {
-            // Deterministic join using DISTINCT ON to eliminate row multiplication (Rule 13)
+            // Deterministic join using GROUP BY to aggregate multi-leg mirror rows and avoid multiplication (Rule 13)
             const updateSql = `
-        WITH deduplicated_mirror AS (
-          SELECT DISTINCT ON (_task_id, _row_number)
+        WITH grouped_mirror AS (
+          SELECT
             _task_id,
             _row_number,
-            _validation_status,
-            _validation_action,
-            _validation_details
-          FROM ${safeMirror}
+            (CASE WHEN bool_or(_validation_status = 'FAIL') THEN 'FAIL' ELSE 'PASS' END) AS _validation_status,
+            (CASE WHEN bool_or(_validation_status = 'FAIL') THEN 'STOP' ELSE 'CONTINUE' END) AS _validation_action,
+            jsonb_agg(
+              to_jsonb(m) - '_batch_id' - '_rule_block_id' - '_task_id' - '_mirrored_at' - '_validation_status' - '_validation_action' - '_validation_details'
+            ) AS mirror_legs
+          FROM ${safeMirror} m
           WHERE _batch_id = $1
             AND _rule_block_id = $2
             AND _task_id = $3
-          ORDER BY _task_id, _row_number, (CASE WHEN _validation_status = 'FAIL' THEN 0 ELSE 1 END), _mirrored_at DESC
+          GROUP BY _task_id, _row_number
         )
         UPDATE task_dataset_transactions tdt
-        SET 
-          validation_status = dm._validation_status,
-          _validation_details = jsonb_build_object(
-            'stage_id', $4::text,
-            'rule_block_id', $2::text,
-            'mirror_table', $5::text,
-            'details', dm._validation_details,
-            'reconciled_at', NOW()
+        SET
+          returned_data = jsonb_set(
+            COALESCE(tdt.returned_data, '{}'::jsonb) || jsonb_build_object(
+              $6::text,
+              COALESCE(tdt.returned_data->$6::text, '{}'::jsonb)
+            ),
+            ARRAY[$6::text, $7::text],
+            gm.mirror_legs,
+            true
           ),
-          updated_at = NOW()
-        FROM deduplicated_mirror dm
-        WHERE tdt.task_id = dm._task_id
-          AND tdt.row_number = dm._row_number;
+          canonical_data = (tdt.canonical_data - 'auditTrail' - 'stageResults') || jsonb_build_object(
+            '_validation_status', gm._validation_status,
+            'reconciliation_status', gm._validation_status,
+            '_validation_action', gm._validation_action,
+            '_validation_details', jsonb_build_object(
+              'stage_id', $4::text,
+              'rule_block_id', $2::text,
+              'mirror_table', $5::text,
+              'legs_count', jsonb_array_length(gm.mirror_legs),
+              'reconciled_at', NOW()
+            )
+          )
+        FROM grouped_mirror gm
+        WHERE tdt.task_id = gm._task_id
+          AND tdt.row_number = gm._row_number;
       `;
-            const res = await pool.query(updateSql, [batchId, ruleBlockId, taskId, stageId, safeMirror]);
+            const res = await pool.query(updateSql, [batchId, ruleBlockId, taskId, stageId, safeMirror, workflowId || 'default', effectiveTable]);
             const totalUpdated = res.rowCount || 0;
             const countSql = `
         SELECT
-          COUNT(*) FILTER (WHERE validation_status = 'PASS')::int AS pass_count,
-          COUNT(*) FILTER (WHERE validation_status = 'FAIL')::int AS fail_count
+          COUNT(*) FILTER (WHERE canonical_data->>'_validation_status' = 'PASS')::int AS pass_count,
+          COUNT(*) FILTER (WHERE canonical_data->>'_validation_status' = 'FAIL')::int AS fail_count
         FROM task_dataset_transactions
         WHERE task_id = $1;
       `;

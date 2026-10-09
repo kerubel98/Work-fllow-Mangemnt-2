@@ -251,7 +251,11 @@ export function buildValuesIngressQuery(
     const rowNums = nextParam(Number(row._row_number));
     const keyPlaceholders = keyMappings.map(m => {
       const v = getRowValueCaseInsensitive(row, m.inputField);
-      return nextParam(v ?? null);
+      // Key fields used for external database lookup MUST ALWAYS be strings to prevent
+      // IEEE 754 precision loss on large integers (e.g. 18-digit UTRNNO) and to prevent
+      // MySQL from coercing VARCHAR columns to double precision floats during joins.
+      const cleanV = (v !== null && v !== undefined && String(v).trim() !== '') ? String(v).trim() : null;
+      return nextParam(cleanV);
     });
     if (dialect === 'MySQL') {
       valueRows.push(`ROW(${rowNums}, ${keyPlaceholders.join(', ')})`);

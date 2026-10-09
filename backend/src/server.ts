@@ -31,6 +31,7 @@ import { workflowBundlesRouter } from './routes/workflowBundles.js';
 import { assetSharingRouter } from './routes/assetSharing.js';
 import { mirrorTableManager } from './services/mirrorTableManager.js';
 import { ftpFileStagingService } from './services/ftpFileStagingService.js';
+import { hashtagSchedulerService } from './services/hashtagSchedulerService.js';
 
 // dotenv/config auto-loads
 
@@ -133,7 +134,9 @@ async function startServer() {
       console.warn('[ServerBoot] Precision sweeper check warning:', sweepErr.message);
     }
   }
-  // MongoDB fallback removed — PostgreSQL is the sole persistence layer.
+
+  // Start autonomous hashtag scheduler for SCHEDULED_CRON presets
+  hashtagSchedulerService.startHashtagScheduler();
 
   const rootDir = fs.existsSync(path.resolve(process.cwd(), 'frontend'))
     ? process.cwd()

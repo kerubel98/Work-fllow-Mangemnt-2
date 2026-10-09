@@ -373,6 +373,47 @@ For changes involving persistent data, architecture, schema, authorization, or l
 18. **NEVER** hardcode inner viewport heights (`h-[calc(100vh-...)]`) in workspace tabs. Always constrain full-screen views with `overflow-hidden flex-1 min-h-0` and `shrink-0` stationary headers.
 19. **NEVER** add or modify properties in `ProcessingStage` or `ValidationCheckStep` without updating `FlowchartNode`, `cleanNodes`, `convertStagesToFlowchart`, and `createSnapshot` in `WorkflowStudioFlowchart.tsx`. Doing so silently drops configurations during canvas interactions.
 20. **NEVER** save workflows without explicit `targetDbId` and `targetTable` scoping or execute validation blocks without explicit `attachedDbConfigIds` bindings.
+21. **NEVER** declare an architectural modification "100% Certified" or sign off based solely on passing unit tests without conducting a zero-assumption physical code verification audit checking for false-green assertions, unwired routes, or empty loop bodies.
+22. **NEVER** execute architectural modifications without maintaining a single designated Master Architectural Document that indexes and summarizes every related plan, acceptance report, and audit document until final sign-off.
+23. **NEVER** perform architectural modifications without updating the master document's in-document Change Summary and registering the evolution in `MASTER_ARCHITECTURE_INDEX.md`.
+
+---
+
+## 7. Mandatory Architectural Document Hub & Sign-Off Traceability Procedure
+
+Whenever modifying, designing, reviewing, or analyzing architectural features in this repository, you must strictly follow this mandatory documentation and sign-off procedure:
+
+### 7.1 Authoritative Entry Point (`MASTER_ARCHITECTURE_INDEX.md`)
+The repository maintains [`MASTER_ARCHITECTURE_INDEX.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/MASTER_ARCHITECTURE_INDEX.md) as the single authoritative entry point collecting, indexing, and organizing all master architectural specifications, implementation plans, acceptance reports, verification audits, and decision logs across all subsystems.
+
+### 7.2 Single Master Specification Anchor
+Every architectural modification or major system feature MUST have one designated primary Master Architectural Specification document in the repository root (e.g. [`UNIVERSAL_HASHTAG_ARCHITECTURE_AND_SPECIFICATION.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/UNIVERSAL_HASHTAG_ARCHITECTURE_AND_SPECIFICATION.md), [`PIPELINE_ENGINE_MASTER_ARCHITECTURE.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/PIPELINE_ENGINE_MASTER_ARCHITECTURE.md)).
+
+### 7.3 In-Document Architectural Change Summaries
+Under each master architectural document, maintain a dedicated **Architectural Change Summary / Revision Log** section recording every architectural modification made (Date, Scope, Rationale, and Physical Code Impact). This change summary must also be mirrored into the corresponding domain section of [`MASTER_ARCHITECTURE_INDEX.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/MASTER_ARCHITECTURE_INDEX.md).
+
+### 7.4 Unified Lifecycle Reference Hub
+The master architectural document MUST maintain a dedicated traceability section (`Implementation Flow: Architectural Roadmap, Acceptance & Audit Traceability`) indexing all related documents generated across the lifecycle until final sign-off:
+1. **Master Specifications & Domain Blueprints**: Core taxonomies, invariant rules, and architecture specs.
+2. **Engineering Implementation Plans**: Phased execution steps, migrations, and service designs.
+3. **Acceptance Reports**: Gap remediation matrices, automated test execution outputs, and build checks.
+4. **Verification Audits & Reality Checks**: Zero-assumption code-level cross-examinations identifying lingering gaps, false-greens, or unwired paths.
+5. **UI/UX Design System Audits**: Viewport flexbox containment, stationary header locks, and modal specifications.
+6. **Architecture Decision Records (ADRs) & Decision Logs**: Governance invariants, security controls, and persistence decisions.
+
+### 7.5 Bullet-Point Summaries & Clickable Markdown Links
+Every document referenced in the master specification and the central index MUST include:
+- A clickable markdown link with file scheme (`[Document](file:///...)`).
+- A concise summary in bullet points defining its scope, key findings, and role in the system.
+
+### 7.6 Zero-Assumption Reality Gate (Anti-Premature Sign-Off)
+No feature or milestone may be accepted or certified until a verification audit physically inspects the code lines, verifying:
+- Every planned API route is registered and mounted.
+- Every enum or trigger has an active runtime runner (not just DDL/types).
+- Every test assertion loop runs non-vacuously (no assertions over empty arrays).
+- Every external connection dispatches to live databases where configured.
+
+
 
 
 

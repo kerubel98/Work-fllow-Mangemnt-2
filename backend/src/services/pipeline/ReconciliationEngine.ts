@@ -335,7 +335,9 @@ export class ReconciliationEngine {
           context.batchId,
           context.ruleBlockId,
           mirrorTable,
-          context.stageId
+          context.stageId,
+          context.workflowId || 'default',
+          context.targetTable || ''
         );
       } catch (err: any) {
         console.warn(`[ReconciliationEngine] task_dataset_transactions reconciliation notice: ${err.message}`);

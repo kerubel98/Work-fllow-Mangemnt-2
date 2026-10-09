@@ -28,7 +28,7 @@
  * @see RULE_TO_METHOD_PIPELINE_ARCHITECTURE.md §3.2, §3.3, §3.4, §4.2
  */
 import { ExecutablePipeline, ExecutableStage } from './ExecutablePipeline.js';
-import { IngestionSearchMethod, ConditionCheckMethod, ReconciliationMethod, DiagnosticReportMethod, } from './methods/index.js';
+import { IngestionSearchMethod, ConditionCheckMethod, ReconciliationMethod, DiagnosticReportMethod, DbConfigValidationMethod, } from './methods/index.js';
 // ---------------------------------------------------------------------------
 // WorkflowPipelineBuilder
 // ---------------------------------------------------------------------------
@@ -131,7 +131,20 @@ export class WorkflowPipelineBuilder {
                 ...explicitStageConfigIds,
                 ...inheritedWfConfigIds
             ]));
-            executableStages.push(new ExecutableStage(stage.id, stage.name, boxType, stage.cardinalityPolicy, stage.orderByColumn, validationMethods, effectiveSteps, stage.aggregationStrategy, attachedDbConfigIds));
+            // Gather attached DatabaseColumnConfiguration objects
+            const attachedConfigs = [
+                ...(stage.attachedDbConfigs || []),
+                ...effectiveSteps.flatMap((s) => s.columnConfigurations || []),
+                ...((workflow.columnConfigurations || []).filter((c) => attachedDbConfigIds.includes(c.id)))
+            ];
+            const uniqueConfigMap = new Map();
+            for (const cfg of attachedConfigs) {
+                if (cfg && cfg.id && !uniqueConfigMap.has(cfg.id)) {
+                    uniqueConfigMap.set(cfg.id, cfg);
+                }
+            }
+            const dbConfigMethods = Array.from(uniqueConfigMap.values()).map(cfg => new DbConfigValidationMethod(cfg, stage.order ?? 1, stage.targetDbId || workflow.targetDbId, stage.targetDataSource || workflow.targetTable));
+            executableStages.push(new ExecutableStage(stage.id, stage.name, boxType, stage.cardinalityPolicy, stage.orderByColumn, validationMethods, effectiveSteps, stage.aggregationStrategy, attachedDbConfigIds, dbConfigMethods));
         }
         return new ExecutablePipeline(workflow.id, workflow.name, executableStages);
     }

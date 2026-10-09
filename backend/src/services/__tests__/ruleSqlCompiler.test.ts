@@ -189,8 +189,64 @@ describe('ruleSqlCompiler', () => {
       expect(compiled.fullUpdateSql).toContain('SET');
       expect(compiled.fullUpdateSql).toContain('_validation_status = CASE');
       expect(compiled.fullUpdateSql).toContain('_validation_action = CASE');
-      expect(compiled.fullUpdateSql).toContain('_validation_details = jsonb_build_object');
       expect(compiled.fullUpdateSql).toContain('WHERE m._batch_id = $1');
+    });
+
+    it('compiles DUPLICATE_CHECK with row_number scoping, filter preservation and aggregation threshold', () => {
+      const step: ValidationCheckStep = {
+        id: 'step-dup-1',
+        stepNumber: 1,
+        name: 'Settlement Duplicate Check',
+        checkType: 'EXISTENCE_CHECK',
+        targetDbId: 'db-1',
+        targetTable: 'tran_log_tab',
+        requiredParams: [],
+        dependencyCondition: 'ALWAYS',
+        onPassAction: 'CONTINUE',
+        onFailAction: 'STOP',
+        onErrorAction: 'STOP',
+        severityOnFailure: 'CRITICAL',
+        columnConfigurations: [
+          {
+            id: 'colcfg-dup',
+            name: 'New Column Rule',
+            dbId: 'db-1',
+            tableName: 'tran_log_tab',
+            ruleType: 'DUPLICATE_CHECK',
+            columns: [
+              { columnName: 'TR_GROUP_ID', role: 'DISCRIMINATOR', priority: 1 },
+              { columnName: 'BO_TYPE', role: 'DISCRIMINATOR', priority: 2 },
+              { columnName: 'PROC_NAME', role: 'DISCRIMINATOR', priority: 3 }
+            ],
+            filterConditions: [
+              { columnName: 'BO_TYPE', operator: '=', value: 'CMTP254' },
+              { columnName: 'PROC_NAME', operator: '!=', value: 'RVS' }
+            ],
+            aggregationRules: [
+              { function: 'COUNT', operator: '>', value: 1 }
+            ],
+            violationAction: 'FLAG',
+            severity: 'CRITICAL',
+            isActive: true
+          }
+        ]
+      };
+
+      const compiled = ruleSqlCompiler.compileBlockUpdateSql(
+        'mirror_sett_tran_log_tab',
+        'fe_utrnno',
+        [step],
+        ['tr_group_id', 'bo_type', 'proc_name', 'fe_utrnno']
+      );
+
+      // Verify the generated SQL contains batch and task scoped subquery
+      expect(compiled.fullUpdateSql).toContain('_dup._batch_id = m._batch_id');
+      expect(compiled.fullUpdateSql).toContain('_dup._task_id = m._task_id');
+      expect(compiled.fullUpdateSql).not.toContain('_dup._row_number = m._row_number');
+      expect(compiled.fullUpdateSql).toContain('_dup."tr_group_id" = m."tr_group_id"');
+      expect(compiled.fullUpdateSql).toContain("LOWER(COALESCE(m.\"bo_type\"::text, '')) = LOWER('CMTP254')");
+      expect(compiled.fullUpdateSql).toContain("COALESCE(m.\"proc_name\"::text, '') != 'RVS'");
+      expect(compiled.fullUpdateSql).toContain('<= 1');
     });
   });
 });

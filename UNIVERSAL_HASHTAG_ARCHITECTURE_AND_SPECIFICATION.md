@@ -264,3 +264,177 @@ The comprehensive, step-by-step engineering plan for realizing this architecture
 7. **Phase 7 (Chat Directives)**: Implements `/escalate` and `/create-hashtag` in `EscalationRoomModal.tsx` and Team Chat with issue context inheritance.
 8. **Phase 8 (Dashboards & Reports)**: Implements dedicated reporting on Personal Dashboard (`My Tasks`) and Team Dashboard (`TeamWorkspace`).
 9. **Phase 9 (Verification)**: Full integration test suite (`universalHashtagsEngine.test.ts`), Vitest regression pass (234 tests), and Vite build validation.
+
+---
+
+## 10. Implementation Flow: Architectural Roadmap, Acceptance & Audit Traceability
+
+To ensure end-to-end governance and provide full traceability across all architectural modifications, this section indexes every related plan document, acceptance report, and verification audit with concise summaries of their roles in the system evolution.
+
+```
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│                        ARCHITECTURAL GOVERNANCE & MODIFICATION FLOW                     │
+└────────────────────────────────────────────────────────────────────────────────────────┘
+                                           │
+  1. MASTER BLUEPRINTS                     ▼
+     • UNIVERSAL_HASHTAG_ARCHITECTURE_AND_SPECIFICATION.md (Directives & 4-Type Taxonomy)
+     • PIPELINE_ENGINE_MASTER_ARCHITECTURE.md (4-Stage Flowchart DAG & Coordinate Injection)
+     • RULE_TO_METHOD_PIPELINE_ARCHITECTURE.md (Rule Verdict vs Pipeline Action Mapping)
+                                           │
+  2. EXECUTION PLANS                       ▼
+     • IMPLEMENTATION_PLAN_UNIVERSAL_HASHTAGS.md (Phases 1–9 Engineering Execution)
+     • IMPLEMENTATION_PLAN_PIPELINE_ENGINE.md (Multi-Stage Pipeline Remediation)
+                                           │
+  3. ACCEPTANCE ASSESSMENTS                ▼
+     • ARCHITECTURE_IMPLEMENTATION_ACCEPTANCE_REPORT.md (GAPs 01–14 Remediation & Tests)
+     • ARCHITECTURE_ACCEPTANCE_REPORT.md (Operational Pipeline Acceptance Sign-Off)
+                                           │
+  4. CRITICAL AUDITS & REVIEWS             ▼
+     • VERIFICATION_AUDIT_REPORT.md (AGAPs 01–09 Code-Level Cross-Examination)
+     • UI_UX_DESIGN_SYSTEM_AUDIT.md (Flexbox Viewport & Stationary Header Containment)
+     • DECISION_LOG.md (ADRs for Maker-Checker, 64-Bit Locks & Mirror Isolation)
+```
+
+---
+
+### 10.1 Master Architectural Specifications
+
+#### 1. [`UNIVERSAL_HASHTAG_ARCHITECTURE_AND_SPECIFICATION.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/UNIVERSAL_HASHTAG_ARCHITECTURE_AND_SPECIFICATION.md) *(This Document)*
+* **Scope**: Master specification transforming hashtags from static file tags into autonomous operational directives.
+* **Key Architecture Points**:
+  * **4-Type Taxonomy**: Type A (*Batch File-Ingestion*), Type B (*Database-Direct Scanner / Zero-File*), Type C (*ETL / Staging Pipeline*), and Type D (*Auditing & Compliance Sweep*).
+  * **Execution Lifecycle**: Segregates partial dry-run investigation checks from full mutating execution.
+  * **Interactive UI**: Specifies Pre-Flight Drawer, side-by-side Result Diff modal, and chat-based `/create-hashtag` staging.
+  * **Reporting Model**: Separates personal operational velocity from team SLA and RCA matrices.
+
+#### 2. [`PIPELINE_ENGINE_MASTER_ARCHITECTURE.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/PIPELINE_ENGINE_MASTER_ARCHITECTURE.md)
+* **Scope**: Master architecture for multi-stage Back Office transaction investigation, validation, and reconciliation.
+* **Key Architecture Points**:
+  * **Four-Pillar Life-Cycle Separation**: Strictly decouples Task Status, Financial Status, Investigation State, and Rule Verdict.
+  * **Coordinate Injection**: Deterministic `(task_id, row_number)` tracking ensuring multi-row batches preserve individual identity.
+  * **Dedicated UNLOGGED Mirrors**: External systems queried into dedicated mirror tables (`mirror_{db}_{table}`) with 64-bit advisory locking.
+  * **NextStageInputResolver**: Dynamic output-to-input propagation across consecutive pipeline stages.
+
+#### 3. [`RULE_TO_METHOD_PIPELINE_ARCHITECTURE.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/RULE_TO_METHOD_PIPELINE_ARCHITECTURE.md)
+* **Scope**: Compilation architecture translating visual flowchart DAG validation boxes into concrete executable pipeline methods.
+* **Key Architecture Points**:
+  * **Method Mapping**: Binds canonical box types (`INGESTION_SEARCH`, `CONDITION_CHECK`, `RECONCILIATION`, `REPORT`) to dedicated execution classes.
+  * **Rule Verdict vs. Pipeline Action**: Guarantees that what a check detects (`PASS`, `FAIL`, `DISCREPANCY`) is cleanly decoupled from what the engine executes next (`CONTINUE`, `STOP`, `CLOSE`, `FLAG`, `REPORT`).
+  * **SQL Compilation**: Compiles declarative matching criteria into batched ANSI SQL composite tuple queries.
+
+---
+
+### 10.2 Engineering Implementation Plans
+
+#### 4. [`IMPLEMENTATION_PLAN_UNIVERSAL_HASHTAGS.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/IMPLEMENTATION_PLAN_UNIVERSAL_HASHTAGS.md)
+* **Scope**: 9-Phase engineering execution plan for implementing the Universal Hashtag Automation Engine.
+* **Key Implementation Points**:
+  * **Phase 1**: Database Migration `026_universal_hashtag_engine.sql` adding 9 schema columns and `hashtag_execution_runs`.
+  * **Phase 2–3**: Backend models, repository methods, and `hashtagService.ts` multi-type execution services.
+  * **Phase 4–5**: 14 REST API routes in `misc.ts` and authoring UI in `HashtagManager.tsx`.
+  * **Phase 6–8**: Investigation workspace diff modal, chat directives (`/escalate`), and reporting tabs.
+  * **Phase 9**: Integration test suite verifying Types A–D and Maker-Checker anti-self-approval.
+
+#### 5. [`IMPLEMENTATION_PLAN_PIPELINE_ENGINE.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/IMPLEMENTATION_PLAN_PIPELINE_ENGINE.md)
+* **Scope**: Step-by-step engineering plan for remediating the pipeline compiler, execution engine, and UI flowchart sync.
+* **Key Implementation Points**:
+  * Implementation of `CoordinateInjector`, `ExecutablePipeline`, and `NextStageInputResolver`.
+  * Multi-stage pipeline execution tests (`multiStagePipelineExecution.test.ts`).
+  * Remediation matrix resolving coordinate loss, unbatched external queries, and flowchart canvas state desynchronization.
+
+#### 6. [`IMPLEMENTATION_PLAN_UNIVERSAL_HASHTAGS_REMEDIATION.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/IMPLEMENTATION_PLAN_UNIVERSAL_HASHTAGS_REMEDIATION.md)
+* **Scope**: 5-Phase engineering plan to systematically remediate all 9 verified architectural gaps (AGAP-01 – AGAP-09).
+* **Key Implementation Points**:
+  * **Phase 1**: Type D `auditRows` per-record taint tracking and Maker-Checker proposal staging on live scans (`conditionalAction`).
+  * **Phase 2**: REST API routes for Type A/D execution, connector dispatch in `testPreFlight()`, and conditional `solutionTemplate` validation.
+  * **Phase 3**: Parameterized 64-bit advisory locking and server-side runtime cron scheduler daemon.
+  * **Phase 4**: Genuine MTTD/MTTR metrics joined against `issues` table and Personal Dashboard automation UI.
+  * **Phase 5**: Automated reality gate certification with non-vacuous Vitest assertions.
+
+---
+
+### 10.3 Acceptance Reports
+
+#### 6. [`ARCHITECTURE_IMPLEMENTATION_ACCEPTANCE_REPORT.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/ARCHITECTURE_IMPLEMENTATION_ACCEPTANCE_REPORT.md)
+* **Scope**: Initial implementation acceptance report evaluating Universal Hashtag Engine delivery against the 9-phase plan.
+* **Key Acceptance Points**:
+  * **Gap Resolution (GAP-01 – GAP-14)**: Documents remediation of `#` prefix normalization, route collisions, set-based batch inserts (500 chunks), UI drawers, and escalation room slash commands.
+  * **Automated Verification**: Records 31 passed test suites (243/243 tests) with zero TypeScript compilation errors.
+  * **Production Bundle**: Records successful Vite production build (`dist/`).
+  * **Governance Compliance**: Asserts alignment with AGENTS.md Rules 1–21 (PostgreSQL persistence, 64-bit advisory locks, and flexbox containment).
+
+#### 7. [`ARCHITECTURE_ACCEPTANCE_REPORT.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/ARCHITECTURE_ACCEPTANCE_REPORT.md)
+* **Scope**: Formal acceptance sign-off for the Operational Pipeline Engine and four-pillar architecture.
+* **Key Acceptance Points**:
+  * Verification of builder/compiler, set-based execution, row-number invariants, and duplicate input handling.
+  * Confirms mirror schema management, external system agnosticism, and downstream coordinate propagation.
+  * Documents zero regressions across legacy workflow execution paths.
+
+---
+
+### 10.4 Critical Audits, Reviews & Governance Records
+
+#### 8. [`VERIFICATION_AUDIT_REPORT.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/VERIFICATION_AUDIT_REPORT.md)
+* **Scope**: Independent, zero-assumption physical code inspection cross-checking the Acceptance Report against the actual codebase.
+* **Key Audit Points**:
+  * **Re-Classifies Status to PARTIAL**: Demonstrates that while GAPs 01–14 resolved real defects, critical runtime paths remained un-wired.
+  * **Discovers 9 Architectural Gaps (AGAP-01 – AGAP-09)**:
+    * *AGAP-01 (High)*: Type D `auditRows` hardcoded to `[]`, creating a false-green test loop masking missing per-row taint.
+    * *AGAP-02 (High)*: `conditionalAction` and `EXECUTE_SQL` Maker Proposal staging never evaluated at runtime.
+    * *AGAP-03 (Med)*: `SCHEDULED_CRON` trigger present in DDL and types, but lacks a server runtime scheduler.
+    * *AGAP-04 (Med)*: Missing REST API routes for Type A file execution and Type D audit sweep triggers.
+    * *AGAP-05 (Med)*: String interpolation used in 64-bit advisory lock key derivation instead of pre-computed params.
+    * *AGAP-06 (Med)*: `testPreFlight` ignores `targetDbId` and runs exclusively on local PostgreSQL.
+    * *AGAP-07 (Low-Med)*: `POST /hashtags` requires `solutionTemplate` for zero-file types (B and D).
+    * *AGAP-08 (Low)*: MTTD/MTTR metrics are run-interval approximations rather than issue lifecycle metrics.
+    * *AGAP-09 (Low)*: Personal Dashboard hashtag tab exists in API client but lacks a frontend view.
+
+#### 9. [`UI_UX_DESIGN_SYSTEM_AUDIT.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/UI_UX_DESIGN_SYSTEM_AUDIT.md)
+* **Scope**: Comprehensive UI/UX compliance audit across all workspace environments and modals.
+* **Key Audit Points**:
+  * **Rule 16 Compliance**: Enforces full-viewport flexbox containment (`h-full flex-1 min-h-0 overflow-hidden`) and eliminates outer viewport scroll leaks.
+  * **Stationary Headers**: Guarantees headers, toolbars, and tab bars stay permanently locked in view (`shrink-0`).
+  * **Independent Panes**: Dual-pane scrolling using `overflow-y-auto min-h-0` with `.no-scrollbar` styling.
+  * **Design System**: Harmonized slate-900 / dark-mode visual hierarchy with zero brittle `calc(100vh - Xpx)` subtractions in inner containers.
+
+#### 10. [`DECISION_LOG.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/DECISION_LOG.md)
+* **Scope**: Permanent Architecture Decision Records (ADRs) establishing core system invariants.
+* **Key Decision Points**:
+  * **ADR-001**: Mandatory Maker-Checker dual authorization and anti-self-approval (`makerId !== checkerId`) for mutating SQL solutions.
+  * **ADR-002**: 64-bit cryptographic advisory locks (`('x' || substr(md5($1), 1, 16))::bit(64)::bigint`) eliminating 32-bit hashtext collisions.
+  * **ADR-003**: Dedicated typed UNLOGGED mirror tables for external database queries, preventing WAL amplification.
+
+#### 11. [`AUDIT_RESPONSE_REPORT.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/AUDIT_RESPONSE_REPORT.md)
+* **Scope**: Formal audit response and cross-examination report adjudicating Acceptance Claims vs. Verification Findings.
+* **Key Response Points**:
+  * Documents physical inspection log across all 26 verification steps.
+  * Confirms physical evidence for all 9 architectural gaps (AGAP-01 to AGAP-09).
+  * Establishes a concrete remediation matrix to achieve genuine 100% certification.
+
+#### 12. [`ARCHITECTURE_REMEDIATION_FINAL_ACCEPTANCE_REPORT.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/ARCHITECTURE_REMEDIATION_FINAL_ACCEPTANCE_REPORT.md)
+* **Scope**: Definitive certification and acceptance sign-off for the full remediation of all 9 verified architectural gaps (AGAP-01 – AGAP-09).
+* **Key Acceptance Points**:
+  * Physical code audit confirming non-empty diagnostic taint tracking, Maker-Checker proposal auto-staging, background scheduler runtime, 64-bit advisory locking parameterization, and genuine issue-lifecycle MTTD/MTTR metrics.
+  * 100% passing test execution across 31 backend test suites (247 tests) and zero compilation warnings/errors across backend (`tsc`) and frontend (`vite build`).
+
+---
+
+### 10.5 Architectural Change Summary & Evolution Log
+
+This log permanently tracks all architectural revisions, scope evolutions, and gap remediations made to the Universal Hashtag Automation Engine:
+
+| Revision Date | Commit / Milestone | Scope of Modification | Rationale & Governance Driver | Physical Code & Spec Impact | Status |
+|---|---|---|---|---|---|
+| **2026-10-04** | `6f44dbc` (Initial Architecture) | Implemented 4-Type Taxonomy (Types A–D), Migration 026 schema, and repository persistence. | Replaced legacy file-only assumption with autonomous, source-agnostic zero-file scanners and ETL staging. | `026_universal_hashtag_engine.sql`, `hashtagService.ts`, `postgresRepo.ts`, `HashtagManager.tsx`, 14 API routes in `misc.ts`. | **Implemented** |
+| **2026-10-04** | Gap Remediation (GAP-01 – GAP-14) | Resolved `#` prefix matching, route collisions in `misc.ts`, set-based 500-chunk batch inserts, UI diff drawer, and chat directives. | Remediated physical execution bottlenecks and aligned with AGENTS.md Rules 1–21. | [`ARCHITECTURE_IMPLEMENTATION_ACCEPTANCE_REPORT.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/ARCHITECTURE_IMPLEMENTATION_ACCEPTANCE_REPORT.md), Vitest suite 31/31 passed. | **Remediated** |
+| **2026-10-04** | Traceability Hub Integration | Added Section 10 (`Implementation Flow`) indexing all 10 project documents. | Enforced end-to-end auditability and backward traceability across all architectural steps. | Updated [`UNIVERSAL_HASHTAG_ARCHITECTURE_AND_SPECIFICATION.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/UNIVERSAL_HASHTAG_ARCHITECTURE_AND_SPECIFICATION.md). | **Codified** |
+| **2026-10-04** | Reality Gate Audit (AGAP-01 – AGAP-09) | Independent physical code inspection uncovered 9 unaddressed gaps (false-green Type D test, unwired `conditionalAction` Maker Proposal staging, missing Type A/D execute routes). | Anti-Premature Certification (Rule 22): Prevent false-green test maskings and ensure execution path reality. | [`VERIFICATION_AUDIT_REPORT.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/VERIFICATION_AUDIT_REPORT.md); Re-classified engine readiness to PARTIAL. | **Audited (Action Pending)** |
+| **2026-10-04** | Master Entry Point Registration | Registered in central [`MASTER_ARCHITECTURE_INDEX.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/MASTER_ARCHITECTURE_INDEX.md) and codified in AGENTS.md Rule 22. | Enforced central architecture directory and mandatory change tracking across all subsystems. | [`MASTER_ARCHITECTURE_INDEX.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/MASTER_ARCHITECTURE_INDEX.md), [`AGENTS.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/AGENTS.md). | **Codified** |
+| **2026-10-04** | Formal Audit Response Compiled | Produced formal cross-examination response adjudicating acceptance claims vs audit findings with remediation roadmap. | Full compliance with Rule 22 Reality Gate and governance traceability. | [`AUDIT_RESPONSE_REPORT.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/AUDIT_RESPONSE_REPORT.md); Actionable remediation matrix established. | **Adjudicated** |
+| **2026-10-04** | Remediation Plan Authored | Authored 5-phase engineering implementation plan to systematically remediate all 9 verified architectural gaps (AGAP-01 – AGAP-09). | Structured roadmap to achieve genuine 100% Certified sign-off without false-green test maskings. | [`IMPLEMENTATION_PLAN_UNIVERSAL_HASHTAGS_REMEDIATION.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/IMPLEMENTATION_PLAN_UNIVERSAL_HASHTAGS_REMEDIATION.md). | **Planned (Execution Ready)** |
+| **2026-10-04** | Gap Remediation & Final Sign-Off | Remediated all 9 gaps (AGAP-01 – AGAP-09): diagnostic taint row query, Maker-Checker proposal auto-staging, `hashtagSchedulerService` background poller, Type A/D execute routes, 64-bit BigInt advisory locking parameterization, `testPreFlight` external DB routing, relaxed template validation, genuine issue-lifecycle MTTD/MTTR metrics, and personal automation dashboard. | Zero-Assumption Reality Gate (AGENTS.md Rule 22): Full physical code verification and non-vacuous assertions. | [`ARCHITECTURE_REMEDIATION_FINAL_ACCEPTANCE_REPORT.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/ARCHITECTURE_REMEDIATION_FINAL_ACCEPTANCE_REPORT.md); 31/31 Vitest suites passed (247 tests); Backend `tsc` & Frontend `vite build` clean. | **100% Certified** |
+
+
+
+
+

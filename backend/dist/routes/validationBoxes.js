@@ -3,6 +3,7 @@ import { repo } from '../store/repository.js';
 import { postgresRepo } from '../store/postgresRepo.js';
 import { mirrorTableManager } from '../services/mirrorTableManager.js';
 import { executeLiveQueryOnDb } from '../services/dbConnectionManager.js';
+import { queryPg } from '../config/postgres.js';
 export const validationBoxesRouter = Router();
 async function hydrateBoxConfigurations(box) {
     if (!box)
@@ -186,13 +187,13 @@ validationBoxesRouter.delete('/:id', async (req, res) => {
 // POST /api/validation-boxes/test - Test a standalone validation box against mock or live inputs
 validationBoxesRouter.post('/test', async (req, res) => {
     try {
-        const { box, sampleRecord, record, transaction, parameters, inputValues, params } = req.body;
+        const { box, sampleRecord, testRecord: explicitTestRecord, record, transaction, parameters, inputValues, params } = req.body;
         if (!box) {
             return res.status(400).json({ error: 'box configuration is required' });
         }
         const { evaluateRuleCondition, resolveRecordField } = await import('../services/investigationEngine.js');
         // Prioritize actual parameter payload given by caller under any standard key
-        const rawProvided = sampleRecord ?? record ?? transaction ?? parameters ?? inputValues ?? params;
+        const rawProvided = sampleRecord ?? explicitTestRecord ?? record ?? transaction ?? parameters ?? inputValues ?? params;
         const hasExplicitPayload = rawProvided !== undefined && rawProvided !== null && typeof rawProvided === 'object';
         // Dynamically build realistic parameters from the box's own definition when none provided
         const buildParametersFromBox = (b) => {
@@ -284,13 +285,27 @@ validationBoxesRouter.post('/test', async (req, res) => {
             if (!db) {
                 return res.status(404).json({ error: `Configured target database [${box.targetDbId}] not found.` });
             }
-            function quoteIdent(name) {
+            function quoteIdentForDb(name, dbType) {
                 const clean = String(name || '').replace(/[^a-zA-Z0-9_]/g, '');
+                if (dbType === 'MySQL')
+                    return `\`${clean}\``;
                 return `"${clean}"`;
             }
             const mirrorName = await mirrorTableManager.ensureMirrorTableExists(db, box.targetTable);
-            // 2. Build WHERE clauses from configured searchParameters with ANSI identifier quoting
-            const whereClauses = [];
+            // Inspect physical columns in the PostgreSQL mirror table
+            const mirrorColsSet = new Set();
+            try {
+                const mColRes = await queryPg(`SELECT column_name FROM information_schema.columns WHERE table_name = $1 AND table_schema = 'public'`, [mirrorName]);
+                for (const r of (mColRes.rows || [])) {
+                    mirrorColsSet.add(String(r.column_name).toLowerCase());
+                }
+            }
+            catch (err) {
+                console.warn(`[ValidationBoxes] Mirror column inspection warning:`, err.message);
+            }
+            // 2. Build WHERE clauses for both mirror table (PostgreSQL) and external database
+            const mirrorWhereClauses = [];
+            const extWhereClauses = [];
             const handledCols = new Set();
             for (const param of searchParams) {
                 const val = resolveRecordField(testRecord, param.inputField) ??
@@ -299,8 +314,18 @@ validationBoxesRouter.post('/test', async (req, res) => {
                     testRecord[param.targetColumn];
                 if (val !== undefined && val !== null && String(val).trim() !== '') {
                     const safeVal = String(val).replace(/'/g, "''");
-                    whereClauses.push(`${quoteIdent(param.targetColumn)} = '${safeVal}'`);
-                    handledCols.add(String(param.targetColumn).toLowerCase());
+                    const targetCol = String(param.targetColumn || '').trim();
+                    const targetColLower = targetCol.toLowerCase();
+                    // External DB clause
+                    extWhereClauses.push(`${quoteIdentForDb(targetCol, db.type)} = '${safeVal}'`);
+                    // Mirror DB clause (case-insensitive column check or payload fallback)
+                    if (mirrorColsSet.has(targetColLower)) {
+                        mirrorWhereClauses.push(`LOWER(COALESCE("${targetColLower}"::text, '')) = LOWER('${safeVal}')`);
+                    }
+                    else {
+                        mirrorWhereClauses.push(`(payload->>'${targetCol}' = '${safeVal}' OR payload->>'${param.inputField}' = '${safeVal}')`);
+                    }
+                    handledCols.add(targetColLower);
                     if (param.inputField)
                         handledCols.add(String(param.inputField).toLowerCase());
                 }
@@ -326,12 +351,19 @@ validationBoxesRouter.post('/test', async (req, res) => {
                 const matchingCol = tableColNames.find(c => c.toLowerCase() === key.toLowerCase());
                 if (matchingCol) {
                     const safeVal = String(rawVal).replace(/'/g, "''");
-                    whereClauses.push(`${quoteIdent(matchingCol)} = '${safeVal}'`);
-                    handledCols.add(matchingCol.toLowerCase());
+                    const matchingColLower = matchingCol.toLowerCase();
+                    extWhereClauses.push(`${quoteIdentForDb(matchingCol, db.type)} = '${safeVal}'`);
+                    if (mirrorColsSet.has(matchingColLower)) {
+                        mirrorWhereClauses.push(`LOWER(COALESCE("${matchingColLower}"::text, '')) = LOWER('${safeVal}')`);
+                    }
+                    else {
+                        mirrorWhereClauses.push(`payload->>'${matchingCol}' = '${safeVal}'`);
+                    }
+                    handledCols.add(matchingColLower);
                     handledCols.add(key.toLowerCase());
                 }
             }
-            if (whereClauses.length === 0) {
+            if (extWhereClauses.length === 0 && mirrorWhereClauses.length === 0) {
                 return res.json({
                     boxType: 'INGESTION_SEARCH',
                     targetDb: db.name,
@@ -344,38 +376,80 @@ validationBoxesRouter.post('/test', async (req, res) => {
                     sampleRecord: testRecord
                 });
             }
-            const safeTable = quoteIdent(box.targetTable || '');
-            const queryPreview = `SELECT * FROM ${safeTable} WHERE ${whereClauses.join(' AND ')} LIMIT 1;`;
+            // 1. Live external database execution (Authoritative source of truth for target database testing)
             let queryResult = null;
-            try {
-                queryResult = await executeLiveQueryOnDb(db, queryPreview);
+            let isMatch = false;
+            let matchedSource = 'EXTERNAL_DB';
+            let activeQueryPreview = '';
+            if (extWhereClauses.length > 0) {
+                const safeTable = quoteIdentForDb(box.targetTable || '', db.type);
+                const extSql = `SELECT * FROM ${safeTable} WHERE ${extWhereClauses.join(' AND ')} LIMIT 1;`;
+                activeQueryPreview = extSql;
+                try {
+                    const liveRes = await executeLiveQueryOnDb(db, extSql);
+                    queryResult = liveRes;
+                    if (liveRes?.rows && liveRes.rows.length > 0) {
+                        isMatch = true;
+                        matchedSource = 'EXTERNAL_DB';
+                        // Auto-stage fetched row(s) into the UNLOGGED mirror table
+                        try {
+                            await mirrorTableManager.bulkInsertToMirror(mirrorName, `sandbox-${Date.now()}`, 'test-validation-box', liveRes.rows);
+                        }
+                        catch (stageErr) {
+                            console.warn(`[ValidationBoxes] Auto-mirror insert error:`, stageErr.message);
+                        }
+                    }
+                }
+                catch (err) {
+                    queryResult = { error: err.message };
+                }
             }
-            catch (err) {
-                queryResult = { error: err.message };
+            // 2. If external DB query is offline or errored, fallback to local mirror table ONLY if strictly scoped to active task
+            const activeTaskId = testRecord?.task_id || testRecord?._task_id || req.body?.taskId;
+            if (!isMatch && activeTaskId && mirrorWhereClauses.length > 0) {
+                try {
+                    const taskScopedWhere = [...mirrorWhereClauses, `_task_id = '${String(activeTaskId).replace(/'/g, "''")}'`];
+                    const mirrorSql = `SELECT * FROM "${mirrorName}" WHERE ${taskScopedWhere.join(' AND ')} LIMIT 1;`;
+                    const mirrorRes = await queryPg(mirrorSql);
+                    if (mirrorRes.rows && mirrorRes.rows.length > 0) {
+                        queryResult = mirrorRes;
+                        isMatch = true;
+                        matchedSource = 'MIRROR_TABLE';
+                        activeQueryPreview = mirrorSql;
+                    }
+                }
+                catch (mirrorErr) {
+                    console.warn(`[ValidationBoxes] Mirror table lookup check error:`, mirrorErr.message);
+                }
             }
-            const isMatch = Boolean(queryResult?.rows && queryResult.rows.length > 0);
             return res.json({
                 boxType: 'INGESTION_SEARCH',
                 targetDb: db.name,
                 targetTable: box.targetTable,
                 mirrorTable: mirrorName,
-                queryPreview,
+                matchedSource,
+                queryPreview: activeQueryPreview,
                 queryExecution: queryResult,
                 passed: isMatch,
                 status: isMatch ? 'MATCH_FOUND' : 'NO_MATCH_OR_EXTERNAL_UNAVAILABLE',
-                badgeText: isMatch ? 'Match Found (200)' : 'No Match (404)',
+                badgeText: isMatch
+                    ? `Match Found (200 - ${matchedSource === 'MIRROR_TABLE' ? 'Mirror' : 'Live'})`
+                    : 'No Match (404)',
                 message: isMatch
-                    ? `Query matched ${queryResult.rows.length} record(s) in ${box.targetTable}`
-                    : `No matching record found in ${box.targetTable} with the given parameters.`,
+                    ? `Query matched ${queryResult?.rows?.length || 1} record(s) via ${matchedSource === 'MIRROR_TABLE' ? `local mirror table [${mirrorName}]` : `external table [${box.targetTable}]`}`
+                    : `No matching record found in ${box.targetTable} or mirror ${mirrorName} with the given parameters.`,
                 sampleRecord: testRecord
             });
         }
         else if (box.boxType === 'RECONCILIATION') {
-            function quoteIdent(name) {
+            function quoteIdentForDb(name, dbType) {
                 const clean = String(name || '').replace(/[^a-zA-Z0-9_]/g, '');
+                if (dbType === 'MySQL')
+                    return `\`${clean}\``;
                 return `"${clean}"`;
             }
             const matchClauses = [];
+            const mirrorMatchClauses = [];
             const missingKeys = [];
             const evaluatedKeys = {};
             const searchParams = Array.isArray(box.searchParameters) && box.searchParameters.length > 0
@@ -391,7 +465,7 @@ validationBoxesRouter.post('/test', async (req, res) => {
                         testRecord[targetCol];
                     if (val !== undefined && val !== null && String(val).trim() !== '') {
                         const safeVal = String(val).replace(/'/g, "''");
-                        matchClauses.push(`${quoteIdent(targetCol)} = '${safeVal}'`);
+                        matchClauses.push(`${targetCol} = '${safeVal}'`);
                         evaluatedKeys[targetCol] = val;
                     }
                     else if (sp.required !== false) {
@@ -408,7 +482,7 @@ validationBoxesRouter.post('/test', async (req, res) => {
                     testRecord[inputKey];
                 if (keyVal !== undefined && keyVal !== null && String(keyVal).trim() !== '') {
                     const safeVal = String(keyVal).replace(/'/g, "''");
-                    matchClauses.push(`${quoteIdent(extKey)} = '${safeVal}'`);
+                    matchClauses.push(`${extKey} = '${safeVal}'`);
                     evaluatedKeys[extKey] = keyVal;
                 }
                 else {
@@ -442,6 +516,8 @@ validationBoxesRouter.post('/test', async (req, res) => {
             }
             let liveCheck = null;
             let isMatch = false;
+            let matchedSource = 'MIRROR_TABLE';
+            let mirrorName = box.mirrorTableName || '';
             try {
                 const db = await repo.getDatabaseById(box.targetDbId);
                 if (!db) {
@@ -456,25 +532,81 @@ validationBoxesRouter.post('/test', async (req, res) => {
                         sampleRecord: testRecord
                     });
                 }
-                const safeTable = quoteIdent(box.targetTable);
-                const q = `SELECT * FROM ${safeTable} WHERE ${matchClauses.join(' AND ')} LIMIT 1;`;
-                liveCheck = await executeLiveQueryOnDb(db, q);
-                isMatch = Boolean(liveCheck?.rows && liveCheck.rows.length > 0);
+                mirrorName = await mirrorTableManager.ensureMirrorTableExists(db, box.targetTable);
+                // 1. Check local mirror table first
+                const mirrorColsSet = new Set();
+                try {
+                    const mColRes = await queryPg(`SELECT column_name FROM information_schema.columns WHERE table_name = $1 AND table_schema = 'public'`, [mirrorName]);
+                    for (const r of (mColRes.rows || [])) {
+                        mirrorColsSet.add(String(r.column_name).toLowerCase());
+                    }
+                }
+                catch { }
+                for (const clause of matchClauses) {
+                    const [col, val] = clause.split(' = ');
+                    const colTrim = col.trim();
+                    const colLower = colTrim.toLowerCase();
+                    if (mirrorColsSet.has(colLower)) {
+                        mirrorMatchClauses.push(`LOWER(COALESCE("${colLower}"::text, '')) = LOWER(${val})`);
+                    }
+                    else {
+                        mirrorMatchClauses.push(`payload->>'${colTrim}' = ${val}`);
+                    }
+                }
+                // 1. Live external database execution (Authoritative source of truth for target database testing)
+                const extMatchClauses = matchClauses.map(clause => {
+                    const [col, val] = clause.split(' = ');
+                    return `${quoteIdentForDb(col.trim(), db.type)} = ${val}`;
+                });
+                const safeTable = quoteIdentForDb(box.targetTable, db.type);
+                const q = `SELECT * FROM ${safeTable} WHERE ${extMatchClauses.join(' AND ')} LIMIT 1;`;
+                try {
+                    liveCheck = await executeLiveQueryOnDb(db, q);
+                    if (liveCheck?.rows && liveCheck.rows.length > 0) {
+                        isMatch = true;
+                        matchedSource = 'EXTERNAL_DB';
+                        try {
+                            await mirrorTableManager.bulkInsertToMirror(mirrorName, `sandbox-${Date.now()}`, 'test-validation-box', liveCheck.rows);
+                        }
+                        catch { }
+                    }
+                }
+                catch (e) {
+                    liveCheck = { error: e.message };
+                }
+                // 2. If external DB query is offline or errored, check mirror table ONLY if strictly scoped to active task
+                const activeTaskId = testRecord?.task_id || testRecord?._task_id || req.body?.taskId;
+                if (!isMatch && activeTaskId && mirrorMatchClauses.length > 0) {
+                    try {
+                        const taskScopedWhere = [...mirrorMatchClauses, `_task_id = '${String(activeTaskId).replace(/'/g, "''")}'`];
+                        const mSql = `SELECT * FROM "${mirrorName}" WHERE ${taskScopedWhere.join(' AND ')} LIMIT 1;`;
+                        const mRes = await queryPg(mSql);
+                        if (mRes.rows && mRes.rows.length > 0) {
+                            liveCheck = mRes;
+                            isMatch = true;
+                            matchedSource = 'MIRROR_TABLE';
+                        }
+                    }
+                    catch (mErr) {
+                        console.warn(`[ValidationBoxes] Mirror check in reconciliation:`, mErr.message);
+                    }
+                }
             }
             catch (e) {
                 liveCheck = { error: e.message };
             }
             const hasError = Boolean(liveCheck?.error);
             const status = hasError ? 'ERROR' : (isMatch ? 'MATCH_FOUND' : 'NO_MATCH_OR_EXTERNAL_UNAVAILABLE');
-            const badgeText = hasError ? 'DB Error' : (isMatch ? 'Match Found (200)' : 'No Match (404)');
+            const badgeText = hasError ? 'DB Error' : (isMatch ? `Match Found (200 - ${matchedSource === 'MIRROR_TABLE' ? 'Mirror' : 'Live'})` : 'No Match (404)');
             return res.json({
                 boxType: 'RECONCILIATION',
                 targetDb: box.targetDbId,
                 targetTable: box.targetTable,
-                mirrorTable: box.mirrorTableName,
+                mirrorTable: mirrorName,
                 matchKeyInput: box.matchKeyInput,
                 matchKeyExternal: box.matchKeyExternal,
                 evaluatedKeys,
+                matchedSource,
                 multiRowPolicy: box.multiRowPolicy || 'COMPOSITE_BUNDLE',
                 hasGroupConfig: !!box.groupConfig,
                 passed: !hasError && isMatch,
@@ -483,8 +615,8 @@ validationBoxesRouter.post('/test', async (req, res) => {
                 message: hasError
                     ? `External database query failed: ${liveCheck.error}`
                     : (isMatch
-                        ? `Matched record in ${box.targetTable} across ${matchClauses.length} key criteria`
-                        : `No matching record found in ${box.targetTable} with the given criteria.`),
+                        ? `Matched record in ${matchedSource === 'MIRROR_TABLE' ? `local mirror [${mirrorName}]` : `external table [${box.targetTable}]`} across ${matchClauses.length} key criteria`
+                        : `No matching record found in ${box.targetTable} or mirror ${mirrorName} with the given criteria.`),
                 liveExecution: liveCheck,
                 sampleRecord: testRecord
             });

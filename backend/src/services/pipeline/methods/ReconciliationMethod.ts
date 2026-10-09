@@ -47,8 +47,20 @@ export class ReconciliationMethod implements ValidationMethod {
 
     let rawRows: any[] = [];
 
-    // If mirror table is specified, attempt to read staged records for this coordinate
-    if (mirrorTable && context.taskId && context.rowNumber !== undefined) {
+    // Prioritize returned_data persisted in task_dataset_transactions (Two-Level Reconciliation Mandate)
+    const workflowId = context.workflowId || 'default';
+    const targetTable = this.targetTable || '';
+    const returnedData = context.initialRecord?.returned_data || context.initialRecord?.canonical_data?.returned_data;
+    if (returnedData && targetTable) {
+      const wfData = returnedData[workflowId] || returnedData;
+      const legs = wfData[targetTable];
+      if (legs) {
+        rawRows = Array.isArray(legs) ? legs : [legs];
+      }
+    }
+
+    // If not found in returned_data, attempt to read staged records from mirror table
+    if (rawRows.length === 0 && mirrorTable && context.taskId && context.rowNumber !== undefined) {
       try {
         const mirrorRes = await queryPg(
           `SELECT * FROM ${mirrorTable}

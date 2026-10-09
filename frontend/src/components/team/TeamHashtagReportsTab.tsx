@@ -9,12 +9,13 @@ import { ErrorBoundary } from '../ErrorBoundary';
 import { 
   Tag, RefreshCw, Activity, CheckCircle2, AlertTriangle, 
   Database, Layers, ShieldCheck, FileText, Clock, Play,
-  ChevronRight, BarChart3, TrendingUp, Search
+  ChevronRight, BarChart3, TrendingUp, Search, UserCheck
 } from 'lucide-react';
 
 interface TeamHashtagReportsTabProps {
   teamId: string;
   teamName: string;
+  currentUser?: any;
 }
 
 export function TeamHashtagReportsTab(props: TeamHashtagReportsTabProps) {
@@ -25,49 +26,67 @@ export function TeamHashtagReportsTab(props: TeamHashtagReportsTabProps) {
   );
 }
 
-function TeamHashtagReportsContent({ teamId, teamName }: TeamHashtagReportsTabProps) {
+function TeamHashtagReportsContent({ teamId, teamName, currentUser }: TeamHashtagReportsTabProps) {
   const [loading, setLoading] = useState(true);
+  const [activeScope, setActiveScope] = useState<'TEAM' | 'PERSONAL'>('TEAM');
   const [reportData, setReportData] = useState<{
     teamId: string;
+    generatedAt: string;
+    hashtagMetrics: any[];
+  } | null>(null);
+  const [personalReportData, setPersonalReportData] = useState<{
+    userId: string;
     generatedAt: string;
     hashtagMetrics: any[];
   } | null>(null);
   const [searchTerm, setSearchTerm] = useState('');
   const [selectedTypeFilter, setSelectedTypeFilter] = useState<string>('ALL');
 
+  const userId = currentUser?.id || currentUser?.username || 'me';
+
   const fetchReport = async () => {
     setLoading(true);
     try {
-      const data = await api.getTeamHashtagReport(teamId);
-      setReportData(data);
+      if (activeScope === 'TEAM') {
+        const data = await api.getTeamHashtagReport(teamId);
+        setReportData(data);
+      } else {
+        const data = await api.getPersonalHashtagReport(userId);
+        setPersonalReportData(data);
+      }
     } catch (err: any) {
-      console.error('Failed to load team hashtag report:', err);
+      console.error('Failed to load hashtag report:', err);
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
-    if (teamId) {
-      fetchReport();
-    }
-  }, [teamId]);
+    fetchReport();
+  }, [teamId, activeScope]);
 
-  const metrics = reportData?.hashtagMetrics || [];
+  const activeMetrics = activeScope === 'TEAM'
+    ? (reportData?.hashtagMetrics || [])
+    : (personalReportData?.hashtagMetrics || []);
 
   // Aggregated totals
-  const totalRuns = metrics.reduce((acc, m) => acc + (Number(m.totalRuns) || 0), 0);
-  const totalScanned = metrics.reduce((acc, m) => acc + (Number(m.totalRowsScanned) || 0), 0);
-  const totalAnomalies = metrics.reduce((acc, m) => acc + (Number(m.totalAnomaliesDetected) || 0), 0);
-  const avgDuration = metrics.length > 0
-    ? Math.round(metrics.reduce((acc, m) => acc + (Number(m.avgDurationMs) || 0), 0) / metrics.length)
-    : 0;
+  const totalRuns = activeMetrics.reduce((acc, m) => acc + (Number(m.total_runs || m.totalRuns) || 0), 0);
+  const totalScanned = activeMetrics.reduce((acc, m) => acc + (Number(m.total_rows_scanned || m.totalRowsScanned) || 0), 0);
+  const totalAnomalies = activeMetrics.reduce((acc, m) => acc + (Number(m.total_anomalies || m.totalAnomaliesDetected) || 0), 0);
+  const avgMttd = activeMetrics.length > 0
+    ? (activeMetrics.reduce((acc, m) => acc + (Number(m.mttd_hours) || 0), 0) / activeMetrics.length).toFixed(1)
+    : '0.0';
+  const avgMttr = activeMetrics.length > 0
+    ? (activeMetrics.reduce((acc, m) => acc + (Number(m.mttr_hours) || 0), 0) / activeMetrics.length).toFixed(1)
+    : '0.0';
 
-  const filteredMetrics = metrics.filter(m => {
+  const filteredMetrics = activeMetrics.filter(m => {
+    const tag = m.hashtag_tag || m.tag || '';
+    const desc = m.description || '';
     const matchesSearch = !searchTerm || 
-      (m.tag && m.tag.toLowerCase().includes(searchTerm.toLowerCase())) ||
-      (m.description && m.description.toLowerCase().includes(searchTerm.toLowerCase()));
-    const matchesType = selectedTypeFilter === 'ALL' || m.hashtagType === selectedTypeFilter;
+      tag.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      desc.toLowerCase().includes(searchTerm.toLowerCase());
+    const matchesType = selectedTypeFilter === 'ALL' || (m.hashtagType || m.hashtag_type) === selectedTypeFilter;
     return matchesSearch && matchesType;
   });
 
@@ -80,9 +99,11 @@ function TeamHashtagReportsContent({ teamId, teamName }: TeamHashtagReportsTabPr
             <span className="p-1.5 bg-[#155DFC]/20 rounded-lg text-blue-400">
               <Tag size={16} />
             </span>
-            <h2 className="text-sm font-bold">Team Hashtag SLA & Execution Reports</h2>
+            <h2 className="text-sm font-bold">
+              {activeScope === 'TEAM' ? 'Team Hashtag SLA & Execution Reports' : 'My Personal Hashtag Automations'}
+            </h2>
             <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-[#155DFC]/30 text-blue-300 border border-[#155DFC]/40">
-              Team: {teamName}
+              {activeScope === 'TEAM' ? `Team: ${teamName}` : `Operator: ${currentUser?.username || userId}`}
             </span>
           </div>
           <p className="text-[11px] text-slate-300 max-w-2xl leading-relaxed">
@@ -90,28 +111,43 @@ function TeamHashtagReportsContent({ teamId, teamName }: TeamHashtagReportsTabPr
           </p>
         </div>
 
-        <button
-          type="button"
-          onClick={fetchReport}
-          disabled={loading}
-          className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold rounded-xl flex items-center space-x-1.5 transition-all cursor-pointer self-start md:self-center shrink-0"
-        >
-          <RefreshCw size={13} className={loading ? 'animate-spin text-blue-400' : 'text-slate-400'} />
-          <span>{loading ? 'Refreshing...' : 'Refresh Metrics'}</span>
-        </button>
+        <div className="flex items-center gap-2 self-start md:self-center shrink-0">
+          <div className="bg-slate-900 border border-slate-800 rounded-xl p-1 flex items-center space-x-1">
+            <button
+              type="button"
+              onClick={() => setActiveScope('TEAM')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer ${
+                activeScope === 'TEAM' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              Team Velocity
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveScope('PERSONAL')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer flex items-center gap-1 ${
+                activeScope === 'PERSONAL' ? 'bg-blue-600 text-white' : 'text-slate-400 hover:text-slate-200'
+              }`}
+            >
+              <UserCheck size={12} />
+              <span>My Automations</span>
+            </button>
+          </div>
+
+          <button
+            type="button"
+            onClick={fetchReport}
+            disabled={loading}
+            className="px-3.5 py-2 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold rounded-xl flex items-center space-x-1.5 transition-all cursor-pointer"
+          >
+            <RefreshCw size={13} className={loading ? 'animate-spin text-blue-400' : 'text-slate-400'} />
+            <span>{loading ? 'Refreshing...' : 'Refresh'}</span>
+          </button>
+        </div>
       </div>
 
       {/* KPI Stats Ribbon */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3 shrink-0">
-        <div className="bg-white border border-slate-200/80 rounded-2xl p-3.5 shadow-xs">
-          <div className="flex items-center justify-between text-slate-500 mb-1">
-            <span className="text-[10px] font-bold uppercase tracking-wider">Tracked Presets</span>
-            <Tag size={14} className="text-indigo-600" />
-          </div>
-          <div className="text-xl font-bold font-mono text-slate-900">{metrics.length}</div>
-          <div className="text-[10px] text-slate-400 mt-0.5">Assigned to team pipelines</div>
-        </div>
-
         <div className="bg-white border border-slate-200/80 rounded-2xl p-3.5 shadow-xs">
           <div className="flex items-center justify-between text-slate-500 mb-1">
             <span className="text-[10px] font-bold uppercase tracking-wider">Executed Runs</span>
@@ -132,11 +168,20 @@ function TeamHashtagReportsContent({ teamId, teamName }: TeamHashtagReportsTabPr
 
         <div className="bg-white border border-slate-200/80 rounded-2xl p-3.5 shadow-xs">
           <div className="flex items-center justify-between text-slate-500 mb-1">
-            <span className="text-[10px] font-bold uppercase tracking-wider">Avg SLA Duration</span>
+            <span className="text-[10px] font-bold uppercase tracking-wider">Mean Detection (MTTD)</span>
             <Clock size={14} className="text-amber-600" />
           </div>
-          <div className="text-xl font-bold font-mono text-slate-900">{avgDuration}ms</div>
-          <div className="text-[10px] text-slate-400 mt-0.5">End-to-end execution speed</div>
+          <div className="text-xl font-bold font-mono text-slate-900">{avgMttd}h</div>
+          <div className="text-[10px] text-slate-400 mt-0.5">Detection latency from issue birth</div>
+        </div>
+
+        <div className="bg-white border border-slate-200/80 rounded-2xl p-3.5 shadow-xs">
+          <div className="flex items-center justify-between text-slate-500 mb-1">
+            <span className="text-[10px] font-bold uppercase tracking-wider">Mean Remediation (MTTR)</span>
+            <TrendingUp size={14} className="text-indigo-600" />
+          </div>
+          <div className="text-xl font-bold font-mono text-slate-900">{avgMttr}h</div>
+          <div className="text-[10px] text-slate-400 mt-0.5">End-to-end resolution speed</div>
         </div>
       </div>
 
@@ -183,7 +228,7 @@ function TeamHashtagReportsContent({ teamId, teamName }: TeamHashtagReportsTabPr
           <div className="flex items-center space-x-2">
             <BarChart3 size={15} className="text-blue-600" />
             <h3 className="text-xs font-bold text-slate-800 uppercase tracking-wider">
-              Hashtag Velocity Matrix ({filteredMetrics.length})
+              {activeScope === 'TEAM' ? 'Hashtag Velocity & SLA Matrix' : 'My Triggered Runs'} ({filteredMetrics.length})
             </h3>
           </div>
           <span className="text-[11px] text-slate-400 font-mono">
@@ -196,63 +241,66 @@ function TeamHashtagReportsContent({ teamId, teamName }: TeamHashtagReportsTabPr
             <thead>
               <tr className="bg-slate-50 border-b border-slate-200 text-[10px] font-bold text-slate-500 uppercase tracking-wider">
                 <th className="py-2.5 px-4">Hashtag Preset</th>
-                <th className="py-2.5 px-4">Classification</th>
-                <th className="py-2.5 px-4 text-center">Execution Count</th>
-                <th className="py-2.5 px-4 text-center">Scanned Volume</th>
-                <th className="py-2.5 px-4 text-center">Anomalies Detected</th>
-                <th className="py-2.5 px-4 text-center">Avg Latency</th>
-                <th className="py-2.5 px-4 text-right">Target DB / Table</th>
+                <th className="py-2.5 px-4 text-center">Runs</th>
+                <th className="py-2.5 px-4 text-center">Volume Scanned</th>
+                <th className="py-2.5 px-4 text-center">Anomalies</th>
+                <th className="py-2.5 px-4 text-center">MTTD (Detection)</th>
+                <th className="py-2.5 px-4 text-center">MTTR (Resolution)</th>
+                <th className="py-2.5 px-4 text-right">Last Execution</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 font-sans">
               {filteredMetrics.length === 0 ? (
                 <tr>
                   <td colSpan={7} className="py-12 text-center text-slate-400 italic">
-                    {loading ? 'Compiling team hashtag SLA reports...' : 'No hashtag performance records found matching search.'}
+                    {loading ? 'Compiling hashtag SLA reports...' : 'No hashtag performance records found matching search.'}
                   </td>
                 </tr>
               ) : (
-                filteredMetrics.map((row) => (
-                  <tr key={row.tag} className="hover:bg-slate-50/60 transition">
-                    <td className="py-3 px-4 font-mono font-bold text-blue-700 whitespace-nowrap">
-                      <div className="flex items-center space-x-1.5">
-                        <Tag size={12} className="text-blue-600" />
-                        <span>{row.tag}</span>
-                      </div>
-                      {row.description && (
-                        <div className="text-[10px] font-normal text-slate-500 font-sans truncate max-w-xs">
-                          {row.description}
+                filteredMetrics.map((row, idx) => {
+                  const tag = row.hashtag_tag || row.tag || `#TAG_${idx}`;
+                  const runs = Number(row.total_runs || row.totalRuns) || 0;
+                  const scanned = Number(row.total_rows_scanned || row.totalRowsScanned) || 0;
+                  const anomalies = Number(row.total_anomalies || row.totalAnomaliesDetected) || 0;
+                  const mttd = row.mttd_hours != null ? `${row.mttd_hours}h` : (row.avg_run_interval_hours ? `${row.avg_run_interval_hours}h` : '-');
+                  const mttr = row.mttr_hours != null ? `${row.mttr_hours}h` : '-';
+                  const lastRun = row.last_run_at || row.lastRunAt;
+
+                  return (
+                    <tr key={tag} className="hover:bg-slate-50/60 transition">
+                      <td className="py-3 px-4 font-mono font-bold text-blue-700 whitespace-nowrap">
+                        <div className="flex items-center space-x-1.5">
+                          <Tag size={12} className="text-blue-600" />
+                          <span>{tag}</span>
                         </div>
-                      )}
-                    </td>
-                    <td className="py-3 px-4 whitespace-nowrap">
-                      <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-slate-100 text-slate-700 border border-slate-200">
-                        {row.hashtagType || 'FILE_INGESTION'}
-                      </span>
-                    </td>
-                    <td className="py-3 px-4 text-center font-mono font-bold text-slate-800">
-                      {row.totalRuns || 0}
-                    </td>
-                    <td className="py-3 px-4 text-center font-mono text-slate-600">
-                      {(Number(row.totalRowsScanned) || 0).toLocaleString()}
-                    </td>
-                    <td className="py-3 px-4 text-center font-mono">
-                      <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                        Number(row.totalAnomaliesDetected) > 0
-                          ? 'bg-rose-50 text-rose-700 border border-rose-200'
-                          : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                      }`}>
-                        {row.totalAnomaliesDetected || 0}
-                      </span>
-                    </td>
-                    <td className="py-3 px-4 text-center font-mono text-slate-700">
-                      {row.avgDurationMs ? `${Math.round(row.avgDurationMs)}ms` : '-'}
-                    </td>
-                    <td className="py-3 px-4 text-right font-mono text-[11px] text-slate-500">
-                      {row.targetTable || row.dedicatedTableName || 'default'}
-                    </td>
-                  </tr>
-                ))
+                      </td>
+                      <td className="py-3 px-4 text-center font-mono font-bold text-slate-800">
+                        {runs}
+                      </td>
+                      <td className="py-3 px-4 text-center font-mono text-slate-600">
+                        {scanned.toLocaleString()}
+                      </td>
+                      <td className="py-3 px-4 text-center font-mono">
+                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                          anomalies > 0
+                            ? 'bg-rose-50 text-rose-700 border border-rose-200'
+                            : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                        }`}>
+                          {anomalies}
+                        </span>
+                      </td>
+                      <td className="py-3 px-4 text-center font-mono font-bold text-amber-700">
+                        {mttd}
+                      </td>
+                      <td className="py-3 px-4 text-center font-mono font-bold text-indigo-700">
+                        {mttr}
+                      </td>
+                      <td className="py-3 px-4 text-right font-mono text-[11px] text-slate-500">
+                        {lastRun ? new Date(lastRun).toLocaleString() : '-'}
+                      </td>
+                    </tr>
+                  );
+                })
               )}
             </tbody>
           </table>

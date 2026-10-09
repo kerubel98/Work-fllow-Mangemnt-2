@@ -178,14 +178,14 @@ function HashtagManagerContent({
     }
   };
 
-  const runDatabaseScan = async (tag: HashtagPreset) => {
+  const runDatabaseScan = async (tag: HashtagPreset, isDryRun: boolean = true) => {
     setScanLoading(true);
     setScanResult(null);
 
     try {
       const res = await api.executeHashtagScan(tag.tag, {
         executedBy: currentUser.username,
-        isDryRun: true
+        isDryRun
       });
       setScanResult(res);
     } catch (err: any) {
@@ -352,15 +352,29 @@ function HashtagManagerContent({
                   </button>
 
                   {selectedTag.hashtagType === 'DATABASE_DIRECT_SCANNER' && (
-                    <button
-                      type="button"
-                      onClick={() => runDatabaseScan(selectedTag)}
-                      disabled={scanLoading}
-                      className="px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 transition shadow-xs cursor-pointer"
-                    >
-                      <Play className="w-3.5 h-3.5" />
-                      <span>{scanLoading ? 'Scanning...' : 'Execute Scan'}</span>
-                    </button>
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => runDatabaseScan(selectedTag, true)}
+                        disabled={scanLoading}
+                        className="px-3 py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-700 border border-amber-200 rounded-lg text-xs font-bold flex items-center gap-1.5 transition cursor-pointer"
+                        title="Run dry-run observational scan without triggering remediations"
+                      >
+                        <Play className="w-3.5 h-3.5" />
+                        <span>{scanLoading ? 'Scanning...' : 'Dry-Run Scan'}</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => runDatabaseScan(selectedTag, false)}
+                        disabled={scanLoading}
+                        className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 transition shadow-xs cursor-pointer"
+                        title="Run live scan and stage Maker-Checker proposal if clean/fixable"
+                      >
+                        <Play className="w-3.5 h-3.5" />
+                        <span>{scanLoading ? 'Running...' : 'Run & Remediate (Live)'}</span>
+                      </button>
+                    </>
                   )}
                 </div>
               </div>
@@ -452,6 +466,12 @@ function HashtagManagerContent({
                       Scanned: {scanResult.rowsScanned} | Anomalies: {scanResult.anomaliesDetected}
                     </span>
                   </div>
+                  {scanResult.stagedProposalId && (
+                    <div className="mb-2 p-2 bg-indigo-50 border border-indigo-200 rounded-lg text-xs font-mono text-indigo-800 flex items-center justify-between">
+                      <span>Maker Proposal Staged: <strong>{scanResult.stagedProposalId}</strong></span>
+                      <span className="px-2 py-0.5 rounded bg-indigo-200 text-indigo-900 font-bold text-[10px]">PENDING_CHECKER</span>
+                    </div>
+                  )}
                   {scanResult.anomalyRows?.length > 0 && (
                     <div className="bg-white p-2.5 rounded-lg border border-slate-200 text-xs font-mono max-h-32 overflow-y-auto">
                       <pre>{JSON.stringify(scanResult.anomalyRows.slice(0, 3), null, 2)}</pre>

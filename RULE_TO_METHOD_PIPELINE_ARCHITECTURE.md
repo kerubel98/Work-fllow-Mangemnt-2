@@ -83,6 +83,10 @@
     - [10.4 The Builder & Method Compilation Lifecycle](#104-the-builder--method-compilation-lifecycle)
     - [10.5 Dynamic SQL Compilation with ruleSqlCompiler](#105-dynamic-sql-compilation-with-rulesqlcompiler)
     - [10.6 End-to-End Execution Trace: Attached DB Config in Action](#106-end-to-end-execution-trace-attached-db-config-in-action)
+    - [10.7 Multi-Leg Duplicate Checking with Row Coordinate Isolation & Filter Preservation](#107-multi-leg-duplicate-checking-with-row-coordinate-isolation--filter-preservation)
+11. [Implementation Flow, Audit Traceability & Revision Log](#11-implementation-flow-audit-traceability--revision-log)
+    - [11.1 Master Governance & Audit References](#111-master-governance--audit-references)
+    - [11.2 Architectural Revision Log](#112-architectural-revision-log)
 
 ---
 
@@ -2713,6 +2717,187 @@ Set-Based Atomic UPDATE executes in PostgreSQL (< 15ms for 50,000 rows):
 1. **Context Isolation**: Every mirror row is quarantined by its 5-tuple context `(_batch_id, _task_id, _rule_block_id, _row_number, _mirror_id)`, completely preventing cross-run, cross-task, and cross-stage contamination.
 2. **Explicit DB Config Scoping**: Workflows only inherit database rules explicitly attached via `attachedDbConfigIds`, adhering to the Anti-Contamination Mandate.
 3. **Set-Based SQL Performance**: DB column configurations compile directly into native PostgreSQL predicates, evaluating 50,000 rows in milliseconds without application loop overhead.
+
+---
+
+### 10.7 Multi-Leg Duplicate Checking with Row Coordinate Isolation & Filter Preservation
+
+#### 10.7.1 The Multi-Leg Banking Reality
+In Back Office financial workflows (such as card payments, ATM settlements, or POS transactions), a single financial customer transaction spans **multiple distinct accounting legs** in the input file (e.g. `trn_log tab.csv` for Task `ISS-6362`):
+- **Row 10**: Principal Settlement Leg (`BO_TYPE = 'CMTP254'`, amount = `142000`)
+- **Row 11**: Interchange Fee Leg (`BO_TYPE = 'CMTP257'`, amount = `142`, fee code = `FEEI040`)
+- **Row 12**: Switch Network Fee Leg (`BO_TYPE = 'CMTP257'`, amount = `142`, fee code = `FEEI043`)
+
+All three rows share the same external reference `FE_UTRNNO = 2689706150` and transaction group `TR_GROUP_ID = 103458988891`. When [CoordinateInjector](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/backend/src/services/pipeline/CoordinateInjector.ts) fetches the corresponding external database records from `tran_log_tab`, each input row stages its matched external legs tagged with its own coordinate:
+- Records for input Row 10 are staged with `_row_number = 10`.
+- Records for input Row 11 are staged with `_row_number = 11`.
+- Records for input Row 12 are staged with `_row_number = 12`.
+
+#### 10.7.2 The Flaw of Unscoped Duplicate Checks
+If a database duplicate check subquery aggregates only by `_batch_id`, `_task_id`, and `tr_group_id`:
+```sql
+-- ❌ FLAWED (Unscoped across task rows):
+SELECT COUNT(*) 
+FROM mirror_sett_tran_log_tab _dup 
+WHERE _dup._batch_id = m._batch_id 
+  AND _dup._task_id = m._task_id 
+  AND _dup."tr_group_id" = m."tr_group_id"
+  AND _dup."bo_type" = 'CMTP254'
+  AND COALESCE(_dup."proc_name", '') != 'RVS'
+```
+PostgreSQL counts across the **entire task**, aggregating the `CMTP254` legs staged for Row 10, Row 11, and Row 12. The count returns **3**, which breaches `<= 1` and causes a **false-positive failure** on valid transactions.
+
+#### 10.7.3 The Compiled Row-Scoped Subquery Pattern
+To guarantee row-level isolation while preserving filter conditions and nullable discriminator columns, [ruleSqlCompiler.ts](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/backend/src/services/ruleSqlCompiler.ts) compiles the following atomic set-based predicate:
+
+```sql
+/* True duplicate check preserving filter conditions, nullable columns, AND row coordinate isolation */
+CASE 
+  WHEN (LOWER(COALESCE(m."bo_type"::text, '')) = LOWER('CMTP254') AND COALESCE(m."proc_name"::text, '') != 'RVS') THEN
+    (
+      SELECT COUNT(*) 
+      FROM mirror_sett_tran_log_tab _dup 
+      WHERE _dup._batch_id = m._batch_id 
+        AND _dup._task_id = m._task_id
+        AND _dup._row_number = m._row_number
+        AND _dup."tr_group_id" = m."tr_group_id"
+        AND LOWER(COALESCE(_dup."bo_type"::text, '')) = LOWER('CMTP254')
+        AND COALESCE(_dup."proc_name"::text, '') != 'RVS'
+    ) <= 1
+  ELSE TRUE
+END
+```
+
+#### 10.7.4 Physical Implementation Sample (`backend/src/services/ruleSqlCompiler.ts`)
+
+```typescript
+// From ruleSqlCompiler.ts: compileStepCondition()
+} else if ((cfg.ruleType === 'DUPLICATE_CHECK' || cfg.ruleType === 'UNIQUE_CONSTRAINT') && Array.isArray(cfg.columns)) {
+  if (mirrorTableName) {
+    // 1. Build filter conditions for outer row and inner subquery
+    const outerFilters: string[] = [];
+    const innerFilters: string[] = [];
+    if (Array.isArray(cfg.filterConditions) && cfg.filterConditions.length > 0) {
+      for (const fc of cfg.filterConditions) {
+        if (!fc.columnName) continue;
+        const colName = sanitizeCol(fc.columnName);
+        const outerColExp = resolveColExpr(colName, mirrorColPrefix, validColumns);
+        const innerColExp = `_dup."${colName.toLowerCase()}"`;
+        const op = String(fc.operator || '=');
+        const val = String(fc.value ?? '').replace(/'/g, "''");
+        if (op === '=' || op === '==') {
+          outerFilters.push(`LOWER(COALESCE(${outerColExp}::text, '')) = LOWER('${val}')`);
+          innerFilters.push(`LOWER(COALESCE(${innerColExp}::text, '')) = LOWER('${val}')`);
+        } else if (op === '!=' || op === '<>') {
+          outerFilters.push(`COALESCE(${outerColExp}::text, '') != '${val}'`);
+          innerFilters.push(`COALESCE(${innerColExp}::text, '') != '${val}'`);
+        }
+      }
+    }
+
+    // 2. Identify non-filtered grouping columns (e.g. TR_GROUP_ID)
+    const matchColNames: string[] = [];
+    if (Array.isArray(cfg.groupByColumns) && cfg.groupByColumns.length > 0) {
+      matchColNames.push(...cfg.groupByColumns);
+    } else {
+      const filterColSet = new Set((cfg.filterConditions || []).map((f: any) => (f.columnName || '').toLowerCase()));
+      for (const col of cfg.columns) {
+        const cName = (col.columnName || '').toLowerCase();
+        if (filterColSet.has(cName)) continue;
+        if ((col as any).isPrimary || col.role === 'PRIMARY_KEY' || col.role === 'MATCH_KEY' || col.role === 'DISCRIMINATOR') {
+          matchColNames.push(col.columnName);
+        }
+      }
+    }
+
+    const joinEqs = matchColNames.map(colName => {
+      const sCol = sanitizeCol(colName);
+      return `_dup."${sCol.toLowerCase()}" = ${resolveColExpr(sCol, mirrorColPrefix, validColumns)}`;
+    });
+
+    // 3. Assemble subquery strictly scoped by _row_number (Rule 13)
+    const countRule = (Array.isArray(cfg.aggregationRules) && cfg.aggregationRules.find((a: any) => a.function === 'COUNT'))
+      || { function: 'COUNT', operator: '>', value: 1 };
+    const threshold = Number(countRule.value ?? 1);
+
+    const whereClauses = [
+      `_dup._batch_id = ${mirrorColPrefix}._batch_id`,
+      `_dup._task_id = ${mirrorColPrefix}._task_id`,
+      `_dup._row_number = ${mirrorColPrefix}._row_number`, // Mandated coordinate isolation
+      ...joinEqs,
+      ...innerFilters
+    ];
+
+    const subquery = `(SELECT COUNT(*) FROM ${mirrorTableName} _dup WHERE ${whereClauses.join(' AND ')})`;
+    if (outerFilters.length > 0) {
+      colConfigConditions.push(`CASE WHEN (${outerFilters.join(' AND ')}) THEN (${subquery} <= ${threshold}) ELSE TRUE END`);
+    } else {
+      colConfigConditions.push(`(${subquery} <= ${threshold})`);
+    }
+  }
+}
+```
+
+---
+
+### 10.8 Multi-Leg Duplicate Checking via JSONB Coordinate Consolidation & Identifier Attribution
+
+#### 10.8.1 The Architectural Evolution: From Mirror Subqueries to Coordinate Consolidation
+As formally specified in [`MULTI_LEG_DUPLICATE_DETECTION_AND_JSONB_COORDINATE_SPECIFICATION.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/MULTI_LEG_DUPLICATE_DETECTION_AND_JSONB_COORDINATE_SPECIFICATION.md) and audited in [`VALIDATION_BOX_AND_ROW_COORDINATE_AUDIT_LOG.md §17`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/VALIDATION_BOX_AND_ROW_COORDINATE_AUDIT_LOG.md#L667):
+
+1. **Ingress vs. Engine Boundary (Rule 3)**:
+   - **File-Level Deduplication**: Enforced strictly at the ingress gate during task creation in [`datasetIngestionService.ts`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/backend/src/services/datasetIngestionService.ts). Duplicate rows in the uploaded spreadsheet are tagged upfront (`status = 'DUPLICATE'`, `is_duplicate = true`).
+   - **Ledger Multi-Leg Verification**: Evaluates the **external database records** returned for that specific input row coordinate.
+2. **Dedicated `returned_data` (`returned`) Column in `task_dataset_transactions`**:
+   Instead of forcing the validation engine to execute fragile correlated self-joins on `UNLOGGED` mirror tables, all external database records returned for an input row are consolidated into a dedicated first-class column `returned_data JSONB` on `task_dataset_transactions`, joining on immutable row coordinates `(tdt.task_id = m._task_id AND tdt.row_number = m._row_number)`:
+   ```json
+   {
+     "returned_data": [
+       { "BO_TYPE": "CMTP254", "AMNT1": 142000, "TR_GROUP_ID": "103458988891" },
+       { "BO_TYPE": "CMTP257", "AMNT1": 142,    "TR_GROUP_ID": "103458988891" },
+       { "BO_TYPE": "CMTP257", "AMNT1": 142,    "TR_GROUP_ID": "103458988891" }
+     ]
+   }
+   ```
+3. **Two-Level Status Architecture (`reconciliation_status` vs. `validation_status`)**:
+   - **Level 1: `reconciliation_status`** (`PASS` / `FAIL` / `PENDING`):
+     - Governed strictly by mirror data presence: If at least 1 record is found in the mirror for that row coordinate, `reconciliation_status = 'PASS'`. If 0 records are found, `reconciliation_status = 'FAIL'`.
+   - **Level 2: `validation_status`** (`PASS` / `FAIL` / `ERROR` / `PENDING`):
+     - Governed by business rules, column configurations, and condition checks evaluated against `returned_data`.
+4. **Database Configurations Converted to Pipeline Methods (`DbConfigMethod`)**:
+   Just like visual validation boxes compile into executable pipeline methods (`IngestionSearchMethod`, `ConditionCheckMethod`), `database_column_configurations` are formalized as first-class pipeline methods (`DbConfigValidationMethod`).
+5. **Stage-Scoped Target Config Mapping (`StageTargetConfigMap`) & Conditional Handoff**:
+   - The engine compiles a scoped map of target tables to attached DB config methods (`stageTargetConfigMap: (stageId, targetTable) -> DbConfigMethod[]`).
+   - **Conditional Handoff**: When reconciliation finishes, the engine inspects this map. If a DB config method is attached, it passes **only the passed data** (`reconciliation_status === 'PASS'`) to the method. Missing/failed rows bypass the method completely.
+6. **Task Data Report Attribution & Status Mutation Governance**:
+   - The DB method evaluates `returned_data` and writes its verdict, `identifierColumn` (`TR_GROUP_ID`), group value (`identifierValue`), matching leg count, and all data keys into `_validation_details` in the task data report.
+   - **Configurable Reconciliation Status Impact**:
+     - If the DB config is configured to mutate reconciliation status (`affectsReconciliationStatus: true`), a failure in the DB method flips `reconciliation_status` to `FAIL` (action `STOP`).
+     - If not configured to mutate (`affectsReconciliationStatus: false`), `reconciliation_status` remains `PASS`, recording its findings strictly in the diagnostic task data report.
+
+---
+
+## 11. Implementation Flow, Audit Traceability & Revision Log
+
+### 11.1 Master Governance & Audit References
+
+All engineering changes in this subsystem adhere to the central governance requirements of [`AGENTS.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/AGENTS.md) (Rule 22) and are indexed in the master architecture entry point:
+
+- **Master Architectural Hub**: [`MASTER_ARCHITECTURE_INDEX.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/MASTER_ARCHITECTURE_INDEX.md)
+- **Detailed Investigation & Remediation Audit Log**: [`VALIDATION_BOX_AND_ROW_COORDINATE_AUDIT_LOG.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/VALIDATION_BOX_AND_ROW_COORDINATE_AUDIT_LOG.md)
+- **Core Engineering Plan**: [`IMPLEMENTATION_PLAN_PIPELINE_ENGINE.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/IMPLEMENTATION_PLAN_PIPELINE_ENGINE.md)
+- **Subsystem Acceptance Report**: [`ARCHITECTURE_ACCEPTANCE_REPORT.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/ARCHITECTURE_ACCEPTANCE_REPORT.md)
+- **Multi-Leg Duplicate Specification**: [`MULTI_LEG_DUPLICATE_DETECTION_AND_JSONB_COORDINATE_SPECIFICATION.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/MULTI_LEG_DUPLICATE_DETECTION_AND_JSONB_COORDINATE_SPECIFICATION.md)
+
+### 11.2 Architectural Revision Log
+
+| Date | Scope | Rationale | Physical Code Impact |
+|---|---|---|---|
+| **2026-10-08** | **Multi-Leg Duplicate Detection via JSONB Coordinate Consolidation** | Decoupled input-file deduplication (enforced at task creation in `datasetIngestionService.ts`) from external ledger duplicate checking. Adopted JSONB leg array consolidation (`_target_records`) on `task_dataset_transactions` with explicit identifier column attribution (`identifierColumn`, `identifierValue`), completely eliminating fragile correlated mirror subqueries. Audited in [`VALIDATION_BOX_AND_ROW_COORDINATE_AUDIT_LOG.md §17`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/VALIDATION_BOX_AND_ROW_COORDINATE_AUDIT_LOG.md#L667). | [`MULTI_LEG_DUPLICATE_DETECTION_AND_JSONB_COORDINATE_SPECIFICATION.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/MULTI_LEG_DUPLICATE_DETECTION_AND_JSONB_COORDINATE_SPECIFICATION.md), [`VALIDATION_BOX_AND_ROW_COORDINATE_AUDIT_LOG.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/VALIDATION_BOX_AND_ROW_COORDINATE_AUDIT_LOG.md), [`RULE_TO_METHOD_PIPELINE_ARCHITECTURE.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/RULE_TO_METHOD_PIPELINE_ARCHITECTURE.md) |
+| **2026-10-04** | **Leg-Level Duplicate Scoping & Option 1 Search** | Eliminated false-positive duplicate check failures on multi-leg settlement files by scoping SQL duplicate checks with `_dup._row_number = m._row_number`. Implemented Option 1 (local mirror lookup first, external MySQL query fallback with backtick dialect quoting, auto-staging to mirror). | [`ruleSqlCompiler.ts`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/backend/src/services/ruleSqlCompiler.ts), [`investigationEngine.ts`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/backend/src/services/investigationEngine.ts), [`validationBoxes.ts`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/backend/src/routes/validationBoxes.ts), [`ruleSqlCompiler.test.ts`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/backend/src/services/__tests__/ruleSqlCompiler.test.ts) |
+| **2026-10-04** | **Database Column Configuration Hydration** | Hydrated attached column configurations onto validation box flowchart nodes and stages, linking PostgreSQL DDL table configurations directly to pipeline execution. | `postgresRepo.ts`, `workflows.ts`, `validationBoxes.ts`, `ExecutablePipeline.ts` |
+| **2026-10-03** | **Universal Hashtag Architecture Alignment** | Implemented 4-type hashtag taxonomy across workflows, templates, and staging queues. | `universalHashtagService.ts`, `hashtagRouter.ts` |
+
 
 
 

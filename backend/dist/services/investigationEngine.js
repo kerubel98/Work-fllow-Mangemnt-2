@@ -141,34 +141,91 @@ export function evaluateAttachedColumnConfigurations(record, configurations) {
             case 'DUPLICATE_CHECK':
             case 'UNIQUE_CONSTRAINT': {
                 for (const col of cols) {
-                    const val = resolveRecordField(evalTarget, col.columnName);
-                    if (val === undefined || val === null || String(val).trim() === '') {
+                    // Discriminator or payload columns are nullable and must never be enforced as non-empty in duplicate checks
+                    if (col.role === 'DISCRIMINATOR' || col.role === 'PAYLOAD')
+                        continue;
+                    if (col.isPrimary || col.role === 'PRIMARY_KEY' || col.role === 'MATCH_KEY') {
+                        const val = resolveRecordField(evalTarget, col.columnName);
+                        if (val === undefined || val === null || String(val).trim() === '') {
+                            return {
+                                status: 'FAIL',
+                                badgeText: 'Missing Key Col',
+                                message: cfg.violationMessage || `Duplicate Check prerequisite failed on [${cfg.name}]: key column '${col.columnName}' is null or empty.`,
+                                detail: `Uniqueness key missing: ${col.columnName}`,
+                                action: cfg.violationAction || 'FLAG',
+                                severity: cfg.severity || 'CRITICAL'
+                            };
+                        }
+                    }
+                }
+                if (cfg.primaryKeyColumn) {
+                    const pkVal = resolveRecordField(evalTarget, cfg.primaryKeyColumn);
+                    if (pkVal === undefined || pkVal === null || String(pkVal).trim() === '') {
                         return {
                             status: 'FAIL',
-                            badgeText: 'Missing Key Col',
-                            message: cfg.violationMessage || `Duplicate Check prerequisite failed on [${cfg.name}]: key column '${col.columnName}' is null or empty.`,
-                            detail: `Uniqueness key missing: ${col.columnName}`,
+                            badgeText: 'Missing PK',
+                            message: cfg.violationMessage || `Duplicate Check prerequisite failed on [${cfg.name}]: primary key '${cfg.primaryKeyColumn}' is null or empty.`,
+                            detail: `Primary key missing: ${cfg.primaryKeyColumn}`,
                             action: cfg.violationAction || 'FLAG',
                             severity: cfg.severity || 'CRITICAL'
                         };
                     }
                 }
                 if (Array.isArray(record._batchRecords) && record._batchRecords.length > 1) {
-                    const thisKey = cols.map(c => String(resolveRecordField(evalTarget, c.columnName) ?? '')).join('::');
-                    const dupCount = record._batchRecords.filter((other) => {
-                        const otherTarget = other._target_record ?? other.canonical_data?._target_record ?? other._mirrorData ?? other.canonical_data ?? other;
-                        const otherKey = cols.map(c => String(resolveRecordField(otherTarget, c.columnName) ?? '')).join('::');
-                        return otherKey === thisKey;
-                    }).length;
-                    if (dupCount > 1) {
-                        return {
-                            status: 'FAIL',
-                            badgeText: 'Duplicate Found',
-                            message: cfg.violationMessage || `Duplicate Check failed on [${cfg.name}]: ${dupCount} records share key [${thisKey}].`,
-                            detail: `Cross-record duplicate violation (${dupCount} occurrences)`,
-                            action: cfg.violationAction || 'FLAG',
-                            severity: cfg.severity || 'CRITICAL'
-                        };
+                    const filterConditions = Array.isArray(cfg.filterConditions) ? cfg.filterConditions : [];
+                    const matchesFilter = (recTarget) => {
+                        if (filterConditions.length === 0)
+                            return true;
+                        return filterConditions.every((fc) => {
+                            if (!fc.columnName)
+                                return true;
+                            const v = resolveRecordField(recTarget, fc.columnName);
+                            const op = fc.operator || '=';
+                            const targetVal = String(fc.value ?? '').toLowerCase();
+                            const actualVal = String(v ?? '').toLowerCase();
+                            if (op === '=' || op === '==')
+                                return actualVal === targetVal;
+                            if (op === '!=' || op === '<>')
+                                return actualVal !== targetVal;
+                            if (op === 'LIKE' || op === 'CONTAINS')
+                                return actualVal.includes(targetVal);
+                            return true;
+                        });
+                    };
+                    if (matchesFilter(evalTarget)) {
+                        const myRowNumber = record._row_number ?? record.row_number ?? evalTarget._row_number;
+                        const filterColNames = new Set(filterConditions.map((fc) => (fc.columnName || '').toLowerCase()));
+                        const groupCols = cols.filter(c => !filterColNames.has((c.columnName || '').toLowerCase()));
+                        const thisKey = (groupCols.length > 0 ? groupCols : cols)
+                            .map(c => String(resolveRecordField(evalTarget, c.columnName) ?? ''))
+                            .join('::');
+                        const countRule = (Array.isArray(cfg.aggregationRules) && cfg.aggregationRules.find((a) => a.function === 'COUNT'))
+                            || { function: 'COUNT', operator: '>', value: 1 };
+                        const threshold = Number(countRule.value ?? 1);
+                        const dupCount = record._batchRecords.filter((other) => {
+                            const otherTarget = other._target_record ?? other.canonical_data?._target_record ?? other._mirrorData ?? other.canonical_data ?? other;
+                            if (myRowNumber !== undefined) {
+                                const otherRowNum = other._row_number ?? other.row_number ?? otherTarget._row_number;
+                                if (otherRowNum !== undefined && otherRowNum !== myRowNumber)
+                                    return false;
+                            }
+                            if (!matchesFilter(otherTarget))
+                                return false;
+                            const otherKey = (groupCols.length > 0 ? groupCols : cols)
+                                .map(c => String(resolveRecordField(otherTarget, c.columnName) ?? ''))
+                                .join('::');
+                            return otherKey === thisKey;
+                        }).length;
+                        if (dupCount > threshold) {
+                            return {
+                                status: 'FAIL',
+                                badgeText: 'Duplicate Found',
+                                message: cfg.violationMessage || `Duplicate Check failed on [${cfg.name}]: ${dupCount} records share key [${thisKey}].`,
+                                detail: `Cross-record duplicate violation (${dupCount} occurrences)`,
+                                action: cfg.violationAction || 'FLAG',
+                                severity: cfg.severity || 'CRITICAL'
+                            };
+                        }
                     }
                 }
                 if (record._matchCount && record._matchCount > 1) {
@@ -412,7 +469,7 @@ export function extractOperandValue(record, operand) {
  * Pure evaluation of a single rule condition against a transaction record and stage context.
  * Strictly separates technical exceptions (ERROR) from business criteria mismatch (FAIL) and success (PASS).
  */
-export function evaluateRuleCondition(record, rule, stage) {
+export function evaluateRuleCondition(record, rule, stage, workflow) {
     try {
         // Gather ALL parameters configured for this validation box / rule
         const configuredStepParams = [];
@@ -460,7 +517,9 @@ export function evaluateRuleCondition(record, rule, stage) {
                     const isRowEvaluated = (record._validation_status && record._validation_status !== 'PENDING')
                         || (record.canonical_data && record.canonical_data._validation_status && record.canonical_data._validation_status !== 'PENDING');
                     const hasExplicitTarget = isRowEvaluated && (('_target_record' in record) || (record.canonical_data && '_target_record' in record.canonical_data) || ('_mirrorData' in record) || ('_externalData' in record));
-                    const isTargetDbConfigured = Boolean(stage?.targetDbId ||
+                    const isTargetDbConfigured = Boolean(workflow?.targetDbId ||
+                        workflow?.targetTable ||
+                        stage?.targetDbId ||
                         rule.targetDbId ||
                         stage?.targetDataSource ||
                         rule.targetTable);
@@ -1201,7 +1260,7 @@ export function executeWorkflowForTransaction(transactionRecord, workflow) {
                 continue;
             }
             // Evaluate condition against active working record
-            const evalResult = evaluateRuleCondition(currentWorkingRecord, rule, stage);
+            const evalResult = evaluateRuleCondition(currentWorkingRecord, rule, stage, workflow);
             const action = evalResult.action || resolveRuleAction(evalResult.status, rule);
             const durationMs = Date.now() - startTime;
             if (evalResult.status === 'ERROR') {
