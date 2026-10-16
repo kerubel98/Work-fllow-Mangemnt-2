@@ -7,7 +7,8 @@ import React, { useState, useMemo, useRef, useEffect } from 'react';
 import {
   Issue, DatabaseConnection, EnvironmentSystem, HashtagPreset, QueryApprovalRequest, User, Team, SolutionProcessType,
   DatabaseValidationWorkflow, ProcessingStage, ValidationResultStatus, PipelineAction,
-  TransactionInvestigationStatus, TransactionExecutionSummary, RuleExecutionAuditEntry, GlobalTransactionSchemaField
+  TransactionInvestigationStatus, TransactionExecutionSummary, RuleExecutionAuditEntry, GlobalTransactionSchemaField,
+  DatabaseColumnConfiguration
 } from '../../types';
 import { aggregateParentIssueStatus } from '../../services/statusAggregator';
 import { createBatchPlan } from '../../services/batchPlanner';
@@ -20,9 +21,9 @@ import {
   Layers, SlidersHorizontal, ArrowUpDown, ChevronDown, ArrowUpAZ, ArrowDownZA,
   Sliders, ShieldAlert, CheckSquare, Square, RotateCcw, ShieldCheck, CheckCircle, Zap, Activity, GitBranch,
   MessageSquare, History, Undo2, Send, Bookmark, AtSign, CheckCheck, FileCode, Users, Sparkles,
-  Paperclip, FileText, FileDown, ExternalLink, Tag
+  Paperclip, FileText, FileDown, ExternalLink, Tag, GitCompare, HelpCircle
 } from 'lucide-react';
-import * as XLSX from 'xlsx';
+import { ErrorBoundary } from '../ErrorBoundary';
 
 export interface StepExecutionResult {
   stepId: string;
@@ -46,6 +47,12 @@ export interface OrchestratedRow {
   investigationStatus: TransactionInvestigationStatus;
   isClosed: boolean;
   isHalted: boolean;
+  _target_record?: any;
+  _target_db?: string;
+  _target_table?: string;
+  returned_data?: any;
+  _validation_status?: string;
+  _validation_details?: any;
 }
 
 
@@ -59,19 +66,347 @@ export function formatValidationDetail(detail: any, defaultText: string = 'Valid
   if (typeof detail === 'string') return detail;
   if (typeof detail === 'object') {
     if (detail instanceof Error) return detail.message;
+
+    // 1. Direct explicit reason or message
+    if (detail.reason && typeof detail.reason === 'string') return detail.reason;
+    if (detail.message && typeof detail.message === 'string') return detail.message;
+
+    // 2. Existence check failure
+    if (detail.existence === 'NOT_FOUND_IN_TARGET_DB') {
+      return detail.reason || 'Record not found in target database';
+    }
+
+    // 3. Stage history failure extraction
+    if (Array.isArray(detail.stageHistory)) {
+      const failedStages = detail.stageHistory.filter((s: any) => s && (s.status === 'FAIL' || s.status === 'ERROR'));
+      if (failedStages.length > 0) {
+        const stageMsgs = failedStages.map((s: any) => {
+          const r = s.details?.reason || s.details?.message || (typeof s.details === 'string' ? s.details : null);
+          return r ? `${s.stageName ? `${s.stageName}: ` : ''}${r}` : `${s.stageName || 'Stage'} failed (${s.action || 'STOP'})`;
+        });
+        return stageMsgs.join('; ');
+      }
+    }
+
+    // 4. Cardinality breach
+    if (detail.cardinality?.breach || detail.cardinality?.status === 'CARDINALITY_BREACH') {
+      if (detail.cardinality.reason) return detail.cardinality.reason;
+      const count = detail.cardinality.count ? ` (${detail.cardinality.count} found)` : '';
+      return `Cardinality breach: policy ${detail.cardinality.policy || 'STRICT_SINGLE'}${count}`;
+    }
+
+    // 5. Table rule violations
+    if (detail.tableRuleViolation) {
+      if (typeof detail.tableRuleViolation === 'string') return detail.tableRuleViolation;
+      if (detail.tableRuleViolation.message) return detail.tableRuleViolation.message;
+      if (detail.tableRuleViolation.title) return detail.tableRuleViolation.title;
+    }
+    if (detail.tableRuleDetails?.message) return String(detail.tableRuleDetails.message);
+
+    // 6. Step results with failures
+    if (detail.stepResults && typeof detail.stepResults === 'object') {
+      const failedSteps = Object.values(detail.stepResults).filter((sr: any) => sr && (sr.resultStatus === 'FAIL' || sr.status === 'FAILED'));
+      if (failedSteps.length > 0) {
+        return failedSteps.map((sr: any) => sr.detail || sr.summary || sr.message || 'Check failed').join('; ');
+      }
+    }
+
+    // 7. Extract from step- keys: e.g. 'step-xxx': { rule, action, passed: false, reason }
+    const stepFailures = Object.entries(detail)
+      .filter(([k, v]: [string, any]) => k.startsWith('step-') && v && v.passed === false)
+      .map(([k, v]: [string, any]) => v.reason || v.message || `${v.rule || k} failed`);
+    if (stepFailures.length > 0) return stepFailures.join('; ');
+
+    // Fallback: look for error/summary/detail
+    if (detail.error) return typeof detail.error === 'string' ? detail.error : (detail.error.message || detail.error.detail || Object.values(detail.error).join(' '));
+    if (detail.detail) return typeof detail.detail === 'string' ? detail.detail : (detail.detail.message || detail.detail.reason || Object.values(detail.detail).join(' '));
+    if (detail.summary) return typeof detail.summary === 'string' ? detail.summary : (detail.summary.message || detail.summary.reason || Object.values(detail.summary).join(' '));
+
+    // Legacy fallback: shallow key extraction
     const keys = Object.keys(detail);
     if (keys.length === 0) return defaultText;
     const messages = keys.map(k => {
       const val = detail[k];
       if (typeof val === 'string') return val;
       if (val && typeof val === 'object') {
-        return val.message || val.rule || val.error || val.detail || JSON.stringify(val);
+        return val.message || val.rule || val.error || val.detail || null;
       }
-      return String(val);
+      return null;
     }).filter(Boolean);
-    return messages.length > 0 ? messages.join('; ') : defaultText;
+    if (messages.length > 0) return messages.join('; ');
   }
-  return String(detail);
+  return defaultText;
+}
+
+/**
+ * Safely renders any data payload as a clean HTML table or structured key-value display.
+ * Eliminates raw JSON dumps across the entire inspection interface.
+ */
+export function renderDataAsTable(data: any, emptyMessage: string = 'No details available'): React.ReactNode {
+  if (data === null || data === undefined || data === '') {
+    return <span className="text-slate-400 italic font-mono text-xs">null</span>;
+  }
+  if (typeof data !== 'object') {
+    return <span className="font-mono text-xs text-slate-800 break-words">{String(data)}</span>;
+  }
+
+  // If array of items
+  if (Array.isArray(data)) {
+    if (data.length === 0) {
+      return <span className="text-slate-400 italic text-xs font-mono">{emptyMessage}</span>;
+    }
+    // Array of primitives (strings, numbers)
+    if (typeof data[0] !== 'object' || data[0] === null) {
+      return (
+        <div className="flex flex-wrap gap-1">
+          {data.map((item, idx) => (
+            <span key={idx} className="px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 font-mono text-[11px] border border-slate-200">
+              {String(item)}
+            </span>
+          ))}
+        </div>
+      );
+    }
+    // Array of objects -> render tabular grid with headers
+    const allKeys = Array.from(new Set(data.flatMap(item => (typeof item === 'object' && item !== null) ? Object.keys(item) : []))).filter(k => !k.startsWith('_'));
+    return (
+      <div className="overflow-x-auto border border-slate-200 rounded-lg max-h-60 overflow-y-auto bg-white">
+        <table className="w-full text-left text-xs font-mono border-collapse">
+          <thead>
+            <tr className="bg-slate-100 border-b border-slate-200 text-slate-700 text-[10px] uppercase font-bold sticky top-0 z-10">
+              <th className="py-1.5 px-2 text-center w-10">#</th>
+              {allKeys.map(k => (
+                <th key={k} className="py-1.5 px-2.5 whitespace-nowrap">{k}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100 text-slate-800">
+            {data.map((row, rIdx) => (
+              <tr key={rIdx} className="hover:bg-slate-50 transition">
+                <td className="py-1.5 px-2 text-center text-slate-400 text-[10px]">{rIdx + 1}</td>
+                {allKeys.map(k => {
+                  const val = row[k];
+                  return (
+                    <td key={k} className="py-1.5 px-2.5 whitespace-nowrap">
+                      {val === null || val === undefined ? (
+                        <span className="text-slate-300 italic">—</span>
+                      ) : typeof val === 'object' ? (
+                        renderDataAsTable(val)
+                      ) : (
+                        <span>{String(val)}</span>
+                      )}
+                    </td>
+                  );
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  }
+
+  // Key-value object
+  const entries = Object.entries(data).filter(([k]) => !k.startsWith('_'));
+  if (entries.length === 0) {
+    return <span className="text-slate-400 italic text-xs font-mono">{emptyMessage}</span>;
+  }
+
+  return (
+    <div className="overflow-x-auto border border-slate-200 rounded-lg max-h-60 overflow-y-auto bg-white">
+      <table className="w-full text-left text-xs font-mono border-collapse">
+        <thead>
+          <tr className="bg-slate-100 border-b border-slate-200 text-slate-700 text-[10px] uppercase font-bold sticky top-0 z-10">
+            <th className="py-1.5 px-3 w-1/3">Property / Parameter</th>
+            <th className="py-1.5 px-3 w-2/3">Evaluated Value</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y divide-slate-100 text-slate-800">
+          {entries.map(([k, v]) => (
+            <tr key={k} className="hover:bg-slate-50 transition">
+              <td className="py-1.5 px-3 font-semibold text-slate-700 whitespace-nowrap">{k}</td>
+              <td className="py-1.5 px-3">
+                {v === null || v === undefined ? (
+                  <span className="text-slate-300 italic">—</span>
+                ) : typeof v === 'object' ? (
+                  renderDataAsTable(v)
+                ) : (
+                  <span>{String(v)}</span>
+                )}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/**
+ * Safely format cell values for table comparison display without dumping raw objects.
+ */
+export function formatCellVal(val: any): string {
+  if (val === undefined || val === null || val === '') return '—';
+  if (typeof val === 'number') {
+    return Number(val).toLocaleString(undefined, { maximumFractionDigits: 4 });
+  }
+  if (typeof val === 'boolean') {
+    return val ? 'TRUE' : 'FALSE';
+  }
+  if (typeof val === 'object') {
+    if (Array.isArray(val)) {
+      return val.map(x => (typeof x === 'object' ? JSON.stringify(x) : String(x))).join(', ');
+    }
+    return formatValidationDetail(val);
+  }
+  return String(val);
+}
+
+/**
+ * Compare two values with epsilon tolerance for numbers and case-insensitivity for strings.
+ */
+export function areValuesEqual(v1: any, v2: any): boolean {
+  if (v1 === undefined || v2 === undefined || v1 === null || v2 === null) return false;
+  if (v1 === '' && v2 === '') return true;
+  const n1 = Number(v1);
+  const n2 = Number(v2);
+  if (!isNaN(n1) && !isNaN(n2) && String(v1).trim() !== '' && String(v2).trim() !== '') {
+    return Math.abs(n1 - n2) < 0.0001;
+  }
+  return String(v1).trim().toLowerCase() === String(v2).trim().toLowerCase();
+}
+
+/**
+ * Human-friendly column label formatting from snake_case or camelCase.
+ */
+export function formatHeaderLabel(key: string): string {
+  return key
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, c => c.toUpperCase());
+}
+
+/**
+ * Case-insensitive property lookup on objects.
+ */
+export function getCaseInsensitiveVal(obj: any, key: string): any {
+  if (!obj || typeof obj !== 'object' || !key) return undefined;
+  if (obj[key] !== undefined && obj[key] !== null) return obj[key];
+  const lKey = key.toLowerCase();
+  for (const k of Object.keys(obj)) {
+    if (k.toLowerCase() === lKey) return obj[k];
+  }
+  return undefined;
+}
+
+/**
+ * Extracts all external database response records returned for this transaction record across
+ * all stages, workflows, and tables in returned_data, as well as _target_records or _target_record.
+ * Guarantees that EVERY returned record is made available to the response data envelope
+ * and data comparison table (one row for each).
+ */
+export function extractRowLegs(row: any, workflow: DatabaseValidationWorkflow | null): any[] {
+  if (!row) return [];
+
+  // If validation findings explicitly state NOT_FOUND_IN_TARGET_DB and no records are present
+  const rowValDetails = row._validation_details
+    || row.canonical_data?._validation_details
+    || row.sourceRecord?._validation_details
+    || row.sourceRecord?.canonical_data?._validation_details;
+  if (rowValDetails?.existence === 'NOT_FOUND_IN_TARGET_DB' && !row.returned_data && !row.canonical_data?.returned_data && !row.sourceRecord?.returned_data) {
+    return [];
+  }
+
+  const returnedData = row.returned_data
+    || row.canonical_data?.returned_data
+    || row.sourceRecord?.returned_data
+    || row.sourceRecord?.canonical_data?.returned_data;
+
+  const collected: any[] = [];
+  const seenKeys = new Set<string>();
+
+  const addRecord = (item: any, meta: { table?: string; wfId?: string } = {}) => {
+    if (!item || typeof item !== 'object') return;
+    const p = item.payload || item;
+    const tblName = meta.table || item._sourceTable || item.table || workflow?.targetTable || 'external_target';
+    const hisId = item.TR_HIS_ID || p.TR_HIS_ID || item.tr_his_id || p.tr_his_id;
+    const uniqueKey = (tblName && hisId)
+      ? `${tblName}_${hisId}`
+      : (item._mirror_id || p._mirror_id || hisId
+        || (p.FE_UTRNNO && p.ACCT_NUM1 ? `${p.FE_UTRNNO}_${p.ACCT_NUM1}_${p.PROC_NAME || ''}_${tblName}` : null)
+        || (item.id || p.id ? String(item.id || p.id) : null));
+
+    if (uniqueKey && seenKeys.has(uniqueKey)) return;
+    if (uniqueKey) seenKeys.add(uniqueKey);
+
+    const proc = item.PROC_NAME || p.PROC_NAME || item.proc_name || p.proc_name || item.legType || null;
+
+    collected.push({
+      ...item,
+      ...(item.payload || {}),
+      _sourceTable: tblName,
+      _sourceWfId: meta.wfId || item._sourceWfId || workflow?.id || 'default',
+      _procName: proc,
+    });
+  };
+
+  if (returnedData && typeof returnedData === 'object') {
+    // 1. Direct array of records
+    if (Array.isArray(returnedData)) {
+      returnedData.forEach(r => addRecord(r));
+    } else {
+      // 2. Namespaced Multi-Leg Stage Envelope: returnedData.stages
+      if (returnedData.stages && typeof returnedData.stages === 'object') {
+        for (const [stgKey, stgVal] of Object.entries(returnedData.stages)) {
+          if (stgVal && typeof stgVal === 'object') {
+            const legs = (stgVal as any).legs;
+            const tbl = (stgVal as any).targetTable || stgKey;
+            if (Array.isArray(legs)) {
+              legs.forEach(r => addRecord(r, { table: tbl, wfId: 'stages' }));
+            }
+          }
+        }
+      }
+
+      // 3. Workflow / table hierarchy: iterate all top-level keys
+      for (const [wfOrTblKey, wfOrTblVal] of Object.entries(returnedData)) {
+        if (wfOrTblKey === 'stages' || wfOrTblKey === 'audit') continue;
+
+        if (Array.isArray(wfOrTblVal)) {
+          wfOrTblVal.forEach(r => addRecord(r, { table: wfOrTblKey }));
+        } else if (typeof wfOrTblVal === 'object' && wfOrTblVal !== null) {
+          for (const [subKey, subVal] of Object.entries(wfOrTblVal)) {
+            if (Array.isArray(subVal)) {
+              subVal.forEach(r => addRecord(r, { table: subKey, wfId: wfOrTblKey }));
+            } else if (typeof subVal === 'object' && subVal !== null && Object.keys(subVal).length > 0) {
+              addRecord(subVal, { table: subKey, wfId: wfOrTblKey });
+            }
+          }
+        }
+      }
+    }
+  }
+
+  // 4. Target records array in canonical or row
+  const targetRecords = row.canonical_data?._target_records
+    || row._target_records
+    || row.sourceRecord?.canonical_data?._target_records
+    || row.sourceRecord?._target_records;
+  if (Array.isArray(targetRecords) && targetRecords.length > 0) {
+    targetRecords.forEach(r => addRecord(r));
+  }
+
+  // 5. Fallback single target record
+  if (collected.length === 0) {
+    const singleRec = row.canonical_data?._target_record
+      || row._target_record
+      || row.sourceRecord?.canonical_data?._target_record
+      || row.sourceRecord?._target_record;
+    if (singleRec && typeof singleRec === 'object' && Object.keys(singleRec).length > 0) {
+      addRecord(singleRec);
+    }
+  }
+
+  return collected;
 }
 
 /**
@@ -597,15 +932,70 @@ export default function ValidationOrchestratorWorkspace({
       .catch(err => console.warn('Could not fetch workflows from API in workspace:', err));
   }, [taskWorkflowExecutions]);
 
-  const [isVerifying, setIsVerifying] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
+  const [debouncedSearchTerm, setDebouncedSearchTerm] = useState('');
+
+  // 250ms Debounced search prevents UI thread locking across 5,000+ items during typing
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setDebouncedSearchTerm(searchTerm);
+    }, 250);
+    return () => clearTimeout(handler);
+  }, [searchTerm]);
   const [outcomeFilter, setOutcomeFilter] = useState<'ALL' | 'FLAGGED' | 'CLEAN'>('ALL');
   const [investigationStatusFilter, setInvestigationStatusFilter] = useState<'ALL' | 'INVESTIGATING' | 'RECONCILED' | 'FLAGGED' | 'CLOSED'>('ALL');
   const [showValidationDropdown, setShowValidationDropdown] = useState(false);
   const [inspectingRow, setInspectingRow] = useState<OrchestratedRow | null>(null);
   const [outcomeDrilldownRow, setOutcomeDrilldownRow] = useState<any | null>(null);
-  const [drilldownLegIndex, setDrilldownLegIndex] = useState<number>(0);
+  const [drilldownLegIndex, setDrilldownLegIndex] = useState<number>(-1);
+  const [inspectLegIndex, setInspectLegIndex] = useState<number>(-1);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [copiedPayloadKey, setCopiedPayloadKey] = useState<string | null>(null);
+  const [expandedRowIds, setExpandedRowIds] = useState<Set<string>>(new Set());
+  const [availableColumnConfigs, setAvailableColumnConfigs] = useState<DatabaseColumnConfiguration[]>([]);
+  const [drilldownOpenAccordions, setDrilldownOpenAccordions] = useState<Record<string, boolean>>({
+    data_comparison: true,
+    validations_conducted: true,
+    grouped_legs: true,
+    inspect_data_comparison: true,
+    inspect_validations_conducted: true,
+    inspect_grouped_legs: true,
+  });
+
+  const handleCopyPayload = (text: string, key: string) => {
+    if (navigator?.clipboard?.writeText) {
+      navigator.clipboard.writeText(text).then(() => {
+        setCopiedPayloadKey(key);
+        setTimeout(() => setCopiedPayloadKey(null), 2000);
+      }).catch(err => console.warn('Could not copy to clipboard:', err));
+    }
+  };
+
+  const toggleDrilldownAccordion = (accordionKey: string) => {
+    setDrilldownOpenAccordions(prev => ({
+      ...prev,
+      [accordionKey]: !prev[accordionKey]
+    }));
+  };
+
+  // Load registered database column configurations from PostgreSQL
+  useEffect(() => {
+    api.getColumnConfigurations()
+      .then((res: any) => {
+        const list = Array.isArray(res) ? res : (res?.data || []);
+        setAvailableColumnConfigs(list);
+      })
+      .catch((err: any) => console.warn('Could not load database column configurations:', err));
+  }, []);
+
+  const toggleRowExpanded = (rowId: string) => {
+    setExpandedRowIds(prev => {
+      const next = new Set(prev);
+      if (next.has(rowId)) next.delete(rowId);
+      else next.add(rowId);
+      return next;
+    });
+  };
 
   // Manual Transaction Investigation Status Overrides
   // (Closing one transaction must NOT automatically close the parent Issue or TeamTask)
@@ -1136,6 +1526,7 @@ export default function ValidationOrchestratorWorkspace({
       hasExecutedValidation
       || (activeWorkflow && taskWorkflowExecutions.some(x => (x.workflow_id || x.workflowId) === activeWorkflow.id))
       || (activeWorkflow && effectiveRows.some(r => r._validation_workflow_id === activeWorkflow.id || r.canonical_data?._validation_workflow_id === activeWorkflow.id))
+      || effectiveRows.some(r => (r._validation_status && r._validation_status !== 'PENDING') || (r.canonical_data?._validation_status && r.canonical_data._validation_status !== 'PENDING'))
     );
 
     const sampleRow = effectiveRows.length > 0 ? effectiveRows[0] : {};
@@ -1196,7 +1587,10 @@ export default function ValidationOrchestratorWorkspace({
             : (rowValStatus ? `Conducted verdict: [${rowValStatus}]` : 'No validation workflow configured.'),
           investigationStatus: initialStatus,
           isClosed: false,
-          isHalted: false
+          isHalted: false,
+          returned_data: row.returned_data || row.canonical_data?.returned_data,
+          _validation_status: rowValStatus || undefined,
+          _validation_details: row._validation_details || row.canonical_data?._validation_details
         };
       });
     }
@@ -1225,23 +1619,40 @@ export default function ValidationOrchestratorWorkspace({
         row.sourceRecord?._validation_workflow_id === activeWorkflow.id
       );
 
-      const isRowEvaluated = isTaskValidated && (
-        isServerRecMatch ||
-        (isRowWfMatch && row._validation_status && row._validation_status !== 'PENDING') ||
-        (isRowWfMatch && row.sourceRecord && row.sourceRecord._validation_status && row.sourceRecord._validation_status !== 'PENDING')
+      const rawTargetRecord =
+        (isServerRecMatch && serverRec?._target_record)
+        ?? serverRec?._target_record
+        ?? row?._target_record
+        ?? row?.sourceRecord?._target_record
+        ?? row?.canonical_data?._target_record
+        ?? row?.sourceRecord?.canonical_data?._target_record
+        ?? row?._mirrorData
+        ?? row?.sourceRecord?._mirrorData
+        ?? row?._externalData
+        ?? row?.sourceRecord?._externalData
+        ?? (row?.returned_data && activeWorkflow?.targetTable ? row.returned_data[activeWorkflow.targetTable] : null)
+        ?? (row?.sourceRecord?.returned_data && activeWorkflow?.targetTable ? row.sourceRecord.returned_data[activeWorkflow.targetTable] : null)
+        ?? null;
+
+      const hasRowPersistedValidation = Boolean(
+        (row.sourceRecord && row.sourceRecord._validation_status && row.sourceRecord._validation_status !== 'PENDING') ||
+        (row._validation_status && row._validation_status !== 'PENDING') ||
+        (row.canonical_data && row.canonical_data._validation_status && row.canonical_data._validation_status !== 'PENDING')
       );
-      const hasTargetRecordExplicit = isRowEvaluated && (
-        (isServerRecMatch && '_target_record' in serverRec)
-        || (isRowWfMatch && '_target_record' in row)
-        || (isRowWfMatch && row.canonical_data && '_target_record' in row.canonical_data)
+
+      const isRowEvaluated = isTaskValidated && (isServerRecMatch || hasRowPersistedValidation);
+      const hasTargetRecordExplicit = isRowEvaluated && Boolean(
+        rawTargetRecord ||
+        (serverRec && '_target_record' in serverRec) ||
+        ('_target_record' in row) ||
+        (row.canonical_data && '_target_record' in row.canonical_data) ||
+        (row.sourceRecord && '_target_record' in row.sourceRecord) ||
+        ('_mirrorData' in row) ||
+        ('_externalData' in row)
       );
-      const targetRecord = isRowEvaluated
-        ? (isServerRecMatch && '_target_record' in serverRec
-            ? serverRec._target_record
-            : (isRowWfMatch && row._target_record !== undefined ? row._target_record : (isRowWfMatch && row.canonical_data && '_target_record' in row.canonical_data ? row.canonical_data._target_record : null)))
-        : null;
-      const targetDbName = (isServerRecMatch && serverRec?._target_db) || (isRowWfMatch && row._target_db) || activeWorkflow?.targetDbId || 'Target DB';
-      const targetTableName = (isServerRecMatch && serverRec?._target_table) || (isRowWfMatch && row._target_table) || activeWorkflow?.targetTable || 'transactions';
+      const targetRecord = isRowEvaluated ? rawTargetRecord : null;
+      const targetDbName = (isServerRecMatch && serverRec?._target_db) || row._target_db || row.sourceRecord?._target_db || activeWorkflow?.targetDbId || 'Target DB';
+      const targetTableName = (isServerRecMatch && serverRec?._target_table) || row._target_table || row.sourceRecord?._target_table || activeWorkflow?.targetTable || 'transactions';
 
       return {
         ...row,
@@ -1282,34 +1693,54 @@ export default function ValidationOrchestratorWorkspace({
       );
 
       const summary = batchSummaries[rowId] || (rowKeyCandidates[1] ? batchSummaries[rowKeyCandidates[1]] : undefined);
-      const isRowEvaluated = isTaskValidated && (
-        isServerRecMatch ||
-        (isRowWfMatch && row._validation_status && row._validation_status !== 'PENDING') ||
-        (isRowWfMatch && row.canonical_data && row.canonical_data._validation_status && row.canonical_data._validation_status !== 'PENDING') ||
-        (isRowWfMatch && row.sourceRecord && row.sourceRecord._validation_status && row.sourceRecord._validation_status !== 'PENDING')
+      const rawTargetRecord =
+        (isServerRecMatch && serverRec?._target_record)
+        ?? serverRec?._target_record
+        ?? row?._target_record
+        ?? row?.sourceRecord?._target_record
+        ?? row?.canonical_data?._target_record
+        ?? row?.sourceRecord?.canonical_data?._target_record
+        ?? row?._mirrorData
+        ?? row?.sourceRecord?._mirrorData
+        ?? row?._externalData
+        ?? row?.sourceRecord?._externalData
+        ?? (row?.returned_data && activeWorkflow?.targetTable ? row.returned_data[activeWorkflow.targetTable] : null)
+        ?? (row?.sourceRecord?.returned_data && activeWorkflow?.targetTable ? row.sourceRecord.returned_data[activeWorkflow.targetTable] : null)
+        ?? null;
+
+      const hasRowPersistedValidation = Boolean(
+        (row.sourceRecord && row.sourceRecord._validation_status && row.sourceRecord._validation_status !== 'PENDING') ||
+        (row._validation_status && row._validation_status !== 'PENDING') ||
+        (row.canonical_data && row.canonical_data._validation_status && row.canonical_data._validation_status !== 'PENDING')
       );
-      const hasTargetRecordExplicit = isRowEvaluated && (
-        (isServerRecMatch && '_target_record' in serverRec)
-        || (isRowWfMatch && '_target_record' in row)
-        || (isRowWfMatch && row.canonical_data && '_target_record' in row.canonical_data)
+
+      const isRowEvaluated = isTaskValidated && (isServerRecMatch || hasRowPersistedValidation);
+      const hasTargetRecordExplicit = isRowEvaluated && Boolean(
+        rawTargetRecord ||
+        (serverRec && '_target_record' in serverRec) ||
+        ('_target_record' in row) ||
+        (row.canonical_data && '_target_record' in row.canonical_data) ||
+        (row.sourceRecord && '_target_record' in row.sourceRecord) ||
+        ('_mirrorData' in row) ||
+        ('_externalData' in row)
       );
-      const targetRecord = isRowEvaluated
-        ? (isServerRecMatch && '_target_record' in serverRec
-            ? serverRec._target_record
-            : (isRowWfMatch && row._target_record !== undefined ? row._target_record : (isRowWfMatch && row.canonical_data && '_target_record' in row.canonical_data ? row.canonical_data._target_record : null)))
-        : null;
-      const targetDbName = (isServerRecMatch && serverRec?._target_db) || (isRowWfMatch && row._target_db) || activeWorkflow?.targetDbId || 'Target DB';
-      const targetTableName = (isServerRecMatch && serverRec?._target_table) || (isRowWfMatch && row._target_table) || activeWorkflow?.targetTable || 'transactions';
+      const targetRecord = isRowEvaluated ? rawTargetRecord : null;
+      const targetDbName = (isServerRecMatch && serverRec?._target_db) || row._target_db || row.sourceRecord?._target_db || activeWorkflow?.targetDbId || 'Target DB';
+      const targetTableName = (isServerRecMatch && serverRec?._target_table) || row._target_table || row.sourceRecord?._target_table || activeWorkflow?.targetTable || 'transactions';
 
       let serverStatus: TransactionInvestigationStatus | undefined;
-      if (isServerRecMatch) {
-        if (serverRec._validation_status === 'FAIL' || (hasTargetRecordExplicit && !targetRecord)) serverStatus = 'FLAGGED';
-        else if (serverRec._validation_status === 'PASS') serverStatus = 'RECONCILED';
-        else if (serverRec._validation_status === 'PAUSED_DB_OFFLINE') serverStatus = 'INVESTIGATING';
-      } else if (isRowWfMatch && row._validation_status && row._validation_status !== 'PENDING') {
-        if (row._validation_status === 'FAIL' || (hasTargetRecordExplicit && !targetRecord)) serverStatus = 'FLAGGED';
-        else if (row._validation_status === 'PASS') serverStatus = 'RECONCILED';
-        else if (row._validation_status === 'PAUSED_DB_OFFLINE') serverStatus = 'INVESTIGATING';
+      const rowValStatus = isServerRecMatch
+        ? serverRec._validation_status
+        : (row._validation_status || row.canonical_data?._validation_status || row.sourceRecord?._validation_status || undefined);
+
+      const rowValDetails = isServerRecMatch
+        ? (serverRec?._validation_details || serverRec?.details)
+        : (row._validation_details || row.canonical_data?._validation_details || row.sourceRecord?._validation_details || row.sourceRecord?.canonical_data?._validation_details || undefined);
+
+      if (rowValStatus && rowValStatus !== 'PENDING') {
+        if (rowValStatus === 'FAIL' || (hasTargetRecordExplicit && !targetRecord)) serverStatus = 'FLAGGED';
+        else if (rowValStatus === 'PASS') serverStatus = 'RECONCILED';
+        else if (rowValStatus === 'PAUSED_DB_OFFLINE') serverStatus = 'INVESTIGATING';
       }
 
       const overriddenStatus = manualStatusOverrides[rowId];
@@ -1375,7 +1806,6 @@ export default function ValidationOrchestratorWorkspace({
       }
 
       // If batch summary audit trail was empty or server evaluated as FAIL, populate stepResults
-      const rowValStatus = isServerRecMatch ? serverRec._validation_status : (isRowWfMatch ? row._validation_status : undefined);
       if (Object.keys(stepResults).length === 0 && rowValStatus && activeWorkflow?.steps) {
         activeWorkflow.steps.forEach(step => {
           stepResults[step.id] = {
@@ -1384,19 +1814,26 @@ export default function ValidationOrchestratorWorkspace({
             badgeText: rowValStatus,
             detail: (hasTargetRecordExplicit && !targetRecord)
               ? `Record not found in target database (${targetDbName}.${targetTableName})`
-              : formatValidationDetail(row._validation_details, rowValStatus === 'PASS' ? 'Condition satisfied' : 'Discrepancy detected in conducted workflow'),
+              : formatValidationDetail(rowValDetails, rowValStatus === 'PASS' ? 'Condition satisfied' : 'Discrepancy detected in conducted workflow'),
             resultStatus: rowValStatus === 'PASS' ? 'PASS' : 'FAIL',
             actionTaken: rowValStatus === 'PASS' ? 'CONTINUE' : 'FLAG'
           };
         });
       }
 
+      const rowReturnedData =
+        (isServerRecMatch && serverRec?.returned_data)
+        || row.returned_data
+        || row.canonical_data?.returned_data
+        || row.sourceRecord?.returned_data;
+
       const mergedSource = {
         ...row,
         ...(isServerRecMatch ? serverRec : {}),
         ...(targetRecord ? { _target_record: targetRecord } : {}),
         _target_db: targetDbName,
-        _target_table: targetTableName
+        _target_table: targetTableName,
+        returned_data: rowReturnedData
       };
 
       return {
@@ -1405,9 +1842,10 @@ export default function ValidationOrchestratorWorkspace({
         _target_record: targetRecord,
         _target_db: targetDbName,
         _target_table: targetTableName,
+        returned_data: rowReturnedData,
         stepResults,
         overallSeverity: rowSeverity,
-        overallSummary: summary?.auditTrail.map(a => `${a.ruleName}: [${a.validationResult}] ${a.pipelineAction}`).join(' | ') || (isServerRecMatch ? `Evaluated via ${activeWorkflow?.name}: [${serverRec._validation_status}]` : (isRowWfMatch && rowValStatus) ? `Conducted verdict: [${rowValStatus}]` : activeWorkflow ? `Ready to validate against [${activeWorkflow.name}]` : 'Passed multi-stage validation'),
+        overallSummary: summary?.auditTrail.map(a => `${a.ruleName}: [${a.validationResult}] ${a.pipelineAction}`).join(' | ') || (isServerRecMatch ? `Evaluated via ${activeWorkflow?.name}: [${serverRec._validation_status}]` : rowValStatus ? `Conducted verdict: [${rowValStatus}]` : activeWorkflow ? `Ready to validate against [${activeWorkflow.name}]` : 'Passed multi-stage validation'),
         remedySql: summary?.remedySql,
         executionSummary: {
           ...(summary || {}),
@@ -1415,7 +1853,9 @@ export default function ValidationOrchestratorWorkspace({
         },
         investigationStatus: finalStatus,
         isClosed,
-        isHalted
+        isHalted,
+        _validation_status: rowValStatus || undefined,
+        _validation_details: rowValDetails
       };
     });
   }, [effectiveRows, activeWorkflow, manualStatusOverrides, hasExecutedValidation, serverEvaluatedRecords, taskWorkflowExecutions]);
@@ -1506,9 +1946,9 @@ export default function ValidationOrchestratorWorkspace({
       result = result.filter(r => !isRowDuplicate(r));
     }
 
-    // Global search term
-    if (searchTerm.trim()) {
-      const q = searchTerm.toLowerCase();
+    // Global search term (debounced to avoid blocking UI thread during typing)
+    if (debouncedSearchTerm.trim()) {
+      const q = debouncedSearchTerm.toLowerCase();
       result = result.filter(r => {
         const matchValues = Object.values(r.sourceRecord).some(v => String(v).toLowerCase().includes(q));
         return matchValues || r.overallSummary.toLowerCase().includes(q);
@@ -1548,7 +1988,7 @@ export default function ValidationOrchestratorWorkspace({
     }
 
     return result;
-  }, [orchestratedRows, hiddenRowIds, activeSheetTab, outcomeFilter, investigationStatusFilter, duplicateFilter, searchTerm, columnFilters, centralMasterRows, effectiveRows]);
+  }, [orchestratedRows, hiddenRowIds, activeSheetTab, outcomeFilter, investigationStatusFilter, duplicateFilter, debouncedSearchTerm, columnFilters, centralMasterRows, effectiveRows]);
 
   // Real-time duplicate & unique record counts
   const duplicateCounts = useMemo(() => {
@@ -1726,6 +2166,20 @@ export default function ValidationOrchestratorWorkspace({
       }
     });
 
+    // Also include workflows stamped on the rows themselves
+    (effectiveRows || []).forEach((r: any) => {
+      const id = r._validation_workflow_id || r.canonical_data?._validation_workflow_id;
+      const name = r._validation_workflow_name || r.canonical_data?._validation_workflow_name || availableWorkflows.find(w => w.id === id)?.name || id;
+      if (id && !seenIds.has(id)) {
+        seenIds.add(id);
+        list.push({
+          id,
+          name,
+          isLatest: list.length === 0
+        });
+      }
+    });
+
     if (hasExecutedValidation && activeWorkflow && !seenIds.has(activeWorkflow.id)) {
       list.push({
         id: activeWorkflow.id,
@@ -1735,7 +2189,7 @@ export default function ValidationOrchestratorWorkspace({
     }
 
     return list;
-  }, [taskWorkflowExecutions, availableWorkflows, hasExecutedValidation, activeWorkflow]);
+  }, [taskWorkflowExecutions, effectiveRows, availableWorkflows, hasExecutedValidation, activeWorkflow]);
 
   const conductedWorkflowsCount = conductedWorkflows.length;
 
@@ -1851,6 +2305,7 @@ export default function ValidationOrchestratorWorkspace({
   };
 
   const [isClearingResults, setIsClearingResults] = useState(false);
+  const [isVerifying, setIsVerifying] = useState(false);
 
   /**
    * Permanently clears ALL validation run history for the current task from
@@ -2111,30 +2566,35 @@ export default function ValidationOrchestratorWorkspace({
     setLiveProgressMsg('');
   };
 
-  const handleExportExcel = () => {
-    const exportData = filteredAndSortedRows.map(r => {
-      const base: Record<string, any> = {};
-      base['Investigation Status'] = r.investigationStatus;
-      base['Case Closed'] = r.isClosed ? 'YES' : 'NO';
-      base['Pipeline Halted'] = r.isHalted ? 'YES' : 'NO';
+  const handleExportExcel = async () => {
+    try {
+      const XLSX = await import('xlsx');
+      const exportData = filteredAndSortedRows.map(r => {
+        const base: Record<string, any> = {};
+        base['Investigation Status'] = r.investigationStatus;
+        base['Case Closed'] = r.isClosed ? 'YES' : 'NO';
+        base['Pipeline Halted'] = r.isHalted ? 'YES' : 'NO';
 
-      base['Collision Status'] = isRowDuplicate(r) ? 'DUPLICATE' : 'UNIQUE';
-      visibleDatasetColumns.forEach(c => {
-        base[c.label] = r.sourceRecord[c.key] ?? '';
+        base['Collision Status'] = isRowDuplicate(r) ? 'DUPLICATE' : 'UNIQUE';
+        visibleDatasetColumns.forEach(c => {
+          base[c.label] = r.sourceRecord[c.key] ?? '';
+        });
+        if (activeWorkflow && !hiddenColumns.has('workflow_outcome')) {
+          const evalRes = evaluateWorkflowOutcome(r, activeWorkflow);
+          base['Validation Status'] = evalRes.message;
+          base['Validation Status Code'] = evalRes.status;
+        }
+        base['Diagnostic Summary'] = r.overallSummary;
+        return base;
       });
-      if (activeWorkflow && !hiddenColumns.has('workflow_outcome')) {
-        const evalRes = evaluateWorkflowOutcome(r, activeWorkflow);
-        base['Validation Status'] = evalRes.message;
-        base['Validation Status Code'] = evalRes.status;
-      }
-      base['Diagnostic Summary'] = r.overallSummary;
-      return base;
-    });
 
-    const ws = XLSX.utils.json_to_sheet(exportData);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'Reconciliation_Data');
-    XLSX.writeFile(wb, `${sourceFileName.replace(/\.[^/.]+$/, "")}_Export.xlsx`);
+      const ws = XLSX.utils.json_to_sheet(exportData);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Reconciliation_Data');
+      XLSX.writeFile(wb, `${sourceFileName.replace(/\.[^/.]+$/, "")}_Export.xlsx`);
+    } catch (err) {
+      console.error('Failed to export Excel report:', err);
+    }
   };
 
 
@@ -2251,13 +2711,13 @@ export default function ValidationOrchestratorWorkspace({
       rec.canonical_data?._validation_workflow_id === workflow.id
     );
 
-    const isEvaluated = hasExecutedValidation || isServerRecMatch || (
-      isRowWfMatch && (
-        (row?.sourceRecord && row.sourceRecord._validation_status && row.sourceRecord._validation_status !== 'PENDING') ||
-        (row?._validation_status && row._validation_status !== 'PENDING') ||
-        (row?.canonical_data && row.canonical_data._validation_status && row.canonical_data._validation_status !== 'PENDING')
-      )
+    const hasRowPersistedValidation = Boolean(
+      (row?.sourceRecord && row.sourceRecord._validation_status && row.sourceRecord._validation_status !== 'PENDING') ||
+      (row?._validation_status && row._validation_status !== 'PENDING') ||
+      (row?.canonical_data && row.canonical_data._validation_status && row.canonical_data._validation_status !== 'PENDING')
     );
+
+    const isEvaluated = hasExecutedValidation || isServerRecMatch || hasRowPersistedValidation;
 
     if (!isEvaluated) {
       return {
@@ -2277,23 +2737,32 @@ export default function ValidationOrchestratorWorkspace({
       };
     }
 
-    const hasTargetRecordExplicit = isEvaluated && (
-      (isServerRecMatch && '_target_record' in serverRec)
-      || (isRowWfMatch && row?.sourceRecord && '_target_record' in row.sourceRecord)
-      || (isRowWfMatch && row && '_target_record' in row)
-      || (isRowWfMatch && row?.canonical_data && '_target_record' in row.canonical_data)
-      || (isRowWfMatch && row?.sourceRecord?.canonical_data && '_target_record' in row.sourceRecord.canonical_data)
-    );
-    const targetRecord = isEvaluated ? (
+    const rawTargetRecord =
       (isServerRecMatch && serverRec?._target_record)
-      ?? (isRowWfMatch ? row?._target_record : null)
-      ?? (isRowWfMatch ? row?.sourceRecord?._target_record : null)
-      ?? (isRowWfMatch ? row?.canonical_data?._target_record : null)
-      ?? (isRowWfMatch ? row?.sourceRecord?.canonical_data?._target_record : null)
-      ?? null
-    ) : null;
-    const targetDbName = (isServerRecMatch && serverRec?._target_db) || (isRowWfMatch && row?.sourceRecord?._target_db) || (isRowWfMatch && row?._target_db) || workflow.targetDbId || 'Target DB';
-    const targetTableName = (isServerRecMatch && serverRec?._target_table) || (isRowWfMatch && row?.sourceRecord?._target_table) || (isRowWfMatch && row?._target_table) || workflow.targetTable || 'transactions';
+      ?? serverRec?._target_record
+      ?? row?._target_record
+      ?? row?.sourceRecord?._target_record
+      ?? row?.canonical_data?._target_record
+      ?? row?.sourceRecord?.canonical_data?._target_record
+      ?? row?._mirrorData
+      ?? row?.sourceRecord?._mirrorData
+      ?? row?._externalData
+      ?? row?.sourceRecord?._externalData
+      ?? (row?.returned_data && workflow?.targetTable ? row.returned_data[workflow.targetTable] : null)
+      ?? (row?.sourceRecord?.returned_data && workflow?.targetTable ? row.sourceRecord.returned_data[workflow.targetTable] : null)
+      ?? null;
+
+    const hasTargetRecordExplicit = isEvaluated && Boolean(
+      rawTargetRecord
+      || (serverRec && '_target_record' in serverRec)
+      || (row?.sourceRecord && ('_target_record' in row.sourceRecord || '_mirrorData' in row.sourceRecord || '_externalData' in row.sourceRecord))
+      || (row && ('_target_record' in row || '_mirrorData' in row || '_externalData' in row))
+      || (row?.canonical_data && ('_target_record' in row.canonical_data || '_mirrorData' in row.canonical_data))
+      || (row?.sourceRecord?.canonical_data && ('_target_record' in row.sourceRecord.canonical_data || '_mirrorData' in row.sourceRecord.canonical_data))
+    );
+    const targetRecord = isEvaluated ? rawTargetRecord : null;
+    const targetDbName = (isServerRecMatch && serverRec?._target_db) || row?.sourceRecord?._target_db || row?._target_db || workflow.targetDbId || 'Target DB';
+    const targetTableName = (isServerRecMatch && serverRec?._target_table) || row?.sourceRecord?._target_table || row?._target_table || workflow.targetTable || 'transactions';
 
     const results = row.stepResults || {};
     const hasAnyResults = Object.keys(results).length > 0;
@@ -2320,6 +2789,10 @@ export default function ValidationOrchestratorWorkspace({
         } else if (res.resultStatus === 'PASS' || res.status === 'PASSED') {
           stepStatus = 'PASS';
         }
+      } else if (step.checkType === 'EXISTENCE_CHECK' && targetRecord) {
+        stepStatus = 'PASS';
+        actionTaken = step.onPassAction || 'CONTINUE';
+        detail = 'Record verified present in target database';
       }
 
       return {
@@ -2355,7 +2828,9 @@ export default function ValidationOrchestratorWorkspace({
       }
 
       // Check if this row was already evaluated in a conducted workflow from the database
-      const rowValStatus = isServerRecMatch ? serverRec._validation_status : (isRowWfMatch ? (row?.sourceRecord?._validation_status || row?._validation_status) : null);
+      const rowValStatus = isServerRecMatch
+        ? serverRec._validation_status
+        : (row?.sourceRecord?._validation_status || row?._validation_status || row?.canonical_data?._validation_status || null);
 
       if (rowValStatus === 'PASS' && (!workflow.targetTable || targetRecord)) {
         return {
@@ -2377,22 +2852,107 @@ export default function ValidationOrchestratorWorkspace({
       }
 
       if (rowValStatus === 'FAIL') {
-        const failMsg = formatValidationDetail(row?.sourceRecord?._validation_details, 'Validation Discrepancy');
-        return {
-          status: 'FAIL',
-          message: failMsg,
-          severity: 'CRITICAL',
-          failedStepCount: 1,
-          passedStepCount: Math.max(0, workflow.steps.length - 1),
-          totalStepCount: workflow.steps.length,
-          stepDetails: workflow.steps.map((s, idx) => ({
+        const valDetails = (isServerRecMatch && serverRec?._validation_details)
+          || row?._validation_details
+          || row?.canonical_data?._validation_details
+          || row?.sourceRecord?._validation_details
+          || row?.sourceRecord?.canonical_data?._validation_details
+          || {};
+
+        const cardinalityBreach = Boolean(valDetails.cardinality?.breach || valDetails.cardinality?.status === 'CARDINALITY_BREACH' || valDetails.cardinality?.reason);
+        const stageHistory = Array.isArray(valDetails.stageHistory) ? valDetails.stageHistory : [];
+        const failedStages = stageHistory.filter((st: any) => st && (st.status === 'FAIL' || st.status === 'ERROR'));
+        const tableRuleViolation = valDetails.tableRuleViolation || valDetails.tableRuleDetails;
+        const notFoundInTarget = valDetails.existence === 'NOT_FOUND_IN_TARGET_DB' || (!targetRecord && Boolean(workflow.targetTable));
+
+        const mappedSteps = workflow.steps.map((s, idx) => {
+          const sBoxType = (s as any).boxType;
+          // Check if this step matches a stage in stageHistory
+          const matchingStage = stageHistory.find((st: any) =>
+            isStepIdMatch(st.stageId, s.id) ||
+            (st.stageName && s.name && st.stageName.toLowerCase() === s.name.toLowerCase()) ||
+            (st.stageName && workflow.targetTable && st.stageName.toLowerCase() === workflow.targetTable.toLowerCase() && (s.checkType === 'EXISTENCE_CHECK' || sBoxType === 'INGESTION_SEARCH' || idx === 0))
+          );
+
+          // Check if step-level result exists in valDetails: e.g. valDetails['step-' + s.id]
+          const stepKey = Object.keys(valDetails).find(k => isStepIdMatch(k, s.id) || isStepIdMatch(k.replace(/^step-/, ''), s.id));
+          const stepObj = stepKey ? valDetails[stepKey] : null;
+
+          let sStatus: 'PASS' | 'FAIL' | 'PENDING' = 'PASS';
+          let sAction = 'CONTINUE';
+          let sDetail = 'Condition satisfied';
+
+          if (matchingStage) {
+            if (matchingStage.status === 'FAIL' || matchingStage.status === 'ERROR') {
+              sStatus = 'FAIL';
+              sAction = matchingStage.action || s.onFailAction || 'STOP';
+              sDetail = matchingStage.details?.reason || matchingStage.details?.message || formatValidationDetail(matchingStage.details, `${s.name} check failed`);
+            } else if (matchingStage.status === 'PASS') {
+              sStatus = 'PASS';
+              sAction = 'CONTINUE';
+              sDetail = 'Condition verified in external stage';
+            }
+          } else if (stepObj && typeof stepObj === 'object') {
+            if (stepObj.passed === false || stepObj.status === 'FAIL') {
+              sStatus = 'FAIL';
+              sAction = stepObj.action || s.onFailAction || 'STOP';
+              sDetail = stepObj.reason || stepObj.message || `${s.name} check failed`;
+            } else if (stepObj.passed === true || stepObj.status === 'PASS') {
+              sStatus = 'PASS';
+              sAction = 'CONTINUE';
+              sDetail = 'Condition verified';
+            }
+          } else if (cardinalityBreach && (s.checkType === 'EXISTENCE_CHECK' || sBoxType === 'INGESTION_SEARCH' || idx === 0 || s.name.toLowerCase().includes('cardinality') || s.name.toLowerCase().includes('search'))) {
+            sStatus = 'FAIL';
+            sAction = s.onFailAction || 'STOP';
+            sDetail = valDetails.cardinality?.reason || `Cardinality breach: found ${valDetails.cardinality?.count || 'multiple'} matching records (Policy: ${valDetails.cardinality?.policy || 'STRICT_SINGLE'})`;
+          } else if (tableRuleViolation && (s.checkType === 'DUAL_SOURCE_COMPARISON' || s.checkType === 'FIELD_COMPARATOR' || sBoxType === 'RECONCILIATION' || sBoxType === 'CONDITION_CHECK' || s.name.toLowerCase().includes('duplicate') || s.name.toLowerCase().includes('rule'))) {
+            sStatus = 'FAIL';
+            sAction = s.onFailAction || 'FLAG';
+            sDetail = typeof tableRuleViolation === 'string' ? tableRuleViolation : (tableRuleViolation.message || tableRuleViolation.title || 'Table column rule violation');
+          } else if (notFoundInTarget && (s.checkType === 'EXISTENCE_CHECK' || sBoxType === 'INGESTION_SEARCH' || idx === 0)) {
+            sStatus = 'FAIL';
+            sAction = s.onFailAction || 'STOP';
+            sDetail = valDetails.reason || `Record not found in target database (${targetDbName}.${targetTableName})`;
+          } else if (failedStages.length > 0 && idx > 0) {
+            const hasPriorStop = stageHistory.some((st: any) => st && (st.status === 'FAIL' || st.status === 'ERROR') && st.action === 'STOP');
+            if (hasPriorStop) {
+              sStatus = 'PENDING';
+              sAction = 'STOP';
+              sDetail = 'Skipped due to upstream stage termination';
+            }
+          }
+
+          return {
             stepId: s.id,
             stepName: s.name,
             checkType: s.checkType,
-            status: idx === 0 ? 'FAIL' : 'PASS',
-            actionTaken: idx === 0 ? 'FLAG' : 'CONTINUE',
-            detail: idx === 0 ? failMsg : 'Condition satisfied'
-          }))
+            status: sStatus,
+            actionTaken: sAction,
+            detail: formatValidationDetail(sDetail)
+          };
+        });
+
+        // Ensure at least one step is marked FAIL if row is FAIL
+        const failingSteps = mappedSteps.filter(s => s.status === 'FAIL');
+        if (failingSteps.length === 0 && mappedSteps.length > 0) {
+          mappedSteps[0].status = 'FAIL';
+          mappedSteps[0].actionTaken = mappedSteps[0].actionTaken || 'STOP';
+          mappedSteps[0].detail = formatValidationDetail(valDetails, 'Validation Discrepancy');
+        }
+
+        const activeFailing = mappedSteps.find(s => s.status === 'FAIL') || mappedSteps[0];
+        const failMsg = activeFailing?.detail || formatValidationDetail(valDetails, 'Validation Discrepancy');
+
+        return {
+          status: 'FAIL',
+          message: failMsg,
+          matchedRuleName: activeFailing?.stepName || workflow.steps[0]?.name || 'Validation Rule',
+          severity: 'CRITICAL',
+          failedStepCount: Math.max(1, mappedSteps.filter(s => s.status === 'FAIL').length),
+          passedStepCount: mappedSteps.filter(s => s.status === 'PASS').length,
+          totalStepCount: workflow.steps.length,
+          stepDetails: mappedSteps
         };
       }
 
@@ -2408,50 +2968,48 @@ export default function ValidationOrchestratorWorkspace({
 
     const rowValStatus = isServerRecMatch
       ? serverRec._validation_status
-      : (isRowWfMatch ? (row?.sourceRecord?._validation_status || row?._validation_status) : null);
+      : (row?.sourceRecord?._validation_status || row?._validation_status || row?.canonical_data?._validation_status || null);
 
     const failedStepCount = stepDetails.filter(s => s.status === 'FAIL').length;
     const passedStepCount = stepDetails.filter(s => s.status === 'PASS').length;
     const aggregations = workflow.messageAggregations || [];
 
-    // 1. Evaluate FAIL rules first (only if overall workflow did NOT conclude with a PASS from a negative check branch)
-    if (rowValStatus !== 'PASS') {
-      const failRules = aggregations.filter(r => r.type === 'FAIL');
-      for (const rule of failRules) {
-        const targetStepIds = rule.validationStepIds || [];
-        if (targetStepIds.length === 0) continue;
+    // 1. Evaluate FAIL rules first
+    const failRules = aggregations.filter(r => r.type === 'FAIL');
+    for (const rule of failRules) {
+      const targetStepIds = rule.validationStepIds || [];
+      if (targetStepIds.length === 0) continue;
 
-        const attachedSteps = stepDetails.filter(s =>
-          targetStepIds.some(tid => isStepIdMatch(s.stepId, tid))
-        );
-        const failedAttached = attachedSteps.filter(s => s.status === 'FAIL');
+      const attachedSteps = stepDetails.filter(s =>
+        targetStepIds.some(tid => isStepIdMatch(s.stepId, tid))
+      );
+      const failedAttached = attachedSteps.filter(s => s.status === 'FAIL');
 
-        const operator = rule.operator || 'ANY';
-        if (operator === 'ANY' && failedAttached.length > 0) {
-          return {
-            status: 'FAIL',
-            message: rule.message || rule.name,
-            matchedRuleName: rule.name,
-            severity: rule.severity || 'CRITICAL',
-            operator,
-            failedStepCount,
-            passedStepCount,
-            totalStepCount: workflow.steps.length,
-            stepDetails
-          };
-        } else if (operator === 'ALL' && failedAttached.length === targetStepIds.length && failedAttached.length > 0) {
-          return {
-            status: 'FAIL',
-            message: rule.message || rule.name,
-            matchedRuleName: rule.name,
-            severity: rule.severity || 'CRITICAL',
-            operator,
-            failedStepCount,
-            passedStepCount,
-            totalStepCount: workflow.steps.length,
-            stepDetails
-          };
-        }
+      const operator = rule.operator || 'ANY';
+      if (operator === 'ANY' && failedAttached.length > 0) {
+        return {
+          status: 'FAIL',
+          message: rule.message || rule.name,
+          matchedRuleName: rule.name,
+          severity: rule.severity || 'CRITICAL',
+          operator,
+          failedStepCount,
+          passedStepCount,
+          totalStepCount: workflow.steps.length,
+          stepDetails
+        };
+      } else if (operator === 'ALL' && failedAttached.length === targetStepIds.length && failedAttached.length > 0) {
+        return {
+          status: 'FAIL',
+          message: rule.message || rule.name,
+          matchedRuleName: rule.name,
+          severity: rule.severity || 'CRITICAL',
+          operator,
+          failedStepCount,
+          passedStepCount,
+          totalStepCount: workflow.steps.length,
+          stepDetails
+        };
       }
     }
 
@@ -2496,21 +3054,11 @@ export default function ValidationOrchestratorWorkspace({
 
     // 3. Fallback when no specific aggregation matched
     if (failedStepCount > 0) {
-      if (rowValStatus === 'PASS') {
-        return {
-          status: 'PASS',
-          message: `Passed via Negative Check Branch (${passedStepCount} Passed, ${failedStepCount} Failed)`,
-          severity: 'RECONCILED',
-          failedStepCount,
-          passedStepCount,
-          totalStepCount: workflow.steps.length,
-          stepDetails
-        };
-      }
-
+      const firstFailing = stepDetails.find(s => s.status === 'FAIL');
       return {
         status: 'FAIL',
-        message: `${failedStepCount} of ${workflow.steps.length} Checks Failed`,
+        message: firstFailing?.detail || `${failedStepCount} of ${workflow.steps.length} Checks Failed`,
+        matchedRuleName: firstFailing?.stepName || workflow.steps[0]?.name,
         severity: 'CRITICAL',
         failedStepCount,
         passedStepCount,
@@ -2537,26 +3085,13 @@ export default function ValidationOrchestratorWorkspace({
       || row.canonical_data?.reconciliation_status 
       || row.reconciliation_status;
 
-    const returnedData = row.returned_data 
-      || row.sourceRecord?.returned_data 
-      || row.canonical_data?.returned_data;
-
-    let legCount = 0;
-    if (returnedData && typeof returnedData === 'object') {
-      const wfLegs = workflow?.id ? returnedData[workflow.id] : null;
-      if (wfLegs && typeof wfLegs === 'object') {
-        const tableLegs = Object.values(wfLegs);
-        for (const t of tableLegs) {
-          if (Array.isArray(t)) legCount += t.length;
-          else if (t) legCount += 1;
-        }
-      }
-    }
+    const returnedLegs = extractRowLegs(row, workflow);
+    const legCount = returnedLegs.length;
 
     if (outcome.status === 'PENDING') {
       return (
         <span
-          onClick={() => { setDrilldownLegIndex(0); setOutcomeDrilldownRow(row); }}
+          onClick={() => { setDrilldownLegIndex(-1); setOutcomeDrilldownRow(row); }}
           className="px-2 py-0.5 rounded text-[10px] font-mono text-slate-400 bg-slate-100 border border-slate-200 cursor-pointer hover:bg-slate-200 transition"
           title="Click to inspect validation steps"
         >
@@ -2570,7 +3105,7 @@ export default function ValidationOrchestratorWorkspace({
 
     return (
       <div
-        onClick={() => { setDrilldownLegIndex(0); setOutcomeDrilldownRow(row); }}
+        onClick={() => { setDrilldownLegIndex(-1); setOutcomeDrilldownRow(row); }}
         className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border text-xs font-semibold cursor-pointer transition shadow-2xs hover:shadow-xs select-none ${isFail
             ? isCritical
               ? 'bg-rose-50 border-rose-300 text-rose-800 hover:bg-rose-100'
@@ -2701,7 +3236,7 @@ export default function ValidationOrchestratorWorkspace({
     const textContent: string = activeAtt.parsedData?.textContent || activeAtt.parsedText || '';
 
     return (
-      <div className="bg-slate-50 min-h-[520px] max-h-[calc(100vh-210px)] flex flex-col font-sans">
+      <div className="bg-slate-50 flex-1 min-h-0 flex flex-col font-sans overflow-hidden">
         {/* Top File Selection Bar & Controls */}
         <div className="bg-white border-b border-slate-200 px-4 py-2.5 flex items-center justify-between gap-3 overflow-x-auto shadow-2xs">
           <div className="flex items-center gap-2 overflow-x-auto py-0.5">
@@ -3737,7 +4272,7 @@ export default function ValidationOrchestratorWorkspace({
       {activeSheetTab === 'attachments' ? (
         renderAttachmentInspector()
       ) : (
-        <div className="overflow-x-auto max-h-[calc(100vh-210px)] min-h-[520px] relative">
+        <div className="overflow-x-auto flex-1 min-h-0 relative">
           <table className="w-full text-left text-xs border-collapse border border-slate-300">
           <thead>
             {/* Header Row: Clean Abstracted Labels with Excel-Style Filter/Sort Menu */}
@@ -4241,15 +4776,40 @@ export default function ValidationOrchestratorWorkspace({
                 const rowIdx = (currentPage - 1) * pageSize + idx;
                 const isSelectedRow = selectedCell.rowIdx === rowIdx;
 
+                const rowLegs = extractRowLegs(row, activeWorkflow);
+                const isRowExpanded = expandedRowIds.has(row.rowId || String(rowIdx));
+                const totalTableColumns = visibleDatasetColumns.length + (activeWorkflow && !hiddenColumns.has('workflow_outcome') ? 1 : 0) + visibleReportColumns.length + 3;
+
                 return (
+                  <React.Fragment key={row.rowId || rowIdx}>
                   <tr
                     key={row.rowId}
                     className={`transition-colors ${isSelectedRow ? 'bg-emerald-50/30' : 'hover:bg-blue-50/20'
                       }`}
                   >
-                    {/* Row Index */}
+                    {/* Row Index with Multi-Leg Expand Button */}
                     <td className="p-1.5 text-center font-mono text-[11px] text-slate-500 bg-[#f8f9fa] border-r border-b border-slate-300 select-none font-semibold">
-                      {rowIdx + 1}
+                      <div className="flex items-center justify-center gap-1">
+                        <span>{rowIdx + 1}</span>
+                        {rowLegs.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              toggleRowExpanded(row.rowId || String(rowIdx));
+                            }}
+                            className={`inline-flex items-center gap-0.5 px-1 py-0.5 rounded text-[9px] font-mono font-bold transition cursor-pointer select-none ${
+                              isRowExpanded
+                                ? 'bg-indigo-600 text-white shadow-xs'
+                                : 'bg-indigo-50 text-indigo-700 hover:bg-indigo-100 border border-indigo-200'
+                            }`}
+                            title={isRowExpanded ? "Collapse multi-leg external coordinates" : `Expand ${rowLegs.length} external ledger legs`}
+                          >
+                            {isRowExpanded ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
+                            <span>{rowLegs.length}L</span>
+                          </button>
+                        )}
+                      </div>
                     </td>
 
                     {/* Data Cells */}
@@ -4338,7 +4898,7 @@ export default function ValidationOrchestratorWorkspace({
                         >
                           {reportVal ? (
                             <span className="inline-flex items-center gap-1 bg-purple-100 text-purple-900 px-1.5 py-0.5 rounded border border-purple-200 text-[11px]">
-                              {typeof reportVal === 'object' ? JSON.stringify(reportVal) : String(reportVal)}
+                              {typeof reportVal === 'object' ? formatValidationDetail(reportVal) : String(reportVal)}
                             </span>
                           ) : (
                             <span className="text-slate-300 italic">—</span>
@@ -4353,7 +4913,10 @@ export default function ValidationOrchestratorWorkspace({
                         <div className="flex items-center justify-center gap-1">
                           <button
                             type="button"
-                            onClick={() => setInspectingRow(row)}
+                            onClick={() => {
+                              setInspectLegIndex(-1);
+                              setInspectingRow(row);
+                            }}
                             className="px-2 py-0.5 text-blue-700 hover:bg-blue-50 rounded text-[10px] font-semibold border border-blue-200 transition cursor-pointer"
                           >
                             Trace DB
@@ -4383,7 +4946,10 @@ export default function ValidationOrchestratorWorkspace({
                         <div className="flex items-center justify-center gap-1">
                           <button
                             type="button"
-                            onClick={() => setInspectingRow(row)}
+                            onClick={() => {
+                              setInspectLegIndex(-1);
+                              setInspectingRow(row);
+                            }}
                             className="px-2 py-0.5 text-blue-700 hover:bg-blue-50 rounded text-[10px] font-semibold border border-blue-200 transition cursor-pointer"
                           >
                             Trace DB
@@ -4432,6 +4998,175 @@ export default function ValidationOrchestratorWorkspace({
                       )}
                     </td>
                   </tr>
+
+                  {/* Multi-Leg Expandable Accordion Subtable */}
+                  {isRowExpanded && rowLegs.length > 0 && (
+                    <tr key={`expanded-${row.rowId || rowIdx}`} className="bg-slate-50/95 border-b-2 border-indigo-300 animate-in fade-in-50">
+                      <td colSpan={totalTableColumns} className="p-3 pl-10 bg-gradient-to-r from-indigo-50/50 via-purple-50/20 to-slate-50/60 font-sans">
+                        <div className="border border-indigo-200/90 rounded-xl bg-white shadow-xs overflow-hidden space-y-2.5 p-3.5">
+                          {/* Header Bar */}
+                          <div className="flex flex-wrap items-center justify-between gap-2 pb-2 border-b border-slate-100">
+                            <div className="flex items-center gap-2">
+                              <div className="p-1.5 rounded-lg bg-indigo-100 text-indigo-700">
+                                <Layers size={15} />
+                              </div>
+                              <div>
+                                <div className="flex items-center gap-2">
+                                  <span className="font-bold text-xs text-slate-900">
+                                    External Ledger Multi-Leg Breakdown
+                                  </span>
+                                  <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-indigo-100 text-indigo-800 border border-indigo-200">
+                                    {rowLegs.length} Legs Detected
+                                  </span>
+                                  <span className="text-[11px] font-mono text-slate-500">
+                                    Target Table: <strong className="text-slate-800">{activeWorkflow?.targetTable || 'tran_log_tab'}</strong>
+                                  </span>
+                                </div>
+                                <p className="text-[10px] text-slate-500 mt-0.5">
+                                  Full mirror coordinates aggregated via PostgreSQL JSONB. Reversal records (<code className="text-purple-700 font-bold font-mono">RVS</code>) and active settlement legs are tracked independently.
+                                </p>
+                              </div>
+                            </div>
+
+                            <div className="flex items-center gap-2">
+                              {(() => {
+                                const getLegFieldVal = (leg: any, f: string) => {
+                                  const obj = leg?.payload || leg || {};
+                                  if (obj[f] !== undefined && obj[f] !== null) return obj[f];
+                                  const lf = f.toLowerCase();
+                                  for (const k of Object.keys(obj)) {
+                                    if (k.toLowerCase() === lf) return obj[k];
+                                  }
+                                  return null;
+                                };
+                                const reversalLegs = rowLegs.filter(l => String(getLegFieldVal(l, 'PROC_NAME') || '').toUpperCase() === 'RVS');
+                                const settlementLegs = rowLegs.filter(l => String(getLegFieldVal(l, 'PROC_NAME') || '').toUpperCase() !== 'RVS');
+                                const isDupBreach = settlementLegs.length > 1;
+
+                                return (
+                                  <div className="flex items-center gap-1.5">
+                                    <span className="px-2 py-0.5 rounded text-[10px] font-mono font-semibold bg-slate-100 text-slate-700 border border-slate-200">
+                                      {settlementLegs.length} Settlement &bull; {reversalLegs.length} Reversals (RVS)
+                                    </span>
+                                    {isDupBreach ? (
+                                      <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-rose-100 text-rose-800 border border-rose-300 flex items-center gap-1">
+                                        <AlertTriangle size={10} /> Duplicate Violation ({settlementLegs.length} &gt; 1)
+                                      </span>
+                                    ) : (
+                                      <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-emerald-100 text-emerald-800 border border-emerald-300 flex items-center gap-1">
+                                        <CheckCircle2 size={10} /> Unique Leg Verified
+                                      </span>
+                                    )}
+                                  </div>
+                                );
+                              })()}
+                            </div>
+                          </div>
+
+                          {/* Sub-table */}
+                          <div className="overflow-x-auto rounded-lg border border-slate-200">
+                            <table className="w-full text-left text-xs font-mono">
+                              <thead>
+                                <tr className="bg-slate-50 text-slate-600 border-b border-slate-200 text-[10px] uppercase font-bold tracking-wider">
+                                  <th className="py-2 px-3 w-14 text-center">Leg #</th>
+                                  <th className="py-2 px-3">BO_TYPE</th>
+                                  <th className="py-2 px-3">PROC_NAME</th>
+                                  <th className="py-2 px-3">Amount</th>
+                                  <th className="py-2 px-3">TR_GROUP_ID</th>
+                                  <th className="py-2 px-3">FE_UTRNNO</th>
+                                  <th className="py-2 px-3">Value Date</th>
+                                  <th className="py-2 px-3">Institutions</th>
+                                  <th className="py-2 px-3">Accounts</th>
+                                  <th className="py-2 px-3 text-center">Cross-Check</th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-slate-100 text-[11px]">
+                                {rowLegs.map((leg, lIdx) => {
+                                  const legObj = leg?.payload || leg || {};
+                                  const getF = (f: string) => {
+                                    if (legObj[f] !== undefined && legObj[f] !== null) return legObj[f];
+                                    const lf = f.toLowerCase();
+                                    for (const k of Object.keys(legObj)) {
+                                      if (k.toLowerCase() === lf) return legObj[k];
+                                    }
+                                    return null;
+                                  };
+
+                                  const boType = getF('BO_TYPE') || '-';
+                                  const procName = getF('PROC_NAME') || '-';
+                                  const isRvs = String(procName).toUpperCase() === 'RVS';
+                                  const amnt = getF('AMNT1') || getF('amount') || '-';
+                                  const trGroupId = getF('TR_GROUP_ID') || '-';
+                                  const feUtrnno = getF('FE_UTRNNO') || getF('utrnno') || '-';
+                                  const valDate = getF('VALUE_DATE') || getF('value_date') || '-';
+                                  const inst1 = getF('INSTITUTION1') || '-';
+                                  const inst2 = getF('INSTITUTION2') || '-';
+                                  const acct1 = getF('ACCT_NUM1') || '-';
+                                  const acct2 = getF('ACCT_NUM2') || '-';
+
+                                  return (
+                                    <tr key={`subleg-${lIdx}`} className={`hover:bg-slate-50/80 transition ${isRvs ? 'bg-amber-50/20' : ''}`}>
+                                      <td className="py-2 px-3 text-center font-bold text-slate-500">
+                                        Leg #{lIdx + 1}
+                                      </td>
+                                      <td className="py-2 px-3 font-semibold text-slate-800">
+                                        <span className="px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 border border-slate-200 text-[10px]">
+                                          {String(boType)}
+                                        </span>
+                                      </td>
+                                      <td className="py-2 px-3 font-semibold">
+                                        {isRvs ? (
+                                          <span className="px-1.5 py-0.5 rounded bg-amber-100 text-amber-900 border border-amber-300 text-[10px] font-bold">
+                                            RVS (Reversal)
+                                          </span>
+                                        ) : (
+                                          <span className="px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-900 border border-emerald-300 text-[10px] font-bold">
+                                            {procName === '-' ? 'PRIMARY' : String(procName)}
+                                          </span>
+                                        )}
+                                      </td>
+                                      <td className="py-2 px-3 font-bold text-emerald-800">
+                                        {String(amnt)}
+                                      </td>
+                                      <td className="py-2 px-3 font-semibold text-indigo-900">
+                                        {String(trGroupId)}
+                                      </td>
+                                      <td className="py-2 px-3 text-slate-600 truncate max-w-[140px]" title={String(feUtrnno)}>
+                                        {String(feUtrnno)}
+                                      </td>
+                                      <td className="py-2 px-3 text-slate-500 text-[10px]">
+                                        {String(valDate).slice(0, 19).replace('T', ' ')}
+                                      </td>
+                                      <td className="py-2 px-3 text-slate-600 text-[10px] truncate max-w-[140px]" title={`${inst1} ➔ ${inst2}`}>
+                                        {inst1} ➔ {inst2}
+                                      </td>
+                                      <td className="py-2 px-3 text-slate-500 text-[10px] truncate max-w-[140px]" title={`${acct1} ➔ ${acct2}`}>
+                                        {acct1} / {acct2}
+                                      </td>
+                                      <td className="py-2 px-3 text-center">
+                                        <button
+                                          type="button"
+                                          onClick={() => {
+                                            setDrilldownLegIndex(lIdx);
+                                            setOutcomeDrilldownRow(row);
+                                          }}
+                                          className="px-2 py-0.5 rounded text-[10px] font-bold font-sans bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200 transition cursor-pointer"
+                                          title="Inspect this specific leg in manual cross-check modal"
+                                        >
+                                          Inspect
+                                        </button>
+                                      </td>
+                                    </tr>
+                                  );
+                                })}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                  </React.Fragment>
                 );
               })
             )}
@@ -4561,7 +5296,9 @@ export default function ValidationOrchestratorWorkspace({
       </div>
 
       {/* Workflow Outcome Drilldown Modal */}
-      {outcomeDrilldownRow && activeWorkflow && (() => {
+      {outcomeDrilldownRow && activeWorkflow && (
+        <ErrorBoundary fallbackTitle="Outcome Drilldown Error" fallbackMessage="Could not render outcome drilldown record view.">
+          {(() => {
         const evalOutcome = evaluateWorkflowOutcome(outcomeDrilldownRow, activeWorkflow);
         const inputRecord = outcomeDrilldownRow.sourceRecord || outcomeDrilldownRow.canonical_data || outcomeDrilldownRow || {};
 
@@ -4611,8 +5348,8 @@ export default function ValidationOrchestratorWorkspace({
           outcomeDrilldownRow.canonical_data?._validation_workflow_id === activeWorkflow.id
         );
 
-        const targetDbName = (isServerRecMatch && serverRec?._target_db) || (isRowWfMatch && outcomeDrilldownRow._target_db) || (isRowWfMatch && outcomeDrilldownRow.sourceRecord?._target_db) || activeWorkflow.targetDbId || 'Target Database';
-        const targetTableName = (isServerRecMatch && serverRec?._target_table) || (isRowWfMatch && outcomeDrilldownRow._target_table) || (isRowWfMatch && outcomeDrilldownRow.sourceRecord?._target_table) || activeWorkflow.targetTable || 'transactions';
+        const targetDbName = (isServerRecMatch && serverRec?._target_db) || outcomeDrilldownRow._target_db || outcomeDrilldownRow.sourceRecord?._target_db || activeWorkflow.targetDbId || 'Target Database';
+        const targetTableName = (isServerRecMatch && serverRec?._target_table) || outcomeDrilldownRow._target_table || outcomeDrilldownRow.sourceRecord?._target_table || activeWorkflow.targetTable || 'transactions';
 
         // Extract multi-leg array from returned_data in task_dataset_transactions
         const modalReturnedData = outcomeDrilldownRow.returned_data
@@ -4622,26 +5359,39 @@ export default function ValidationOrchestratorWorkspace({
           || {};
         const modalWfData = modalReturnedData[activeWorkflow.id] || modalReturnedData;
         const modalRawLegs = modalWfData[targetTableName] || modalWfData[activeWorkflow.targetTable || ''] || modalReturnedData[targetTableName] || modalReturnedData[activeWorkflow.targetTable || ''];
-        const returnedLegs: any[] = Array.isArray(modalRawLegs) ? modalRawLegs : (modalRawLegs ? [modalRawLegs] : []);
+        const fallbackLegs: any[] = Array.isArray(modalRawLegs) ? modalRawLegs : (modalRawLegs ? [modalRawLegs] : []);
+        const extractedLegs = extractRowLegs(outcomeDrilldownRow, activeWorkflow);
+        const returnedLegs: any[] = extractedLegs.length > 0 ? extractedLegs : fallbackLegs;
 
-        const targetRecord = (returnedLegs.length > 0 && returnedLegs[drilldownLegIndex])
-          ? returnedLegs[drilldownLegIndex]
-          : ((isServerRecMatch ? serverRec?._target_record : null)
-            ?? (isRowWfMatch ? outcomeDrilldownRow._target_record : null)
-            ?? (isRowWfMatch ? outcomeDrilldownRow.sourceRecord?._target_record : null)
-            ?? (isRowWfMatch ? outcomeDrilldownRow.canonical_data?._target_record : null)
-            ?? (isRowWfMatch ? outcomeDrilldownRow.sourceRecord?.canonical_data?._target_record : null)
-            ?? null);
+        const isNotFoundInDb = Boolean(
+          outcomeDrilldownRow._validation_details?.existence === 'NOT_FOUND_IN_TARGET_DB' ||
+          outcomeDrilldownRow.canonical_data?._validation_details?.existence === 'NOT_FOUND_IN_TARGET_DB' ||
+          outcomeDrilldownRow.sourceRecord?._validation_details?.existence === 'NOT_FOUND_IN_TARGET_DB' ||
+          (isServerRecMatch && serverRec?._validation_details?.existence === 'NOT_FOUND_IN_TARGET_DB') ||
+          (returnedLegs.length === 0 && (outcomeDrilldownRow.reconciliation_status === 'FAIL' || outcomeDrilldownRow.canonical_data?.reconciliation_status === 'FAIL'))
+        );
 
-        const getCaseInsensitiveVal = (obj: any, key: string) => {
-          if (!obj || typeof obj !== 'object' || !key) return undefined;
-          if (obj[key] !== undefined && obj[key] !== null) return obj[key];
-          const lKey = key.toLowerCase();
-          for (const k of Object.keys(obj)) {
-            if (k.toLowerCase() === lKey) return obj[k];
-          }
-          return undefined;
-        };
+        // Selected Leg Candidate (respects drilldownLegIndex when an individual leg is picked)
+        const selectedLegCandidate = (drilldownLegIndex >= 0 && returnedLegs[drilldownLegIndex])
+          ? (returnedLegs[drilldownLegIndex]?.payload || returnedLegs[drilldownLegIndex])
+          : null;
+
+        const rawTargetCandidate = selectedLegCandidate
+          ?? ((isServerRecMatch && serverRec?._target_record)
+            ?? serverRec?._target_record
+            ?? outcomeDrilldownRow._target_record
+            ?? outcomeDrilldownRow.sourceRecord?._target_record
+            ?? outcomeDrilldownRow.canonical_data?._target_record
+            ?? outcomeDrilldownRow.sourceRecord?.canonical_data?._target_record
+            ?? outcomeDrilldownRow._mirrorData
+            ?? outcomeDrilldownRow.sourceRecord?._mirrorData
+            ?? outcomeDrilldownRow._externalData
+            ?? outcomeDrilldownRow.sourceRecord?._externalData
+            ?? (returnedLegs.length > 0 ? (returnedLegs[0]?.payload || returnedLegs[0]) : null));
+
+        const targetRecord = (isNotFoundInDb || !rawTargetCandidate || (typeof rawTargetCandidate === 'object' && Object.keys(rawTargetCandidate).length === 0))
+          ? null
+          : rawTargetCandidate;
 
         // Format user-configured query parameters for readable display
         const queryParamPairs = activeModalParams
@@ -4652,10 +5402,289 @@ export default function ValidationOrchestratorWorkspace({
           ? queryParamPairs.map(qp => `${qp.param}: ${qp.val}`).join(' | ')
           : (outcomeDrilldownRow.rowId || 'Record');
 
-        const formatVal = (v: any) => {
-          if (v === null || v === undefined || v === '') return <span className="text-slate-400 italic">null</span>;
-          if (typeof v === 'object') return JSON.stringify(v);
-          return String(v);
+        // Discover DB column configurations attached to this workflow or its target table
+        const rowValDetails = (isServerRecMatch && serverRec?._validation_details)
+          || outcomeDrilldownRow._validation_details
+          || outcomeDrilldownRow.sourceRecord?._validation_details
+          || outcomeDrilldownRow.canonical_data?._validation_details
+          || {};
+
+        const activeDbConfigs: DatabaseColumnConfiguration[] = [];
+        const seenDbConfigIds = new Set<string>();
+
+        // 1. Attached to active workflow
+        if (Array.isArray(activeWorkflow.attachedDbConfigIds)) {
+          activeWorkflow.attachedDbConfigIds.forEach(id => {
+            const found = availableColumnConfigs.find(c => c.id === id);
+            if (found && !seenDbConfigIds.has(found.id)) {
+              seenDbConfigIds.add(found.id);
+              activeDbConfigs.push(found);
+            }
+          });
+        }
+
+        // 2. Attached to steps
+        if (Array.isArray(activeWorkflow.steps)) {
+          activeWorkflow.steps.forEach(s => {
+            if (Array.isArray(s.columnConfigurations)) {
+              s.columnConfigurations.forEach(c => {
+                if (c && !seenDbConfigIds.has(c.id)) {
+                  seenDbConfigIds.add(c.id);
+                  activeDbConfigs.push(c);
+                }
+              });
+            }
+            if (Array.isArray(s.attachedDbConfigIds)) {
+              s.attachedDbConfigIds.forEach(id => {
+                const found = availableColumnConfigs.find(c => c.id === id);
+                if (found && !seenDbConfigIds.has(found.id)) {
+                  seenDbConfigIds.add(found.id);
+                  activeDbConfigs.push(found);
+                }
+              });
+            }
+          });
+        }
+
+        // 3. Matched by target table from availableColumnConfigs
+        if (targetTableName) {
+          const tblLower = targetTableName.toLowerCase();
+          availableColumnConfigs.forEach(c => {
+            if (c.tableName && c.tableName.toLowerCase() === tblLower && !seenDbConfigIds.has(c.id)) {
+              if (!activeWorkflow.targetDbId || c.dbId === activeWorkflow.targetDbId) {
+                seenDbConfigIds.add(c.id);
+                activeDbConfigs.push(c);
+              }
+            }
+          });
+        }
+
+        // 4. Synthesized DB Config if tableRuleDetails or tableRuleViolation is present from server
+        const tableRuleInfo = rowValDetails.tableRuleDetails || rowValDetails.tableRuleViolation;
+        if (tableRuleInfo && typeof tableRuleInfo === 'object' && tableRuleInfo.rule) {
+          const synthId = `server-rule-${tableRuleInfo.rule}`;
+          if (!seenDbConfigIds.has(synthId) && !activeDbConfigs.some(c => c.name === tableRuleInfo.rule)) {
+            seenDbConfigIds.add(synthId);
+            activeDbConfigs.push({
+              id: synthId,
+              name: tableRuleInfo.rule,
+              dbId: targetDbName,
+              tableName: targetTableName,
+              ruleType: (tableRuleInfo.ruleType as any) || 'DUPLICATE_CHECK',
+              description: tableRuleInfo.message || 'Evaluated Table Validation Rule',
+              columns: tableRuleInfo.identifierColumn ? [{ columnName: tableRuleInfo.identifierColumn, priority: 1 }] : [],
+              violationAction: (tableRuleInfo.action as any) || 'FLAG',
+              severity: 'CRITICAL',
+              isActive: true,
+              filterConditions: tableRuleInfo.filterConditions || [],
+              aggregationRules: tableRuleInfo.threshold ? [{ function: 'COUNT', operator: '<=', value: tableRuleInfo.threshold }] : []
+            });
+          }
+        }
+
+        // Evaluate each DB configuration against the transaction
+        const evaluatedDbConfigs = activeDbConfigs.map(cfg => {
+          const tableViolation = rowValDetails.tableRuleViolation || rowValDetails.tableRuleDetails;
+          const isServerViolation = Boolean(
+            tableViolation && (
+              (typeof tableViolation === 'string' && tableViolation.includes(cfg.name)) ||
+              (typeof tableViolation === 'object' && (tableViolation.rule === cfg.name || tableViolation.ruleType === cfg.ruleType || tableViolation.stepId === cfg.id))
+            )
+          );
+
+          if (isServerViolation) {
+            const violationMsg = typeof tableViolation === 'string'
+              ? tableViolation
+              : (tableViolation.message || cfg.violationMessage || `Rule violation detected on table ${cfg.tableName}`);
+            return {
+              config: cfg,
+              status: 'FAIL' as const,
+              action: cfg.violationAction || 'FLAG',
+              verdictMessage: violationMsg,
+              evaluatedDetails: typeof tableViolation === 'object' ? tableViolation : { message: violationMsg },
+              evaluatedLegs: (typeof tableViolation === 'object' && Array.isArray(tableViolation.matchingLegs)) ? tableViolation.matchingLegs : returnedLegs
+            };
+          }
+
+          if (cfg.ruleType === 'DUPLICATE_CHECK' || cfg.ruleType === 'UNIQUE_CONSTRAINT') {
+            let filtered = returnedLegs;
+            if (Array.isArray(cfg.filterConditions) && cfg.filterConditions.length > 0) {
+              filtered = returnedLegs.filter(leg => {
+                const legObj = leg?.payload || leg || {};
+                return cfg.filterConditions!.every(fc => {
+                  const rawVal = getCaseInsensitiveVal(legObj, fc.columnName);
+                  const sVal = rawVal !== undefined && rawVal !== null ? String(rawVal).trim().toLowerCase() : '';
+                  const condVal = String(fc.value ?? '').trim().toLowerCase();
+                  switch (fc.operator) {
+                    case '=': return sVal === condVal;
+                    case '!=': return sVal !== condVal;
+                    case 'LIKE': return sVal.includes(condVal);
+                    case 'STARTS_WITH': return sVal.startsWith(condVal);
+                    case '>': return Number(sVal) > Number(condVal);
+                    case '>=': return Number(sVal) >= Number(condVal);
+                    case '<': return Number(sVal) < Number(condVal);
+                    case '<=': return Number(sVal) <= Number(condVal);
+                    case 'IN': return condVal.split(',').map(s => s.trim()).includes(sVal);
+                    case 'NOT_IN': return !condVal.split(',').map(s => s.trim()).includes(sVal);
+                    default: return sVal === condVal;
+                  }
+                });
+              });
+            }
+
+            const op = String(cfg.aggregationRules?.[0]?.operator || '>').trim();
+            const threshold = Number(cfg.aggregationRules?.[0]?.value ?? 1);
+            const count = filtered.length;
+
+            let isViolation = false;
+            if (count <= 1) {
+              if ((op === '=' || op === '==') && threshold === 1) isViolation = false;
+              else if (op === '>' || op === '>=') isViolation = false;
+              else if (count === 0 && (op === '=' || op === '==') && threshold > 0) isViolation = false;
+            } else {
+              if (op === '=' || op === '==') isViolation = (count !== threshold);
+              else if (op === '>') isViolation = (count > threshold);
+              else if (op === '>=') isViolation = (count >= threshold);
+              else isViolation = (count > 1);
+            }
+
+            if (isViolation) {
+              return {
+                config: cfg,
+                status: 'FAIL' as const,
+                action: cfg.violationAction || 'FLAG',
+                verdictMessage: cfg.violationMessage || `Duplicate check breach: detected ${count} matching legs exceeding threshold ${threshold} for table ${cfg.tableName}.`,
+                evaluatedDetails: {
+                  filterConditions: cfg.filterConditions,
+                  evaluatedCount: count,
+                  threshold,
+                  totalLegsCount: returnedLegs.length
+                },
+                evaluatedLegs: filtered
+              };
+            } else {
+              return {
+                config: cfg,
+                status: (returnedLegs.length > 0 ? 'PASS' : 'PENDING') as 'PASS' | 'PENDING',
+                action: 'CONTINUE' as const,
+                verdictMessage: returnedLegs.length > 0
+                  ? `Condition satisfied: ${count} matching leg(s) evaluated within threshold (${threshold})`
+                  : 'Pending evaluation against target records',
+                evaluatedDetails: {
+                  filterConditions: cfg.filterConditions,
+                  evaluatedCount: count,
+                  threshold
+                },
+                evaluatedLegs: filtered
+              };
+            }
+          }
+
+          if (cfg.ruleType === 'COMPLETENESS_CHECK') {
+            const missing: string[] = [];
+            const checkTarget = returnedLegs[0] || inputRecord;
+            const obj = checkTarget?.payload || checkTarget || {};
+            for (const col of (cfg.columns || [])) {
+              const v = getCaseInsensitiveVal(obj, col.columnName);
+              if (v === undefined || v === null || String(v).trim() === '') {
+                missing.push(col.columnName);
+              }
+            }
+            if (missing.length > 0 && returnedLegs.length > 0) {
+              return {
+                config: cfg,
+                status: 'FAIL' as const,
+                action: cfg.violationAction || 'FLAG',
+                verdictMessage: cfg.violationMessage || `Completeness check breach: missing required column(s) [${missing.join(', ')}]`,
+                evaluatedDetails: { missingColumns: missing, requiredColumns: cfg.columns?.map(c => c.columnName) },
+                evaluatedLegs: returnedLegs
+              };
+            }
+            return {
+              config: cfg,
+              status: (returnedLegs.length > 0 ? 'PASS' : 'PENDING') as 'PASS' | 'PENDING',
+              action: 'CONTINUE' as const,
+              verdictMessage: returnedLegs.length > 0 ? 'All mandatory columns populated' : 'Pending evaluation',
+              evaluatedDetails: { requiredColumns: cfg.columns?.map(c => c.columnName) },
+              evaluatedLegs: returnedLegs
+            };
+          }
+
+          const fallbackStatus = evalOutcome.status === 'FAIL' ? 'FAIL' : (returnedLegs.length > 0 ? 'PASS' : 'PENDING');
+          return {
+            config: cfg,
+            status: fallbackStatus as 'PASS' | 'FAIL' | 'PENDING',
+            action: fallbackStatus === 'FAIL' ? (cfg.violationAction || 'FLAG') : 'CONTINUE',
+            verdictMessage: cfg.description || `Rule evaluated on table ${cfg.tableName}`,
+            evaluatedDetails: { ruleType: cfg.ruleType, tableName: cfg.tableName },
+            evaluatedLegs: returnedLegs
+          };
+        });
+
+        // Grouped legs classification
+        const getLegFieldVal = (leg: any, f: string) => {
+          const obj = leg?.payload || leg || {};
+          if (obj[f] !== undefined && obj[f] !== null) return obj[f];
+          const lf = f.toLowerCase();
+          for (const k of Object.keys(obj)) {
+            if (k.toLowerCase() === lf) return obj[k];
+          }
+          return null;
+        };
+
+        const reversalLegs = returnedLegs.filter(l => String(getLegFieldVal(l, 'PROC_NAME') || '').toUpperCase() === 'RVS');
+        const settlementLegs = returnedLegs.filter(l => String(getLegFieldVal(l, 'PROC_NAME') || '').toUpperCase() !== 'RVS');
+        const isDupLegBreach = settlementLegs.length > 1;
+
+        // Extract multi-leg response envelope data & metrics
+        let activeStageEnvelope: any = null;
+        if (modalReturnedData?.stages && typeof modalReturnedData.stages === 'object') {
+          const targetTbl = activeWorkflow?.targetTable?.toLowerCase();
+          for (const [stgKey, stgVal] of Object.entries(modalReturnedData.stages)) {
+            if (stgVal && typeof stgVal === 'object') {
+              const stgTbl = String((stgVal as any).targetTable || stgKey).toLowerCase();
+              if (targetTbl && stgTbl === targetTbl) {
+                activeStageEnvelope = stgVal;
+                break;
+              }
+            }
+          }
+          if (!activeStageEnvelope) {
+            activeStageEnvelope = Object.values(modalReturnedData.stages)[0] || null;
+          }
+        }
+
+        const auditMetadata = modalReturnedData?.audit || null;
+        const aggregatedMetrics = activeStageEnvelope?.aggregatedMetrics || null;
+        const hasReversal = reversalLegs.length > 0 || Boolean(aggregatedMetrics?.hasReversal);
+
+        let computedTotalAmount = 0;
+        let computedFeeAmount = 0;
+        let currencyFound: string | null = aggregatedMetrics?.currency || null;
+
+        returnedLegs.forEach((l: any) => {
+          const obj = l?.payload || l || {};
+          const amtVal = getCaseInsensitiveVal(obj, 'reqamt') ?? getCaseInsensitiveVal(obj, 'amount');
+          const feeVal = getCaseInsensitiveVal(obj, 'client_billingfee') ?? getCaseInsensitiveVal(obj, 'transfeeamt1') ?? getCaseInsensitiveVal(obj, 'fee');
+          const currVal = getCaseInsensitiveVal(obj, 'currency') ?? getCaseInsensitiveVal(obj, 'curr');
+          if (currVal && !currencyFound) currencyFound = String(currVal);
+          if (amtVal !== undefined && amtVal !== null && !isNaN(Number(amtVal))) {
+            computedTotalAmount += Number(amtVal);
+          }
+          if (feeVal !== undefined && feeVal !== null && !isNaN(Number(feeVal))) {
+            computedFeeAmount += Number(feeVal);
+          }
+        });
+
+        const displayNetAmt = aggregatedMetrics?.netAmount ?? (computedTotalAmount - computedFeeAmount);
+        const displayTotalAmt = aggregatedMetrics?.totalAmount ?? computedTotalAmount;
+        const displayFeeAmt = aggregatedMetrics?.feeAmount ?? computedFeeAmount;
+
+        const isAccordionOpen = (key: string, defaultOpen: boolean = false) => {
+          if (drilldownOpenAccordions[key] !== undefined) {
+            return drilldownOpenAccordions[key];
+          }
+          return defaultOpen;
         };
 
         // Dynamically build comparison fields from configured parameters + all common fields present in inputRecord
@@ -4682,42 +5711,245 @@ export default function ValidationOrchestratorWorkspace({
           }
         }
 
+        const cleanInputRecord: Record<string, any> = {};
+        for (const [k, v] of Object.entries(inputRecord)) {
+          if (!k.startsWith('_')) {
+            cleanInputRecord[k] = v;
+          }
+        }
+
+        const activeModalParamsLower = new Set(activeModalParams.map(p => p.toLowerCase()));
+        const comparisonColSet = new Set<string>();
+        const comparisonColumns: { key: string; label: string; isKeyParam: boolean }[] = [];
+
+        const registerCol = (key?: string) => {
+          if (!key) return;
+          const trimmed = key.trim();
+          if (!trimmed || trimmed.startsWith('_')) return;
+          const lk = trimmed.toLowerCase();
+          if (isInternalMetaKey(lk)) return;
+          if (!comparisonColSet.has(lk)) {
+            comparisonColSet.add(lk);
+            comparisonColumns.push({
+              key: trimmed,
+              label: formatHeaderLabel(trimmed),
+              isKeyParam: activeModalParamsLower.has(lk)
+            });
+          }
+        };
+
+        // 1. Configured validation parameters first
+        activeModalParams.forEach(p => registerCol(p));
+
+        // 2. High priority financial/identifier columns
+        ['transaction_id', 'retrieval_ref_num', 'refnum', 'rrn', 'account_number', 'acct_num', 'amount', 'reqamt', 'currency', 'value_date', 'ttime', 'terminal_id', 'proc_name', 'bo_type'].forEach(p => registerCol(p));
+
+        // 3. Remaining input columns
+        Object.keys(cleanInputRecord).forEach(k => registerCol(k));
+
+        // 4. Columns from returned legs / target record
+        returnedLegs.forEach(leg => {
+          const legObj = leg?.payload || leg || {};
+          Object.keys(legObj).forEach(k => registerCol(k));
+        });
+        if (targetRecord) {
+          const tObj = targetRecord.payload || targetRecord;
+          Object.keys(tObj).forEach(k => registerCol(k));
+        }
+
+        // Construct multi-stage execution results with returned data for each stage
+        const pipelineStages: Array<{
+          stageId: string;
+          stageName: string;
+          status: 'PASS' | 'FAIL' | 'PENDING' | 'ERROR';
+          action: string;
+          message: string;
+          returnedData: any;
+        }> = [];
+
+        // 1. Target DB Existence Lookup Stage
+        const existPass = Boolean(targetRecord);
+        pipelineStages.push({
+          stageId: 'existence_lookup',
+          stageName: `Target DB Ingestion Lookup (${targetTableName})`,
+          status: existPass ? 'PASS' : 'FAIL',
+          action: existPass ? 'CONTINUE' : 'STOP',
+          message: existPass
+            ? `Located ${returnedLegs.length || 1} record(s) matching criteria in target table ${targetDbName}.${targetTableName}`
+            : `Record not found in target database ${targetDbName}.${targetTableName}`,
+          returnedData: {
+            targetDatabase: targetDbName,
+            targetTable: targetTableName,
+            recordsReturnedCount: returnedLegs.length,
+            lookupParameters: queryParamPairs.reduce((acc: any, q) => ({ ...acc, [q.param]: q.val }), {}),
+            status: existPass ? 'RECORD_FOUND' : 'NOT_FOUND_IN_TARGET_DB'
+          }
+        });
+
+        // 2. Cardinality & Multi-Leg Stage (if multiple legs or cardinality check)
+        if (rowValDetails?.cardinality || returnedLegs.length > 1) {
+          const cardPolicy = rowValDetails?.cardinality?.policy || (returnedLegs.length > 1 ? 'EXACT_ONE' : 'ALL_MATCH');
+          const cardStatus = (rowValDetails?.cardinality?.status === 'FAIL' || isDupLegBreach) ? 'FAIL' : 'PASS';
+          pipelineStages.push({
+            stageId: 'cardinality_policy',
+            stageName: `Multi-Leg Cardinality Check (${cardPolicy})`,
+            status: cardStatus,
+            action: cardStatus === 'FAIL' ? 'STOP' : 'CONTINUE',
+            message: cardStatus === 'FAIL'
+              ? `Multi-leg cardinality breach: expected 1 unique record, but received ${settlementLegs.length} active settlement legs in ${targetTableName}`
+              : `Cardinality policy satisfied: evaluated ${returnedLegs.length} returned record(s) in external ledger`,
+            returnedData: {
+              policy: cardPolicy,
+              totalReturnedRecords: returnedLegs.length,
+              activeSettlementLegs: settlementLegs.length,
+              reversalLegsFiltered: reversalLegs.length,
+              reason: rowValDetails?.cardinality?.reason || (isDupLegBreach ? 'Multiple active settlement legs detected' : 'Unique record verified'),
+              returnedRecords: returnedLegs
+            }
+          });
+        }
+
+        // 3. Stage History from ExecutablePipeline
+        if (Array.isArray(rowValDetails?.stageHistory) && rowValDetails.stageHistory.length > 0) {
+          rowValDetails.stageHistory.forEach((sh: any, sIdx: number) => {
+            const existingIdx = pipelineStages.findIndex(ps => ps.stageId === sh.stageId || ps.stageName === sh.stageName);
+            const stItem = {
+              stageId: sh.stageId || `pipeline_stage_${sIdx}`,
+              stageName: sh.stageName || `Pipeline Stage ${sIdx + 1}`,
+              status: (sh.status || (sh.recordsFound > 0 ? 'PASS' : 'FAIL')) as any,
+              action: sh.action || (sh.status === 'FAIL' ? 'STOP' : 'CONTINUE'),
+              message: sh.message || (sh.recordsFound != null ? `Processed stage. Records found: ${sh.recordsFound}` : 'Stage execution completed'),
+              returnedData: sh.details || sh.returned_data || (sh.recordsFound != null ? { recordsFound: sh.recordsFound, targetTable: sh.targetTable } : { stageName: sh.stageName, status: sh.status })
+            };
+            if (existingIdx >= 0) {
+              pipelineStages[existingIdx] = stItem;
+            } else {
+              pipelineStages.push(stItem);
+            }
+          });
+        }
+
+        // 4. DB Table Column Configurations & Table Rules
+        evaluatedDbConfigs.forEach(d => {
+          pipelineStages.push({
+            stageId: `dbcfg_${d.config.id}`,
+            stageName: `DB Table Rule: ${d.config.name} (${d.config.ruleType})`,
+            status: d.status,
+            action: d.action,
+            message: d.verdictMessage,
+            returnedData: {
+              ruleName: d.config.name,
+              ruleType: d.config.ruleType,
+              targetTable: d.config.tableName,
+              keyColumns: d.config.columns?.map(c => c.columnName).join(', ') || d.config.primaryKeyColumn || '—',
+              filterConditions: d.config.filterConditions || [],
+              threshold: d.config.aggregationRules?.[0]?.value || 1,
+              actionOnViolation: d.config.violationAction || 'FLAG',
+              ruleDiagnostics: d.evaluatedDetails,
+              evaluatedLegs: d.evaluatedLegs
+            }
+          });
+        });
+
+        // 5. Validation Check Steps from Workflow
+        evalOutcome.stepDetails.forEach(s => {
+          if (!pipelineStages.some(ps => ps.stageId === `step_${s.stepId}` || ps.stageId === s.stepId)) {
+            const stepParamComparisons = activeModalParams.map(param => {
+              const inVal = getCaseInsensitiveVal(inputRecord, param);
+              const tgtVal = targetRecord ? getCaseInsensitiveVal(targetRecord, param) : undefined;
+              const isMatch = inVal !== undefined && tgtVal !== undefined && String(inVal).trim().toLowerCase() === String(tgtVal).trim().toLowerCase();
+              return {
+                parameter: param,
+                inputValue: inVal ?? null,
+                targetDbValue: tgtVal ?? null,
+                verdict: isMatch ? 'MATCH' : tgtVal === undefined ? 'NOT_IN_DB' : 'MISMATCH'
+              };
+            });
+
+            pipelineStages.push({
+              stageId: `step_${s.stepId}`,
+              stageName: `Validation Step: ${s.stepName} (${s.checkType})`,
+              status: s.status,
+              action: s.actionTaken,
+              message: typeof s.detail === 'string' ? s.detail : formatValidationDetail(s.detail, 'Step verification completed'),
+              returnedData: {
+                stepId: s.stepId,
+                stepName: s.stepName,
+                checkType: s.checkType,
+                status: s.status,
+                actionTaken: s.actionTaken,
+                fieldComparisons: stepParamComparisons
+              }
+            });
+          }
+        });
+
+        const handleSetAllAccordions = (open: boolean) => {
+          setDrilldownOpenAccordions(prev => ({
+            ...prev,
+            data_comparison: open,
+            validations_conducted: open,
+            grouped_legs: open,
+          }));
+        };
+
         return (
           <div className="fixed inset-0 bg-black/60 backdrop-blur-xs z-50 flex items-center justify-center p-4">
-            <div className="bg-white border border-slate-300 rounded-2xl max-w-4xl w-full p-6 space-y-4 shadow-2xl animate-in zoom-in-95 text-slate-800 max-h-[90vh] flex flex-col">
+            <div className="bg-white border border-slate-300 rounded-2xl max-w-5xl w-full p-6 space-y-4 shadow-2xl animate-in zoom-in-95 text-slate-800 max-h-[92vh] flex flex-col">
               {/* Modal Header */}
               <div className="flex items-center justify-between border-b border-slate-200 pb-3 shrink-0">
-                <div className="flex items-center gap-2">
-                  <div className={`p-2 rounded-xl ${evalOutcome.status === 'FAIL' ? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-700'
-                    }`}>
-                    {evalOutcome.status === 'FAIL' ? <AlertTriangle size={18} /> : <CheckCircle2 size={18} />}
+                <div className="flex items-center gap-2.5">
+                  <div className={`p-2 rounded-xl ${evalOutcome.status === 'FAIL' ? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-700'}`}>
+                    {evalOutcome.status === 'FAIL' ? <AlertTriangle size={20} /> : <CheckCircle2 size={20} />}
                   </div>
                   <div>
-                    <h3 className="font-bold text-sm text-slate-900">Workflow Validation Drilldown & Manual Check</h3>
+                    <h3 className="font-bold text-sm text-slate-900">
+                      Workflow Validation Drilldown & Investigation
+                    </h3>
                     <p className="text-xs text-slate-500">
                       Record: <span className="font-mono font-semibold text-slate-700">{displayKeyString}</span> &bull; Workflow: <span className="font-semibold text-purple-700">{activeWorkflow.name}</span>
                     </p>
                   </div>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setOutcomeDrilldownRow(null)}
-                  className="p-1 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition cursor-pointer"
-                >
-                  <X size={18} />
-                </button>
+
+                <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-1 border border-slate-200 rounded-lg p-0.5 bg-slate-50">
+                    <button
+                      type="button"
+                      onClick={() => handleSetAllAccordions(true)}
+                      className="px-2 py-0.5 rounded text-[10px] font-semibold text-slate-700 hover:bg-white hover:shadow-2xs transition cursor-pointer"
+                    >
+                      Expand All
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleSetAllAccordions(false)}
+                      className="px-2 py-0.5 rounded text-[10px] font-semibold text-slate-700 hover:bg-white hover:shadow-2xs transition cursor-pointer"
+                    >
+                      Collapse All
+                    </button>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setOutcomeDrilldownRow(null)}
+                    className="p-1.5 rounded-lg text-slate-400 hover:text-slate-700 hover:bg-slate-100 transition cursor-pointer"
+                  >
+                    <X size={18} />
+                  </button>
+                </div>
               </div>
 
               {/* Scrollable Modal Content */}
               <div className="flex-1 overflow-y-auto space-y-4 pr-1">
                 {/* Aggregated Outcome Banner */}
-                <div className={`p-3.5 rounded-xl border flex items-center justify-between ${evalOutcome.status === 'FAIL'
+                <div className={`p-3.5 rounded-xl border flex items-center justify-between ${
+                  evalOutcome.status === 'FAIL'
                     ? 'bg-rose-50/80 border-rose-200 text-rose-900'
                     : 'bg-emerald-50/80 border-emerald-200 text-emerald-900'
-                  }`}>
+                }`}>
                   <div className="space-y-0.5">
                     <div className="text-[10px] font-bold uppercase tracking-wider font-mono opacity-80">
-                      Consolidated Outcome
+                      Consolidated Validation Outcome
                     </div>
                     <div className="text-sm font-bold">
                       {typeof evalOutcome.message === 'string' ? evalOutcome.message : formatValidationDetail(evalOutcome.message, 'Validation Discrepancy')}
@@ -4730,8 +5962,9 @@ export default function ValidationOrchestratorWorkspace({
                   </div>
 
                   <div className="text-right">
-                    <span className={`px-2.5 py-1 rounded-full text-xs font-mono font-bold ${evalOutcome.status === 'FAIL' ? 'bg-rose-600 text-white' : 'bg-emerald-600 text-white'
-                      }`}>
+                    <span className={`px-2.5 py-1 rounded-full text-xs font-mono font-bold ${
+                      evalOutcome.status === 'FAIL' ? 'bg-rose-600 text-white' : 'bg-emerald-600 text-white'
+                    }`}>
                       {evalOutcome.status}
                     </span>
                     <div className="text-[10px] text-slate-500 mt-1 font-mono">
@@ -4740,206 +5973,793 @@ export default function ValidationOrchestratorWorkspace({
                   </div>
                 </div>
 
-                {/* Conducted Validation Blocks Breakdown */}
-                <div className="space-y-2">
-                  <div className="text-xs font-bold text-slate-700 flex items-center justify-between">
-                    <span className="flex items-center gap-1.5">
-                      <Layers size={13} className="text-purple-600" />
-                      Conducted Validation Blocks ({evalOutcome.stepDetails.length} checks)
-                    </span>
-                    <span className="text-[11px] font-mono text-slate-500 font-normal">Executed Rules & Pipeline Actions</span>
-                  </div>
-
-                  <div className="border border-slate-200 rounded-xl overflow-hidden divide-y divide-slate-100 text-xs">
-                    {evalOutcome.stepDetails.map((step, idx) => (
-                      <div key={step.stepId} className="p-3 flex items-center justify-between gap-3 hover:bg-slate-50 transition">
-                        <div className="flex items-center gap-2.5 min-w-0 flex-1">
-                          <span className="w-5 h-5 rounded-full bg-slate-100 text-slate-600 font-mono text-[10px] font-bold flex items-center justify-center shrink-0">
-                            {idx + 1}
-                          </span>
-                          <div className="min-w-0 flex-1">
-                            <div className="flex items-center gap-2">
-                              <span className="font-bold text-slate-900 truncate">
-                                {step.stepName}
-                              </span>
-                              <span className="px-1.5 py-0.2 rounded text-[9px] font-mono bg-slate-100 text-slate-600 border border-slate-200 shrink-0">
-                                {step.checkType}
-                              </span>
-                            </div>
-                            <p className="text-[11px] text-slate-500 truncate mt-0.5">
-                              {typeof step.detail === 'string' ? step.detail : formatValidationDetail(step.detail, 'Step Detail')}
-                            </p>
-                          </div>
-                        </div>
-
-                        <div className="flex items-center gap-2 shrink-0">
-                          <span className={`px-2 py-0.5 rounded text-[10px] font-bold font-mono ${step.status === 'PASS' ? 'bg-emerald-100 text-emerald-800 border border-emerald-300' :
-                              step.status === 'FAIL' ? 'bg-rose-100 text-rose-800 border border-rose-300' :
-                                'bg-slate-100 text-slate-600 border border-slate-300'
-                            }`}>
-                            {step.status}
-                          </span>
-                          <span className={`px-1.5 py-0.5 rounded text-[9px] font-mono ${step.actionTaken === 'STOP' ? 'bg-rose-50 text-rose-700' : 'bg-blue-50 text-blue-700'
-                            }`}>
-                            {step.actionTaken}
-                          </span>
-                        </div>
+                {/* Failure Diagnostics & Violated Rule Box */}
+                {evalOutcome.status === 'FAIL' && (
+                  <div className="p-3.5 bg-rose-50 border border-rose-300 rounded-xl space-y-2 shadow-2xs">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-1.5 font-bold text-rose-900 text-xs font-mono uppercase tracking-wider">
+                        <AlertTriangle size={15} className="text-rose-600 shrink-0" />
+                        <span>Root Cause & Violated Rule:</span>
+                        <span className="px-2 py-0.5 rounded bg-rose-200 text-rose-900 text-[10px] font-bold">
+                          {evalOutcome.matchedRuleName || 'Validation Rule'}
+                        </span>
                       </div>
-                    ))}
-                  </div>
-                </div>
-
-                {/* Target Database Fetched Record Section (For Manual Cross-Check) */}
-                <div className="space-y-2 pt-2">
-                  <div className="text-xs font-bold text-slate-700 flex items-center justify-between">
-                    <span className="flex items-center gap-1.5">
-                      <Database size={13} className="text-blue-600" />
-                      Target Database Record (Manual Cross-Check)
-                    </span>
-                    <div className="flex items-center gap-2">
-                      <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-blue-50 text-blue-800 border border-blue-200 font-semibold">
-                        {targetDbName} &bull; {targetTableName}
+                      <span className="text-[10px] font-mono font-bold text-rose-700 bg-white px-2 py-0.5 rounded border border-rose-300">
+                        Action: STOP (Pipeline Halted)
                       </span>
+                    </div>
+
+                    <div className="p-2.5 bg-white rounded-lg border border-rose-200 text-xs text-rose-950 font-mono space-y-1">
+                      <div className="font-bold flex items-center gap-1.5 text-rose-800 font-sans">
+                        <span>Discrepancy Detail:</span>
+                      </div>
+                      <p className="text-[11px] text-slate-800 leading-relaxed font-sans">
+                        {typeof evalOutcome.message === 'string' ? evalOutcome.message : formatValidationDetail(evalOutcome.message, 'Validation Discrepancy')}
+                      </p>
+                    </div>
+
+                    {returnedLegs.length > 1 && (
+                      <div className="pt-0.5 flex flex-wrap items-center justify-between gap-2 text-[11px] text-rose-900 font-mono">
+                        <span className="bg-rose-100 px-2 py-0.5 rounded border border-rose-300 font-bold">
+                          Multi-Leg Response: {returnedLegs.length} Returned Records in {targetTableName}
+                        </span>
+                        <span className="text-slate-600 font-sans text-[11px]">
+                          Expand the Data Comparison accordion below to view one row for each returned record compared against input values.
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* =========================================================================
+                    ACCORDION 1: DATA COMPARISON (INPUT DATA & RETURNED DB DATA IN ONE REAL TABLE)
+                    ========================================================================= */}
+                <div className="border border-blue-200 rounded-xl overflow-hidden bg-white shadow-2xs">
+                  <button
+                    type="button"
+                    onClick={() => toggleDrilldownAccordion('data_comparison')}
+                    className="w-full p-3.5 bg-gradient-to-r from-blue-50/70 via-indigo-50/40 to-white hover:bg-blue-50/90 transition flex items-center justify-between text-left cursor-pointer border-b border-blue-100"
+                  >
+                    <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                      <div className="text-blue-600 transition-transform duration-200">
+                        {isAccordionOpen('data_comparison', true) ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                      </div>
+                      <div className="p-1.5 rounded-lg bg-blue-100 text-blue-700 shrink-0">
+                        <Table size={15} />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-bold text-xs text-slate-900 uppercase font-mono tracking-wider">
+                            Data Comparison: Input Data &amp; Returned DB Data
+                          </span>
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-blue-100 text-blue-800 border border-blue-200">
+                            {comparisonColumns.length} Columns
+                          </span>
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-indigo-100 text-indigo-800 border border-indigo-200">
+                            1 Input Row &bull; {returnedLegs.length > 0 ? (drilldownLegIndex >= 0 ? `Focused Record #${drilldownLegIndex + 1} of ${returnedLegs.length}` : `${returnedLegs.length} Returned DB Records`) : targetRecord ? '1 DB Row' : '0 DB Records'}
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-slate-500 mt-0.5 truncate font-mono">
+                          Unified horizontal table comparing task input values against external database mirror ledger ({targetDbName}.{targetTableName})
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0 ml-2">
                       {targetRecord ? (
-                        <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-50 text-emerald-800 border border-emerald-300 font-bold flex items-center gap-1">
-                          <Check size={10} /> Fetched from Target DB
+                        <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-emerald-100 text-emerald-800 border border-emerald-300 flex items-center gap-1">
+                          <CheckCircle2 size={11} /> DB Records Found ({returnedLegs.length || 1})
                         </span>
                       ) : (
-                        <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-rose-50 text-rose-800 border border-rose-300 font-bold flex items-center gap-1">
-                          <AlertTriangle size={10} /> Not Found in Target DB
+                        <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-rose-100 text-rose-800 border border-rose-300 flex items-center gap-1">
+                          <AlertTriangle size={11} /> 0 Records in DB
                         </span>
                       )}
                     </div>
-                  </div>
+                  </button>
 
-                  {/* Multi-Leg Inspector Accordion / Tab Strip */}
-                  {returnedLegs.length > 1 && (
-                    <div className="flex flex-wrap items-center gap-2 p-2.5 bg-blue-50/70 border border-blue-200 rounded-xl">
-                      <div className="flex items-center gap-1.5 text-xs font-bold text-blue-900 shrink-0">
-                        <Layers size={14} className="text-blue-600" />
-                        <span>Multi-Leg Transaction ({returnedLegs.length} Legs Detected in {targetTableName}):</span>
+                  {isAccordionOpen('data_comparison', true) && (
+                    <div className="p-3.5 space-y-3 bg-white animate-in fade-in-50 duration-150">
+                      {/* Integrated Multi-Leg Response Envelope Banner & Switcher Tabs */}
+                      {returnedLegs.length > 0 ? (
+                        <div className="p-3 bg-gradient-to-r from-slate-50 via-indigo-50/40 to-slate-50 rounded-xl border border-indigo-200 text-slate-800 text-xs space-y-2.5 shadow-2xs">
+                          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-indigo-100 pb-2">
+                            <div className="flex items-center gap-2">
+                              <div className="p-1 rounded-md bg-indigo-100 text-indigo-700">
+                                <Layers size={14} />
+                              </div>
+                              <span className="font-bold text-xs text-indigo-950 font-mono uppercase tracking-wider">
+                                Returned Data Response Envelope: {returnedLegs.length} Returned DB Record{returnedLegs.length > 1 ? 's' : ''}
+                              </span>
+                              <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-indigo-200 text-indigo-900 border border-indigo-300">
+                                {targetDbName}.{targetTableName}
+                              </span>
+                              {activeStageEnvelope?.queriedAt && (
+                                <span className="text-[10px] text-slate-500 font-mono hidden sm:inline">
+                                  &bull; Queried: {String(activeStageEnvelope.queriedAt).replace('T', ' ').slice(0, 19)}
+                                </span>
+                              )}
+                              {auditMetadata?.statusVersion != null && (
+                                <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-slate-200 text-slate-700 font-semibold">
+                                  v{auditMetadata.statusVersion}
+                                </span>
+                              )}
+                            </div>
+
+                            <div className="flex items-center gap-1.5 flex-wrap font-mono text-[10px]">
+                              {displayTotalAmt > 0 && (
+                                <span className="px-2 py-0.5 rounded bg-white text-slate-800 border border-slate-300 font-bold">
+                                  Gross: {currencyFound ? `${currencyFound} ` : ''}{displayTotalAmt.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                                </span>
+                              )}
+                              {displayFeeAmt > 0 && (
+                                <span className="px-2 py-0.5 rounded bg-white text-amber-800 border border-amber-300 font-bold">
+                                  Fees: {currencyFound ? `${currencyFound} ` : ''}{displayFeeAmt.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                                </span>
+                              )}
+                              {displayTotalAmt > 0 && (
+                                <span className="px-2 py-0.5 rounded bg-indigo-100 text-indigo-900 border border-indigo-300 font-bold">
+                                  Net: {currencyFound ? `${currencyFound} ` : ''}{displayNetAmt.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                                </span>
+                              )}
+                              {hasReversal && (
+                                <span className="px-2 py-0.5 rounded bg-amber-100 text-amber-900 border border-amber-300 font-bold flex items-center gap-1">
+                                  <AlertTriangle size={10} className="text-amber-700" /> Reversal Present
+                                </span>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Interactive Multi-Leg Switcher Tabs */}
+                          {returnedLegs.length > 1 && (
+                            <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 no-scrollbar">
+                              <span className="text-[10px] font-bold text-slate-500 uppercase font-mono mr-1">Filter View:</span>
+                              <button
+                                type="button"
+                                onClick={() => setDrilldownLegIndex(-1)}
+                                className={`px-2.5 py-1 rounded-lg text-xs font-mono font-bold transition flex items-center gap-1.5 shrink-0 cursor-pointer ${
+                                  drilldownLegIndex === -1
+                                    ? 'bg-indigo-600 text-white shadow-xs'
+                                    : 'bg-white hover:bg-slate-100 text-slate-700 border border-slate-300'
+                                }`}
+                              >
+                                <Table size={12} />
+                                <span>All Response Data ({returnedLegs.length})</span>
+                              </button>
+
+                              {returnedLegs.map((leg: any, idx: number) => {
+                                const legObj = leg?.payload || leg || {};
+                                const proc = getCaseInsensitiveVal(legObj, 'PROC_NAME') || leg.legType || leg._procName || `Record #${idx + 1}`;
+                                const isRvs = String(proc).toUpperCase() === 'RVS';
+                                const legAmt = getCaseInsensitiveVal(legObj, 'reqamt') ?? getCaseInsensitiveVal(legObj, 'amount') ?? getCaseInsensitiveVal(legObj, 'amnt1');
+                                const legTbl = leg._sourceTable || targetTableName;
+                                const isSelected = drilldownLegIndex === idx;
+
+                                return (
+                                  <button
+                                    key={idx}
+                                    type="button"
+                                    onClick={() => setDrilldownLegIndex(idx)}
+                                    className={`px-2.5 py-1 rounded-lg text-xs font-mono font-bold transition flex items-center gap-1.5 shrink-0 cursor-pointer border ${
+                                      isSelected
+                                        ? isRvs
+                                          ? 'bg-amber-600 text-white border-amber-700 shadow-xs'
+                                          : 'bg-blue-600 text-white border-blue-700 shadow-xs'
+                                        : isRvs
+                                          ? 'bg-amber-50 hover:bg-amber-100 text-amber-900 border-amber-300'
+                                          : 'bg-white hover:bg-slate-100 text-slate-800 border-slate-300'
+                                    }`}
+                                  >
+                                    <span className={`w-1.5 h-1.5 rounded-full ${isSelected ? 'bg-white' : isRvs ? 'bg-amber-500' : 'bg-blue-500'}`} />
+                                    <span>#{idx + 1}: {String(proc)} ({legTbl})</span>
+                                    {legAmt !== undefined && legAmt !== null && (
+                                      <span className={`text-[10px] px-1 py-0.2 rounded font-semibold ${
+                                        isSelected ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-600'
+                                      }`}>
+                                        {formatCellVal(legAmt)}
+                                      </span>
+                                    )}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      ) : isNotFoundInDb ? (
+                        <div className="p-3 bg-rose-50 rounded-xl border border-rose-200 text-xs flex items-center justify-between shadow-2xs">
+                          <div className="flex items-center gap-2">
+                            <AlertTriangle size={15} className="text-rose-600" />
+                            <span className="font-bold text-rose-900 font-mono">External Target Ledger: 0 Mirror Records Returned</span>
+                            <span className="text-[11px] text-rose-700">({targetDbName}.{targetTableName})</span>
+                          </div>
+                          <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-rose-200 text-rose-900 border border-rose-300">
+                            NOT FOUND IN TARGET DB
+                          </span>
+                        </div>
+                      ) : null}
+
+                      {/* Sub-header banner if viewing focused record */}
+                      {drilldownLegIndex >= 0 && returnedLegs[drilldownLegIndex] && (
+                        <div className="flex items-center justify-between p-2 rounded-lg bg-indigo-50 border border-indigo-200 text-xs">
+                          <div className="flex items-center gap-2">
+                            <span className="font-bold text-indigo-900 font-mono">
+                              Focused on Record #{drilldownLegIndex + 1} of {returnedLegs.length}:
+                            </span>
+                            <span className="px-2 py-0.5 rounded bg-indigo-200 text-indigo-900 font-mono font-bold text-[10px]">
+                              {String(getCaseInsensitiveVal(returnedLegs[drilldownLegIndex]?.payload || returnedLegs[drilldownLegIndex], 'PROC_NAME') || `Record #${drilldownLegIndex + 1}`)}
+                            </span>
+                            <span className="text-[10px] text-slate-500 font-mono hidden sm:inline">
+                              (Highlighted in comparison table below &bull; One row for each returned record)
+                            </span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setDrilldownLegIndex(-1)}
+                            className="px-2 py-0.5 rounded bg-white hover:bg-slate-100 text-indigo-700 font-bold border border-indigo-300 text-[10px] cursor-pointer"
+                          >
+                            Clear Focus
+                          </button>
+                        </div>
+                      )}
+
+                      <div className="overflow-x-auto border border-slate-200 rounded-xl shadow-2xs max-h-[420px] overflow-y-auto">
+                        <table className="w-full text-left text-xs border-collapse">
+                          <thead>
+                            <tr className="bg-slate-100 text-slate-700 font-mono text-[10px] uppercase font-bold sticky top-0 z-20 border-b border-slate-200">
+                              <th className="py-2.5 px-3.5 whitespace-nowrap bg-slate-200/90 text-slate-800 border-r border-slate-300 sticky left-0 z-30 min-w-[200px] shadow-xs">
+                                Data Record Source
+                              </th>
+                              {comparisonColumns.map(col => (
+                                <th key={col.key} className="py-2.5 px-3 whitespace-nowrap border-r border-slate-200">
+                                  <div className="flex items-center gap-1">
+                                    <span>{col.label}</span>
+                                    {col.isKeyParam && (
+                                      <span className="text-[8px] px-1 py-0.2 rounded bg-purple-100 text-purple-800 border border-purple-200 font-mono">KEY</span>
+                                    )}
+                                  </div>
+                                </th>
+                              ))}
+                              <th className="py-2.5 px-3 text-center whitespace-nowrap bg-slate-100 w-28">
+                                Comparison
+                              </th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100 font-mono text-xs">
+                            {/* ROW 1: INPUT DATA */}
+                            <tr className="hover:bg-blue-50/30 transition bg-blue-50/15">
+                              <td className="py-2.5 px-3.5 whitespace-nowrap bg-blue-50/95 font-bold border-r border-blue-200 text-blue-950 sticky left-0 z-10 shadow-xs">
+                                <div className="flex items-center justify-between gap-2">
+                                  <div className="flex items-center gap-1.5">
+                                    <FileSpreadsheet size={13} className="text-blue-600 shrink-0" />
+                                    <span>Input Data</span>
+                                  </div>
+                                  <span className="px-1.5 py-0.2 rounded text-[9px] bg-blue-200 text-blue-800 border border-blue-300 font-bold">TASK DATASET</span>
+                                </div>
+                              </td>
+                              {comparisonColumns.map(col => {
+                                const inVal = getCaseInsensitiveVal(cleanInputRecord, col.key);
+                                return (
+                                  <td key={col.key} className="py-2.5 px-3 whitespace-nowrap border-r border-slate-100 text-slate-900 font-semibold bg-white">
+                                    {formatCellVal(inVal)}
+                                  </td>
+                                );
+                              })}
+                              <td className="py-2.5 px-3 whitespace-nowrap text-center text-[10px] font-bold text-blue-800 bg-blue-50/40">
+                                BASELINE
+                              </td>
+                            </tr>
+
+                            {/* ROWS 2+: RETURNED DB DATA - ONE ROW FOR EACH */}
+                            {returnedLegs.length > 0 ? (
+                              returnedLegs.map((leg, legIdx) => {
+                                const isFocused = drilldownLegIndex === legIdx;
+                                const legObj = leg?.payload || leg || {};
+                                const proc = getCaseInsensitiveVal(legObj, 'PROC_NAME') || leg.legType || `Record #${legIdx + 1}`;
+                                const isRvs = String(proc || '').toUpperCase() === 'RVS';
+                                const legRrn = getCaseInsensitiveVal(legObj, 'refnum') ?? getCaseInsensitiveVal(legObj, 'rrn') ?? getCaseInsensitiveVal(legObj, 'retrieval_ref_num');
+
+                                // Calculate diffs between input and this leg
+                                let diffCount = 0;
+                                let evaluatedCols = 0;
+                                comparisonColumns.forEach(col => {
+                                  const inVal = getCaseInsensitiveVal(cleanInputRecord, col.key);
+                                  const tgtVal = getCaseInsensitiveVal(legObj, col.key);
+                                  if (inVal !== undefined && tgtVal !== undefined) {
+                                    evaluatedCols++;
+                                    if (!areValuesEqual(inVal, tgtVal)) {
+                                      diffCount++;
+                                    }
+                                  }
+                                });
+
+                                return (
+                                  <tr
+                                    key={legIdx}
+                                    className={`hover:bg-indigo-50/30 transition ${
+                                      isFocused
+                                        ? 'ring-2 ring-indigo-500 bg-indigo-50/60'
+                                        : isRvs
+                                          ? 'bg-amber-50/20'
+                                          : legIdx % 2 === 0
+                                            ? 'bg-white'
+                                            : 'bg-slate-50/30'
+                                    }`}
+                                  >
+                                    <td className={`py-2.5 px-3.5 whitespace-nowrap font-bold border-r border-indigo-200 text-indigo-950 sticky left-0 z-10 shadow-xs ${isFocused ? 'bg-indigo-100' : isRvs ? 'bg-amber-50/95' : 'bg-indigo-50/95'}`}>
+                                      <div className="flex items-center justify-between gap-2">
+                                        <div className="flex items-center gap-1.5 min-w-0">
+                                          <Database size={13} className={isRvs ? 'text-amber-700 shrink-0' : 'text-indigo-600 shrink-0'} />
+                                          <span className="truncate">
+                                            Returned Record #{legIdx + 1}
+                                          </span>
+                                          {isFocused && (
+                                            <span className="text-[9px] px-1 py-0.2 rounded bg-indigo-600 text-white font-mono font-bold">
+                                              FOCUSED
+                                            </span>
+                                          )}
+                                          {legRrn && (
+                                            <span className="text-[10px] text-slate-500 font-mono font-normal hidden lg:inline">
+                                              ({String(legRrn)})
+                                            </span>
+                                          )}
+                                        </div>
+                                        <div className="flex items-center gap-1 shrink-0">
+                                          <span className={`px-1.5 py-0.2 rounded text-[9px] font-bold border ${isRvs ? 'bg-amber-200 text-amber-900 border-amber-300' : 'bg-blue-200 text-blue-900 border-blue-300'}`}>
+                                            {String(proc).toUpperCase()}
+                                          </span>
+                                          <span className="px-1 py-0.2 rounded text-[8px] bg-slate-100 text-slate-600 border border-slate-200 font-normal">
+                                            {leg._sourceTable || targetTableName}
+                                          </span>
+                                        </div>
+                                      </div>
+                                    </td>
+
+                                    {comparisonColumns.map(col => {
+                                      const inVal = getCaseInsensitiveVal(cleanInputRecord, col.key);
+                                      const tgtVal = getCaseInsensitiveVal(legObj, col.key);
+
+                                      if (inVal !== undefined && tgtVal !== undefined) {
+                                        const isMatch = areValuesEqual(inVal, tgtVal);
+                                        return (
+                                          <td
+                                            key={col.key}
+                                            className={`py-2.5 px-3 whitespace-nowrap border-r ${
+                                              isMatch
+                                                ? 'border-slate-100 text-emerald-950 bg-emerald-50/25'
+                                                : 'border-rose-200 text-rose-950 bg-rose-50/80 font-bold'
+                                            }`}
+                                            title={isMatch ? 'Matches input value' : `Mismatch: Input='${inVal}' vs DB='${tgtVal}'`}
+                                          >
+                                            {isMatch ? (
+                                              <span className="font-semibold">{formatCellVal(tgtVal)}</span>
+                                            ) : (
+                                              <span className="inline-flex items-center gap-1 bg-rose-100 text-rose-800 px-1.5 py-0.5 rounded border border-rose-300">
+                                                {formatCellVal(tgtVal)}
+                                              </span>
+                                            )}
+                                          </td>
+                                        );
+                                      }
+
+                                      if (tgtVal !== undefined) {
+                                        return (
+                                          <td key={col.key} className="py-2.5 px-3 whitespace-nowrap border-r border-slate-100 text-slate-700 bg-white">
+                                            {formatCellVal(tgtVal)}
+                                          </td>
+                                        );
+                                      }
+
+                                      return (
+                                        <td key={col.key} className="py-2.5 px-3 whitespace-nowrap border-r border-slate-100 text-slate-300 italic bg-white">
+                                          —
+                                        </td>
+                                      );
+                                    })}
+
+                                    <td className="py-2.5 px-3 whitespace-nowrap text-center">
+                                      <div className="flex items-center justify-center gap-1.5">
+                                        {diffCount === 0 && evaluatedCols > 0 ? (
+                                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold text-[10px]">
+                                            <Check size={10} /> MATCH
+                                          </span>
+                                        ) : diffCount > 0 ? (
+                                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 font-bold text-[10px]">
+                                            <AlertTriangle size={10} /> {diffCount} DIFF
+                                          </span>
+                                        ) : (
+                                          <span className="text-[10px] text-slate-400 italic">EVALUATED</span>
+                                        )}
+                                        {returnedLegs.length > 1 && (
+                                          <button
+                                            type="button"
+                                            onClick={() => setDrilldownLegIndex(drilldownLegIndex === legIdx ? -1 : legIdx)}
+                                            className={`px-1.5 py-0.5 rounded text-[9px] font-mono font-bold transition cursor-pointer border ${
+                                              drilldownLegIndex === legIdx
+                                                ? 'bg-indigo-600 text-white border-indigo-700'
+                                                : 'bg-white hover:bg-slate-100 text-slate-700 border-slate-300'
+                                            }`}
+                                            title={drilldownLegIndex === legIdx ? 'Reset to all legs' : 'Isolate this leg in table'}
+                                          >
+                                            {drilldownLegIndex === legIdx ? 'Focused ✓' : 'Focus'}
+                                          </button>
+                                        )}
+                                      </div>
+                                    </td>
+                                  </tr>
+                                );
+                              })
+                            ) : targetRecord ? (
+                              <tr className="hover:bg-indigo-50/30 transition bg-white">
+                                <td className="py-2.5 px-3.5 whitespace-nowrap font-bold border-r border-indigo-200 text-indigo-950 sticky left-0 z-10 shadow-xs bg-indigo-50/95">
+                                  <div className="flex items-center justify-between gap-2">
+                                    <div className="flex items-center gap-1.5">
+                                      <Database size={13} className="text-indigo-600 shrink-0" />
+                                      <span>Returned DB Data</span>
+                                    </div>
+                                    <span className="px-1.5 py-0.2 rounded text-[9px] font-bold bg-indigo-200 text-indigo-900 border border-indigo-300">
+                                      {targetTableName}
+                                    </span>
+                                  </div>
+                                </td>
+                                {comparisonColumns.map(col => {
+                                  const inVal = getCaseInsensitiveVal(cleanInputRecord, col.key);
+                                  const tgtVal = getCaseInsensitiveVal(targetRecord, col.key);
+
+                                  if (inVal !== undefined && tgtVal !== undefined) {
+                                    const isMatch = areValuesEqual(inVal, tgtVal);
+                                    return (
+                                      <td
+                                        key={col.key}
+                                        className={`py-2.5 px-3 whitespace-nowrap border-r ${
+                                          isMatch ? 'border-slate-100 text-emerald-950 bg-emerald-50/25' : 'border-rose-200 text-rose-950 bg-rose-50/80 font-bold'
+                                        }`}
+                                      >
+                                        {isMatch ? (
+                                          <span className="font-semibold">{formatCellVal(tgtVal)}</span>
+                                        ) : (
+                                          <span className="inline-flex items-center gap-1 bg-rose-100 text-rose-800 px-1.5 py-0.5 rounded border border-rose-300">
+                                            {formatCellVal(tgtVal)}
+                                          </span>
+                                        )}
+                                      </td>
+                                    );
+                                  }
+                                  return (
+                                    <td key={col.key} className="py-2.5 px-3 whitespace-nowrap border-r border-slate-100 text-slate-700 bg-white">
+                                      {formatCellVal(tgtVal)}
+                                    </td>
+                                  );
+                                })}
+                                <td className="py-2.5 px-3 whitespace-nowrap text-center">
+                                  <span className="text-[10px] text-slate-400 italic">EVALUATED</span>
+                                </td>
+                              </tr>
+                            ) : (
+                              <tr>
+                                <td className="py-3 px-3.5 whitespace-nowrap bg-rose-50 font-bold border-r border-rose-200 text-rose-950 sticky left-0 z-10 shadow-xs">
+                                  <div className="flex items-center justify-between gap-2">
+                                    <div className="flex items-center gap-1.5">
+                                      <Database size={13} className="text-rose-600 shrink-0" />
+                                      <span>Returned DB Data</span>
+                                    </div>
+                                    <span className="px-1.5 py-0.2 rounded text-[9px] font-bold bg-rose-200 text-rose-900 border border-rose-300">0 ROWS</span>
+                                  </div>
+                                </td>
+                                <td colSpan={comparisonColumns.length + 1} className="py-3 px-4 text-rose-700 font-mono text-xs bg-rose-50/30">
+                                  <div className="flex items-center gap-2">
+                                    <AlertTriangle size={14} className="text-rose-600 shrink-0" />
+                                    <span>No records returned from external target table {targetDbName}.{targetTableName} matching query lookup parameters.</span>
+                                  </div>
+                                </td>
+                              </tr>
+                            )}
+                          </tbody>
+                        </table>
                       </div>
-                      <div className="flex items-center gap-1.5 flex-wrap">
-                        {returnedLegs.map((leg, idx) => {
-                          const isSelected = drilldownLegIndex === idx;
-                          const legKey = leg.refnum || leg.utrnno || leg.id || leg.amount || `Leg #${idx + 1}`;
-                          return (
-                            <button
-                              key={`leg-tab-${idx}`}
-                              type="button"
-                              onClick={() => setDrilldownLegIndex(idx)}
-                              className={`px-2.5 py-1 rounded-lg text-xs font-mono font-bold transition cursor-pointer flex items-center gap-1.5 ${
-                                isSelected
-                                  ? 'bg-blue-600 text-white shadow-xs'
-                                  : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-100'
-                              }`}
-                            >
-                              <span>Leg #{idx + 1}</span>
-                              <span className="text-[10px] opacity-80">({String(legKey).slice(0, 14)})</span>
-                            </button>
-                          );
-                        })}
-                      </div>
+
+                      {/* Embedded Returned Legs Detail Cards & Raw Payloads */}
+                      {returnedLegs.length > 0 && (
+                        <div className="pt-2 border-t border-slate-200 space-y-2.5">
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-bold text-slate-800 font-mono uppercase tracking-wider flex items-center gap-1.5">
+                              <Layers size={13} className="text-indigo-600" />
+                              Returned DB Records Payload Inspection ({returnedLegs.length} Record{returnedLegs.length > 1 ? 's' : ''})
+                            </span>
+                            <span className="text-[11px] text-slate-500 font-mono">
+                              All {returnedLegs.length} external database response records returned from query lookup
+                            </span>
+                          </div>
+
+                          <div className="grid grid-cols-1 gap-2.5">
+                            {returnedLegs.map((leg: any, idx: number) => {
+                              const legObj = leg?.payload || leg || {};
+                              const proc = getCaseInsensitiveVal(legObj, 'PROC_NAME') || leg.legType || 'TRANSACTION_LEG';
+                              const isRvs = String(proc).toUpperCase() === 'RVS';
+                              const legAmt = getCaseInsensitiveVal(legObj, 'reqamt') ?? getCaseInsensitiveVal(legObj, 'amount');
+                              const legCurr = getCaseInsensitiveVal(legObj, 'currency') ?? getCaseInsensitiveVal(legObj, 'curr') ?? 'USD';
+                              const legRef = getCaseInsensitiveVal(legObj, 'refnum') ?? getCaseInsensitiveVal(legObj, 'rrn') ?? getCaseInsensitiveVal(legObj, 'retrieval_ref_num');
+                              const legTime = getCaseInsensitiveVal(legObj, 'ttime') ?? getCaseInsensitiveVal(legObj, 'value_date') ?? getCaseInsensitiveVal(legObj, 'created_at');
+                              const isFocused = drilldownLegIndex === idx;
+
+                              const attributes: { key: string; value: any }[] = [];
+                              for (const [k, v] of Object.entries(legObj)) {
+                                if (!k.startsWith('_') && v !== undefined && v !== null && typeof v !== 'object') {
+                                  attributes.push({ key: k, value: v });
+                                }
+                              }
+
+                              const payloadJson = JSON.stringify(legObj, null, 2);
+                              const copyKey = `drilldown_leg_${idx}`;
+
+                              return (
+                                <div
+                                  key={idx}
+                                  className={`rounded-xl border transition p-3 space-y-2.5 bg-slate-50/50 shadow-2xs ${
+                                    isFocused
+                                      ? 'border-indigo-400 ring-2 ring-indigo-200 bg-indigo-50/20'
+                                      : isRvs
+                                        ? 'border-amber-300'
+                                        : 'border-slate-200 hover:border-slate-300'
+                                  }`}
+                                >
+                                  {/* Leg Sub-header */}
+                                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200/70 pb-2">
+                                    <div className="flex items-center gap-2">
+                                      <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
+                                        isRvs ? 'bg-amber-100 text-amber-900 border border-amber-300' : 'bg-indigo-100 text-indigo-900 border border-indigo-300'
+                                      }`}>
+                                        RECORD #{idx + 1}
+                                      </span>
+                                      <span className="font-bold text-xs text-slate-900 font-mono">
+                                        PROC: {String(proc)}
+                                      </span>
+                                      {legRef && (
+                                        <span className="text-[11px] font-mono text-slate-500">
+                                          &bull; RRN: <strong className="text-slate-700">{String(legRef)}</strong>
+                                        </span>
+                                      )}
+                                      {legTime && (
+                                        <span className="text-[11px] font-mono text-slate-500">
+                                          &bull; Time: {String(legTime).replace('T', ' ').slice(0, 19)}
+                                        </span>
+                                      )}
+                                    </div>
+
+                                    <div className="flex items-center gap-2">
+                                      {legAmt !== undefined && legAmt !== null && (
+                                        <span className={`px-2 py-0.5 rounded font-mono text-xs font-bold ${
+                                          isRvs ? 'bg-amber-100 text-amber-900 border border-amber-300' : 'bg-emerald-100 text-emerald-900 border border-emerald-300'
+                                        }`}>
+                                          {String(legCurr)} {formatCellVal(legAmt)}
+                                        </span>
+                                      )}
+                                      <button
+                                        type="button"
+                                        onClick={() => setDrilldownLegIndex(isFocused ? -1 : idx)}
+                                        className={`px-2.5 py-1 rounded text-[11px] font-semibold transition cursor-pointer border ${
+                                          isFocused
+                                            ? 'bg-indigo-600 text-white border-indigo-700'
+                                            : 'bg-white hover:bg-slate-100 text-slate-700 border-slate-300'
+                                        }`}
+                                      >
+                                        {isFocused ? 'Viewing in Comparison ✓' : 'Focus in Comparison'}
+                                      </button>
+                                    </div>
+                                  </div>
+
+                                  {/* Attributes grid */}
+                                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2 text-[11px] font-mono">
+                                    {attributes.slice(0, 16).map(attr => (
+                                      <div key={attr.key} className="bg-white p-2 rounded-lg border border-slate-100 space-y-0.5 shadow-3xs">
+                                        <span className="text-[10px] text-slate-500 uppercase font-semibold block truncate" title={attr.key}>
+                                          {formatHeaderLabel(attr.key)}
+                                        </span>
+                                        <span className="font-bold text-slate-800 block truncate" title={String(attr.value)}>
+                                          {formatCellVal(attr.value)}
+                                        </span>
+                                      </div>
+                                    ))}
+                                  </div>
+
+                                  {/* Raw JSON toggle */}
+                                  <details className="text-[11px] font-mono group">
+                                    <summary className="cursor-pointer text-indigo-600 hover:text-indigo-800 font-semibold select-none flex items-center justify-between">
+                                      <span>View Raw Record JSON Payload</span>
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.preventDefault();
+                                          handleCopyPayload(payloadJson, copyKey);
+                                        }}
+                                        className="px-2 py-0.5 rounded bg-white hover:bg-slate-100 text-slate-700 text-[10px] font-mono border border-slate-300 cursor-pointer"
+                                      >
+                                        {copiedPayloadKey === copyKey ? 'Copied!' : 'Copy JSON'}
+                                      </button>
+                                    </summary>
+                                    <pre className="mt-2 p-2.5 bg-slate-900 text-emerald-400 rounded-lg overflow-x-auto text-[10px] whitespace-pre-wrap max-h-48 overflow-y-auto">
+                                      {payloadJson}
+                                    </pre>
+                                  </details>
+                                </div>
+                              );
+                            })}
+                          </div>
+
+                          {/* Full Stage Response Envelope JSON Viewer */}
+                          {modalReturnedData && typeof modalReturnedData === 'object' && Object.keys(modalReturnedData).length > 0 && (
+                            <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-2">
+                              <div className="flex items-center justify-between">
+                                <span className="text-xs font-bold text-slate-700 font-mono uppercase tracking-wider">
+                                  Full Stage Response Data Envelope (JSONB)
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => handleCopyPayload(JSON.stringify(modalReturnedData, null, 2), 'drilldown_stage_envelope')}
+                                  className="px-2.5 py-0.5 rounded bg-white hover:bg-slate-100 text-slate-700 text-[10px] font-mono border border-slate-300 cursor-pointer"
+                                >
+                                  {copiedPayloadKey === 'drilldown_stage_envelope' ? 'Copied Envelope!' : 'Copy Full Envelope'}
+                                </button>
+                              </div>
+                              <pre className="p-2.5 bg-slate-950 text-emerald-400 rounded-lg overflow-x-auto text-[10px] font-mono whitespace-pre-wrap max-h-40 overflow-y-auto">
+                                {JSON.stringify(modalReturnedData, null, 2)}
+                              </pre>
+                            </div>
+                          )}
+                        </div>
+                      )}
                     </div>
                   )}
+                </div>
 
-                  {targetRecord ? (
-                    <div className="border border-slate-200 rounded-xl overflow-hidden shadow-xs">
-                      <table className="w-full text-xs text-left">
-                        <thead>
-                          <tr className="bg-slate-100/80 text-slate-700 font-semibold border-b border-slate-200 font-mono text-[11px]">
-                            <th className="py-2 px-3 w-1/4">Field / Parameter</th>
-                            <th className="py-2 px-3 w-1/3 text-slate-900">Task Dataset Record (Input)</th>
-                            <th className="py-2 px-3 w-1/3 text-blue-900">Target DB Fetched Record ({targetDbName})</th>
-                            <th className="py-2 px-2 text-center w-16">Match</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-slate-100 font-mono">
-                          {dynamicComparisonFields.map((field) => {
-                            const inVal = getCaseInsensitiveVal(inputRecord, field.inputKey);
-                            const tgtVal = getCaseInsensitiveVal(targetRecord, field.targetKey);
-
-                            if (inVal === undefined && tgtVal === undefined) return null;
-
-                            const isMatch = inVal !== undefined && tgtVal !== undefined && String(inVal).trim().toLowerCase() === String(tgtVal).trim().toLowerCase();
-
-                            return (
-                              <tr key={field.label} className="hover:bg-slate-50/70 transition">
-                                <td className="py-2 px-3 font-medium text-slate-600">
-                                  {field.label}
-                                </td>
-                                <td className="py-2 px-3 text-slate-800 font-semibold">
-                                  {formatVal(inVal)}
-                                </td>
-                                <td className={`py-2 px-3 font-semibold ${isMatch ? 'text-blue-900' : 'text-rose-700 bg-rose-50/50'}`}>
-                                  {formatVal(tgtVal)}
-                                </td>
-                                <td className="py-2 px-2 text-center">
-                                  {isMatch ? (
-                                    <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-emerald-100 text-emerald-700">
-                                      <Check size={11} />
-                                    </span>
-                                  ) : (
-                                    <span className="inline-flex items-center justify-center w-5 h-5 rounded-full bg-rose-100 text-rose-700" title="Discrepancy detected">
-                                      <AlertTriangle size={11} />
-                                    </span>
-                                  )}
-                                </td>
-                              </tr>
-                            );
-                          })}
-
-                          {/* Extra fields from target record that weren't in dynamicComparisonFields */}
-                          {Object.entries(targetRecord)
-                            .filter(([k]) => !k.startsWith('_') && !dynamicComparisonFields.some(f => f.targetKey.toLowerCase() === k.toLowerCase()))
-                            .map(([k, v]) => (
-                              <tr key={`extra-${k}`} className="hover:bg-slate-50/70 transition bg-slate-50/30">
-                                <td className="py-1.5 px-3 text-slate-500 font-normal">
-                                  {k}
-                                </td>
-                                <td className="py-1.5 px-3 text-slate-400 italic">
-                                  {formatVal(inputRecord[k])}
-                                </td>
-                                <td className="py-1.5 px-3 text-blue-900 font-semibold">
-                                  {formatVal(v)}
-                                </td>
-                                <td className="py-1.5 px-2 text-center text-[10px] text-slate-400">
-                                  —
-                                </td>
-                              </tr>
-                            ))}
-                        </tbody>
-                      </table>
+                {/* =========================================================================
+                    ACCORDION 2: VALIDATIONS CONDUCTED (ALL STAGES & STEPS IN ONE REAL TABLE)
+                    ========================================================================= */}
+                <div className="border border-purple-200 rounded-xl overflow-hidden bg-white shadow-2xs">
+                  <button
+                    type="button"
+                    onClick={() => toggleDrilldownAccordion('validations_conducted')}
+                    className="w-full p-3.5 bg-gradient-to-r from-purple-50/70 via-slate-50/50 to-white hover:bg-purple-50/90 transition flex items-center justify-between text-left cursor-pointer border-b border-purple-100"
+                  >
+                    <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                      <div className="text-purple-600 transition-transform duration-200">
+                        {isAccordionOpen('validations_conducted', true) ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                      </div>
+                      <div className="p-1.5 rounded-lg bg-purple-100 text-purple-700 shrink-0">
+                        <GitCompare size={15} />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-bold text-xs text-slate-900 uppercase font-mono tracking-wider">
+                            Validations Conducted: Multi-Stage Evaluation Steps
+                          </span>
+                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-mono font-bold ${
+                            evalOutcome.status === 'PASS' ? 'bg-emerald-100 text-emerald-800 border border-emerald-200' : 'bg-rose-100 text-rose-800 border border-rose-200'
+                          }`}>
+                            Overall Verdict: {evalOutcome.status}
+                          </span>
+                          <span className="text-[10px] font-mono text-slate-500">
+                            {pipelineStages.length} Stages/Steps &bull; {pipelineStages.filter(s => s.status === 'PASS').length} Passed &bull; {pipelineStages.filter(s => s.status === 'FAIL' || s.status === 'ERROR').length} Failed
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-slate-500 mt-0.5 truncate font-mono">
+                          Sequential execution checklist and verification findings for workflow &ldquo;{activeWorkflow.name}&rdquo;
+                        </p>
+                      </div>
                     </div>
-                  ) : (
-                    <div className={`p-4 border rounded-xl flex items-start gap-3 text-xs ${evalOutcome.status === 'PENDING' ? 'bg-amber-50 border-amber-200 text-amber-900' : 'bg-rose-50 border-rose-200 text-rose-900'}`}>
-                      <AlertTriangle size={18} className={evalOutcome.status === 'PENDING' ? 'text-amber-600 shrink-0 mt-0.5' : 'text-rose-600 shrink-0 mt-0.5'} />
-                      <div>
-                        {evalOutcome.status === 'PENDING' ? (
-                          <>
-                            <div className="font-bold text-sm text-slate-800">Validation Not Run Yet</div>
-                            <p className="mt-1 text-slate-600 leading-relaxed">
-                              This record has not yet been validated against target database <strong className="font-mono text-slate-900">{targetDbName}</strong> table <strong className="font-mono text-slate-900">{targetTableName}</strong>.
-                            </p>
-                            <p className="mt-1.5 text-[11px] text-blue-700 font-medium">
-                              Click "▶ Run Validation" to query the target database with configured parameters <strong className="font-mono">{displayKeyString}</strong>.
-                            </p>
-                          </>
-                        ) : (
-                          <>
-                            <div className="font-bold text-sm">No Matching Record Returned from Target Database</div>
-                            <p className="mt-1 text-rose-700 leading-relaxed">
-                              The query against target database <strong className="font-mono text-rose-900">{targetDbName}</strong> table <strong className="font-mono text-rose-900">{targetTableName}</strong> with parameters <strong className="font-mono text-rose-900">{displayKeyString}</strong> returned 0 records.
-                            </p>
-                            <p className="mt-1.5 text-[11px] text-rose-600 font-medium">
-                              Suggested Manual Action: verify whether this transaction was submitted, settled, or delayed in the target settlement system.
-                            </p>
-                          </>
-                        )}
+
+                    <div className="flex items-center gap-2 shrink-0 ml-2">
+                      <span className={`px-2 py-0.5 rounded font-mono text-[10px] font-bold ${
+                        evalOutcome.status === 'PASS' ? 'bg-emerald-600 text-white' : 'bg-rose-600 text-white'
+                      }`}>
+                        {evalOutcome.status}
+                      </span>
+                    </div>
+                  </button>
+
+                  {isAccordionOpen('validations_conducted', true) && (
+                    <div className="p-3.5 space-y-3 bg-white animate-in fade-in-50 duration-150">
+                      <div className="overflow-x-auto border border-slate-200 rounded-xl shadow-2xs">
+                        <table className="w-full text-left text-xs border-collapse">
+                          <thead>
+                            <tr className="bg-slate-100 text-slate-700 font-mono text-[10px] uppercase font-bold border-b border-slate-200">
+                              <th className="py-2.5 px-3 text-center w-12">#</th>
+                              <th className="py-2.5 px-3 min-w-[220px]">Validation Stage / Rule Name</th>
+                              <th className="py-2.5 px-3 min-w-[140px]">Check Type</th>
+                              <th className="py-2.5 px-3 text-center w-28">Status</th>
+                              <th className="py-2.5 px-3 text-center w-28">Action</th>
+                              <th className="py-2.5 px-4 min-w-[280px]">Evaluation Findings &amp; Discrepancy Record</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100 font-mono text-xs">
+                            {pipelineStages.map((stage, sIdx) => {
+                              const isPass = stage.status === 'PASS';
+                              const isFail = stage.status === 'FAIL' || stage.status === 'ERROR';
+                              const checkType = stage.returnedData?.checkType || stage.returnedData?.ruleType || (
+                                stage.stageId === 'existence_lookup' ? 'INGESTION_SEARCH' :
+                                stage.stageId === 'cardinality_policy' ? 'CARDINALITY' :
+                                stage.stageId.startsWith('dbcfg_') ? 'TABLE_RULE' :
+                                'EQUALITY_MATCH'
+                              );
+
+                              return (
+                                <tr
+                                  key={stage.stageId || sIdx}
+                                  className={`hover:bg-slate-50/70 transition ${
+                                    isFail ? 'bg-rose-50/30' : sIdx % 2 === 0 ? 'bg-white' : 'bg-slate-50/20'
+                                  }`}
+                                >
+                                  <td className="py-2.5 px-3 text-center font-bold text-slate-500">
+                                    {sIdx + 1}
+                                  </td>
+                                  <td className="py-2.5 px-3 font-semibold text-slate-900">
+                                    <div className="flex items-center gap-1.5">
+                                      {isPass ? (
+                                        <CheckCircle2 size={13} className="text-emerald-600 shrink-0" />
+                                      ) : isFail ? (
+                                        <AlertTriangle size={13} className="text-rose-600 shrink-0" />
+                                      ) : (
+                                        <HelpCircle size={13} className="text-slate-400 shrink-0" />
+                                      )}
+                                      <span>{stage.stageName}</span>
+                                    </div>
+                                  </td>
+                                  <td className="py-2.5 px-3 text-slate-600">
+                                    <span className="px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 text-[10px] font-bold border border-slate-200">
+                                      {String(checkType)}
+                                    </span>
+                                  </td>
+                                  <td className="py-2.5 px-3 text-center">
+                                    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                                      isPass
+                                        ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                                        : isFail
+                                        ? 'bg-rose-100 text-rose-800 border border-rose-300'
+                                        : 'bg-slate-100 text-slate-700 border border-slate-300'
+                                    }`}>
+                                      {stage.status}
+                                    </span>
+                                  </td>
+                                  <td className="py-2.5 px-3 text-center">
+                                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${
+                                      isFail
+                                        ? 'bg-rose-50 text-rose-800 border-rose-200'
+                                        : 'bg-slate-50 text-slate-700 border-slate-200'
+                                    }`}>
+                                      ➔ {stage.action}
+                                    </span>
+                                  </td>
+                                  <td className="py-2.5 px-4 font-sans text-xs">
+                                    <div className="space-y-1">
+                                      <div className={`leading-relaxed ${isFail ? 'font-semibold text-rose-900' : 'text-slate-700'}`}>
+                                        {stage.message}
+                                      </div>
+
+                                      {/* If specific field comparison mismatches exist, show clean badges */}
+                                      {Array.isArray(stage.returnedData?.fieldComparisons) &&
+                                        stage.returnedData.fieldComparisons.some((fc: any) => fc.verdict === 'MISMATCH') && (
+                                          <div className="flex flex-wrap items-center gap-1.5 pt-0.5 font-mono text-[10px]">
+                                            {stage.returnedData.fieldComparisons
+                                              .filter((fc: any) => fc.verdict === 'MISMATCH')
+                                              .map((fc: any, fcIdx: number) => (
+                                                <span key={fcIdx} className="bg-rose-100 text-rose-800 px-1.5 py-0.5 rounded border border-rose-300">
+                                                  <strong>{fc.parameter}</strong>: Input &lsquo;{formatCellVal(fc.inputValue)}&rsquo; ≠ DB &lsquo;{formatCellVal(fc.targetDbValue)}&rsquo;
+                                                </span>
+                                              ))}
+                                          </div>
+                                      )}
+                                    </div>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
                       </div>
                     </div>
                   )}
                 </div>
+
+
               </div>
 
               {/* Modal Footer */}
@@ -4959,210 +6779,1193 @@ export default function ValidationOrchestratorWorkspace({
           </div>
         );
       })()}
+        </ErrorBoundary>
+      )}
 
       {/* =========================================================================
           7. DATABASE RECORD INSPECTOR MODAL
           ========================================================================= */}
       {inspectingRow && (
-        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-2xs z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-xl border border-slate-300 max-w-xl w-full p-5 space-y-4 shadow-2xl animate-in zoom-in-95 max-h-[90vh] overflow-y-auto">
-            <div className="flex items-center justify-between border-b border-slate-200 pb-2.5">
-              <div className="flex items-center gap-2">
-                <Database size={16} className="text-blue-600" />
-                <div>
-                  <h3 className="font-bold text-slate-900 text-xs font-mono uppercase tracking-wider">
-                    Transaction Investigation: {inspectingRow.rowId}
-                  </h3>
-                  <p className="text-[10px] text-slate-500">Multi-Stage Investigation Audit Trail</p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setInspectingRow(null)}
-                className="p-1 text-slate-400 hover:text-slate-700 rounded cursor-pointer"
-              >
-                <X size={16} />
-              </button>
-            </div>
+        <ErrorBoundary fallbackTitle="Database Record Inspector Error" fallbackMessage="Could not render record inspection details.">
+          {(() => {
+        const rowValDetails = inspectingRow._validation_details || inspectingRow.sourceRecord?._validation_details;
+        const inspectorLegs = extractRowLegs(inspectingRow, activeWorkflow);
+        const cleanInputRecord: Record<string, any> = {};
+        const rawInput = inspectingRow.sourceRecord || inspectingRow.canonical_data || inspectingRow || {};
+        for (const [k, v] of Object.entries(rawInput)) {
+          if (!k.startsWith('_')) {
+            cleanInputRecord[k] = v;
+          }
+        }
+        const inspectIsNotFoundInDb = Boolean(
+          rowValDetails?.existence === 'NOT_FOUND_IN_TARGET_DB' ||
+          inspectingRow._validation_details?.existence === 'NOT_FOUND_IN_TARGET_DB' ||
+          inspectingRow.sourceRecord?._validation_details?.existence === 'NOT_FOUND_IN_TARGET_DB' ||
+          (inspectorLegs.length === 0 && (inspectingRow.reconciliation_status === 'FAIL' || (inspectingRow.sourceRecord as any)?.reconciliation_status === 'FAIL'))
+        );
 
-            {/* Lifecycle Status Pill and Individual Transaction Closure Button */}
-            <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 flex items-center justify-between gap-3">
-              <div className="flex items-center gap-2">
-                <span className="text-xs font-bold text-slate-600">Investigation Status:</span>
-                <span className={`px-2.5 py-0.5 rounded-full text-xs font-bold uppercase font-mono ${inspectingRow.investigationStatus === 'RECONCILED' ? 'bg-emerald-100 text-emerald-800 border border-emerald-300' :
-                    inspectingRow.investigationStatus === 'CLOSED' ? 'bg-slate-200 text-slate-800 border border-slate-400' :
-                      inspectingRow.investigationStatus === 'FLAGGED' ? 'bg-rose-100 text-rose-800 border border-rose-300' :
-                        'bg-amber-100 text-amber-800 border border-amber-300'
-                  }`}>
-                  {inspectingRow.investigationStatus}
-                </span>
-              </div>
+        // Focused Record (respects inspectLegIndex when an individual record is picked)
+        const focusedInspectRecord = (inspectLegIndex >= 0 && inspectorLegs[inspectLegIndex])
+          ? (inspectorLegs[inspectLegIndex]?.payload || inspectorLegs[inspectLegIndex])
+          : null;
 
-              <button
-                type="button"
-                onClick={() => {
-                  handleToggleRowClosed(inspectingRow.rowId);
-                  setInspectingRow({
-                    ...inspectingRow,
-                    investigationStatus: inspectingRow.investigationStatus === 'CLOSED' ? 'INVESTIGATING' : 'CLOSED',
-                    isClosed: inspectingRow.investigationStatus !== 'CLOSED'
-                  });
-                }}
-                className={`px-3 py-1 rounded text-xs font-bold border transition cursor-pointer ${inspectingRow.investigationStatus === 'CLOSED'
-                    ? 'bg-slate-200 hover:bg-slate-300 text-slate-800 border-slate-400'
-                    : 'bg-indigo-600 hover:bg-indigo-500 text-white border-indigo-700 shadow-xs'
-                  }`}
-              >
-                {inspectingRow.investigationStatus === 'CLOSED' ? 'Reopen Transaction' : 'Close Transaction Case'}
-              </button>
-            </div>
+        const rawInspectRecord = focusedInspectRecord
+          || inspectingRow._target_record
+          || inspectingRow.sourceRecord?._target_record
+          || (inspectorLegs.length > 0 ? (inspectorLegs[0]?.payload || inspectorLegs[0]) : null);
 
-            {/* Central Repository Lineage & Cross-Task Duplicate Detection Card */}
-            {(inspectingRow.sourceRecord?._isDuplicate || inspectingRow.sourceRecord?.isDuplicate) ? (
-              <div className="p-3 bg-purple-50 rounded-xl border border-purple-200 text-purple-950 text-xs space-y-1.5 shadow-2xs">
-                <div className="flex items-center justify-between">
-                  <span className="font-bold flex items-center gap-1.5 text-purple-900 font-mono text-[11px] uppercase tracking-wider">
-                    <span className="w-2 h-2 rounded-full bg-purple-600 inline-block animate-pulse"></span>
-                    Central Transaction Repository: Duplicate Identified
-                  </span>
-                  <span className="px-2 py-0.5 rounded text-[10px] font-bold font-mono bg-purple-200 text-purple-900 border border-purple-300">
-                    Prior Task #{inspectingRow.sourceRecord?._duplicateFromTaskId || inspectingRow.sourceRecord?._originalTaskId || 'Recorded'}
-                  </span>
-                </div>
-                <p className="text-[11px] text-purple-800">
-                  This transaction key previously appeared in Task <strong>#{inspectingRow.sourceRecord?._duplicateFromTaskId || inspectingRow.sourceRecord?._originalTaskId}</strong>. The Central Repository automatically synchronized historical state to prevent redundant downstream processing.
-                </p>
-                <div className="flex flex-wrap items-center gap-2 pt-1 font-mono text-[10px]">
-                  <span className="bg-white/80 px-2 py-0.5 rounded border border-purple-300">
-                    Batch: <strong>{inspectingRow.sourceRecord?._batchId || 'N/A'}</strong>
-                  </span>
-                  {inspectingRow.sourceRecord?._allTaskIds && (
-                    <span className="bg-white/80 px-2 py-0.5 rounded border border-purple-300">
-                      Task History: {Array.isArray(inspectingRow.sourceRecord._allTaskIds) ? inspectingRow.sourceRecord._allTaskIds.map(t => `#${t}`).join(', ') : inspectingRow.sourceRecord._allTaskIds}
-                    </span>
-                  )}
-                </div>
-              </div>
-            ) : inspectingRow.sourceRecord?._batchId ? (
-              <div className="px-3 py-2 bg-slate-50 rounded-lg border border-slate-200 flex items-center justify-between text-[11px] font-mono text-slate-600">
-                <span>Central Batch Allocation: <strong>{inspectingRow.sourceRecord._batchId}</strong></span>
-                <span className="text-emerald-700 font-bold bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">First Ingested</span>
-              </div>
-            ) : null}
+        const inspectTargetRecord = (inspectIsNotFoundInDb || !rawInspectRecord || (typeof rawInspectRecord === 'object' && Object.keys(rawInspectRecord).length === 0))
+          ? null
+          : rawInspectRecord;
+        const inspectTargetDb = inspectingRow._target_db || activeWorkflow?.targetDbId || 'Target DB';
+        const inspectTargetTable = inspectingRow._target_table || activeWorkflow?.targetTable || 'tran_log_tab';
 
-            <p className="text-[10px] text-slate-400 italic">
-              Note: Closing this individual transaction does not automatically close other records or the parent Issue (#{selectedIssue.id}).
-            </p>
+        // Extract multi-leg response envelope data & metrics
+        const rawReturnedData = inspectingRow.returned_data
+          || (inspectingRow.sourceRecord as any)?.returned_data
+          || (inspectingRow as any).canonical_data?.returned_data
+          || (inspectingRow.sourceRecord as any)?.canonical_data?.returned_data;
 
-            {/* Audit Trail of Rules Evaluated */}
-            {(() => {
-              const modalAuditTrail = (
-                (Array.isArray(inspectingRow.executionSummary?.auditTrail) && inspectingRow.executionSummary.auditTrail.length > 0 ? inspectingRow.executionSummary.auditTrail : null) ||
-                (Array.isArray(inspectingRow.sourceRecord?.auditTrail) ? inspectingRow.sourceRecord.auditTrail : null) ||
-                (Array.isArray(inspectingRow.sourceRecord?.canonical_data?.auditTrail) ? inspectingRow.sourceRecord.canonical_data.auditTrail : null) ||
-                (Array.isArray(serverEvaluatedRecords?.[inspectingRow.rowId]?.auditTrail) ? serverEvaluatedRecords[inspectingRow.rowId].auditTrail : null) ||
-                []
-              ).filter((entry: any) => {
-                if (!entry || !entry.ruleId) return false;
-                if (activeWorkflow?.steps && activeWorkflow.steps.length > 0) {
-                  return activeWorkflow.steps.some(s => isStepIdMatch(s.id, entry.ruleId));
-                }
-                return true;
-              });
+        let activeStageEnvelope: any = null;
+        if (rawReturnedData?.stages && typeof rawReturnedData.stages === 'object') {
+          const targetTbl = activeWorkflow?.targetTable?.toLowerCase();
+          for (const [stgKey, stgVal] of Object.entries(rawReturnedData.stages)) {
+            if (stgVal && typeof stgVal === 'object') {
+              const stgTbl = String((stgVal as any).targetTable || stgKey).toLowerCase();
+              if (targetTbl && stgTbl === targetTbl) {
+                activeStageEnvelope = stgVal;
+                break;
+              }
+            }
+          }
+          if (!activeStageEnvelope) {
+            activeStageEnvelope = Object.values(rawReturnedData.stages)[0] || null;
+          }
+        }
 
-              return (
-                <div className="space-y-2 text-xs">
-                  <div className="flex items-center justify-between">
-                    <span className="font-bold text-slate-700 text-[11px] uppercase tracking-wider flex items-center gap-1.5 font-mono">
-                      <CheckCircle size={13} className="text-blue-600" />
-                      <span>Multi-Stage Rule Evaluation Trajectory:</span>
-                    </span>
-                    {activeWorkflow && (
-                      <span className="text-[10px] font-mono text-purple-700 font-bold bg-purple-50 px-2 py-0.5 rounded border border-purple-200">
-                        Workflow: {activeWorkflow.name}
-                      </span>
-                    )}
+        const auditMetadata = rawReturnedData?.audit || null;
+        const aggregatedMetrics = activeStageEnvelope?.aggregatedMetrics || null;
+
+        const reversalLegs = inspectorLegs.filter((l: any) => {
+          const obj = l?.payload || l || {};
+          return String(getCaseInsensitiveVal(obj, 'PROC_NAME') || '').toUpperCase() === 'RVS';
+        });
+        const settlementLegs = inspectorLegs.filter((l: any) => {
+          const obj = l?.payload || l || {};
+          return String(getCaseInsensitiveVal(obj, 'PROC_NAME') || '').toUpperCase() !== 'RVS';
+        });
+        const hasReversal = reversalLegs.length > 0 || Boolean(aggregatedMetrics?.hasReversal);
+
+        let computedTotalAmount = 0;
+        let computedFeeAmount = 0;
+        let currencyFound: string | null = aggregatedMetrics?.currency || null;
+
+        inspectorLegs.forEach((l: any) => {
+          const obj = l?.payload || l || {};
+          const amtVal = getCaseInsensitiveVal(obj, 'reqamt') ?? getCaseInsensitiveVal(obj, 'amount');
+          const feeVal = getCaseInsensitiveVal(obj, 'client_billingfee') ?? getCaseInsensitiveVal(obj, 'transfeeamt1') ?? getCaseInsensitiveVal(obj, 'fee');
+          const currVal = getCaseInsensitiveVal(obj, 'currency') ?? getCaseInsensitiveVal(obj, 'curr');
+          if (currVal && !currencyFound) currencyFound = String(currVal);
+          if (amtVal !== undefined && amtVal !== null && !isNaN(Number(amtVal))) {
+            computedTotalAmount += Number(amtVal);
+          }
+          if (feeVal !== undefined && feeVal !== null && !isNaN(Number(feeVal))) {
+            computedFeeAmount += Number(feeVal);
+          }
+        });
+
+        const displayNetAmt = aggregatedMetrics?.netAmount ?? (computedTotalAmount - computedFeeAmount);
+        const displayTotalAmt = aggregatedMetrics?.totalAmount ?? computedTotalAmount;
+        const displayFeeAmt = aggregatedMetrics?.feeAmount ?? computedFeeAmount;
+
+        const inspectParams = activeWorkflow?.steps?.map(s => s.parameter).filter(Boolean) || [];
+        const inspectParamsLower = new Set(inspectParams.map(p => p.toLowerCase()));
+        const inspectColSet = new Set<string>();
+        const inspectComparisonColumns: { key: string; label: string; isKeyParam: boolean }[] = [];
+        const registerInspectCol = (key?: string) => {
+          if (!key) return;
+          const trimmed = key.trim();
+          if (!trimmed || trimmed.startsWith('_')) return;
+          const lk = trimmed.toLowerCase();
+          if (isInternalMetaKey(lk)) return;
+          if (!inspectColSet.has(lk)) {
+            inspectColSet.add(lk);
+            inspectComparisonColumns.push({
+              key: trimmed,
+              label: formatHeaderLabel(trimmed),
+              isKeyParam: inspectParamsLower.has(lk)
+            });
+          }
+        };
+
+        inspectParams.forEach(p => registerInspectCol(p));
+        ['transaction_id', 'retrieval_ref_num', 'refnum', 'rrn', 'account_number', 'acct_num', 'amount', 'reqamt', 'currency', 'value_date', 'ttime', 'terminal_id', 'proc_name', 'bo_type'].forEach(p => registerInspectCol(p));
+        Object.keys(cleanInputRecord).forEach(k => registerInspectCol(k));
+        inspectorLegs.forEach((leg: any) => {
+          const legObj = leg?.payload || leg || {};
+          Object.keys(legObj).forEach(k => registerInspectCol(k));
+        });
+        if (inspectTargetRecord) {
+          const tObj = inspectTargetRecord.payload || inspectTargetRecord;
+          Object.keys(tObj).forEach(k => registerInspectCol(k));
+        }
+
+        const isFailRecord = inspectingRow.validationResult === 'FAIL' ||
+          inspectingRow.investigationStatus === 'FLAGGED' ||
+          (inspectingRow as any).status === 'FLAGGED' ||
+          (inspectingRow as any).status === 'ERROR' ||
+          rowValDetails?.status === 'FAIL' ||
+          rowValDetails?.cardinality?.status === 'FAIL' ||
+          !!rowValDetails?.tableRuleViolation ||
+          rowValDetails?.existence?.status === 'FAIL';
+
+        const handleSetAllInspectAccordions = (open: boolean) => {
+          setDrilldownOpenAccordions(prev => ({
+            ...prev,
+            inspect_data_comparison: open,
+            inspect_validations_conducted: open,
+            inspect_grouped_legs: open,
+          }));
+        };
+
+        const isAccordionOpen = (key: string, defaultOpen: boolean = false) => {
+          if (drilldownOpenAccordions[key] !== undefined) {
+            return drilldownOpenAccordions[key];
+          }
+          return defaultOpen;
+        };
+
+        const synthesizedTrail: any[] = [];
+
+        // 1. Stage history from _validation_details
+        if (Array.isArray(rowValDetails?.stageHistory)) {
+          rowValDetails.stageHistory.forEach((sh: any) => {
+            synthesizedTrail.push({
+              ruleId: sh.stageId || `stage_${sh.stageName}`,
+              ruleName: sh.stageName ? `Stage: ${sh.stageName}` : 'Pipeline Stage',
+              stageName: sh.stageName || 'Pipeline Stage',
+              validationResult: sh.status || (sh.recordsFound > 0 ? 'PASS' : 'FAIL'),
+              pipelineAction: sh.status === 'FAIL' ? 'STOP' : 'CONTINUE',
+              message: sh.message || (sh.recordsFound != null ? `Found ${sh.recordsFound} record(s) in target table` : 'Stage execution completed'),
+              errorDetail: sh.error || null,
+              durationMs: sh.durationMs || 0
+            });
+          });
+        }
+
+        // 2. Cardinality check entry
+        if (rowValDetails?.cardinality) {
+          synthesizedTrail.push({
+            ruleId: 'cardinality_policy',
+            ruleName: `Cardinality Check (${rowValDetails.cardinality.policy || 'EXACT_ONE'})`,
+            stageName: 'Multi-Leg Validation',
+            validationResult: rowValDetails.cardinality.status || 'FAIL',
+            pipelineAction: rowValDetails.cardinality.status === 'FAIL' ? 'STOP' : 'CONTINUE',
+            message: `Evaluated ${rowValDetails.cardinality.actualCount ?? inspectorLegs.length} matched legs against policy ${rowValDetails.cardinality.policy || 'EXACT_ONE'}. ${rowValDetails.cardinality.reason || ''}`,
+            errorDetail: rowValDetails.cardinality.status === 'FAIL' ? `Actual count: ${rowValDetails.cardinality.actualCount ?? inspectorLegs.length}, Expected: 1` : null,
+            durationMs: 0
+          });
+        }
+
+        // 3. Table rule violation entry
+        if (rowValDetails?.tableRuleViolation) {
+          synthesizedTrail.push({
+            ruleId: rowValDetails.tableRuleViolation.stepId || 'table_rule_violation',
+            ruleName: rowValDetails.tableRuleViolation.ruleName || 'Table-Level Validation Check',
+            stageName: rowValDetails.tableRuleViolation.stageName || 'Table Evaluation',
+            validationResult: 'FAIL',
+            pipelineAction: 'STOP',
+            message: rowValDetails.tableRuleViolation.message || rowValDetails.tableRuleViolation.detail || 'Rule criteria violated',
+            errorDetail: rowValDetails.tableRuleViolation,
+            durationMs: 0
+          });
+        }
+
+        // 4. Target DB existence
+        if (rowValDetails?.existence) {
+          synthesizedTrail.push({
+            ruleId: 'existence_lookup',
+            ruleName: 'Target DB Existence Verification',
+            stageName: 'Ingestion Lookup',
+            validationResult: rowValDetails.existence.status === 'PASS' ? 'PASS' : 'FAIL',
+            pipelineAction: rowValDetails.existence.status === 'PASS' ? 'CONTINUE' : 'STOP',
+            message: rowValDetails.existence.status === 'PASS' ? 'Target records located in mirror ledger' : 'NOT_FOUND_IN_TARGET_DB: No matching rows in target table',
+            errorDetail: `Target Table: ${rowValDetails.existence.targetTable || activeWorkflow?.targetTable || 'target_table'}`,
+            durationMs: 0
+          });
+        }
+
+        // 5. Existing auditTrail or stepResults
+        if (Array.isArray(inspectingRow.executionSummary?.auditTrail) && inspectingRow.executionSummary.auditTrail.length > 0) {
+          inspectingRow.executionSummary.auditTrail.forEach((at: any) => synthesizedTrail.push(at));
+        } else if (inspectingRow.stepResults && Object.keys(inspectingRow.stepResults).length > 0) {
+          Object.values(inspectingRow.stepResults).forEach((sr: any) => {
+            synthesizedTrail.push({
+              ruleId: sr.stepId,
+              ruleName: activeWorkflow?.steps?.find((s: any) => isStepIdMatch(s.id, sr.stepId))?.name || (sr as any).ruleName || 'Validation Step',
+              stageName: sr.stageName || 'Validation Stage',
+              validationResult: sr.resultStatus || (sr.status === 'PASSED' ? 'PASS' : 'FAIL'),
+              pipelineAction: sr.actionTaken || (sr.status === 'PASSED' ? 'CONTINUE' : 'STOP'),
+              message: sr.detail || sr.badgeText,
+              errorDetail: sr.dbValue,
+              durationMs: 0
+            });
+          });
+        } else if (Array.isArray(inspectingRow.sourceRecord?.auditTrail)) {
+          inspectingRow.sourceRecord.auditTrail.forEach((at: any) => synthesizedTrail.push(at));
+        } else if (Array.isArray(inspectingRow.sourceRecord?.canonical_data?.auditTrail)) {
+          inspectingRow.sourceRecord.canonical_data.auditTrail.forEach((at: any) => synthesizedTrail.push(at));
+        } else if (Array.isArray(serverEvaluatedRecords?.[inspectingRow.rowId]?.auditTrail)) {
+          serverEvaluatedRecords[inspectingRow.rowId].auditTrail.forEach((at: any) => synthesizedTrail.push(at));
+        }
+
+        // De-duplicate synthesizedTrail by ruleId + validationResult + stageName
+        const seenKey = new Set<string>();
+        const deduplicatedTrail = synthesizedTrail.filter((e) => {
+          const k = `${e.ruleId}_${e.validationResult}_${e.stageName}`;
+          if (seenKey.has(k)) return false;
+          seenKey.add(k);
+          return true;
+        });
+
+        // Filter by activeWorkflow.steps if matching, otherwise fall back to full deduplicatedTrail
+        const filtered = deduplicatedTrail.filter((entry: any) => {
+          if (!entry || !entry.ruleId) return false;
+          if (activeWorkflow?.steps && activeWorkflow.steps.length > 0) {
+            return activeWorkflow.steps.some((s: any) => isStepIdMatch(s.id, entry.ruleId));
+          }
+          return true;
+        });
+        const modalAuditTrail = filtered.length > 0 ? filtered : deduplicatedTrail;
+
+        return (
+          <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-2xs z-50 flex items-center justify-center p-4 animate-in fade-in duration-150">
+            <div className="bg-white rounded-2xl border border-slate-300 max-w-5xl w-full p-6 space-y-4 shadow-2xl animate-in zoom-in-95 max-h-[92vh] flex flex-col text-slate-800">
+              {/* Modal Header */}
+              <div className="flex items-center justify-between border-b border-slate-200 pb-3 shrink-0">
+                <div className="flex items-center gap-3">
+                  <div className="p-2 rounded-xl bg-blue-50 text-blue-700 border border-blue-200">
+                    <Database size={20} />
                   </div>
-
-                  <div className="space-y-2">
-                    {modalAuditTrail.length > 0 ? (
-                      modalAuditTrail.map((entry: any, idx: number) => (
-                        <div
-                          key={idx}
-                          className={`p-3 rounded-lg border text-xs space-y-1 ${entry.validationResult === 'PASS' ? 'bg-emerald-50/60 border-emerald-200 text-emerald-950' :
-                              entry.validationResult === 'FAIL' ? 'bg-amber-50/60 border-amber-200 text-amber-950' :
-                                'bg-rose-50/60 border-rose-200 text-rose-950'
-                            }`}
-                        >
-                          <div className="flex items-center justify-between">
-                            <div className="flex items-center gap-2">
-                              <span className="px-1.5 py-0.2 rounded text-[9px] font-mono font-bold bg-white text-slate-700 border border-slate-300">
-                                {entry.stageName}
-                              </span>
-                              <span className="font-bold text-slate-900">{entry.ruleName}</span>
-                            </div>
-
-                            <div className="flex items-center gap-1.5 font-mono text-[10px]">
-                              <span className={`px-1.5 py-0.5 rounded font-bold ${entry.validationResult === 'PASS' ? 'bg-emerald-600 text-white' :
-                                  entry.validationResult === 'FAIL' ? 'bg-amber-500 text-white' :
-                                    'bg-rose-600 text-white'
-                                }`}>
-                                {entry.validationResult}
-                              </span>
-                              <span className="px-1.5 py-0.5 rounded font-bold bg-white border border-slate-300 text-slate-700">
-                                ➔ {entry.pipelineAction}
-                              </span>
-                              <span className="text-slate-400 font-bold">{entry.durationMs}ms</span>
-                            </div>
-                          </div>
-
-                          <p className="text-[11px] text-slate-700 font-sans">{entry.message}</p>
-                          {entry.errorDetail && (
-                            <div className="p-1.5 bg-rose-100 rounded text-[10px] font-mono text-rose-800 border border-rose-200">
-                              {entry.errorDetail}
-                            </div>
-                          )}
-                        </div>
-                      ))
-                    ) : (
-                      <div className="p-3 bg-slate-50 rounded border border-slate-200 text-slate-500 italic text-center">
-                        No sequential audit entries recorded for this transaction under [{activeWorkflow?.name || 'Current Workflow'}].
-                      </div>
-                    )}
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h3 className="font-bold text-slate-900 text-sm font-mono uppercase tracking-wider">
+                        Transaction Investigation: {inspectingRow.rowId}
+                      </h3>
+                      {activeWorkflow && (
+                        <span className="text-[10px] font-mono text-purple-700 font-bold bg-purple-50 px-2 py-0.5 rounded border border-purple-200">
+                          Workflow: {activeWorkflow.name}
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-xs text-slate-500 mt-0.5">
+                      Multi-Stage Rule Trajectory &bull; Target Ledger Mirror Coordinates &bull; Root Cause Diagnostics
+                    </p>
                   </div>
                 </div>
-              );
-            })()}
 
-            {inspectingRow.remedySql && (
-              <div className="space-y-1 text-xs">
-                <span className="font-bold text-slate-600 text-[10px] uppercase font-mono">Suggested Remedy / Correction DML:</span>
-                <div className="relative">
-                  <pre className="bg-slate-900 text-emerald-400 p-2.5 rounded font-mono text-[11px] overflow-x-auto whitespace-pre-wrap">
-                    {inspectingRow.remedySql}
-                  </pre>
+                <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-1 border border-slate-200 rounded-lg p-0.5 bg-slate-50">
+                    <button
+                      type="button"
+                      onClick={() => handleSetAllInspectAccordions(true)}
+                      className="px-2 py-0.5 rounded text-[10px] font-semibold text-slate-700 hover:bg-white hover:shadow-2xs transition cursor-pointer"
+                    >
+                      Expand All
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleSetAllInspectAccordions(false)}
+                      className="px-2 py-0.5 rounded text-[10px] font-semibold text-slate-700 hover:bg-white hover:shadow-2xs transition cursor-pointer"
+                    >
+                      Collapse All
+                    </button>
+                  </div>
                   <button
                     type="button"
-                    onClick={() => handleCopySql(inspectingRow.remedySql!, inspectingRow.rowId)}
-                    className="absolute right-2 top-2 p-1 bg-slate-800 hover:bg-slate-700 text-white rounded text-[10px] font-mono cursor-pointer"
+                    onClick={() => setInspectingRow(null)}
+                    className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg cursor-pointer transition"
                   >
-                    {copiedId === inspectingRow.rowId ? 'Copied!' : 'Copy SQL'}
+                    <X size={18} />
                   </button>
                 </div>
               </div>
-            )}
 
-            <div className="flex justify-end pt-1">
-              <button
-                type="button"
-                onClick={() => setInspectingRow(null)}
-                className="px-3.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold rounded text-xs cursor-pointer"
-              >
-                Close
-              </button>
+              {/* Lifecycle Status Pill and Individual Transaction Closure Button */}
+              <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 flex flex-wrap items-center justify-between gap-3 shrink-0">
+                <div className="flex items-center gap-2">
+                  <span className="text-xs font-bold text-slate-600">Investigation Status:</span>
+                  <span className={`px-2.5 py-0.5 rounded-full text-xs font-bold uppercase font-mono ${inspectingRow.investigationStatus === 'RECONCILED' ? 'bg-emerald-100 text-emerald-800 border border-emerald-300' :
+                      inspectingRow.investigationStatus === 'CLOSED' ? 'bg-slate-200 text-slate-800 border border-slate-400' :
+                        inspectingRow.investigationStatus === 'FLAGGED' ? 'bg-rose-100 text-rose-800 border border-rose-300' :
+                          'bg-amber-100 text-amber-800 border border-amber-300'
+                    }`}>
+                    {inspectingRow.investigationStatus}
+                  </span>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      handleToggleRowClosed(inspectingRow.rowId);
+                      setInspectingRow({
+                        ...inspectingRow,
+                        investigationStatus: inspectingRow.investigationStatus === 'CLOSED' ? 'INVESTIGATING' : 'CLOSED',
+                        isClosed: inspectingRow.investigationStatus !== 'CLOSED'
+                      });
+                    }}
+                    className={`px-3 py-1 rounded-lg text-xs font-bold border transition cursor-pointer ${inspectingRow.investigationStatus === 'CLOSED'
+                        ? 'bg-slate-200 hover:bg-slate-300 text-slate-800 border-slate-400'
+                        : 'bg-indigo-600 hover:bg-indigo-500 text-white border-indigo-700 shadow-xs'
+                      }`}
+                  >
+                    {inspectingRow.investigationStatus === 'CLOSED' ? 'Reopen Transaction' : 'Close Transaction Case'}
+                  </button>
+                </div>
+              </div>
+
+
+
+              {/* Failure Root Cause & Violated Rule Diagnostics Card */}
+              {isFailRecord && (
+                <div className="p-4 bg-rose-50/80 rounded-xl border border-rose-300 text-rose-950 text-xs space-y-2.5 shadow-2xs shrink-0">
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-rose-200/80 pb-2">
+                    <div className="flex items-center gap-2">
+                      <AlertTriangle size={17} className="text-rose-600 shrink-0" />
+                      <span className="font-bold text-rose-900 font-mono text-xs uppercase tracking-wider">
+                        Failure Diagnostics & Violated Rule Box
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-1.5 font-mono text-[10px]">
+                      <span className="px-2 py-0.5 rounded font-bold bg-rose-600 text-white">
+                        VERDICT: {rowValDetails?.status || inspectingRow.validationResult || 'FAIL'}
+                      </span>
+                      <span className="px-2 py-0.5 rounded font-bold bg-white text-rose-800 border border-rose-300">
+                        PIPELINE ACTION: STOP
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5 pt-0.5 text-[11px]">
+                    <div className="bg-white/90 p-2.5 rounded-lg border border-rose-200 space-y-1">
+                      <div className="text-slate-500 font-mono text-[10px] font-semibold uppercase">Failing Rule / Step:</div>
+                      <div className="font-bold text-slate-900">
+                        {rowValDetails?.tableRuleViolation?.ruleName ||
+                          rowValDetails?.tableRuleViolation?.stepId ||
+                          (rowValDetails?.cardinality?.status === 'FAIL' ? `Cardinality Check (${rowValDetails.cardinality.policy || 'EXACT_ONE'})` : null) ||
+                          (rowValDetails?.existence?.status === 'FAIL' ? 'Target DB Record Existence' : null) ||
+                          inspectingRow.executionSummary?.failingRule ||
+                          activeWorkflow?.steps?.[0]?.name ||
+                          'Validation Step Evaluation'}
+                      </div>
+                    </div>
+                    <div className="bg-white/90 p-2.5 rounded-lg border border-rose-200 space-y-1">
+                      <div className="text-slate-500 font-mono text-[10px] font-semibold uppercase">Failing Stage:</div>
+                      <div className="font-bold text-slate-900">
+                        {rowValDetails?.tableRuleViolation?.stageName ||
+                          (Array.isArray(rowValDetails?.stageHistory) ? (rowValDetails.stageHistory.find((s: any) => s.status === 'FAIL')?.stageName || rowValDetails.stageHistory[0]?.stageName) : null) ||
+                          inspectingRow.executionSummary?.failingStage ||
+                          activeWorkflow?.stages?.[0]?.name ||
+                          'Validation Stage'}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="bg-white/90 p-3 rounded-lg border border-rose-200 space-y-1.5 text-[11px]">
+                    <div className="text-slate-500 font-mono text-[10px] font-semibold uppercase">Root Cause & Violated Condition:</div>
+                    <div className="font-medium text-rose-900 leading-relaxed">
+                      {rowValDetails?.cardinality?.status === 'FAIL' ? (
+                        <>
+                          Multi-leg cardinality policy breach: expected <strong>{rowValDetails.cardinality.policy === 'EXACT_ONE' ? 'exactly 1 record' : rowValDetails.cardinality.policy}</strong>, but external query returned <strong>{rowValDetails.cardinality.actualCount ?? inspectorLegs.length} returned records</strong>. Reason: {rowValDetails.cardinality.reason || 'Multiple settlement records found'}.
+                        </>
+                      ) : rowValDetails?.tableRuleViolation ? (
+                        <>
+                          Table validation rule violation: <strong>{rowValDetails.tableRuleViolation.ruleName || rowValDetails.tableRuleViolation.stepId}</strong>. {rowValDetails.tableRuleViolation.message || rowValDetails.tableRuleViolation.detail || 'Condition not satisfied by target ledger records'}.
+                        </>
+                      ) : rowValDetails?.existence?.status === 'FAIL' ? (
+                        <>
+                          Record not found in target database: Target query returned 0 rows in table <strong className="font-mono text-rose-950">{rowValDetails.existence.targetTable || activeWorkflow?.targetTable || 'target_table'}</strong>.
+                        </>
+                      ) : (
+                        formatValidationDetail(inspectingRow.validationDetail, 'Validation criteria failed during multi-stage pipeline execution.')
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Central Repository Lineage & Cross-Task Duplicate Detection Card */}
+              {(inspectingRow.sourceRecord?._isDuplicate || inspectingRow.sourceRecord?.isDuplicate) ? (
+                <div className="p-3 bg-purple-50 rounded-xl border border-purple-200 text-purple-950 text-xs space-y-1.5 shadow-2xs shrink-0">
+                  <div className="flex items-center justify-between">
+                    <span className="font-bold flex items-center gap-1.5 text-purple-900 font-mono text-[11px] uppercase tracking-wider">
+                      <span className="w-2 h-2 rounded-full bg-purple-600 inline-block animate-pulse"></span>
+                      Central Transaction Repository: Duplicate Identified
+                    </span>
+                    <span className="px-2 py-0.5 rounded text-[10px] font-bold font-mono bg-purple-200 text-purple-900 border border-purple-300">
+                      Prior Task #{inspectingRow.sourceRecord?._duplicateFromTaskId || inspectingRow.sourceRecord?._originalTaskId || 'Recorded'}
+                    </span>
+                  </div>
+                  <p className="text-[11px] text-purple-800">
+                    This transaction key previously appeared in Task <strong>#{inspectingRow.sourceRecord?._duplicateFromTaskId || inspectingRow.sourceRecord?._originalTaskId}</strong>. The Central Repository automatically synchronized historical state to prevent redundant downstream processing.
+                  </p>
+                </div>
+              ) : null}
+
+              {/* Scrollable Container for Accordions */}
+              <div className="flex-1 overflow-y-auto space-y-4 pr-1">
+                {/* =========================================================================
+                    ACCORDION 1: DATA COMPARISON (INPUT DATA & RETURNED DB DATA IN ONE REAL TABLE)
+                    ========================================================================= */}
+                <div className="border border-blue-200 rounded-xl overflow-hidden bg-white shadow-2xs">
+                  <button
+                    type="button"
+                    onClick={() => toggleDrilldownAccordion('inspect_data_comparison')}
+                    className="w-full p-3.5 bg-gradient-to-r from-blue-50/70 via-indigo-50/40 to-white hover:bg-blue-50/90 transition flex items-center justify-between text-left cursor-pointer border-b border-blue-100"
+                  >
+                    <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                      <div className="text-blue-600 transition-transform duration-200">
+                        {isAccordionOpen('inspect_data_comparison', true) ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                      </div>
+                      <div className="p-1.5 rounded-lg bg-blue-100 text-blue-700 shrink-0">
+                        <Table size={15} />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-bold text-xs text-slate-900 uppercase font-mono tracking-wider">
+                            Data Comparison: Input Data &amp; Returned DB Data
+                          </span>
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-blue-100 text-blue-800 border border-blue-200">
+                            {inspectComparisonColumns.length} Columns
+                          </span>
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-indigo-100 text-indigo-800 border border-indigo-200">
+                            1 Input Row &bull; {inspectorLegs.length > 0 ? (inspectLegIndex >= 0 ? `Focused Record #${inspectLegIndex + 1} of ${inspectorLegs.length}` : `${inspectorLegs.length} Returned DB Records`) : inspectTargetRecord ? '1 DB Row' : '0 DB Records'}
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-slate-500 mt-0.5 truncate font-mono">
+                          Unified horizontal table comparing task input values against external database mirror ledger ({inspectTargetDb}.{inspectTargetTable})
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2 shrink-0 ml-2">
+                      {inspectTargetRecord ? (
+                        <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-emerald-100 text-emerald-800 border border-emerald-300 flex items-center gap-1">
+                          <CheckCircle2 size={11} /> DB Records Found ({inspectorLegs.length || 1})
+                        </span>
+                      ) : (
+                        <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-rose-100 text-rose-800 border border-rose-300 flex items-center gap-1">
+                          <AlertTriangle size={11} /> 0 Records in DB
+                        </span>
+                      )}
+                    </div>
+                  </button>
+
+                  {isAccordionOpen('inspect_data_comparison', true) && (
+                    <div className="p-3.5 space-y-3 bg-white animate-in fade-in-50 duration-150">
+                      {/* Integrated Multi-Leg Response Envelope Banner & Switcher Tabs */}
+                      {inspectorLegs.length > 0 ? (
+                        <div className="p-3 bg-gradient-to-r from-slate-50 via-indigo-50/40 to-slate-50 rounded-xl border border-indigo-200 text-slate-800 text-xs space-y-2.5 shadow-2xs">
+                          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-indigo-100 pb-2">
+                            <div className="flex items-center gap-2">
+                              <div className="p-1 rounded-md bg-indigo-100 text-indigo-700">
+                                <Layers size={14} />
+                              </div>
+                              <span className="font-bold text-xs text-indigo-950 font-mono uppercase tracking-wider">
+                                Returned Data Response Envelope: {inspectorLegs.length} Returned DB Record{inspectorLegs.length > 1 ? 's' : ''}
+                              </span>
+                              <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-indigo-200 text-indigo-900 border border-indigo-300">
+                                {inspectTargetDb}.{inspectTargetTable}
+                              </span>
+                              {activeStageEnvelope?.queriedAt && (
+                                <span className="text-[10px] text-slate-500 font-mono hidden sm:inline">
+                                  &bull; Queried: {String(activeStageEnvelope.queriedAt).replace('T', ' ').slice(0, 19)}
+                                </span>
+                              )}
+                              {auditMetadata?.statusVersion != null && (
+                                <span className="text-[10px] font-mono px-1.5 py-0.2 rounded bg-slate-200 text-slate-700 font-semibold">
+                                  v{auditMetadata.statusVersion}
+                                </span>
+                              )}
+                            </div>
+
+                            <div className="flex items-center gap-1.5 flex-wrap font-mono text-[10px]">
+                              {displayTotalAmt > 0 && (
+                                <span className="px-2 py-0.5 rounded bg-white text-slate-800 border border-slate-300 font-bold">
+                                  Gross: {currencyFound ? `${currencyFound} ` : ''}{displayTotalAmt.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                                </span>
+                              )}
+                              {displayFeeAmt > 0 && (
+                                <span className="px-2 py-0.5 rounded bg-white text-amber-800 border border-amber-300 font-bold">
+                                  Fees: {currencyFound ? `${currencyFound} ` : ''}{displayFeeAmt.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                                </span>
+                              )}
+                              {displayTotalAmt > 0 && (
+                                <span className="px-2 py-0.5 rounded bg-indigo-100 text-indigo-900 border border-indigo-300 font-bold">
+                                  Net: {currencyFound ? `${currencyFound} ` : ''}{displayNetAmt.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                                </span>
+                              )}
+                              {hasReversal && (
+                                <span className="px-2 py-0.5 rounded bg-amber-100 text-amber-900 border border-amber-300 font-bold flex items-center gap-1">
+                                  <AlertTriangle size={10} className="text-amber-700" /> Reversal Present
+                                </span>
+                              )}
+                            </div>
+                          </div>
+
+                          {/* Interactive Multi-Leg Switcher Tabs */}
+                          {inspectorLegs.length > 1 && (
+                            <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5 no-scrollbar">
+                              <span className="text-[10px] font-bold text-slate-500 uppercase font-mono mr-1">Filter View:</span>
+                              <button
+                                type="button"
+                                onClick={() => setInspectLegIndex(-1)}
+                                className={`px-2.5 py-1 rounded-lg text-xs font-mono font-bold transition flex items-center gap-1.5 shrink-0 cursor-pointer ${
+                                  inspectLegIndex === -1
+                                    ? 'bg-indigo-600 text-white shadow-xs'
+                                    : 'bg-white hover:bg-slate-100 text-slate-700 border border-slate-300'
+                                }`}
+                              >
+                                <Table size={12} />
+                                <span>All Response Data ({inspectorLegs.length})</span>
+                              </button>
+
+                              {inspectorLegs.map((leg: any, idx: number) => {
+                                const legObj = leg?.payload || leg || {};
+                                const proc = getCaseInsensitiveVal(legObj, 'PROC_NAME') || leg.legType || leg._procName || `Record #${idx + 1}`;
+                                const isRvs = String(proc).toUpperCase() === 'RVS';
+                                const legAmt = getCaseInsensitiveVal(legObj, 'reqamt') ?? getCaseInsensitiveVal(legObj, 'amount') ?? getCaseInsensitiveVal(legObj, 'amnt1');
+                                const legTbl = leg._sourceTable || inspectTargetTable;
+                                const isSelected = inspectLegIndex === idx;
+
+                                return (
+                                  <button
+                                    key={idx}
+                                    type="button"
+                                    onClick={() => setInspectLegIndex(idx)}
+                                    className={`px-2.5 py-1 rounded-lg text-xs font-mono font-bold transition flex items-center gap-1.5 shrink-0 cursor-pointer border ${
+                                      isSelected
+                                        ? isRvs
+                                          ? 'bg-amber-600 text-white border-amber-700 shadow-xs'
+                                          : 'bg-blue-600 text-white border-blue-700 shadow-xs'
+                                        : isRvs
+                                          ? 'bg-amber-50 hover:bg-amber-100 text-amber-900 border-amber-300'
+                                          : 'bg-white hover:bg-slate-100 text-slate-800 border-slate-300'
+                                    }`}
+                                  >
+                                    <span className={`w-1.5 h-1.5 rounded-full ${isSelected ? 'bg-white' : isRvs ? 'bg-amber-500' : 'bg-blue-500'}`} />
+                                    <span>#{idx + 1}: {String(proc)} ({legTbl})</span>
+                                    {legAmt !== undefined && legAmt !== null && (
+                                      <span className={`text-[10px] px-1 py-0.2 rounded font-semibold ${
+                                        isSelected ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-600'
+                                      }`}>
+                                        {formatCellVal(legAmt)}
+                                      </span>
+                                    )}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </div>
+                      ) : inspectIsNotFoundInDb ? (
+                        <div className="p-3 bg-rose-50 rounded-xl border border-rose-200 text-xs flex items-center justify-between shadow-2xs">
+                          <div className="flex items-center gap-2">
+                            <AlertTriangle size={15} className="text-rose-600" />
+                            <span className="font-bold text-rose-900 font-mono">External Target Ledger: 0 Mirror Records Returned</span>
+                            <span className="text-[11px] text-rose-700">({inspectTargetDb}.{inspectTargetTable})</span>
+                          </div>
+                          <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-rose-200 text-rose-900 border border-rose-300">
+                            NOT FOUND IN TARGET DB
+                          </span>
+                        </div>
+                      ) : null}
+
+                      {/* Sub-header banner if viewing focused record */}
+                      {inspectLegIndex >= 0 && inspectorLegs[inspectLegIndex] && (
+                        <div className="flex items-center justify-between p-2 rounded-lg bg-indigo-50 border border-indigo-200 text-xs">
+                          <div className="flex items-center gap-2">
+                            <span className="font-bold text-indigo-900 font-mono">
+                              Focused on Record #{inspectLegIndex + 1} of {inspectorLegs.length}:
+                            </span>
+                            <span className="px-2 py-0.5 rounded bg-indigo-200 text-indigo-900 font-mono font-bold text-[10px]">
+                              {String(getCaseInsensitiveVal(inspectorLegs[inspectLegIndex]?.payload || inspectorLegs[inspectLegIndex], 'PROC_NAME') || `Record #${inspectLegIndex + 1}`)}
+                            </span>
+                            <span className="text-[10px] text-slate-500 font-mono hidden sm:inline">
+                              (Highlighted in comparison table below &bull; One row for each returned record)
+                            </span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setInspectLegIndex(-1)}
+                            className="px-2 py-0.5 rounded bg-white hover:bg-slate-100 text-indigo-700 font-bold border border-indigo-300 text-[10px] cursor-pointer"
+                          >
+                            Clear Focus
+                          </button>
+                        </div>
+                      )}
+
+                      <div className="overflow-x-auto border border-slate-200 rounded-xl shadow-2xs max-h-[420px] overflow-y-auto">
+                        <table className="w-full text-left text-xs border-collapse">
+                          <thead>
+                            <tr className="bg-slate-100 text-slate-700 font-mono text-[10px] uppercase font-bold sticky top-0 z-20 border-b border-slate-200">
+                              <th className="py-2.5 px-3.5 whitespace-nowrap bg-slate-200/90 text-slate-800 border-r border-slate-300 sticky left-0 z-30 min-w-[200px] shadow-xs">
+                                Data Record Source
+                              </th>
+                              {inspectComparisonColumns.map(col => (
+                                <th key={col.key} className="py-2.5 px-3 whitespace-nowrap border-r border-slate-200">
+                                  <div className="flex items-center gap-1">
+                                    <span>{col.label}</span>
+                                    {col.isKeyParam && (
+                                      <span className="text-[8px] px-1 py-0.2 rounded bg-purple-100 text-purple-800 border border-purple-200 font-mono">KEY</span>
+                                    )}
+                                  </div>
+                                </th>
+                              ))}
+                              <th className="py-2.5 px-3 text-center whitespace-nowrap bg-slate-100 w-28">
+                                Comparison
+                              </th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100 font-mono text-xs">
+                            {/* ROW 1: INPUT DATA */}
+                            <tr className="hover:bg-blue-50/30 transition bg-blue-50/15">
+                              <td className="py-2.5 px-3.5 whitespace-nowrap bg-blue-50/95 font-bold border-r border-blue-200 text-blue-950 sticky left-0 z-10 shadow-xs">
+                                <div className="flex items-center justify-between gap-2">
+                                  <div className="flex items-center gap-1.5">
+                                    <FileSpreadsheet size={13} className="text-blue-600 shrink-0" />
+                                    <span>Input Data</span>
+                                  </div>
+                                  <span className="px-1.5 py-0.2 rounded text-[9px] bg-blue-200 text-blue-800 border border-blue-300 font-bold">TASK DATASET</span>
+                                </div>
+                              </td>
+                              {inspectComparisonColumns.map(col => {
+                                const inVal = getCaseInsensitiveVal(cleanInputRecord, col.key);
+                                return (
+                                  <td key={col.key} className="py-2.5 px-3 whitespace-nowrap border-r border-slate-100 text-slate-900 font-semibold bg-white">
+                                    {formatCellVal(inVal)}
+                                  </td>
+                                );
+                              })}
+                              <td className="py-2.5 px-3 whitespace-nowrap text-center text-[10px] font-bold text-blue-800 bg-blue-50/40">
+                                BASELINE
+                              </td>
+                            </tr>
+
+                            {/* ROWS 2+: RETURNED DB DATA - ONE ROW FOR EACH */}
+                            {inspectorLegs.length > 0 ? (
+                              inspectorLegs.map((leg, legIdx) => {
+                                const isFocused = inspectLegIndex === legIdx;
+                                const legObj = leg?.payload || leg || {};
+                                const proc = getCaseInsensitiveVal(legObj, 'PROC_NAME') || leg.legType || `Record #${legIdx + 1}`;
+                                const isRvs = String(proc || '').toUpperCase() === 'RVS';
+                                const legRrn = getCaseInsensitiveVal(legObj, 'refnum') ?? getCaseInsensitiveVal(legObj, 'rrn') ?? getCaseInsensitiveVal(legObj, 'retrieval_ref_num');
+
+                                // Calculate diffs between input and this leg
+                                let diffCount = 0;
+                                let evaluatedCols = 0;
+                                inspectComparisonColumns.forEach(col => {
+                                  const inVal = getCaseInsensitiveVal(cleanInputRecord, col.key);
+                                  const tgtVal = getCaseInsensitiveVal(legObj, col.key);
+                                  if (inVal !== undefined && tgtVal !== undefined) {
+                                    evaluatedCols++;
+                                    if (!areValuesEqual(inVal, tgtVal)) {
+                                      diffCount++;
+                                    }
+                                  }
+                                });
+
+                                return (
+                                  <tr
+                                    key={legIdx}
+                                    className={`hover:bg-indigo-50/30 transition ${
+                                      isFocused
+                                        ? 'ring-2 ring-indigo-500 bg-indigo-50/60'
+                                        : isRvs
+                                          ? 'bg-amber-50/20'
+                                          : legIdx % 2 === 0
+                                            ? 'bg-white'
+                                            : 'bg-slate-50/30'
+                                    }`}
+                                  >
+                                    <td className={`py-2.5 px-3.5 whitespace-nowrap font-bold border-r border-indigo-200 text-indigo-950 sticky left-0 z-10 shadow-xs ${isFocused ? 'bg-indigo-100' : isRvs ? 'bg-amber-50/95' : 'bg-indigo-50/95'}`}>
+                                      <div className="flex items-center justify-between gap-2">
+                                        <div className="flex items-center gap-1.5 min-w-0">
+                                          <Database size={13} className={isRvs ? 'text-amber-700 shrink-0' : 'text-indigo-600 shrink-0'} />
+                                          <span className="truncate">
+                                            Returned Record #{legIdx + 1}
+                                          </span>
+                                          {isFocused && (
+                                            <span className="text-[9px] px-1 py-0.2 rounded bg-indigo-600 text-white font-mono font-bold">
+                                              FOCUSED
+                                            </span>
+                                          )}
+                                          {legRrn && (
+                                            <span className="text-[10px] text-slate-500 font-mono font-normal hidden lg:inline">
+                                              ({String(legRrn)})
+                                            </span>
+                                          )}
+                                        </div>
+                                        <div className="flex items-center gap-1 shrink-0">
+                                          <span className={`px-1.5 py-0.2 rounded text-[9px] font-bold border ${isRvs ? 'bg-amber-200 text-amber-900 border-amber-300' : 'bg-blue-200 text-blue-900 border-blue-300'}`}>
+                                            {String(proc).toUpperCase()}
+                                          </span>
+                                          <span className="px-1 py-0.2 rounded text-[8px] bg-slate-100 text-slate-600 border border-slate-200 font-normal">
+                                            {leg._sourceTable || inspectTargetTable}
+                                          </span>
+                                        </div>
+                                      </div>
+                                    </td>
+
+                                    {inspectComparisonColumns.map(col => {
+                                      const inVal = getCaseInsensitiveVal(cleanInputRecord, col.key);
+                                      const tgtVal = getCaseInsensitiveVal(legObj, col.key);
+
+                                      if (inVal !== undefined && tgtVal !== undefined) {
+                                        const isMatch = areValuesEqual(inVal, tgtVal);
+                                        return (
+                                          <td
+                                            key={col.key}
+                                            className={`py-2.5 px-3 whitespace-nowrap border-r ${
+                                              isMatch
+                                                ? 'border-slate-100 text-emerald-950 bg-emerald-50/25'
+                                                : 'border-rose-200 text-rose-950 bg-rose-50/80 font-bold'
+                                            }`}
+                                            title={isMatch ? 'Matches input value' : `Mismatch: Input='${inVal}' vs DB='${tgtVal}'`}
+                                          >
+                                            {isMatch ? (
+                                              <span className="font-semibold">{formatCellVal(tgtVal)}</span>
+                                            ) : (
+                                              <span className="inline-flex items-center gap-1 bg-rose-100 text-rose-800 px-1.5 py-0.5 rounded border border-rose-300">
+                                                {formatCellVal(tgtVal)}
+                                              </span>
+                                            )}
+                                          </td>
+                                        );
+                                      }
+
+                                      if (tgtVal !== undefined) {
+                                        return (
+                                          <td key={col.key} className="py-2.5 px-3 whitespace-nowrap border-r border-slate-100 text-slate-700 bg-white">
+                                            {formatCellVal(tgtVal)}
+                                          </td>
+                                        );
+                                      }
+
+                                      return (
+                                        <td key={col.key} className="py-2.5 px-3 whitespace-nowrap border-r border-slate-100 text-slate-300 italic bg-white">
+                                          —
+                                        </td>
+                                      );
+                                    })}
+
+                                    <td className="py-2.5 px-3 whitespace-nowrap text-center">
+                                      <div className="flex items-center justify-center gap-1.5">
+                                        {diffCount === 0 && evaluatedCols > 0 ? (
+                                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 font-bold text-[10px]">
+                                            <Check size={10} /> MATCH
+                                          </span>
+                                        ) : diffCount > 0 ? (
+                                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-rose-100 text-rose-800 font-bold text-[10px]">
+                                            <AlertTriangle size={10} /> {diffCount} DIFF
+                                          </span>
+                                        ) : (
+                                          <span className="text-[10px] text-slate-400 italic">EVALUATED</span>
+                                        )}
+                                        {inspectorLegs.length > 1 && (
+                                          <button
+                                            type="button"
+                                            onClick={() => setInspectLegIndex(inspectLegIndex === legIdx ? -1 : legIdx)}
+                                            className={`px-1.5 py-0.5 rounded text-[9px] font-mono font-bold transition cursor-pointer border ${
+                                              inspectLegIndex === legIdx
+                                                ? 'bg-indigo-600 text-white border-indigo-700'
+                                                : 'bg-white hover:bg-slate-100 text-slate-700 border-slate-300'
+                                            }`}
+                                            title={inspectLegIndex === legIdx ? 'Reset to all records' : 'Focus this record in comparison'}
+                                          >
+                                            {inspectLegIndex === legIdx ? 'Focused ✓' : 'Focus'}
+                                          </button>
+                                        )}
+                                      </div>
+                                    </td>
+                                  </tr>
+                                );
+                              })
+                            ) : inspectTargetRecord ? (
+                              <tr className="hover:bg-indigo-50/30 transition bg-white">
+                                <td className="py-2.5 px-3.5 whitespace-nowrap font-bold border-r border-indigo-200 text-indigo-950 sticky left-0 z-10 shadow-xs bg-indigo-50/95">
+                                  <div className="flex items-center justify-between gap-2">
+                                    <div className="flex items-center gap-1.5">
+                                      <Database size={13} className="text-indigo-600 shrink-0" />
+                                      <span>Returned DB Data</span>
+                                    </div>
+                                    <span className="px-1.5 py-0.2 rounded text-[9px] font-bold bg-indigo-200 text-indigo-900 border border-indigo-300">
+                                      {inspectTargetTable}
+                                    </span>
+                                  </div>
+                                </td>
+                                {inspectComparisonColumns.map(col => {
+                                  const inVal = getCaseInsensitiveVal(cleanInputRecord, col.key);
+                                  const tgtVal = getCaseInsensitiveVal(inspectTargetRecord, col.key);
+
+                                  if (inVal !== undefined && tgtVal !== undefined) {
+                                    const isMatch = areValuesEqual(inVal, tgtVal);
+                                    return (
+                                      <td
+                                        key={col.key}
+                                        className={`py-2.5 px-3 whitespace-nowrap border-r ${
+                                          isMatch ? 'border-slate-100 text-emerald-950 bg-emerald-50/25' : 'border-rose-200 text-rose-950 bg-rose-50/80 font-bold'
+                                        }`}
+                                      >
+                                        {isMatch ? (
+                                          <span className="font-semibold">{formatCellVal(tgtVal)}</span>
+                                        ) : (
+                                          <span className="inline-flex items-center gap-1 bg-rose-100 text-rose-800 px-1.5 py-0.5 rounded border border-rose-300">
+                                            {formatCellVal(tgtVal)}
+                                          </span>
+                                        )}
+                                      </td>
+                                    );
+                                  }
+                                  return (
+                                    <td key={col.key} className="py-2.5 px-3 whitespace-nowrap border-r border-slate-100 text-slate-700 bg-white">
+                                      {formatCellVal(tgtVal)}
+                                    </td>
+                                  );
+                                })}
+                                <td className="py-2.5 px-3 whitespace-nowrap text-center">
+                                  <span className="text-[10px] text-slate-400 italic">EVALUATED</span>
+                                </td>
+                              </tr>
+                            ) : (
+                              <tr>
+                                <td className="py-3 px-3.5 whitespace-nowrap bg-rose-50 font-bold border-r border-rose-200 text-rose-950 sticky left-0 z-10 shadow-xs">
+                                  <div className="flex items-center justify-between gap-2">
+                                    <div className="flex items-center gap-1.5">
+                                      <Database size={13} className="text-rose-600 shrink-0" />
+                                      <span>Returned DB Data</span>
+                                    </div>
+                                    <span className="px-1.5 py-0.2 rounded text-[9px] font-bold bg-rose-200 text-rose-900 border border-rose-300">0 ROWS</span>
+                                  </div>
+                                </td>
+                                <td colSpan={inspectComparisonColumns.length + 1} className="py-3 px-4 text-rose-700 font-mono text-xs bg-rose-50/30">
+                                  <div className="flex items-center gap-2">
+                                    <AlertTriangle size={14} className="text-rose-600 shrink-0" />
+                                    <span>No records returned from external target table {inspectTargetDb}.{inspectTargetTable} matching query lookup parameters.</span>
+                                  </div>
+                                </td>
+                              </tr>
+                            )}
+                          </tbody>
+                        </table>
+                      </div>
+
+                      {/* Embedded Returned Records Detail Cards & Raw Payloads */}
+                      {inspectorLegs.length > 0 && (
+                        <div className="pt-2 border-t border-slate-200 space-y-2.5">
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-bold text-slate-800 font-mono uppercase tracking-wider flex items-center gap-1.5">
+                              <Layers size={13} className="text-indigo-600" />
+                              Returned DB Records Payload Inspection ({inspectorLegs.length} Record{inspectorLegs.length > 1 ? 's' : ''})
+                            </span>
+                            <span className="text-[11px] text-slate-500 font-mono">
+                              All {inspectorLegs.length} external database response records returned from query lookup
+                            </span>
+                          </div>
+
+                          <div className="grid grid-cols-1 gap-2.5">
+                            {inspectorLegs.map((leg: any, idx: number) => {
+                              const legObj = leg?.payload || leg || {};
+                              const proc = getCaseInsensitiveVal(legObj, 'PROC_NAME') || leg.legType || 'TRANSACTION_RECORD';
+                              const isRvs = String(proc).toUpperCase() === 'RVS';
+                              const legAmt = getCaseInsensitiveVal(legObj, 'reqamt') ?? getCaseInsensitiveVal(legObj, 'amount');
+                              const legCurr = getCaseInsensitiveVal(legObj, 'currency') ?? getCaseInsensitiveVal(legObj, 'curr') ?? 'USD';
+                              const legRef = getCaseInsensitiveVal(legObj, 'refnum') ?? getCaseInsensitiveVal(legObj, 'rrn') ?? getCaseInsensitiveVal(legObj, 'retrieval_ref_num');
+                              const legTime = getCaseInsensitiveVal(legObj, 'ttime') ?? getCaseInsensitiveVal(legObj, 'value_date') ?? getCaseInsensitiveVal(legObj, 'created_at');
+                              const isFocused = inspectLegIndex === idx;
+
+                              const attributes: { key: string; value: any }[] = [];
+                              for (const [k, v] of Object.entries(legObj)) {
+                                if (!k.startsWith('_') && v !== undefined && v !== null && typeof v !== 'object') {
+                                  attributes.push({ key: k, value: v });
+                                }
+                              }
+
+                              const payloadJson = JSON.stringify(legObj, null, 2);
+                              const copyKey = `inspect_leg_${idx}`;
+
+                              return (
+                                <div
+                                  key={idx}
+                                  className={`rounded-xl border transition p-3 space-y-2.5 bg-slate-50/50 shadow-2xs ${
+                                    isFocused
+                                      ? 'border-indigo-400 ring-2 ring-indigo-200 bg-indigo-50/20'
+                                      : isRvs
+                                        ? 'border-amber-300'
+                                        : 'border-slate-200 hover:border-slate-300'
+                                  }`}
+                                >
+                                  {/* Sub-header */}
+                                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200/70 pb-2">
+                                    <div className="flex items-center gap-2">
+                                      <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
+                                        isRvs ? 'bg-amber-100 text-amber-900 border border-amber-300' : 'bg-indigo-100 text-indigo-900 border border-indigo-300'
+                                      }`}>
+                                        RECORD #{idx + 1}
+                                      </span>
+                                      <span className="font-bold text-xs text-slate-900 font-mono">
+                                        PROC: {String(proc)}
+                                      </span>
+                                      {legRef && (
+                                        <span className="text-[11px] font-mono text-slate-500">
+                                          &bull; RRN: <strong className="text-slate-700">{String(legRef)}</strong>
+                                        </span>
+                                      )}
+                                      {legTime && (
+                                        <span className="text-[11px] font-mono text-slate-500">
+                                          &bull; Time: {String(legTime).replace('T', ' ').slice(0, 19)}
+                                        </span>
+                                      )}
+                                    </div>
+
+                                    <div className="flex items-center gap-2">
+                                      {legAmt !== undefined && legAmt !== null && (
+                                        <span className={`px-2 py-0.5 rounded font-mono text-xs font-bold ${
+                                          isRvs ? 'bg-amber-100 text-amber-900 border border-amber-300' : 'bg-emerald-100 text-emerald-900 border border-emerald-300'
+                                        }`}>
+                                          {String(legCurr)} {formatCellVal(legAmt)}
+                                        </span>
+                                      )}
+                                      <button
+                                        type="button"
+                                        onClick={() => setInspectLegIndex(isFocused ? -1 : idx)}
+                                        className={`px-2.5 py-1 rounded text-[11px] font-semibold transition cursor-pointer border ${
+                                          isFocused
+                                            ? 'bg-indigo-600 text-white border-indigo-700'
+                                            : 'bg-white hover:bg-slate-100 text-slate-700 border-slate-300'
+                                        }`}
+                                      >
+                                        {isFocused ? 'Viewing in Comparison ✓' : 'Focus in Comparison'}
+                                      </button>
+                                    </div>
+                                  </div>
+
+                                  {/* Attributes grid */}
+                                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2 text-[11px] font-mono">
+                                    {attributes.slice(0, 16).map(attr => (
+                                      <div key={attr.key} className="bg-white p-2 rounded-lg border border-slate-100 space-y-0.5 shadow-3xs">
+                                        <span className="text-[10px] text-slate-500 uppercase font-semibold block truncate" title={attr.key}>
+                                          {formatHeaderLabel(attr.key)}
+                                        </span>
+                                        <span className="font-bold text-slate-800 block truncate" title={String(attr.value)}>
+                                          {formatCellVal(attr.value)}
+                                        </span>
+                                      </div>
+                                    ))}
+                                  </div>
+
+                                  {/* Raw JSON toggle */}
+                                  <details className="text-[11px] font-mono group">
+                                    <summary className="cursor-pointer text-indigo-600 hover:text-indigo-800 font-semibold select-none flex items-center justify-between">
+                                      <span>View Raw Record JSON Payload</span>
+                                      <button
+                                        type="button"
+                                        onClick={(e) => {
+                                          e.preventDefault();
+                                          handleCopyPayload(payloadJson, copyKey);
+                                        }}
+                                        className="px-2 py-0.5 rounded bg-white hover:bg-slate-100 text-slate-700 text-[10px] font-mono border border-slate-300 cursor-pointer"
+                                      >
+                                        {copiedPayloadKey === copyKey ? 'Copied!' : 'Copy JSON'}
+                                      </button>
+                                    </summary>
+                                    <pre className="mt-2 p-2.5 bg-slate-900 text-emerald-400 rounded-lg overflow-x-auto text-[10px] whitespace-pre-wrap max-h-48 overflow-y-auto">
+                                      {payloadJson}
+                                    </pre>
+                                  </details>
+                                </div>
+                              );
+                            })}
+                          </div>
+
+                          {/* Full Stage Response Envelope JSON Viewer */}
+                          {rawReturnedData && typeof rawReturnedData === 'object' && Object.keys(rawReturnedData).length > 0 && (
+                            <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 space-y-2">
+                              <div className="flex items-center justify-between">
+                                <span className="text-xs font-bold text-slate-700 font-mono uppercase tracking-wider">
+                                  Full Stage Response Data Envelope (JSONB)
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => handleCopyPayload(JSON.stringify(rawReturnedData, null, 2), 'inspect_stage_envelope')}
+                                  className="px-2.5 py-0.5 rounded bg-white hover:bg-slate-100 text-slate-700 text-[10px] font-mono border border-slate-300 cursor-pointer"
+                                >
+                                  {copiedPayloadKey === 'inspect_stage_envelope' ? 'Copied Envelope!' : 'Copy Full Envelope'}
+                                </button>
+                              </div>
+                              <pre className="p-2.5 bg-slate-950 text-emerald-400 rounded-lg overflow-x-auto text-[10px] font-mono whitespace-pre-wrap max-h-40 overflow-y-auto">
+                                {JSON.stringify(rawReturnedData, null, 2)}
+                              </pre>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                {/* =========================================================================
+                    ACCORDION 2: VALIDATIONS CONDUCTED (ALL STAGES & STEPS IN ONE REAL TABLE)
+                    ========================================================================= */}
+                <div className="border border-purple-200 rounded-xl overflow-hidden bg-white shadow-2xs">
+                  <button
+                    type="button"
+                    onClick={() => toggleDrilldownAccordion('inspect_validations_conducted')}
+                    className="w-full p-3.5 bg-gradient-to-r from-purple-50/70 via-slate-50/50 to-white hover:bg-purple-50/90 transition flex items-center justify-between text-left cursor-pointer border-b border-purple-100"
+                  >
+                    <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                      <div className="text-purple-600 transition-transform duration-200">
+                        {isAccordionOpen('inspect_validations_conducted', true) ? <ChevronDown size={16} /> : <ChevronRight size={16} />}
+                      </div>
+                      <div className="p-1.5 rounded-lg bg-purple-100 text-purple-700 shrink-0">
+                        <GitCompare size={15} />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-bold text-xs text-slate-900 uppercase font-mono tracking-wider">
+                            Validations Conducted: Multi-Stage Evaluation Steps
+                          </span>
+                          <span className="text-[10px] font-mono text-slate-500">
+                            {modalAuditTrail.length} Steps Recorded &bull; {modalAuditTrail.filter((s: any) => s.validationResult === 'PASS').length} Passed &bull; {modalAuditTrail.filter((s: any) => s.validationResult === 'FAIL').length} Failed
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-slate-500 mt-0.5 truncate font-mono">
+                          Sequential execution checklist and verification findings for transaction {inspectingRow.rowId}
+                        </p>
+                      </div>
+                    </div>
+                  </button>
+
+                  {isAccordionOpen('inspect_validations_conducted', true) && (
+                    <div className="p-3.5 space-y-3 bg-white animate-in fade-in-50 duration-150">
+                      <div className="overflow-x-auto border border-slate-200 rounded-xl shadow-2xs">
+                        <table className="w-full text-left text-xs border-collapse">
+                          <thead>
+                            <tr className="bg-slate-100 text-slate-700 font-mono text-[10px] uppercase font-bold border-b border-slate-200">
+                              <th className="py-2.5 px-3 text-center w-12">#</th>
+                              <th className="py-2.5 px-3 min-w-[220px]">Validation Stage / Rule Name</th>
+                              <th className="py-2.5 px-3 min-w-[140px]">Check Type</th>
+                              <th className="py-2.5 px-3 text-center w-28">Status</th>
+                              <th className="py-2.5 px-3 text-center w-28">Action</th>
+                              <th className="py-2.5 px-4 min-w-[280px]">Evaluation Findings &amp; Discrepancy Record</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100 font-mono text-xs">
+                            {modalAuditTrail.map((entry: any, sIdx: number) => {
+                              const isPass = entry.validationResult === 'PASS';
+                              const isFail = entry.validationResult === 'FAIL';
+
+                              return (
+                                <tr key={sIdx} className={`hover:bg-slate-50/70 transition ${isFail ? 'bg-rose-50/30' : sIdx % 2 === 0 ? 'bg-white' : 'bg-slate-50/20'}`}>
+                                  <td className="py-2.5 px-3 text-center font-bold text-slate-500">{sIdx + 1}</td>
+                                  <td className="py-2.5 px-3 font-semibold text-slate-900">
+                                    <div className="flex items-center gap-1.5">
+                                      {isPass ? (
+                                        <CheckCircle2 size={13} className="text-emerald-600 shrink-0" />
+                                      ) : isFail ? (
+                                        <AlertTriangle size={13} className="text-rose-600 shrink-0" />
+                                      ) : (
+                                        <HelpCircle size={13} className="text-slate-400 shrink-0" />
+                                      )}
+                                      <span>{entry.ruleName || entry.stageName}</span>
+                                    </div>
+                                  </td>
+                                  <td className="py-2.5 px-3 text-slate-600">
+                                    <span className="px-1.5 py-0.5 rounded bg-slate-100 text-slate-700 text-[10px] font-bold border border-slate-200">
+                                      {String(entry.stageName || 'CHECK')}
+                                    </span>
+                                  </td>
+                                  <td className="py-2.5 px-3 text-center">
+                                    <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                                      isPass
+                                        ? 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                                        : isFail
+                                        ? 'bg-rose-100 text-rose-800 border border-rose-300'
+                                        : 'bg-slate-100 text-slate-700 border border-slate-300'
+                                    }`}>
+                                      {entry.validationResult}
+                                    </span>
+                                  </td>
+                                  <td className="py-2.5 px-3 text-center">
+                                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${
+                                      isFail
+                                        ? 'bg-rose-50 text-rose-800 border-rose-200'
+                                        : 'bg-slate-50 text-slate-700 border-slate-200'
+                                    }`}>
+                                      ➔ {entry.pipelineAction}
+                                    </span>
+                                  </td>
+                                  <td className="py-2.5 px-4 font-sans text-xs">
+                                    <div className="space-y-1">
+                                      <div className={`leading-relaxed ${isFail ? 'font-semibold text-rose-900' : 'text-slate-700'}`}>
+                                        {typeof entry.message === 'string'
+                                          ? entry.message
+                                          : formatValidationDetail(entry.message, 'Evaluation complete')}
+                                      </div>
+                                      {entry.errorDetail && typeof entry.errorDetail === 'string' && (
+                                        <div className="text-[10px] font-mono text-rose-700 bg-rose-50 p-1.5 rounded border border-rose-200">
+                                          {entry.errorDetail}
+                                        </div>
+                                      )}
+                                    </div>
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+
+              </div>
+
+              {/* Suggested Remedy SQL */}
+              {inspectingRow.remedySql && (
+                <div className="space-y-1 text-xs">
+                  <span className="font-bold text-slate-600 text-[10px] uppercase font-mono">Suggested Remedy / Correction DML:</span>
+                  <div className="relative">
+                    <pre className="bg-slate-900 text-emerald-400 p-2.5 rounded font-mono text-[11px] overflow-x-auto whitespace-pre-wrap">
+                      {inspectingRow.remedySql}
+                    </pre>
+                    <button
+                      type="button"
+                      onClick={() => handleCopySql(inspectingRow.remedySql!, inspectingRow.rowId)}
+                      className="absolute right-2 top-2 p-1 bg-slate-800 hover:bg-slate-700 text-white rounded text-[10px] font-mono cursor-pointer"
+                    >
+                      {copiedId === inspectingRow.rowId ? 'Copied!' : 'Copy SQL'}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              <div className="flex justify-end pt-2 border-t border-slate-200">
+                <button
+                  type="button"
+                  onClick={() => setInspectingRow(null)}
+                  className="px-4 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold rounded-lg text-xs cursor-pointer transition"
+                >
+                  Close
+                </button>
+              </div>
             </div>
           </div>
-        </div>
+        );
+      })()}
+        </ErrorBoundary>
       )}
 
       {/* Toast Alert for Reversion Success */}
@@ -5187,7 +7990,8 @@ export default function ValidationOrchestratorWorkspace({
 
       {/* REVERSION HISTORY MODAL */}
       {showReversionHistory && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4 animate-in fade-in duration-150">
+        <ErrorBoundary fallbackTitle="Reversion History Error" fallbackMessage="Could not render reversion audit history.">
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4 animate-in fade-in duration-150">
           <div className="bg-white border border-slate-200 rounded-2xl p-6 max-w-xl w-full shadow-2xl space-y-4 animate-in zoom-in-95 duration-150">
             <div className="flex items-center justify-between pb-3 border-b border-slate-100">
               <div className="flex items-center space-x-2.5">
@@ -5249,6 +8053,7 @@ export default function ValidationOrchestratorWorkspace({
             </div>
           </div>
         </div>
+        </ErrorBoundary>
       )}
 
       {/* ADD IN-FLIGHT VALIDATION BOX MODAL */}
@@ -5685,7 +8490,8 @@ export default function ValidationOrchestratorWorkspace({
 
       {/* Universal Hashtags Result Diff Modal Drawer (GAP-10) */}
       {showHashtagDiffModal && hashtagDiffResult && (
-        <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
+        <ErrorBoundary fallbackTitle="Hashtag Comparison Error" fallbackMessage="Could not render hashtag diff modal.">
+          <div className="fixed inset-0 z-50 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4">
           <div className="bg-slate-900 border border-slate-700 rounded-2xl w-full max-w-4xl max-h-[85vh] flex flex-col shadow-2xl overflow-hidden animate-in fade-in duration-200">
             {/* Modal Header */}
             <div className="p-4 bg-slate-950 border-b border-slate-800 flex items-center justify-between">
@@ -5850,6 +8656,7 @@ export default function ValidationOrchestratorWorkspace({
             </div>
           </div>
         </div>
+        </ErrorBoundary>
       )}
 
     </div>

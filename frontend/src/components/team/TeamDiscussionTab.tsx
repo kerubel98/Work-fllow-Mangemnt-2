@@ -82,7 +82,7 @@ export const TeamDiscussionTab: React.FC<TeamDiscussionTabProps> = ({
   };
 
   return (
-    <div className="flex flex-col h-[calc(100vh-14rem)] min-h-[480px] bg-slate-50/50 border border-slate-200/90 rounded-2xl overflow-hidden font-sans shadow-xs" id="team-discussion-tab">
+    <div className="flex flex-col h-full min-h-0 bg-slate-50/50 border border-slate-200/90 rounded-2xl overflow-hidden font-sans shadow-xs" id="team-discussion-tab">
       {/* Discussion Header */}
       <div className="bg-white border-b border-slate-200/90 px-4 py-3 flex flex-wrap items-center justify-between gap-2">
         <div className="flex items-center space-x-2.5">

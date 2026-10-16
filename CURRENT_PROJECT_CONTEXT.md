@@ -777,12 +777,13 @@ backend/src/
 ┌─────────────────────────────────────────────────────────────────────────────────────┐
 │                             PRIMARY POSTGRESQL DATABASE                             │
 │  ┌─────────────────────────────────────────┐  ┌──────────────────────────────────┐  │
-│  │ 26 Core Relational Tables               │  │ Dedicated UNLOGGED Mirror Tables │  │
-│  │ - issues & task_dataset_transactions    │  │ - mirror_db_transactions         │  │
-│  │ - database_validation_workflows         │  │ - Indexed by _batch_id, status   │  │
-│  │ - validation_boxes                      │  │ - Blazing-fast set updates       │  │
-│  │ - global_standard_directory             │  │ - Dropped/cleaned on completion  │  │
-│  │ - resolution_approval_requests          │  └──────────────────────────────────┘  │
+│  │ 33 Base Relational Tables               │  │ Dedicated UNLOGGED Mirror Tables │  │
+│  │ (76 Public Tables Across Migrations)    │  │ - mirror_db_transactions         │  │
+│  │ - issues & task_dataset_transactions    │  │ - Indexed by _batch_id, status   │  │
+│  │ - database_validation_workflows         │  │ - Blazing-fast set updates       │  │
+│  │ - validation_boxes                      │  │ - Dropped/cleaned on completion  │  │
+│  │ - global_standard_directory             │  └──────────────────────────────────┘  │
+│  │ - resolution_approval_requests          │                                        │
 │  │ - team_dashboard_visibility_grants      │                                        │
 │  │ - cross_functional_project_groups       │                                        │
 │  │ - ai_strategic_objectives               │                                        │
@@ -880,5 +881,67 @@ The current application context report has been generated and saved to `CURRENT_
   - **Incident 2 (ValidationBoxType Mismatch)**: Re-inserted validation boxes with non-standard check types (`EXISTENCE_CHECK`, `VALUE_MATCH`) were silently excluded from the UI by `ValidationBoxManager.tsx`. *Lesson:* Container types (`ValidationBoxType`) and execution check types (`CheckType`) are distinct architectural concepts and must remain separated across every layer.
   - **Incident 3 (Team Database Connections)**: Database connections created in team workspaces require explicit ownership, query authorization, and formal promotion workflows to prevent cross-tenant data leaks. *Lesson:* Access must be bounded by the chain `User` → `Team Membership` → `Team` → `DB Connection` → `Allowed Operation`.
   - **Core Engineering Mandate**: Replace the failure pattern `Assumption → Unverified modification → Persistent state changed → Data loss` with `Evidence → Inspection → Plan → Approval → Controlled modification → Verification`.
+
+---
+
+## 32. Standard File Ingestion Workspace, Value Translation Dictionaries & Table Mapping Modernization (2026-10-09)
+
+- **PostgreSQL Persistence for Ingestion Mapping Templates (Migration 028)**:
+  - Added `file_ingestion_mapping_templates` table in `028_file_ingestion_mapping_templates.sql` to permanently replace ephemeral browser/in-memory template objects.
+  - Linked `mapping_template_id` to `hashtag_presets` to enforce strict schema consistency during automated FTP/inbound email ingestion.
+- **Decoupled `<StandardFileIngestionWorkspace />`**:
+  - Encapsulates preamble row skipping (`headerRowIndex >= 1`), headerless file handling, column exclusions (`deletedColumns`), in-place text hygiene, and auto-mapping into a reusable, table-formatted workspace.
+  - Replaced modal overload with inline, table-level toolbar controls and a dedicated template save dialog.
+  - Shifted required column enforcement authority from hardcoded global schemas to individual saved templates (`FileIngestionMappingTemplate.requiredColumns`), enforced as a pre-commit barrier on `POST /api/issues` and within hashtag absorption pipelines.
+  - Decommissioned synthetic mock loaders (`📄 Chargebacks CSV`, `📊 Settlement CSV`).
+  - Eliminated nested form submission event bubbling, preventing unwanted page redirects during template saves.
+- **Column Header `...` Action Suite**:
+  - Implemented column-level context actions:
+    1. ✂️ **Data Splitting**: Multi-part column splitting with live row previews and delimiter selection.
+    2. 🔗 **Column Merging**: Multi-column concatenation with configurable separators and live preview.
+    3. 🪄 **Inline Transformation Rules**: Case normalization, whitespace trimming, phone sanitization, ISO date conversions, currency stripping, and PAN masking.
+    4. 🗄️ **External DB Comparator**: In-place sample retrieval from connected external tables (`api.getTablePreview`) with 1-click column alignment.
+- **Value Transformation / Translation Dictionary Architecture**:
+  - **Conceptual Separation**: Separated canonical structural definitions in `global_standard_directory` from value-level translation lookup dictionaries (e.g. Bank Name $\rightarrow$ Bank Code `CBE` $\rightarrow$ `01`, Channel Name $\rightarrow$ Channel Code `ATM` $\rightarrow$ `01`, Transaction Status $\rightarrow$ ISO Response Code, and Currency Names $\rightarrow$ ISO-4217 Codes).
+  - Applied during **Task Creation File Ingestion** and **Hashtag File Templates** to automatically translate human-readable statement data into exact database codes before database persistence and mirror table reconciliation.
+  - Managed under **System Settings** -> **Transformations** tab with a real-time translation testing sandbox.
+- **Admin Hub: "Table Mapping" Subsystem Modernization**:
+  - Renamed the `"Environment & Table Mappings"` tab to **`"Table Mapping"`**.
+  - Replaced static attribute lists with an interactive **live database sample data grid** powered by `api.getTablePreview(selectedDbId, selectedTableName, 10)`.
+  - Column headers feature physical column names, primary key badges, data type tags, Global Schema dropdown selectors, and the `...` More Actions context menu:
+    - ✂️ **Data Splitting**
+    - 🔗 **Column Merging**
+    - ➕ **Add this Column to Global Field**: 1-click modal to register physical columns directly into `global_standard_directory` without navigating to the Global Dictionary tab.
+    - 🔤 **Map to Transformation Dictionary**: Link columns to pre-configured value lookup dictionaries.
+    - 🗑️ **Unmap Column**
+- **Universal Column Checkbox Selection & Dynamic Merge Action**:
+  - Added individual select checkboxes to every column header card across both **Table Mapping** (`SystemSettings.tsx`) and **Standard File Ingestion Workspace** (`StandardFileIngestionWorkspace.tsx`).
+  - Added master select-all / deselect-all checkboxes in the `#` row index header cell with automatic indeterminate state handling.
+  - Added a dynamic **"Merge Columns"** toolbar button (`btn-merge-table-columns` / `btn-merge-file-columns`) that is disabled when $< 2$ columns are selected, and activates with vibrant indigo styling, badge count indicator (e.g. `Merge Columns (2)`), and pre-populated modal launch when $\ge 2$ columns are selected.
+- **PostgreSQL Persistence for Value Translation Dictionaries (Governance Rule 23)**:
+  - Codified Governance Principle 23 (*Strict Prohibition of Client-Side localStorage as Primary State Store*) into `AGENTS.md`.
+  - Migrated Value Translation Dictionaries out of client `localStorage` into PostgreSQL via migration `029_value_translation_dictionaries.sql`.
+  - Implemented full REST API CRUD (`/api/value-translation-dictionaries`) and backend repository methods in `postgresRepo.ts`.
+  - Hydrated `SystemSettings.tsx` and `StandardFileIngestionWorkspace.tsx` authoritatively from PostgreSQL, backed by 5/5 passing unit tests in `valueTranslationDictionaries.test.ts`.
+- **Auto-Cleaner Recipe & Data Transformer Template Engine**:
+  - Elevated mapping templates from static column maps into full data cleaning and transformation recipe holders (`FileIngestionCleaningRecipe`).
+  - Automatically captures all file operations executed prior to clicking "Save Template":
+    - **Header Slicing & Preamble Truncation**: `headerMode`, `headerRowIndex`, `manualHeaders`.
+    - **Column Exclusions**: `deletedColumns` list.
+    - **Column Splits**: `splitOperations` (column, delimiter type, custom delimiter, part names, keep original).
+    - **Column Merges**: `mergeOperations` (col1, col2, separator type, custom separator, result column name, keep sources).
+    - **Value Transformations & Dictionaries**: `transformOperations` (column, rule type: UPPERCASE, LOWERCASE, TRIM, PHONE_SANITIZE, DATE_ISO, NUMBER_CLEAN, CURRENCY_STRIP, MASK_PAN, DICT_LOOKUP, params).
+    - **Data Hygiene Actions**: `cleaningActions` (DEDUPLICATE, REMOVE_EMPTY_ROWS, NORMALIZE_DATES, TRIM_WHITESPACE, MASK_PAN, FILL_BLANKS_NA) and cleaning policies.
+    - **Column Mappings & Required Fields**: `columnMappings`, `requiredColumns`.
+  - Persisted in PostgreSQL (`file_ingestion_mapping_templates.cleaning_recipe` JSONB) and hydrated into top-level typed arrays (`postgresRepo.ts`).
+  - Dual deterministic replay engines:
+    - **Backend (`dataSanitizerService.replayTemplateOperations`)**: Executed on hashtag absorption (`hashtagService.ts`) and issue attachment parsing (`routes/issues.ts`).
+    - **Frontend (`replayOperationsOnDataset`)**: Replays automatically upon template selection, file upload, or drag-and-drop in `StandardFileIngestionWorkspace.tsx`.
+  - Toolbar UX includes an active **"Recipe Rules"** badge button and collapsible drawer displaying all active recipe steps, plus a recipe summary breakdown in the Save Template modal.
+  - Verified with 100% test pass rate in `fileIngestionMappingTemplates.test.ts` (6/6 passing).
+
+
+
+
 
 

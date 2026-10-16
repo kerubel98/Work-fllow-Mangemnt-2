@@ -5,7 +5,8 @@
 
 import { 
   DatabaseColumnConfiguration, WorkspaceSettingProposal, TeamEscalationTarget, 
-  TeamAdminPrivileges, WorkflowBundle, MailboxResponse, HashtagPreset, HashtagExecutionRun 
+  TeamAdminPrivileges, WorkflowBundle, MailboxResponse, HashtagPreset, HashtagExecutionRun,
+  FileIngestionMappingTemplate, ValueTranslationDictionary
 } from '../types';
 
 const API_BASE_URL = '/api';
@@ -291,6 +292,8 @@ export const api = {
     }),
   getTableColumns: (dbId: string, tableName: string) =>
     fetchApi<{ dbId: string; dbName: string; tableName: string; columns: { name: string; type: string; nullable: boolean; isPrimary?: boolean }[] }>(`/db/databases/${dbId}/tables/${tableName}/columns`),
+  getTablePreview: (dbId: string, tableName: string, limit: number = 10) =>
+    fetchApi<{ dbId: string; dbName: string; tableName: string; columns: string[]; rows: any[]; rowCount: number; source: string }>(`/db/databases/${dbId}/tables/${tableName}/preview?limit=${limit}`),
 
   // ================= FTP File Staging Configurations =================
   getFtpStagingConfigs: (connectionId?: string) =>
@@ -628,6 +631,22 @@ export const api = {
     fetchApi<any>(`/transactions/settings/templates/${id}`, {
       method: 'DELETE'
     }),
+
+  // File Ingestion Mapping Templates (Domain 7)
+  getFileMappingTemplates: (teamId?: string) =>
+    fetchApi<FileIngestionMappingTemplate[]>(`/file-mapping-templates${teamId ? `?teamId=${teamId}` : ''}`),
+  getFileMappingTemplateById: (id: string) =>
+    fetchApi<FileIngestionMappingTemplate>(`/file-mapping-templates/${id}`),
+  saveFileMappingTemplate: (template: Partial<FileIngestionMappingTemplate>) =>
+    fetchApi<FileIngestionMappingTemplate>('/file-mapping-templates', {
+      method: 'POST',
+      body: JSON.stringify(template)
+    }),
+  deleteFileMappingTemplate: (id: string) =>
+    fetchApi<{ success: boolean; id: string }>(`/file-mapping-templates/${id}`, {
+      method: 'DELETE'
+    }),
+
   uploadTransactionsToWorkingDb: (uploadData: { filename: string; uploadedBy: string; templateId?: string; templateName?: string; records: any[]; fileSizeBytes?: number }) =>
     fetchApi<any>('/transactions/upload', {
       method: 'POST',
@@ -939,10 +958,15 @@ export const api = {
     }),
 
   // ================= Workspace Setting Proposals (Maker-Checker & Escalation) =================
-  getWorkspaceSettingProposals: (params?: { teamId?: string; status?: string }) => {
+  getWorkspaceSettingProposals: (paramsOrTeamId?: { teamId?: string; status?: string } | string, statusParam?: string) => {
     const query = new URLSearchParams();
-    if (params?.teamId) query.append('teamId', params.teamId);
-    if (params?.status) query.append('status', params.status);
+    if (typeof paramsOrTeamId === 'string') {
+      if (paramsOrTeamId) query.append('teamId', paramsOrTeamId);
+      if (statusParam) query.append('status', statusParam);
+    } else if (paramsOrTeamId) {
+      if (paramsOrTeamId.teamId) query.append('teamId', paramsOrTeamId.teamId);
+      if (paramsOrTeamId.status) query.append('status', paramsOrTeamId.status);
+    }
     const qs = query.toString();
     return fetchApi<WorkspaceSettingProposal[]>(`/settings/proposals${qs ? `?${qs}` : ''}`);
   },
@@ -956,11 +980,41 @@ export const api = {
       body: JSON.stringify(proposal)
     }),
 
-  reviewWorkspaceSettingProposal: (id: string, action: 'APPROVE' | 'REJECT', checkerId: string, checkerName?: string, feedback?: string) =>
-    fetchApi<WorkspaceSettingProposal>(`/settings/proposals/${encodeURIComponent(id)}/review`, {
+  submitWorkspaceSettingProposal: (proposal: Partial<WorkspaceSettingProposal>) =>
+    fetchApi<WorkspaceSettingProposal>('/settings/proposals', {
+      method: 'POST',
+      body: JSON.stringify(proposal)
+    }),
+
+  reviewWorkspaceSettingProposal: (
+    id: string,
+    actionOrReview: 'APPROVE' | 'REJECT' | { action: 'APPROVE' | 'REJECT'; checkerId: string; checkerName?: string; reviewFeedback?: string; feedback?: string },
+    checkerIdParam?: string,
+    checkerNameParam?: string,
+    feedbackParam?: string
+  ) => {
+    let action: 'APPROVE' | 'REJECT';
+    let checkerId: string;
+    let checkerName: string | undefined;
+    let feedback: string | undefined;
+
+    if (typeof actionOrReview === 'object') {
+      action = actionOrReview.action;
+      checkerId = actionOrReview.checkerId;
+      checkerName = actionOrReview.checkerName;
+      feedback = actionOrReview.reviewFeedback || actionOrReview.feedback;
+    } else {
+      action = actionOrReview;
+      checkerId = checkerIdParam!;
+      checkerName = checkerNameParam;
+      feedback = feedbackParam;
+    }
+
+    return fetchApi<WorkspaceSettingProposal>(`/settings/proposals/${encodeURIComponent(id)}/review`, {
       method: 'POST',
       body: JSON.stringify({ action, checkerId, checkerName, feedback })
-    }),
+    });
+  },
 
   escalateWorkspaceSettingProposal: (id: string, targetTeamId: string, reason: string, escalatedBy?: string, escalatedByName?: string) =>
     fetchApi<WorkspaceSettingProposal>(`/settings/proposals/${encodeURIComponent(id)}/escalate`, {
@@ -1220,7 +1274,7 @@ export const api = {
 
   // Operational Asset Sharing & Verification
   shareOperationalAsset: (payload: {
-    assetType: 'WORKFLOW' | 'VALIDATION_BOX' | 'DB_CONFIG';
+    assetType: 'WORKFLOW' | 'VALIDATION_BOX' | 'DB_CONFIG' | 'HASHTAG';
     assetId: string;
     targetType: 'INDIVIDUAL' | 'TEAM' | 'CHAT_ROOM';
     targetId: string;
@@ -1340,6 +1394,17 @@ export const api = {
       body: JSON.stringify(preset)
     }),
 
+  updateHashtag: (tag: string, preset: Partial<HashtagPreset>) =>
+    fetchApi<HashtagPreset>(`/hashtags/${encodeURIComponent(tag)}`, {
+      method: 'PUT',
+      body: JSON.stringify(preset)
+    }),
+
+  deleteHashtag: (tag: string) =>
+    fetchApi<{ success: boolean; deletedTag: string }>(`/hashtags/${encodeURIComponent(tag)}`, {
+      method: 'DELETE'
+    }),
+
   executeHashtagScan: (tag: string, payload: { executedBy: string; taskId?: string; teamId?: string; isDryRun?: boolean }) =>
     fetchApi<{ runId: string; stagedProposalId?: string | null; rowsScanned: number; anomaliesDetected: number; anomalyRows: any[]; verdict: string; executionDurationMs: number; errors: string[] }>(
       `/hashtags/${encodeURIComponent(tag)}/execute-scan`,
@@ -1411,10 +1476,63 @@ export const api = {
   getHashtagAnalytics: () =>
     fetchApi<{ hashtagAnalytics: any[]; issuesAwaitingSolution: any[]; totalTrackedTags: number }>(
       '/hashtags/analytics'
-    )
+    ),
+
+  // Value Translation Dictionaries (PostgreSQL Persisted - Domain 7 / Rule 23)
+  getValueTranslationDictionaries: (category?: string) =>
+    fetchApi<ValueTranslationDictionary[]>(
+      category ? `/value-translation-dictionaries?category=${encodeURIComponent(category)}` : '/value-translation-dictionaries'
+    ),
+
+  getValueTranslationDictionaryById: (id: string) =>
+    fetchApi<ValueTranslationDictionary>(`/value-translation-dictionaries/${encodeURIComponent(id)}`),
+
+  createValueTranslationDictionary: (dict: Partial<ValueTranslationDictionary>) =>
+    fetchApi<ValueTranslationDictionary>('/value-translation-dictionaries', {
+      method: 'POST',
+      body: JSON.stringify(dict)
+    }),
+
+  updateValueTranslationDictionary: (id: string, dict: Partial<ValueTranslationDictionary>) =>
+    fetchApi<ValueTranslationDictionary>(`/value-translation-dictionaries/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      body: JSON.stringify(dict)
+    }),
+
+  deleteValueTranslationDictionary: (id: string) =>
+    fetchApi<{ success: boolean; id: string }>(`/value-translation-dictionaries/${encodeURIComponent(id)}`, {
+      method: 'DELETE'
+    }),
+
+  // System Transformation Rules (PostgreSQL Persisted - Rule 23)
+  getSystemTransformationRules: (category?: string) => {
+    const params = new URLSearchParams();
+    if (category && category !== 'ALL') params.append('category', category);
+    const qs = params.toString();
+    return fetchApi<any[]>(`/settings/transformation-rules${qs ? `?${qs}` : ''}`);
+  },
+
+  saveSystemTransformationRule: (rule: any) => {
+    if (rule.id && !rule.id.startsWith('rule-custom-')) {
+      return fetchApi<any>(`/settings/transformation-rules/${encodeURIComponent(rule.id)}`, {
+        method: 'PUT',
+        body: JSON.stringify(rule)
+      });
+    }
+    return fetchApi<any>('/settings/transformation-rules', {
+      method: 'POST',
+      body: JSON.stringify(rule)
+    });
+  },
+
+  deleteSystemTransformationRule: (id: string) =>
+    fetchApi<{ success: boolean; id: string }>(`/settings/transformation-rules/${encodeURIComponent(id)}`, {
+      method: 'DELETE'
+    })
 };
 
 export const apiClient = api;
+
 
 
 

@@ -36,16 +36,32 @@ Based on inspection of the active codebase (`backend/`, `frontend/`, and Postgre
 ### 2.2 Backend Services & Endpoints (Current State)
 * **[hashtagService.ts](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/backend/src/services/hashtagService.ts)**:
   - `resolveHashtagAssets(tag)` queries across 5 PostgreSQL entities: workflows, FTP configs, DB connections, tasks/issues, and team chat messages matching `%#tag%`.
+* **[assetSharingService.ts](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/backend/src/services/assetSharingService.ts)**:
+  - Integrates `'HASHTAG'` as a first-class shared asset (`AssetType = 'WORKFLOW' | 'VALIDATION_BOX' | 'DB_CONFIG' | 'HASHTAG'`).
+  - `getAssetPayload('HASHTAG', assetId)`: Extracts complete directive metadata, criteria, solution templates, and DB targets for modal preview.
+  - `adoptAsset`: Clones shared hashtag presets into personal workspaces as `#TAG_COPY` with full configuration preservation.
 * **[misc.ts (Router)](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/backend/src/routes/misc.ts)**:
   - `GET /api/hashtags`: Lists registered presets.
-  - `POST /api/hashtags`: Registers/upserts a preset.
+  - `POST /api/hashtags`: Registers a new preset directive.
+  - `PUT /api/hashtags/:tag`: Updates an existing hashtag preset (metadata, rules, criteria, DB targets, execution trigger, and solution template).
+  - `DELETE /api/hashtags/:tag`: Permanently removes a hashtag preset and detaches associated scheduled triggers.
   - `GET /api/hashtags/resolve/:tag`: Cross-system asset discovery.
   - `PUT /api/hashtags/:tag/kpis`: Updates managerial SLA expectations.
   - `POST /api/hashtags/create-from-issue/:issueId`: Derives a preset from a resolved task.
   - `GET /api/hashtags/analytics`: Aggregates volume, open/resolved counts, and tasks awaiting SQL scripts.
+  - `POST /api/hashtags/execute-direct/:tag`: Runs Type B zero-file DB scanner directives.
+  - `POST /api/hashtags/execute-staging/:tag`: Runs Type C ETL staging pipelines.
+  - `POST /api/hashtags/execute-file/:tag`: Runs Type A batch file ingestion with uploaded payload.
+  - `POST /api/hashtags/execute-audit/:tag`: Triggers Type D scheduled compliance audit sweep.
 
 ### 2.3 Frontend Integration (Current State)
-* **`HashtagManager.tsx`**: Interactive preset library (chips on left, inspector on right).
+* **`HashtagManager.tsx`**: Interactive preset library with full lifecycle management:
+  - **Chip & Card Grid**: Real-time filtering, status badges, and 1-click action buttons on card footers.
+  - **Inline Action Bar**: Edit, Share, and Delete buttons on each card (`e.stopPropagation()`) and inspector header.
+  - **Edit Modal**: In-place modification of description, criteria, sample files, target DB/tables, triggers, and SQL templates.
+  - **Quick Share & Clipboard Dialog**: 1-click copy for `#tag` identifier, remediation SQL statement, and complete JSON specification.
+  - **Team Resource Center Sharing**: Seamless integration with `ShareAssetModal` for sharing hashtag presets across teammates and teams.
+  - **Delete Confirmation Modal**: Safe deletion with instant optimistic state pruning and toast notifications.
 * **`WorkspaceTaskCreator.tsx`**: Category / Hashtag dropdown during manual task creation.
 * **`ValidationOrchestratorWorkspace.tsx`**: Auto-loads the workflow bound to the task's hashtag; provides *Reset to Hashtag Default Workflow*.
 * **`IssueResolutionPanel.tsx`**: Auto-populates SQL solution templates matching `issue.linkedHashtag`.
@@ -83,7 +99,7 @@ Hashtags are classified by their **Data Source Mode**, **Input Requirements**, a
 │ FILE-INGESTION   │      │ SCANNER (ZERO-FILE)          │ STAGING PIPELINE │       │ & COMPLIANCE     │
 ├──────────────────┤      ├──────────────────┤           ├──────────────────┤       ├──────────────────┤
 │ • Input: File    │      │ • Input: NONE    │           │ • Input: NONE /  │       │ • Input: Variable│
-│   (CSV, Excel)   │      │ • Source: DB/    │           │   Query Trigger  │       │ • Source: Live DB│
+│   (CSV,XLSX,XML) │      │ • Source: DB/    │           │   Query Trigger  │       │ • Source: Live DB│
 │ • Sample upload  │      │   Mirror Table   │           │ • Action: Extract│       │ • Action: Read-  │
 │   defines schema │      │ • Action: Query  │           │   & Insert into  │       │   only diagnostic│
 │ • Validates cols │      │   duplicates /   │           │   Dedicated Table│       │   evaluation     │
@@ -99,15 +115,19 @@ Hashtags are classified by their **Data Source Mode**, **Input Requirements**, a
 
 ### Type A: Batch File-Ingestion Hashtags (`FILE_INGESTION`)
 * **Trigger Mode**: Manual task intake, FTP batch ingestion, or file drop.
-* **Input Requirement**: Batch file (.csv, .xlsx).
+* **Input Requirement**: Batch file in **CSV (`.csv`), Excel (`.xlsx`, `.xls`), or XML (`.xml`)** format.
 * **Creation / Authoring Requirements**:
-  - Requires uploading a **representative sample file** during creation.
+  - Requires uploading a **representative sample file** during creation (`.csv`, `.xlsx`, `.xls`, or `.xml`).
+  - **Multi-Format Extraction Pipeline**:
+    - **CSV / Delimited Files**: Delimiter auto-detection (comma `,`, semicolon `;`, tab `\t`) with quoted string stripping and canonical header mapping.
+    - **Excel Spreadsheets (`.xlsx`, `.xls`)**: Binary workbook parsing via `XLSX` extracting active sheets, mapping row 0 to headers, and transforming tabular grid data into typed JSON record sets.
+    - **XML Data Documents (`.xml`)**: DOM-level structural tree parsing. Identifies candidate repeating entity tags (e.g., `<records><record>...`, `<transactions><row .../>`, or ISO 20022 `camt.053` / `pacs.008` settlement feeds), flattens element attributes and child element tags into canonical column headers, and constructs tabular row objects.
   - The author defines **minimum required columns** and column-level integrity checks.
   - Supports **value & dictionary transformations** (e.g., converting incoming `bank_code: "001"` into canonical `bank_name: "Awash International Bank"`).
 * **Execution Flow**:
-  1. Operator uploads file and selects `#HASHTAG`.
-  2. Engine validates column presence and data integrity against the preset's rules before task creation.
-  3. Transforms raw records into canonical schema fields.
+  1. Operator uploads file (CSV, Excel, or XML) and selects `#HASHTAG`.
+  2. Engine parses the format into canonical record sets and validates column presence and data integrity against the preset's rules before task creation.
+  3. Transforms raw records into canonical schema fields using dictionary lookups.
   4. Runs bound validation workflow DAG.
   5. If workflow yields `PASS`, conditionally executes parameterized SQL remediation on the target external database (or routes to Maker-Checker review).
 
@@ -175,6 +195,45 @@ ALTER TABLE hashtag_presets
   ADD COLUMN IF NOT EXISTS schedule_cron VARCHAR(100),
   ADD COLUMN IF NOT EXISTS conditional_action JSONB DEFAULT '{"onPass": "EXECUTE_SQL", "onFail": "FLAG_INVESTIGATION"}'::jsonb;
 ```
+
+### 5.2 Preset Lifecycle Governance & Repository Operations (Update, Share, Delete)
+
+To support complete operational agility and peer collaboration across teams, hashtag presets are managed through a comprehensive lifecycle:
+
+```
+┌────────────────────────────────────────────────────────────────────────────────────────┐
+│                        HASHTAG PRESET LIFECYCLE & GOVERNANCE                           │
+└────────────────────────────────────────────────────────────────────────────────────────┘
+                                            │
+               ┌────────────────────────────┼────────────────────────────┐
+               ▼                            ▼                            ▼
+      ┌─────────────────┐          ┌─────────────────┐          ┌─────────────────┐
+      │  IN-PLACE EDIT  │          │  ASSET SHARING  │          │   SAFE DELETE   │
+      ├─────────────────┤          ├─────────────────┤          ├─────────────────┤
+      │ • PUT /api/     │          │ • AssetType:    │          │ • DELETE /api/  │
+      │   hashtags/:tag │          │   'HASHTAG'     │          │   hashtags/:tag │
+      │ • Scope: tag/ID │          │ • 1-Click Copy: │          │ • Scoped SQL    │
+      │ • Field-level   │          │   Tag, SQL, JSON│          │   deletion      │
+      │   sanitization  │          │ • Resource Ctr: │          │ • Optimistic UI │
+      │ • Updates in DB │          │   Team clone as │          │   state purge   │
+      │   repository    │          │   #TAG_COPY     │          │ • Toast feedback│
+      └─────────────────┘          └─────────────────┘          └─────────────────┘
+```
+
+1. **In-Place Update (`PUT /api/hashtags/:tag`)**:
+   - Updates criteria, schema requirements, database targets, schedules, dictionary lookups, and solution scripts.
+   - Dual-scope resolution in `postgresRepo.updateHashtag(tagOrId, updates)`: Matches on either exact `tag` (case-insensitive with/without `#`) or unique primary key `id`.
+   - Normalizes tags to upper-case prefixed canonical representation (e.g., `#AIB_REVERSAL`).
+
+2. **Asset Sharing & Resource Center Adoption (`AssetSharingService`)**:
+   - Registered as a first-class sharable asset type (`AssetType: 'HASHTAG'`).
+   - `getAssetPayload('HASHTAG', assetId)`: Extracts full operational context into a visual preview payload.
+   - `adoptAsset(..., 'HASHTAG')`: Deep-clones the directive into the recipient's workspace as `#<TAG>_COPY`, preserving full column structures, lookup dictionaries, conditional actions, and execution triggers.
+   - 1-Click Clipboard Actions: Instant copying of `#tag` string, remediation SQL script, or comprehensive JSON configuration.
+
+3. **Safe Deletion (`DELETE /api/hashtags/:tag`)**:
+   - Permanently deletes preset from `hashtag_presets` table via `postgresRepo.deleteHashtag(tagOrId)`.
+   - Frontend triggers optimistic UI purge and non-blocking toast confirmation.
 
 ---
 
@@ -433,6 +492,11 @@ This log permanently tracks all architectural revisions, scope evolutions, and g
 | **2026-10-04** | Formal Audit Response Compiled | Produced formal cross-examination response adjudicating acceptance claims vs audit findings with remediation roadmap. | Full compliance with Rule 22 Reality Gate and governance traceability. | [`AUDIT_RESPONSE_REPORT.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/AUDIT_RESPONSE_REPORT.md); Actionable remediation matrix established. | **Adjudicated** |
 | **2026-10-04** | Remediation Plan Authored | Authored 5-phase engineering implementation plan to systematically remediate all 9 verified architectural gaps (AGAP-01 – AGAP-09). | Structured roadmap to achieve genuine 100% Certified sign-off without false-green test maskings. | [`IMPLEMENTATION_PLAN_UNIVERSAL_HASHTAGS_REMEDIATION.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/IMPLEMENTATION_PLAN_UNIVERSAL_HASHTAGS_REMEDIATION.md). | **Planned (Execution Ready)** |
 | **2026-10-04** | Gap Remediation & Final Sign-Off | Remediated all 9 gaps (AGAP-01 – AGAP-09): diagnostic taint row query, Maker-Checker proposal auto-staging, `hashtagSchedulerService` background poller, Type A/D execute routes, 64-bit BigInt advisory locking parameterization, `testPreFlight` external DB routing, relaxed template validation, genuine issue-lifecycle MTTD/MTTR metrics, and personal automation dashboard. | Zero-Assumption Reality Gate (AGENTS.md Rule 22): Full physical code verification and non-vacuous assertions. | [`ARCHITECTURE_REMEDIATION_FINAL_ACCEPTANCE_REPORT.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/ARCHITECTURE_REMEDIATION_FINAL_ACCEPTANCE_REPORT.md); 31/31 Vitest suites passed (247 tests); Backend `tsc` & Frontend `vite build` clean. | **100% Certified** |
+| **2026-10-09** | `8d573ca` (Lifecycle: Edit, Share & Delete) | Implemented full lifecycle operations for hashtag presets: `updateHashtag`, `deleteHashtag`, `AssetSharingService` support for `'HASHTAG'` (`adoptAsset` cloning), card footers with Edit/Share/Delete, clipboard actions, and Resource Center sharing. | Complete UI and API management of universal hashtag presets without manual database intervention; peer collaboration via Resource Center. | [`postgresRepo.ts`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/backend/src/store/postgresRepo.ts), [`misc.ts`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/backend/src/routes/misc.ts), [`assetSharingService.ts`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/backend/src/services/assetSharingService.ts), [`HashtagManager.tsx`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/frontend/src/components/issue/HashtagManager.tsx), [`universalHashtagsEngine.test.ts`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/backend/src/services/__tests__/universalHashtagsEngine.test.ts). | **100% Certified** |
+| **2026-10-09** | Multi-Format Ingestion Engine | Extended Type A (`FILE_INGESTION`) hashtags and task intake to ingest Excel (`.xlsx`, `.xls`) and XML (`.xml`) files alongside CSV. Integrated XLSX sheet extraction and DOM-based structural XML parsing (ISO 20022 and banking interchange trees) with canonical header extraction and dictionary translation. | Eliminates CSV-only restriction, providing seamless operational intake for banking XML and Excel spreadsheets directly into hashtag directives. | [`HashtagManager.tsx`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/frontend/src/components/issue/HashtagManager.tsx), [`WorkspaceTaskCreator.tsx`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/frontend/src/components/issue/WorkspaceTaskCreator.tsx), [`universalHashtagsEngine.test.ts`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/backend/src/services/__tests__/universalHashtagsEngine.test.ts). | **100% Certified** |
+| **2026-10-09** | Column Mapping, Data Cleaning & Workflow Approval Linkage | Added header acceptance, interactive column mapping to canonical dictionary fields, required fields configuration, sample data preview table, and integrated data hygiene suite (deduplication, empty row removal, date format standardization to ISO, whitespace trimming). Added Data Transformation Dictionary deferred preview modal. Integrated task creation schema mismatch alert/guard when uploaded files miss required columns. Linked hashtag presets to validation workflows with approval hierarchy (approved workflows sorted first and badges indicating approval status). | Enhances data quality, guarantees ingestion schema integrity, prevents unvalidated intake, and ensures compliance with workflow approval governance before execution. | [`HashtagManager.tsx`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/frontend/src/components/issue/HashtagManager.tsx), [`WorkspaceTaskCreator.tsx`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/frontend/src/components/issue/WorkspaceTaskCreator.tsx), [`universalHashtagsEngine.test.ts`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/backend/src/services/__tests__/universalHashtagsEngine.test.ts). | **100% Certified** |
+
+
 
 
 

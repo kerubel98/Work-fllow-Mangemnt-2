@@ -1,6 +1,7 @@
 backend/node_modules
 frontend/node_modules
-env
+env/
+.env
 
 node_modules
 
@@ -11,3 +12,7 @@ opencode.json
 # Scratch and ad-hoc inspection scripts
 scratch/
 backend/check_*.mjs
+backend/dist/
+frontend/dist/
+*.zip
+tesr.json

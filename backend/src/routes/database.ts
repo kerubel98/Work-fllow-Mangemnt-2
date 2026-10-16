@@ -425,9 +425,14 @@ databaseRouter.get('/databases', async (req: Request, res: Response) => {
     const { role, teamId, userId } = req.query as { role?: string; teamId?: string; userId?: string };
     const allDbs = await repo.getDatabases();
 
+    const sanitize = (list: DatabaseConnection[]) => list.map(d => ({
+      ...d,
+      password: d.password ? '••••••••' : undefined,
+    }));
+
     // If caller is Admin/Superadmin, return everything
     if (role === 'admin' || role === 'superadmin') {
-      return res.json(allDbs);
+      return res.json(sanitize(allDbs));
     }
 
     // Identify user's team ID if provided or discovered via permanent team
@@ -447,7 +452,7 @@ databaseRouter.get('/databases', async (req: Request, res: Response) => {
       return true;
     });
 
-    return res.json(visibleDbs);
+    return res.json(sanitize(visibleDbs));
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
   }
@@ -460,7 +465,7 @@ databaseRouter.get('/team-databases', async (req: Request, res: Response) => {
     if (!teamId) {
       return res.status(400).json({ error: 'teamId query parameter is required' });
     }
-    const teamDbs = await repo.getTeamSpecificConnections(teamId);
+    const teamDbs = await repo.getTeamSpecificConnections(teamId, true);
     return res.json(teamDbs);
   } catch (err: any) {
     return res.status(500).json({ error: err.message });

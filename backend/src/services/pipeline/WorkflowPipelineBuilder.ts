@@ -202,6 +202,18 @@ export class WorkflowPipelineBuilder {
         )
       );
 
+      // Phase 13: Table-level database column configurations run per-coordinate on returned candidate legs
+      // in DbConfigValidationMethod. To prevent correlated subqueries on the mirror table that evaluate across
+      // the entire batch and omit coordinate isolation and multi-leg filters, strip columnConfigurations
+      // from compiledRules passed to the mirror update when dbConfigMethods are attached.
+      const compiledRules = effectiveSteps.map(step => {
+        if (dbConfigMethods.length > 0 && (step as any).columnConfigurations) {
+          const { columnConfigurations, ...rest } = step as any;
+          return rest;
+        }
+        return step;
+      });
+
       executableStages.push(new ExecutableStage(
         stage.id,
         stage.name,
@@ -209,7 +221,7 @@ export class WorkflowPipelineBuilder {
         stage.cardinalityPolicy,
         stage.orderByColumn,
         validationMethods,
-        effectiveSteps,
+        compiledRules,
         stage.aggregationStrategy,
         attachedDbConfigIds,
         dbConfigMethods

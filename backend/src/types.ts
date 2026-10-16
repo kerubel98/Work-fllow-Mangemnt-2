@@ -235,6 +235,8 @@ export interface Issue {
   acceptedScriptProposalId?: string;
   initialSnapshot?: Record<string, any>[];
   attachments?: any[];
+  mappingTemplateId?: string;
+  templateRequiredColumns?: string[];
 }
 
 export interface CriteriaRule {
@@ -350,6 +352,141 @@ export interface HashtagPreset {
     onPass: 'EXECUTE_SQL' | 'STAGE_PROPOSAL' | 'NOTIFY_ONLY' | 'CLOSE_TASK';
     onFail: 'FLAG_INVESTIGATION' | 'STOP' | 'ESCALATE' | 'REPORT_ONLY';
   };
+  /** Optional linked saved file ingestion mapping template ID */
+  mappingTemplateId?: string | null;
+}
+
+// ── File Ingestion Mapping Templates & Recipes (Domain 7) ───────────────────
+
+export type SplitDelimiterType =
+  | 'SPACE'
+  | 'COMMA'
+  | 'HYPHEN'
+  | 'SLASH'
+  | 'UNDERSCORE'
+  | 'PIPE'
+  | 'SEMICOLON'
+  | 'CUSTOM';
+
+export interface SplitOperation {
+  id: string;
+  column: string;
+  delimiterType: SplitDelimiterType;
+  customDelimiter?: string;
+  partNames: string[];
+  keepOriginal: boolean;
+}
+
+export type MergeSeparatorType =
+  | 'SPACE'
+  | 'HYPHEN'
+  | 'UNDERSCORE'
+  | 'SLASH'
+  | 'COMMA'
+  | 'NONE'
+  | 'CUSTOM';
+
+export interface MergeOperation {
+  id: string;
+  col1: string;
+  col2: string;
+  separatorType: MergeSeparatorType;
+  customSeparator?: string;
+  resultColumnName: string;
+  keepSources: boolean;
+}
+
+export type TransformRuleType =
+  | 'UPPERCASE'
+  | 'LOWERCASE'
+  | 'TITLECASE'
+  | 'TRIM'
+  | 'DATE_ISO'
+  | 'STRIP_CURRENCY'
+  | 'MASK_MIDDLE'
+  | 'PHONE_ET'
+  | 'VALUE_REPLACE'
+  | 'VALUE_TRANSLATION_DICT'
+  | 'REGEX_EXTRACT';
+
+export interface TransformOperation {
+  id: string;
+  column: string;
+  ruleType: TransformRuleType | string;
+  param1?: string;
+  param2?: string;
+}
+
+export type CleaningActionType =
+  | 'DEDUPLICATE'
+  | 'REMOVE_EMPTY_ROWS'
+  | 'NORMALIZE_DATES'
+  | 'TRIM_WHITESPACE'
+  | 'MASK_PAN'
+  | 'FILL_BLANKS_NA';
+
+export interface FileIngestionCleaningRecipe {
+  emptyRowsAction?: 'DROP' | 'FILL_NA' | 'ERROR_BLOCK';
+  duplicateRowsAction?: 'DROP_EXACT' | 'KEEP_FIRST' | 'FLAG_FOR_REVIEW' | 'ERROR_BLOCK';
+  trimWhitespace?: boolean;
+  normalizeDatesToIso?: boolean;
+  maskCardPan?: boolean;
+  fillBlanksWithNa?: boolean;
+  splitOperations?: SplitOperation[];
+  mergeOperations?: MergeOperation[];
+  transformOperations?: TransformOperation[];
+  cleaningActions?: string[];
+  valueTranslations?: Record<string, string>;
+}
+
+export interface FileIngestionRecipe {
+  headerMode: 'ROW_INDEX' | 'HEADERLESS_MANUAL';
+  headerRowIndex: number; // 1-indexed (e.g. 1 = first row, 4 = after 3 preamble lines)
+  dataStartRowIndex?: number;
+  manualHeaders: Record<string, string>; // e.g. { "col_0": "Txn_Ref", "col_1": "Amount" }
+  deletedColumns: string[]; // List of original column names/indexes to permanently exclude
+  columnMappings: Record<string, string>; // sourceColumn -> canonicalGlobalStandardKey
+  requiredColumns: string[]; // Mandated columns enforced for this specific template
+  cleaningPolicies: {
+    emptyRowsAction: 'DROP' | 'FILL_NA' | 'ERROR_BLOCK';
+    duplicateRowsAction: 'DROP_EXACT' | 'KEEP_FIRST' | 'FLAG_FOR_REVIEW' | 'ERROR_BLOCK';
+    trimWhitespace: boolean;
+    normalizeDatesToIso: boolean;
+    maskCardPan: boolean;
+    fillBlanksWithNa: boolean;
+  };
+  splitOperations?: SplitOperation[];
+  mergeOperations?: MergeOperation[];
+  transformOperations?: TransformOperation[];
+  cleaningActions?: string[];
+  sourceType: 'csv' | 'xlsx' | 'xls' | 'xml';
+  sheetName?: string;
+  xmlRecordTag?: string;
+  valueTranslations?: Record<string, string>;
+}
+
+export interface FileIngestionMappingTemplate {
+  id: string;
+  name: string;
+  description?: string;
+  sourceType: 'csv' | 'xlsx' | 'xls' | 'xml';
+  headerMode: 'ROW_INDEX' | 'HEADERLESS_MANUAL';
+  headerRowIndex: number;
+  manualHeaders: Record<string, string>;
+  deletedColumns: string[];
+  requiredColumns: string[];
+  columnMappings: Record<string, string>;
+  cleaningRecipe: FileIngestionCleaningRecipe;
+  splitOperations?: SplitOperation[];
+  mergeOperations?: MergeOperation[];
+  transformOperations?: TransformOperation[];
+  cleaningActions?: string[];
+  valueTranslations?: Record<string, string>;
+  createdBy?: string;
+  teamId?: string;
+  isDefault?: boolean;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface TransactionReversionSnapshot {
@@ -983,7 +1120,9 @@ export type ValidationCheckType =
   | 'AMOUNT_MATCH'
   | 'STATUS_MATCH'
   | 'CROSS_DB_LOOKUP'
-  | 'DUAL_SOURCE_COMPARISON';
+  | 'DUAL_SOURCE_COMPARISON'
+  | 'VALUE_MATCH'
+  | 'DATABASE_CONFIG_RULES';
 
 export interface ValidationCheckStep {
   id: string;
@@ -1591,12 +1730,38 @@ export interface DatabaseColumnConfiguration {
   updatedAt?: string;
 }
 
+export interface MultiLegStageData {
+  targetDb?: string;
+  targetTable: string;
+  queriedAt?: string;
+  matchCount: number;
+  legs: Array<Record<string, any>>;
+  aggregatedMetrics?: {
+    netAmount?: number;
+    feeAmount?: number;
+    settledAmount?: number;
+    hasReversal?: boolean;
+    legCount?: number;
+    [key: string]: any;
+  };
+}
+
+export interface MultiLegStageEnvelope {
+  stages?: Record<string, MultiLegStageData>;
+  audit?: {
+    lastExecutedAt?: string;
+    executionRunId?: string;
+    statusVersion?: number;
+  };
+  [key: string]: any;
+}
+
 export interface TaskDatasetTransactionEntity {
   id: string;
   task_id: string;
   row_number: number;
   batch_id?: string;
-  returned_data?: Record<string, Record<string, Array<Record<string, any>>>> | Array<Record<string, any>>;
+  returned_data?: MultiLegStageEnvelope | Record<string, Record<string, Array<Record<string, any>>>> | Array<Record<string, any>>;
   canonical_data: {
     _rowNumber?: number;
     _task_id?: string;
@@ -1749,6 +1914,48 @@ export interface WorkflowBundle {
   approvedAt?: string;
   updatedAt: string;
 }
+
+// ==========================================
+// VALUE TRANSLATION DICTIONARIES (DOMAIN 7)
+// ==========================================
+
+export interface ValueTranslationDictionary {
+  id: string;
+  name: string;
+  description: string;
+  category: 'BANK_CODES' | 'CHANNEL_CODES' | 'STATUS_CODES' | 'CURRENCIES' | 'CUSTOM';
+  mappings: {
+    sourceValue: string;
+    targetValue: string;
+    notes?: string;
+  }[];
+  isSystemDefault?: boolean;
+  createdBy?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+// ==========================================
+// SYSTEM TRANSFORMATION RULES (DOMAIN 7 / RULE 23)
+// ==========================================
+
+export interface SystemTransformationRule {
+  id: string;
+  name: string;
+  description: string;
+  category: 'Splitting' | 'Merging' | 'Sanitization' | 'Date' | 'Masking' | 'Lookup' | 'Regex';
+  type: 'SPLIT' | 'MERGE' | 'CASE' | 'TRIM' | 'DATE_FORMAT' | 'STRIP_CURRENCY' | 'MASK' | 'PHONE_ET' | 'VALUE_REPLACE' | 'REGEX_EXTRACT';
+  delimiter?: string;
+  separator?: string;
+  pattern?: string;
+  replacement?: string;
+  targetFormat?: string;
+  isSystem?: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+
 
 
 

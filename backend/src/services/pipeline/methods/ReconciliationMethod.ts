@@ -51,11 +51,19 @@ export class ReconciliationMethod implements ValidationMethod {
     const workflowId = context.workflowId || 'default';
     const targetTable = this.targetTable || '';
     const returnedData = context.initialRecord?.returned_data || context.initialRecord?.canonical_data?.returned_data;
-    if (returnedData && targetTable) {
-      const wfData = returnedData[workflowId] || returnedData;
-      const legs = wfData[targetTable];
-      if (legs) {
-        rawRows = Array.isArray(legs) ? legs : [legs];
+    if (returnedData) {
+      if (returnedData.stages) {
+        const stageData = returnedData.stages[context.stageId] || (targetTable ? returnedData.stages[targetTable] : null);
+        if (stageData?.legs && Array.isArray(stageData.legs)) {
+          rawRows = stageData.legs;
+        }
+      }
+      if (rawRows.length === 0 && targetTable) {
+        const wfData = returnedData[workflowId] || returnedData;
+        const legs = wfData[targetTable];
+        if (legs) {
+          rawRows = Array.isArray(legs) ? legs : [legs];
+        }
       }
     }
 

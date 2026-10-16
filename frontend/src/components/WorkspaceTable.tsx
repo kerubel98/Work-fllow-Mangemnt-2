@@ -36,18 +36,7 @@ export default function WorkspaceTable({
     return globalMappingService.getStandardFields();
   });
 
-  const [records, setRecords] = useState<WorkspaceTableRecord[]>(() => {
-    const saved = localStorage.getItem('workspace_table_records');
-    if (saved) {
-      try {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) return parsed;
-      } catch (e) {
-        console.warn('Failed to parse saved workspace_table_records from localStorage', e);
-      }
-    }
-    return [];
-  });
+  const [records, setRecords] = useState<WorkspaceTableRecord[]>([]);
 
   const [searchTerm, setSearchTerm] = useState('');
   const [tagFilter, setTagFilter] = useState('all');
@@ -102,7 +91,6 @@ export default function WorkspaceTable({
       const data = await api.getWorkspaceTableRecords();
       if (Array.isArray(data)) {
         setRecords(data);
-        localStorage.setItem('workspace_table_records', JSON.stringify(data));
       }
       setStandardFields(globalMappingService.getStandardFields());
     } catch (e) {
@@ -119,7 +107,6 @@ export default function WorkspaceTable({
   const handleDeleteRecord = async (id: string) => {
     const updated = records.filter(r => r.id !== id);
     setRecords(updated);
-    localStorage.setItem('workspace_table_records', JSON.stringify(updated));
     setDeleteAlert('Record removed from centralized collection table.');
     setTimeout(() => setDeleteAlert(null), 3500);
     try {
@@ -132,7 +119,7 @@ export default function WorkspaceTable({
   const executeClearAll = async () => {
     setConfirmClearOpen(false);
     setRecords([]);
-    localStorage.removeItem('workspace_table_records');
+
     setDeleteAlert('All centralized collection records have been cleared.');
     setTimeout(() => setDeleteAlert(null), 3500);
     try {

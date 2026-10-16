@@ -73,7 +73,7 @@ export interface StageExecutionRecord {
   /** What the pipeline does next — strictly separated from validationResult. */
   pipelineAction: PipelineAction;
   /** Row count resolution status from cardinality policy. */
-  cardinalityStatus: 'EXACT_MATCH' | 'CARDINALITY_BREACH' | 'ORDERED_LATEST_PICKED' | 'FANOUT' | 'NO_MATCH';
+  cardinalityStatus: 'EXACT_MATCH' | 'CARDINALITY_BREACH' | 'ORDERED_LATEST_PICKED' | 'ORDERED_FIRST_PICKED' | 'FANOUT' | 'NO_MATCH';
   /**
    * Strongly-keyed dictionary of values extracted from the external result.
    * Downstream stages resolve their requiredInputKeys from this dict.
@@ -146,7 +146,7 @@ export interface ReconciliationResult {
   validationResult: 'PASS' | 'FAIL' | 'ERROR' | 'PAUSED_DB_OFFLINE';
   /** CONTINUE / STOP / CLOSE / FLAG / REPORT */
   pipelineAction: PipelineAction;
-  cardinalityStatus: 'EXACT_MATCH' | 'CARDINALITY_BREACH' | 'ORDERED_LATEST_PICKED' | 'FANOUT' | 'NO_MATCH';
+  cardinalityStatus: 'EXACT_MATCH' | 'CARDINALITY_BREACH' | 'ORDERED_LATEST_PICKED' | 'ORDERED_FIRST_PICKED' | 'FANOUT' | 'NO_MATCH';
   /** Values to be made available to downstream stages. */
   producedValues: Record<string, any>;
   /** Convenience list of keys in producedValues. */
@@ -177,6 +177,7 @@ export interface BatchExecutionContext {
   executionTimestamp: string;
   workflowId?: string;
   targetTable?: string;
+  targetDbId?: string;
 }
 
 /**
@@ -277,6 +278,9 @@ export interface BatchPipelineExecutionReport {
     validationAction: PipelineAction;
     details?: any;
     targetRecord?: any;
+    targetRecords?: any[];
+    stageRecords?: any[];
+    allStageLegs?: Record<string, any[]>;
   }>;
 }
 

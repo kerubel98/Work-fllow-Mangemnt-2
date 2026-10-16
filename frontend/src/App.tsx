@@ -169,8 +169,9 @@ export default function App() {
 
     const hydrateFromBackend = async () => {
       try {
-        // Stage 1: Critical Workspace Entities (renders the active view immediately)
+        // Stage 1: Critical Workspace Entities (authoritatively from PostgreSQL - Rule 23)
         const [
+          fetchedMe,
           fetchedUsers,
           fetchedIssues,
           fetchedDatabases,
@@ -178,6 +179,7 @@ export default function App() {
           fetchedTeams,
           fetchedHashtags
         ] = await Promise.allSettled([
+          api.getMe(),
           api.getUsers(),
           api.getIssues(currentUser?.id),
           api.getDatabases(),
@@ -188,10 +190,17 @@ export default function App() {
 
         if (!isMounted) return;
 
+        if (fetchedMe.status === 'fulfilled' && fetchedMe.value?.user) {
+          setCurrentUser(fetchedMe.value.user);
+        }
+
         if (fetchedUsers.status === 'fulfilled' && Array.isArray(fetchedUsers.value) && fetchedUsers.value.length > 0) {
           setUsers(fetchedUsers.value);
+          if (!currentUser && fetchedMe.status !== 'fulfilled') {
+            setCurrentUser(fetchedUsers.value[0]);
+          }
         }
-        if (fetchedIssues.status === 'fulfilled' && Array.isArray(fetchedIssues.value) && fetchedIssues.value.length > 0) {
+        if (fetchedIssues.status === 'fulfilled' && Array.isArray(fetchedIssues.value)) {
           setIssues(fetchedIssues.value);
         }
         if (fetchedDatabases.status === 'fulfilled' && Array.isArray(fetchedDatabases.value)) {
@@ -206,6 +215,7 @@ export default function App() {
         if (fetchedHashtags.status === 'fulfilled' && Array.isArray(fetchedHashtags.value) && fetchedHashtags.value.length > 0) {
           setHashtags(fetchedHashtags.value);
         }
+
 
         // Stage 2: Secondary / Collaboration Data (yields to render loop before fetching)
         setTimeout(async () => {
@@ -902,6 +912,16 @@ export default function App() {
     api.createHashtag(newPreset).catch(err => console.warn('Could not create hashtag in API:', err));
   };
 
+  const handleUpdateHashtagPreset = (updated: HashtagPreset) => {
+    setHashtags(prev => prev.map(h => (h.tag === updated.tag || (h as any).id === updated.tag ? updated : h)));
+    api.updateHashtag(updated.tag, updated).catch(err => console.warn('Could not update hashtag in API:', err));
+  };
+
+  const handleDeleteHashtagPreset = (tag: string) => {
+    setHashtags(prev => prev.filter(h => h.tag !== tag && (h as any).id !== tag));
+    api.deleteHashtag(tag).catch(err => console.warn('Could not delete hashtag in API:', err));
+  };
+
   const handleSendChatMessage = (issueId: string, messageText: string) => {
     if (!currentUser) return;
     const newMessage: ChatMessage = {
@@ -1043,6 +1063,8 @@ export default function App() {
                   onDeleteIssue={handleDeleteIssue}
                   onCreateIssue={handleCreateIssue}
                   onCreateHashtagPreset={handleCreateHashtagPreset} 
+                  onUpdateHashtagPreset={handleUpdateHashtagPreset}
+                  onDeleteHashtagPreset={handleDeleteHashtagPreset}
                   onSendChatMessage={handleSendChatMessage} 
                   onChangeTab={handleTabChange}
                   onWorkspaceSubViewChange={setWorkspaceSubView}

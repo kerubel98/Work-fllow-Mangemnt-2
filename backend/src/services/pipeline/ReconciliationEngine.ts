@@ -59,15 +59,15 @@ function resolveCardinalityStatus(
   }
 
   if (policy === 'EXPLICIT_FIRST') {
-    return { rows: [rows[0]], status: 'ORDERED_LATEST_PICKED', breach: false };
+    return { rows: [rows[0]], status: 'ORDERED_FIRST_PICKED', breach: false };
   }
 
   if (policy === 'ONE_TO_MANY' || policy === 'ALL_ROWS') {
     return { rows, status: 'FANOUT', breach: false };
   }
 
-  // Fallback
-  return { rows, status: 'EXACT_MATCH', breach: false };
+  // Fail-closed for unrecognized policies
+  return { rows, status: 'CARDINALITY_BREACH', breach: true };
 }
 
 function extractProducedValues(
@@ -243,10 +243,25 @@ export class ReconciliationEngine {
       ).toLowerCase().trim();
       const mirrorVal = String(matchedRow[targetCol] ?? '').toLowerCase().trim();
       const expectedVal = String(rule.compareValue ?? rule.expectedValue ?? '').toLowerCase().trim();
-      passed = expectedVal ? (inputVal === expectedVal || mirrorVal === expectedVal) : inputVal === mirrorVal;
+      if (expectedVal) {
+        passed = inputVal ? (inputVal === expectedVal && mirrorVal === expectedVal) : mirrorVal === expectedVal;
+      } else {
+        passed = inputVal === mirrorVal;
+      }
       comparison[targetCol] = { input: inputVal, mirror: mirrorVal, expected: expectedVal, match: passed };
+    } else if (rule.checkType === 'VALUE_MATCH') {
+      const targetCol = rule.targetField || rule.sourceField || '';
+      const mirrorVal = String(matchedRow[targetCol] ?? '').toLowerCase().trim();
+      const expectedVal = String(rule.compareValue ?? rule.expectedValue ?? '').toLowerCase().trim();
+      passed = mirrorVal === expectedVal;
+      comparison[targetCol] = { mirror: mirrorVal, expected: expectedVal, match: passed };
+    } else if (rule.checkType === 'SQL_CONDITION' || rule.checkType === 'DATABASE_CONFIG_RULES') {
+      passed = true;
+    } else {
+      // RE-001: Unknown check types fail closed
+      passed = false;
+      comparison.error = `Unsupported checkType '${rule.checkType}'. Fail-closed enforcement rejects unknown check types.`;
     }
-    // Other checkTypes fall through to passed=true (existence-only validation)
 
     const validationResult = passed ? 'PASS' : 'FAIL';
     const pipelineAction = determinePipelineAction(validationResult, rule);

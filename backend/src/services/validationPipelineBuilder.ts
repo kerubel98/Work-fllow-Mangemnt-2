@@ -43,6 +43,7 @@ export interface CompiledValidationPlan {
   stages: CompiledStagePlan[];
   topologicalOrder: string[];
   isAcyclic: boolean;
+  connections?: Array<{ fromNodeId: string; toNodeId: string; fromPort?: string; toPort?: string; action?: string }>;
 }
 
 export interface PipelineCompilationOptions {
@@ -326,7 +327,8 @@ export class ValidationPipelineBuilder {
       compiledAt: new Date().toISOString(),
       stages: compiledStages,
       topologicalOrder,
-      isAcyclic: true
+      isAcyclic: true,
+      connections: workflow.connections || []
     };
   }
 
@@ -338,7 +340,18 @@ export class ValidationPipelineBuilder {
     connections: Array<{ fromNodeId: string; toNodeId: string }>
   ): { isAcyclic: boolean; topologicalOrder: string[] } {
     const stageIds = stages.map(s => s.id);
-    if (stageIds.length <= 1) {
+    if (stageIds.length === 0) {
+      return { isAcyclic: true, topologicalOrder: [] };
+    }
+
+    // PB-002: Check for self-referential cycles regardless of stage count
+    for (const conn of connections) {
+      if (conn.fromNodeId === conn.toNodeId) {
+        return { isAcyclic: false, topologicalOrder: [] };
+      }
+    }
+
+    if (stageIds.length === 1) {
       return { isAcyclic: true, topologicalOrder: stageIds };
     }
 

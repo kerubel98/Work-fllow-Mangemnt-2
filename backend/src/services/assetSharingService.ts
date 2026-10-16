@@ -7,7 +7,7 @@
 import { getPostgresPool } from '../config/postgres.js';
 import { randomUUID } from 'crypto';
 
-export type AssetType = 'WORKFLOW' | 'VALIDATION_BOX' | 'DB_CONFIG';
+export type AssetType = 'WORKFLOW' | 'VALIDATION_BOX' | 'DB_CONFIG' | 'HASHTAG';
 export type ShareTargetType = 'INDIVIDUAL' | 'TEAM' | 'CHAT_ROOM';
 export type AssetStatus = 'DRAFT' | 'PENDING_CHECKER_TEST' | 'APPROVED' | 'DECLINED';
 
@@ -102,6 +102,28 @@ export class AssetSharingService {
         tableName: r.table_name,
         columnsCount: Array.isArray(r.columns) ? r.columns.length : Object.keys(r.columns || {}).length,
         columnMappings: r.columns || {}
+      };
+      return { asset: r, visualPayload };
+    }
+
+    if (assetType === 'HASHTAG') {
+      const cleanTag = (assetId || '').trim().replace(/^#+/, '');
+      const exactTag = `#${cleanTag}`;
+      const { rows } = await pool.query(
+        'SELECT * FROM hashtag_presets WHERE LOWER(tag) = LOWER($1) OR LOWER(tag) = LOWER($2) OR LOWER(id) = LOWER($1) OR LOWER(id) = LOWER($2) LIMIT 1;',
+        [exactTag, cleanTag]
+      );
+      if (rows.length === 0) return null;
+      const r = rows[0];
+      const visualPayload = {
+        title: r.tag,
+        description: r.description,
+        hashtagType: r.hashtag_type || 'FILE_INGESTION',
+        criteria: r.criteria,
+        targetTable: r.target_table_name,
+        targetDb: r.target_db_id,
+        author: r.author,
+        solutionTemplate: r.solution_template
       };
       return { asset: r, visualPayload };
     }
@@ -310,6 +332,42 @@ export class AssetSharingService {
         ]
       );
       return { newAssetId: newId, message: 'Database Configuration added to personal workspace', asset: rows[0] };
+    }
+
+    if (params.assetType === 'HASHTAG') {
+      const baseTag = (orig.tag || 'TAG').replace(/^#+/, '');
+      const newTag = `#${baseTag}_COPY`;
+      const newId = `tag-${Date.now()}-${randomUUID().slice(0, 6)}`;
+      const { rows } = await pool.query(
+        `INSERT INTO hashtag_presets (
+          id, tag, description, criteria, expected_file_structure, solution_template,
+          author, created_at, hashtag_type, data_source_mode, target_db_id, target_table_name,
+          dedicated_app_table, minimum_required_columns, dictionary_lookup_mappings,
+          execution_trigger, schedule_cron, conditional_action
+        ) VALUES (
+          $1, $2, $3, $4, $5, $6, $7, NOW(), $8, $9, $10, $11, $12, $13, $14, $15, $16, $17
+        ) RETURNING *;`,
+        [
+          newId,
+          newTag,
+          orig.description ? `${orig.description} (Adopted)` : 'Adopted hashtag preset',
+          orig.criteria,
+          JSON.stringify(orig.expected_file_structure || []),
+          orig.solution_template,
+          params.recipientName,
+          orig.hashtag_type || 'FILE_INGESTION',
+          orig.data_source_mode || 'FILE_UPLOAD',
+          orig.target_db_id || null,
+          orig.target_table_name || null,
+          orig.dedicated_app_table || null,
+          JSON.stringify(orig.minimum_required_columns || []),
+          JSON.stringify(orig.dictionary_lookup_mappings || {}),
+          orig.execution_trigger || 'MANUAL',
+          orig.schedule_cron || null,
+          JSON.stringify(orig.conditional_action || { onPass: 'EXECUTE_SQL', onFail: 'FLAG_INVESTIGATION' })
+        ]
+      );
+      return { newAssetId: newId, message: `Hashtag Directive cloned as ${newTag}`, asset: rows[0] };
     }
 
     throw new Error(`Unsupported asset type: ${params.assetType}`);

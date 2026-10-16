@@ -128,6 +128,12 @@ Whenever modifying, designing, reviewing, or analyzing features in this reposito
     - **Summaries & Clickable Links**: Every referenced document MUST be hyperlinked using markdown links (`[Document](file:///...)`) and accompanied by concise, bullet-pointed summaries of its scope, findings, and key architectural points.
     - **Anti-Premature Certification (Zero-Assumption Reality Gate)**: No architectural modification may be declared "100% Certified" or signed off based solely on passing unit tests or acceptance claims. Final sign-off requires a rigorous physical code audit verifying that all runtime execution bridges, API routes, scheduled triggers, and test assertion loops physically execute non-vacuously (preventing false-green tests and disconnected schema fields).
 
+23. **Strict Prohibition of Client-Side `localStorage` as Primary State Store**:
+    - **Zero Business Logic in Local Storage**: Browser `localStorage` or `sessionStorage` must NEVER be used as the primary storage, system of record, or source of truth for any application entity, business dictionary, template, transformation rule, mapping, or workflow configuration.
+    - **Mandatory PostgreSQL First**: Any new feature, dictionary, or configuration schema MUST be persisted in PostgreSQL (`operational_workflow_db`) via a versioned relational migration, backend repository methods in `postgresRepo.ts`, and REST API routes before or alongside frontend wiring.
+    - **Strictly Ephemeral UI Scoping**: `localStorage` is permitted solely for non-business, device-local UI ergonomics (such as sidebar collapsed toggles). Any frontend state caching must serve only as a secondary optimistic read cache that is unconditionally hydrated and governed by PostgreSQL.
+
+
 
 
 

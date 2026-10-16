@@ -7,7 +7,8 @@ import {
   QueryExtraction, InvestigationTask, InvestigationBatch, InvestigationTransaction,
   CentralTransactionRecord, ValidationBox, GlobalStandardDirectoryRecord, TaskWorkflowExecution, FtpFileStagingConfig, TransactionTemplate, UploadedTransactionRecord, UploadAuditLog,
   DatabaseColumnConfiguration, TeamRelationship, TeamRelationshipType,
-  WorkspaceSettingProposal, SettingProposalType, SettingProposalStatus
+  WorkspaceSettingProposal, SettingProposalType, SettingProposalStatus,
+  FileIngestionMappingTemplate, ValueTranslationDictionary, SystemTransformationRule
 } from '../types.js';
 
 function parseJson(val: any, fallback: any = null) {
@@ -31,6 +32,82 @@ function safeJsonStringify(obj: any, fallback: string = '[]'): string {
     });
   } catch {
     return fallback;
+  }
+}
+
+let fileMappingSchemaInitialized = false;
+async function ensureFileMappingTemplatesSchema(): Promise<void> {
+  if (fileMappingSchemaInitialized) return;
+  try {
+    const pool = getPostgresPool();
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS file_ingestion_mapping_templates (
+        id VARCHAR(64) PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        description TEXT,
+        source_type VARCHAR(32) NOT NULL DEFAULT 'csv',
+        header_mode VARCHAR(32) NOT NULL DEFAULT 'ROW_INDEX',
+        header_row_index INT NOT NULL DEFAULT 1,
+        manual_headers JSONB NOT NULL DEFAULT '{}'::jsonb,
+        deleted_columns JSONB NOT NULL DEFAULT '[]'::jsonb,
+        required_columns JSONB NOT NULL DEFAULT '[]'::jsonb,
+        column_mappings JSONB NOT NULL DEFAULT '{}'::jsonb,
+        cleaning_recipe JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_by VARCHAR(64),
+        team_id VARCHAR(64),
+        is_default BOOLEAN NOT NULL DEFAULT false,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_file_ingest_tpl_team ON file_ingestion_mapping_templates(team_id);
+      CREATE INDEX IF NOT EXISTS idx_file_ingest_tpl_name ON file_ingestion_mapping_templates(name);
+      ALTER TABLE hashtag_presets ADD COLUMN IF NOT EXISTS mapping_template_id VARCHAR(64);
+    `);
+    fileMappingSchemaInitialized = true;
+  } catch (err: any) {
+    console.warn('[postgresRepo] ensureFileMappingTemplatesSchema warning:', err.message);
+  }
+}
+
+let systemTransformationSchemaInitialized = false;
+async function ensureSystemTransformationRulesSchema(): Promise<void> {
+  if (systemTransformationSchemaInitialized) return;
+  try {
+    const pool = getPostgresPool();
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS system_transformation_rules (
+        id VARCHAR(64) PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        description TEXT,
+        category VARCHAR(32) NOT NULL DEFAULT 'Sanitization',
+        type VARCHAR(32) NOT NULL DEFAULT 'CASE',
+        delimiter VARCHAR(64),
+        separator VARCHAR(64),
+        pattern TEXT,
+        replacement TEXT,
+        target_format VARCHAR(64),
+        is_system BOOLEAN NOT NULL DEFAULT false,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_trans_rule_category ON system_transformation_rules(category);
+      CREATE INDEX IF NOT EXISTS idx_trans_rule_type ON system_transformation_rules(type);
+
+      INSERT INTO system_transformation_rules (id, name, description, category, type, delimiter, separator, pattern, replacement, target_format, is_system)
+      VALUES
+        ('rule-phone-et', 'Ethiopian Mobile Phone Normalizer', 'Normalizes Ethiopian local numbers (09..., 07..., 251...) to standard +251XXXXXXXXX format.', 'Sanitization', 'PHONE_ET', NULL, NULL, NULL, NULL, NULL, true),
+        ('rule-name-split', 'Full Name to First & Last Splitter', 'Splits compound full name by whitespace into distinct first and last name columns.', 'Splitting', 'SPLIT', ' ', NULL, NULL, NULL, NULL, true),
+        ('rule-branch-account-merge', 'Branch Code & Account Number Merger', 'Concatenates branch prefix and bank account number with hyphen separator.', 'Merging', 'MERGE', NULL, '-', NULL, NULL, NULL, true),
+        ('rule-card-pan-mask', '16-Digit Card PAN Masker', 'Preserves first 4 BIN digits and last 4 card digits, masking the middle 8 digits with asterisks.', 'Masking', 'MASK', NULL, NULL, NULL, NULL, NULL, true),
+        ('rule-iso-date-normalize', 'ISO Date Normalizer (YYYY-MM-DD)', 'Converts legacy DD/MM/YYYY and MM/DD/YYYY dates to standard ISO-8601 YYYY-MM-DD format.', 'Date', 'DATE_FORMAT', NULL, NULL, NULL, NULL, 'YYYY-MM-DD', true),
+        ('rule-iso-decline-uppercase', 'ISO Decline Code Uppercase Standardizer', 'Standardizes network decline reasons and response codes to uppercase canonical format.', 'Sanitization', 'CASE', NULL, NULL, NULL, NULL, NULL, true),
+        ('rule-currency-cleaner', 'Currency Symbol & Comma Stripper', 'Removes $, ETB, EUR symbols, commas, and whitespace, yielding a clean decimal number.', 'Sanitization', 'STRIP_CURRENCY', NULL, NULL, NULL, NULL, NULL, true),
+        ('rule-trim-whitespace', 'Whitespace Cleaner & Compactor', 'Trims leading/trailing whitespace and compresses consecutive internal spaces.', 'Sanitization', 'TRIM', NULL, NULL, NULL, NULL, NULL, true)
+      ON CONFLICT (id) DO NOTHING;
+    `);
+    systemTransformationSchemaInitialized = true;
+  } catch (err: any) {
+    console.warn('[postgresRepo] ensureSystemTransformationRulesSchema warning:', err.message);
   }
 }
 
@@ -627,6 +704,7 @@ export const postgresRepo = {
         _validation_status: effectiveStatus,
         _validation_details: evalInfo?.details || canonical._validation_details || null,
         _target_record: effectiveStatus === 'FAIL' && canonical._validation_details?.existence === 'NOT_FOUND_IN_TARGET_DB' ? null : effectiveTargetRecord,
+        _target_records: canonical._target_records || evalInfo?.targetRecords || null,
         _target_db: evalInfo?.targetDb || canonical._target_db || null,
         _validation_workflow_id: (isExecMatchingWorkflow && latestWorkflowId) || canonical._validation_workflow_id || null,
         _validation_workflow_name: (isExecMatchingWorkflow && latestWorkflowName) || canonical._validation_workflow_name || null,
@@ -647,6 +725,8 @@ export const postgresRepo = {
       status: string;
       details?: any;
       targetRecord?: any;
+      targetRecords?: any[];
+      allStageLegs?: Record<string, any[]>;
       targetDb?: string;
       targetTable?: string;
       auditTrail?: any[];
@@ -659,29 +739,60 @@ export const postgresRepo = {
       await client.query('BEGIN');
       for (const rec of evaluatedRecords) {
         if (!rec.key) continue;
+
+        let effectiveLegs: any[] = [];
+        if (Array.isArray(rec.targetRecords) && rec.targetRecords.length > 0) {
+          effectiveLegs = rec.targetRecords;
+        } else if (rec.targetRecord && typeof rec.targetRecord === 'object' && Object.keys(rec.targetRecord).length > 0) {
+          effectiveLegs = [rec.targetRecord];
+        }
+
+        const wfTablesEnvelope: Record<string, any[]> = {};
+        if (rec.allStageLegs && typeof rec.allStageLegs === 'object') {
+          for (const [tName, tLegs] of Object.entries(rec.allStageLegs)) {
+            if (Array.isArray(tLegs) && tLegs.length > 0) {
+              wfTablesEnvelope[tName] = tLegs;
+            }
+          }
+        }
+        const effectiveTable = rec.targetTable || '';
+        if (effectiveLegs.length > 0 && effectiveTable && !wfTablesEnvelope[effectiveTable]) {
+          wfTablesEnvelope[effectiveTable] = effectiveLegs;
+        }
+
+        const primaryTargetRecord = effectiveLegs.length > 0 ? effectiveLegs[0] : (rec.targetRecord || null);
+
         await client.query(
           `UPDATE task_dataset_transactions
            SET returned_data = CASE
-                 WHEN $3::jsonb IS NOT NULL AND $3::jsonb != 'null'::jsonb THEN
+                 WHEN $12::jsonb IS NOT NULL AND jsonb_typeof($12::jsonb) = 'array' AND jsonb_array_length($12::jsonb) > 0 THEN
                    jsonb_set(
-                     COALESCE(returned_data, '{}'::jsonb) || jsonb_build_object(
-                       $6::text,
-                       COALESCE(returned_data->$6::text, '{}'::jsonb)
-                     ),
+                     COALESCE(returned_data, '{}'::jsonb),
                      ARRAY[$6::text, COALESCE(NULLIF($5::text, ''), 'default')],
-                     CASE
-                       WHEN jsonb_typeof(COALESCE(returned_data->$6::text->COALESCE(NULLIF($5::text, ''), 'default'), 'null'::jsonb)) = 'array'
-                       THEN returned_data->$6::text->COALESCE(NULLIF($5::text, ''), 'default')
-                       ELSE jsonb_build_array($3::jsonb)
-                     END,
+                     $12::jsonb,
                      true
                    )
-                 ELSE COALESCE(returned_data, '{}'::jsonb)
+                 WHEN $3::jsonb IS NOT NULL AND $3::jsonb != 'null'::jsonb THEN
+                   jsonb_set(
+                     COALESCE(returned_data, '{}'::jsonb),
+                     ARRAY[$6::text, COALESCE(NULLIF($5::text, ''), 'default')],
+                     jsonb_build_array($3::jsonb),
+                     true
+                   )
+                 ELSE
+                   -- Unmatched records DO NOT have returned data.
+                   -- If returned_data was empty or only had this workflow, leave or set to NULL.
+                   CASE
+                     WHEN returned_data IS NULL THEN NULL
+                     WHEN (returned_data - $6::text) = '{}'::jsonb THEN NULL
+                     ELSE (returned_data - $6::text)
+                   END
                END,
-               canonical_data = (canonical_data - 'auditTrail' - 'stageResults') || jsonb_build_object(
+               canonical_data = (canonical_data - 'auditTrail' - 'stageResults' - '_target_records' - '_target_record') || jsonb_build_object(
              '_validation_status', $1::text,
              '_validation_details', $2::jsonb,
              '_target_record', $3::jsonb,
+             '_target_records', $12::jsonb,
              '_target_db', $4::text,
              '_target_table', $5::text,
              '_validation_workflow_id', $6::text,
@@ -717,7 +828,7 @@ export const postgresRepo = {
           [
             rec.status,
             JSON.stringify(rec.details || {}),
-            JSON.stringify(rec.targetRecord || null),
+            JSON.stringify(primaryTargetRecord || null),
             rec.targetDb || '',
             rec.targetTable || '',
             workflowId,
@@ -725,7 +836,8 @@ export const postgresRepo = {
             taskId,
             rec.key,
             JSON.stringify(rec.auditTrail || rec.stageResults || []),
-            JSON.stringify(rec.stageResults || rec.auditTrail || [])
+            JSON.stringify(rec.stageResults || rec.auditTrail || []),
+            JSON.stringify(effectiveLegs)
           ]
         );
       }
@@ -753,7 +865,7 @@ export const postgresRepo = {
 
   // ================= DATABASE CONNECTIONS =================
   // Helper to map PostgreSQL row to DatabaseConnection entity
-  mapDbConnectionRow(r: any): DatabaseConnection {
+  mapDbConnectionRow(r: any, maskSecret: boolean = false): DatabaseConnection {
     return {
       id: r.id,
       name: r.name,
@@ -763,7 +875,7 @@ export const postgresRepo = {
       connectionString: r.connection_string || undefined,
       databaseName: r.database_name || undefined,
       username: r.username || undefined,
-      password: r.password || undefined,
+      password: maskSecret ? (r.password ? '••••••••' : undefined) : (r.password || undefined),
       status: r.status,
       apiEndpoint: r.api_endpoint || '',
       createdByAdmin: r.created_by_admin,
@@ -785,36 +897,36 @@ export const postgresRepo = {
   },
 
   // ================= DATABASE CONNECTIONS =================
-  async getDatabaseConnections(): Promise<DatabaseConnection[]> {
+  async getDatabaseConnections(maskSecret: boolean = false): Promise<DatabaseConnection[]> {
     const pool = getPostgresPool();
     const { rows } = await pool.query('SELECT * FROM database_connections ORDER BY name ASC;');
-    return rows.map(r => this.mapDbConnectionRow(r));
+    return rows.map(r => this.mapDbConnectionRow(r, maskSecret));
   },
 
-  async getDatabaseConnectionById(id: string): Promise<DatabaseConnection | null> {
+  async getDatabaseConnectionById(id: string, maskSecret: boolean = false): Promise<DatabaseConnection | null> {
     const pool = getPostgresPool();
     const { rows } = await pool.query('SELECT * FROM database_connections WHERE id = $1 LIMIT 1;', [id]);
     if (!rows.length) return null;
-    return this.mapDbConnectionRow(rows[0]);
+    return this.mapDbConnectionRow(rows[0], maskSecret);
   },
 
-  async getTeamSpecificConnections(teamId: string): Promise<DatabaseConnection[]> {
+  async getTeamSpecificConnections(teamId: string, maskSecret: boolean = false): Promise<DatabaseConnection[]> {
     const pool = getPostgresPool();
     const { rows } = await pool.query(
       `SELECT * FROM database_connections WHERE scope = 'team' AND team_id = $1 ORDER BY name ASC;`,
       [teamId]
     );
-    return rows.map(r => this.mapDbConnectionRow(r));
+    return rows.map(r => this.mapDbConnectionRow(r, maskSecret));
   },
 
-  async getAdminTeamResources(): Promise<DatabaseConnection[]> {
+  async getAdminTeamResources(maskSecret: boolean = false): Promise<DatabaseConnection[]> {
     const pool = getPostgresPool();
     const { rows } = await pool.query(
       `SELECT * FROM database_connections 
        WHERE scope = 'team' OR promotion_status != 'NONE' 
        ORDER BY promotion_requested_at DESC NULLS LAST, name ASC;`
     );
-    return rows.map(r => this.mapDbConnectionRow(r));
+    return rows.map(r => this.mapDbConnectionRow(r, maskSecret));
   },
 
   async createDatabaseConnection(conn: DatabaseConnection): Promise<DatabaseConnection> {
@@ -886,9 +998,12 @@ export const postgresRepo = {
     return conn;
   },
 
-  async updateDatabaseConnection(id: string, updates: Partial<DatabaseConnection>): Promise<DatabaseConnection | null> {
+async updateDatabaseConnection(id: string, updates: Partial<DatabaseConnection>): Promise<DatabaseConnection | null> {
     const existing = await this.getDatabaseConnectionById(id);
     if (!existing) return null;
+    if (updates.password === '••••••••' || updates.password === '') {
+      delete updates.password;
+    }
     const merged = { ...existing, ...updates };
     await this.createDatabaseConnection(merged);
     return merged;
@@ -2878,7 +2993,8 @@ export const postgresRepo = {
       dictionaryLookupMappings: parseJson(r.dictionary_lookup_mappings, {}),
       executionTrigger: r.execution_trigger || 'MANUAL',
       scheduleCron: r.schedule_cron || null,
-      conditionalAction: parseJson(r.conditional_action, { onPass: 'EXECUTE_SQL', onFail: 'FLAG_INVESTIGATION' })
+      conditionalAction: parseJson(r.conditional_action, { onPass: 'EXECUTE_SQL', onFail: 'FLAG_INVESTIGATION' }),
+      mappingTemplateId: r.mapping_template_id || null
     };
   },
 
@@ -2921,9 +3037,10 @@ export const postgresRepo = {
          hashtag_type, data_source_mode,
          target_db_id, target_table_name, dedicated_app_table,
          minimum_required_columns, dictionary_lookup_mappings,
-         execution_trigger, schedule_cron, conditional_action
+         execution_trigger, schedule_cron, conditional_action,
+         mapping_template_id
        )
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)
        ON CONFLICT (id) DO UPDATE SET
          tag                       = EXCLUDED.tag,
          description               = EXCLUDED.description,
@@ -2942,7 +3059,8 @@ export const postgresRepo = {
          dictionary_lookup_mappings= EXCLUDED.dictionary_lookup_mappings,
          execution_trigger         = EXCLUDED.execution_trigger,
          schedule_cron             = EXCLUDED.schedule_cron,
-         conditional_action        = EXCLUDED.conditional_action;`,
+         conditional_action        = EXCLUDED.conditional_action,
+         mapping_template_id       = EXCLUDED.mapping_template_id;`,
       [
         tagId, normalizedTag, tag.description, tag.criteria,
         JSON.stringify(tag.expectedFileStructure || []),
@@ -2964,7 +3082,8 @@ export const postgresRepo = {
         JSON.stringify(tag.dictionaryLookupMappings || {}),
         tag.executionTrigger || 'MANUAL',
         tag.scheduleCron || null,
-        JSON.stringify(tag.conditionalAction || { onPass: 'EXECUTE_SQL', onFail: 'FLAG_INVESTIGATION' })
+        JSON.stringify(tag.conditionalAction || { onPass: 'EXECUTE_SQL', onFail: 'FLAG_INVESTIGATION' }),
+        tag.mappingTemplateId || null
       ]
     );
     return { ...tag, tag: normalizedTag };
@@ -2978,6 +3097,89 @@ export const postgresRepo = {
     );
     if (!rows.length) return null;
     return (this as any)._mapHashtagRow(rows[0]);
+  },
+
+  async updateHashtag(tagOrId: string, updates: Partial<HashtagPreset>): Promise<HashtagPreset | null> {
+    const existing = await this.getHashtagByTag(tagOrId);
+    if (!existing) return null;
+
+    const normalizedTag = updates.tag
+      ? (updates.tag.startsWith('#') ? updates.tag.toUpperCase() : `#${updates.tag.toUpperCase()}`)
+      : existing.tag;
+
+    const merged: HashtagPreset = {
+      ...existing,
+      ...updates,
+      tag: normalizedTag
+    };
+
+    const pool = getPostgresPool();
+    const cleanTag = (tagOrId || '').trim().replace(/^#+/, '');
+    const exactTag = `#${cleanTag}`;
+
+    await pool.query(
+      `UPDATE hashtag_presets SET
+         tag                        = $1,
+         description                = $2,
+         criteria                   = $3,
+         expected_file_structure    = $4,
+         solution_template          = $5,
+         author                     = $6,
+         workflow_id                = $7,
+         workflow_name              = $8,
+         process_type               = $9,
+         kpis                       = $10,
+         hashtag_type               = $11,
+         data_source_mode           = $12,
+         target_db_id               = $13,
+         target_table_name          = $14,
+         dedicated_app_table        = $15,
+         minimum_required_columns   = $16,
+         dictionary_lookup_mappings = $17,
+         execution_trigger          = $18,
+         schedule_cron              = $19,
+         conditional_action         = $20,
+         mapping_template_id        = $21
+       WHERE LOWER(tag) = LOWER($22) OR LOWER(tag) = LOWER($23) OR LOWER(id) = LOWER($22) OR LOWER(id) = LOWER($23);`,
+      [
+        merged.tag,
+        merged.description,
+        merged.criteria,
+        JSON.stringify(merged.expectedFileStructure || []),
+        merged.solutionTemplate,
+        merged.author,
+        merged.workflowId || null,
+        merged.workflowName || null,
+        merged.processType || 'INTERNAL_STAGED_FIX',
+        JSON.stringify(merged.kpis || []),
+        merged.hashtagType || 'FILE_INGESTION',
+        merged.dataSourceMode || 'FILE_UPLOAD',
+        merged.targetDbId || null,
+        merged.targetTableName || null,
+        merged.dedicatedAppTable || null,
+        JSON.stringify(merged.minimumRequiredColumns || []),
+        JSON.stringify(merged.dictionaryLookupMappings || {}),
+        merged.executionTrigger || 'MANUAL',
+        merged.scheduleCron || null,
+        JSON.stringify(merged.conditionalAction || { onPass: 'EXECUTE_SQL', onFail: 'FLAG_INVESTIGATION' }),
+        merged.mappingTemplateId || null,
+        exactTag,
+        cleanTag
+      ]
+    );
+
+    return merged;
+  },
+
+  async deleteHashtag(tagOrId: string): Promise<boolean> {
+    const pool = getPostgresPool();
+    const cleanTag = (tagOrId || '').trim().replace(/^#+/, '');
+    const exactTag = `#${cleanTag}`;
+    const result = await pool.query(
+      'DELETE FROM hashtag_presets WHERE LOWER(tag) = LOWER($1) OR LOWER(tag) = LOWER($2) OR LOWER(id) = LOWER($1) OR LOWER(id) = LOWER($2);',
+      [exactTag, cleanTag]
+    );
+    return (result.rowCount ?? 0) > 0;
   },
 
   /** Record a completed execution run in hashtag_execution_runs */
@@ -4156,7 +4358,7 @@ export const postgresRepo = {
 
 
   // ================= DATABASE CONNECTIONS =================
-  async getDatabases(): Promise<DatabaseConnection[]> {
+  async getDatabases(maskSecret: boolean = false): Promise<DatabaseConnection[]> {
     const pool = getPostgresPool();
     const { rows } = await pool.query(
       `SELECT id, name, type, host, port, connection_string, database_name, username, password,
@@ -4173,7 +4375,7 @@ export const postgresRepo = {
       connectionString: r.connection_string,
       databaseName: r.database_name,
       username: r.username,
-      password: r.password,
+      password: maskSecret ? (r.password ? '••••••••' : undefined) : r.password,
       status: r.status,
       apiEndpoint: r.api_endpoint,
       createdByAdmin: r.created_by_admin,
@@ -4189,8 +4391,8 @@ export const postgresRepo = {
     } as DatabaseConnection));
   },
 
-  async getDatabaseById(id: string): Promise<DatabaseConnection | null> {
-    return this.getDatabaseConnectionById(id);
+  async getDatabaseById(id: string, maskSecret: boolean = false): Promise<DatabaseConnection | null> {
+    return this.getDatabaseConnectionById(id, maskSecret);
   },
 
   async createDatabase(db: DatabaseConnection): Promise<DatabaseConnection> {
@@ -4207,6 +4409,330 @@ export const postgresRepo = {
     return (rowCount ?? 0) > 0;
   },
 
+  // ================= FILE INGESTION MAPPING TEMPLATES (Domain 7) =================
+  async getFileMappingTemplates(teamId?: string): Promise<FileIngestionMappingTemplate[]> {
+    await ensureFileMappingTemplatesSchema();
+    const pool = getPostgresPool();
+    let sql = 'SELECT * FROM file_ingestion_mapping_templates';
+    const params: any[] = [];
+    if (teamId) {
+      params.push(teamId);
+      sql += ' WHERE team_id = $1 OR team_id IS NULL';
+    }
+    sql += ' ORDER BY created_at DESC;';
+    const { rows } = await pool.query(sql, params);
+    return rows.map(r => {
+      const cr = parseJson(r.cleaning_recipe, {});
+      return {
+        id: r.id,
+        name: r.name,
+        description: r.description || '',
+        sourceType: r.source_type || 'csv',
+        headerMode: r.header_mode || 'ROW_INDEX',
+        headerRowIndex: r.header_row_index ?? 1,
+        manualHeaders: parseJson(r.manual_headers, {}),
+        deletedColumns: parseJson(r.deleted_columns, []),
+        requiredColumns: parseJson(r.required_columns, []),
+        columnMappings: parseJson(r.column_mappings, {}),
+        cleaningRecipe: cr,
+        splitOperations: cr.splitOperations || [],
+        mergeOperations: cr.mergeOperations || [],
+        transformOperations: cr.transformOperations || [],
+        cleaningActions: cr.cleaningActions || [],
+        valueTranslations: cr.valueTranslations || {},
+        createdBy: r.created_by,
+        teamId: r.team_id,
+        isDefault: r.is_default || false,
+        createdAt: r.created_at?.toISOString() || new Date().toISOString(),
+        updatedAt: r.updated_at?.toISOString() || new Date().toISOString()
+      };
+    });
+  },
+
+  async getFileMappingTemplateById(id: string): Promise<FileIngestionMappingTemplate | null> {
+    await ensureFileMappingTemplatesSchema();
+    const pool = getPostgresPool();
+    const { rows } = await pool.query(
+      'SELECT * FROM file_ingestion_mapping_templates WHERE id = $1 LIMIT 1;',
+      [id]
+    );
+    if (!rows.length) return null;
+    const r = rows[0];
+    const cr = parseJson(r.cleaning_recipe, {});
+    return {
+      id: r.id,
+      name: r.name,
+      description: r.description || '',
+      sourceType: r.source_type || 'csv',
+      headerMode: r.header_mode || 'ROW_INDEX',
+      headerRowIndex: r.header_row_index ?? 1,
+      manualHeaders: parseJson(r.manual_headers, {}),
+      deletedColumns: parseJson(r.deleted_columns, []),
+      requiredColumns: parseJson(r.required_columns, []),
+      columnMappings: parseJson(r.column_mappings, {}),
+      cleaningRecipe: cr,
+      splitOperations: cr.splitOperations || [],
+      mergeOperations: cr.mergeOperations || [],
+      transformOperations: cr.transformOperations || [],
+      cleaningActions: cr.cleaningActions || [],
+      valueTranslations: cr.valueTranslations || {},
+      createdBy: r.created_by,
+      teamId: r.team_id,
+      isDefault: r.is_default || false,
+      createdAt: r.created_at?.toISOString() || new Date().toISOString(),
+      updatedAt: r.updated_at?.toISOString() || new Date().toISOString()
+    };
+  },
+
+  async createOrUpdateFileMappingTemplate(template: FileIngestionMappingTemplate): Promise<FileIngestionMappingTemplate> {
+    await ensureFileMappingTemplatesSchema();
+    const pool = getPostgresPool();
+    const id = template.id || `tpl_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const now = new Date();
+
+    const fullCleaningRecipe = {
+      ...(template.cleaningRecipe || {}),
+      splitOperations: template.splitOperations || template.cleaningRecipe?.splitOperations || [],
+      mergeOperations: template.mergeOperations || template.cleaningRecipe?.mergeOperations || [],
+      transformOperations: template.transformOperations || template.cleaningRecipe?.transformOperations || [],
+      cleaningActions: template.cleaningActions || template.cleaningRecipe?.cleaningActions || [],
+      valueTranslations: template.valueTranslations || template.cleaningRecipe?.valueTranslations || {}
+    };
+
+    await pool.query(
+      `INSERT INTO file_ingestion_mapping_templates (
+         id, name, description, source_type, header_mode, header_row_index,
+         manual_headers, deleted_columns, required_columns, column_mappings,
+         cleaning_recipe, created_by, team_id, is_default, created_at, updated_at
+       )
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+       ON CONFLICT (id) DO UPDATE SET
+         name = EXCLUDED.name,
+         description = EXCLUDED.description,
+         source_type = EXCLUDED.source_type,
+         header_mode = EXCLUDED.header_mode,
+         header_row_index = EXCLUDED.header_row_index,
+         manual_headers = EXCLUDED.manual_headers,
+         deleted_columns = EXCLUDED.deleted_columns,
+         required_columns = EXCLUDED.required_columns,
+         column_mappings = EXCLUDED.column_mappings,
+         cleaning_recipe = EXCLUDED.cleaning_recipe,
+         team_id = EXCLUDED.team_id,
+         is_default = EXCLUDED.is_default,
+         updated_at = EXCLUDED.updated_at;`,
+      [
+        id,
+        template.name,
+        template.description || '',
+        template.sourceType || 'csv',
+        template.headerMode || 'ROW_INDEX',
+        template.headerRowIndex ?? 1,
+        JSON.stringify(template.manualHeaders || {}),
+        JSON.stringify(template.deletedColumns || []),
+        JSON.stringify(template.requiredColumns || []),
+        JSON.stringify(template.columnMappings || {}),
+        JSON.stringify(fullCleaningRecipe),
+        template.createdBy || null,
+        template.teamId || null,
+        template.isDefault || false,
+        template.createdAt || now,
+        now
+      ]
+    );
+    const saved = await this.getFileMappingTemplateById(id);
+    return saved!;
+  },
+
+  async deleteFileMappingTemplate(id: string): Promise<boolean> {
+    await ensureFileMappingTemplatesSchema();
+    const pool = getPostgresPool();
+    const { rowCount } = await pool.query('DELETE FROM file_ingestion_mapping_templates WHERE id = $1;', [id]);
+    return (rowCount ?? 0) > 0;
+  },
+
+  // ================= VALUE TRANSLATION DICTIONARIES (Domain 7 / Governance Rule 23) =================
+  async getValueTranslationDictionaries(category?: string): Promise<ValueTranslationDictionary[]> {
+    const pool = getPostgresPool();
+    let sql = 'SELECT * FROM value_translation_dictionaries';
+    const params: any[] = [];
+    if (category) {
+      params.push(category);
+      sql += ' WHERE category = $1';
+    }
+    sql += ' ORDER BY is_system_default DESC, name ASC;';
+    const { rows } = await pool.query(sql, params);
+    return rows.map(r => ({
+      id: r.id,
+      name: r.name,
+      description: r.description || '',
+      category: r.category || 'CUSTOM',
+      mappings: parseJson(r.mappings, []),
+      isSystemDefault: r.is_system_default || false,
+      createdBy: r.created_by,
+      createdAt: r.created_at?.toISOString() || new Date().toISOString(),
+      updatedAt: r.updated_at?.toISOString() || new Date().toISOString()
+    }));
+  },
+
+  async getValueTranslationDictionaryById(id: string): Promise<ValueTranslationDictionary | null> {
+    const pool = getPostgresPool();
+    const { rows } = await pool.query(
+      'SELECT * FROM value_translation_dictionaries WHERE id = $1 LIMIT 1;',
+      [id]
+    );
+    if (!rows.length) return null;
+    const r = rows[0];
+    return {
+      id: r.id,
+      name: r.name,
+      description: r.description || '',
+      category: r.category || 'CUSTOM',
+      mappings: parseJson(r.mappings, []),
+      isSystemDefault: r.is_system_default || false,
+      createdBy: r.created_by,
+      createdAt: r.created_at?.toISOString() || new Date().toISOString(),
+      updatedAt: r.updated_at?.toISOString() || new Date().toISOString()
+    };
+  },
+
+  async createOrUpdateValueTranslationDictionary(dict: ValueTranslationDictionary): Promise<ValueTranslationDictionary> {
+    const pool = getPostgresPool();
+    const id = dict.id || `dict_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const now = new Date();
+    await pool.query(
+      `INSERT INTO value_translation_dictionaries (
+         id, name, description, category, mappings, is_system_default, created_by, created_at, updated_at
+       )
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       ON CONFLICT (id) DO UPDATE SET
+         name = EXCLUDED.name,
+         description = EXCLUDED.description,
+         category = EXCLUDED.category,
+         mappings = EXCLUDED.mappings,
+         is_system_default = EXCLUDED.is_system_default,
+         updated_at = EXCLUDED.updated_at;`,
+      [
+        id,
+        dict.name,
+        dict.description || '',
+        dict.category || 'CUSTOM',
+        JSON.stringify(dict.mappings || []),
+        dict.isSystemDefault || false,
+        dict.createdBy || null,
+        dict.createdAt || now,
+        now
+      ]
+    );
+    const saved = await this.getValueTranslationDictionaryById(id);
+    return saved!;
+  },
+
+  async deleteValueTranslationDictionary(id: string): Promise<boolean> {
+    const pool = getPostgresPool();
+    const { rowCount } = await pool.query('DELETE FROM value_translation_dictionaries WHERE id = $1;', [id]);
+    return (rowCount ?? 0) > 0;
+  },
+
+  // ================= SYSTEM TRANSFORMATION RULES (Domain 7 / Governance Rule 23) =================
+  async getSystemTransformationRules(category?: string): Promise<SystemTransformationRule[]> {
+    await ensureSystemTransformationRulesSchema();
+    const pool = getPostgresPool();
+    let sql = 'SELECT * FROM system_transformation_rules';
+    const params: any[] = [];
+    if (category && category !== 'ALL') {
+      params.push(category);
+      sql += ' WHERE category = $1';
+    }
+    sql += ' ORDER BY is_system DESC, name ASC;';
+    const { rows } = await pool.query(sql, params);
+    return rows.map(r => ({
+      id: r.id,
+      name: r.name,
+      description: r.description || '',
+      category: r.category || 'Sanitization',
+      type: r.type || 'CASE',
+      delimiter: r.delimiter || undefined,
+      separator: r.separator || undefined,
+      pattern: r.pattern || undefined,
+      replacement: r.replacement || undefined,
+      targetFormat: r.target_format || undefined,
+      isSystem: r.is_system || false,
+      createdAt: r.created_at?.toISOString() || new Date().toISOString(),
+      updatedAt: r.updated_at?.toISOString() || new Date().toISOString()
+    }));
+  },
+
+  async getSystemTransformationRuleById(id: string): Promise<SystemTransformationRule | null> {
+    await ensureSystemTransformationRulesSchema();
+    const pool = getPostgresPool();
+    const { rows } = await pool.query('SELECT * FROM system_transformation_rules WHERE id = $1 LIMIT 1;', [id]);
+    if (!rows.length) return null;
+    const r = rows[0];
+    return {
+      id: r.id,
+      name: r.name,
+      description: r.description || '',
+      category: r.category || 'Sanitization',
+      type: r.type || 'CASE',
+      delimiter: r.delimiter || undefined,
+      separator: r.separator || undefined,
+      pattern: r.pattern || undefined,
+      replacement: r.replacement || undefined,
+      targetFormat: r.target_format || undefined,
+      isSystem: r.is_system || false,
+      createdAt: r.created_at?.toISOString() || new Date().toISOString(),
+      updatedAt: r.updated_at?.toISOString() || new Date().toISOString()
+    };
+  },
+
+  async createOrUpdateSystemTransformationRule(rule: SystemTransformationRule): Promise<SystemTransformationRule> {
+    await ensureSystemTransformationRulesSchema();
+    const pool = getPostgresPool();
+    const id = rule.id || `rule_custom_${Date.now()}`;
+    const now = new Date();
+    await pool.query(
+      `INSERT INTO system_transformation_rules (
+         id, name, description, category, type, delimiter, separator, pattern, replacement, target_format, is_system, created_at, updated_at
+       )
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+       ON CONFLICT (id) DO UPDATE SET
+         name = EXCLUDED.name,
+         description = EXCLUDED.description,
+         category = EXCLUDED.category,
+         type = EXCLUDED.type,
+         delimiter = EXCLUDED.delimiter,
+         separator = EXCLUDED.separator,
+         pattern = EXCLUDED.pattern,
+         replacement = EXCLUDED.replacement,
+         target_format = EXCLUDED.target_format,
+         is_system = EXCLUDED.is_system,
+         updated_at = EXCLUDED.updated_at;`,
+      [
+        id,
+        rule.name,
+        rule.description || '',
+        rule.category || 'Sanitization',
+        rule.type || 'CASE',
+        rule.delimiter || null,
+        rule.separator || null,
+        rule.pattern || null,
+        rule.replacement || null,
+        rule.targetFormat || null,
+        rule.isSystem || false,
+        rule.createdAt || now,
+        now
+      ]
+    );
+    const saved = await this.getSystemTransformationRuleById(id);
+    return saved!;
+  },
+
+  async deleteSystemTransformationRule(id: string): Promise<boolean> {
+    await ensureSystemTransformationRulesSchema();
+    const pool = getPostgresPool();
+    const { rowCount } = await pool.query('DELETE FROM system_transformation_rules WHERE id = $1;', [id]);
+    return (rowCount ?? 0) > 0;
+  }
 
 };
 

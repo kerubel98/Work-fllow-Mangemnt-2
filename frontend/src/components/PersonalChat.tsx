@@ -129,7 +129,7 @@ export default function PersonalChat({
   });
 
   return (
-    <div className="h-[calc(100vh-3.5rem)] flex flex-col space-y-2.5" id="personal-chat-workspace">
+    <div className="flex-1 min-h-0 flex flex-col space-y-2.5" id="personal-chat-workspace">
       
       {/* Header Banner */}
       <div className="bg-[#0F172B] border border-slate-800 rounded-xl p-2.5 sm:p-3 text-white shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-2.5 shrink-0">

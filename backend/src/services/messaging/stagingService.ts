@@ -343,7 +343,7 @@ export class StagingService {
       }
     }
 
-    const issueId = `ISS-${Date.now().toString().slice(-6)}`;
+    const issueId = `ISS-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`;
     const effectiveTitle = staged.subject || `External ${staged.category.replace(/_/g, ' ')}`;
     const effectiveTeam = staged.teamId || 'team-settlement-01';
 

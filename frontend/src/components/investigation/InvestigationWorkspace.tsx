@@ -6,6 +6,7 @@
 import React from 'react';
 import { Issue, User, DatabaseConnection, EnvironmentSystem, HashtagPreset, QueryApprovalRequest, Team } from '../../types';
 import ValidationOrchestratorWorkspace from './ValidationOrchestratorWorkspace';
+import { ErrorBoundary } from '../ErrorBoundary';
 
 interface InvestigationWorkspaceProps {
   issues: Issue[];
@@ -25,5 +26,9 @@ interface InvestigationWorkspaceProps {
 }
 
 export default function InvestigationWorkspace(props: InvestigationWorkspaceProps) {
-  return <ValidationOrchestratorWorkspace {...props} />;
+  return (
+    <ErrorBoundary fallbackTitle="Investigation Workspace Error">
+      <ValidationOrchestratorWorkspace {...props} />
+    </ErrorBoundary>
+  );
 }

@@ -76,6 +76,31 @@ describe('Universal Hashtag Engine Full Integration & Governance Suite (GAP-14 R
       expect(result.enrichedRecords[0].bank_name).toBe('Commercial Bank of Ethiopia');
       expect(result.enrichedRecords[1].bank_name).toBe('Awash International Bank');
     });
+
+    it('ingests and enriches parsed XML and Excel multi-format row structures', async () => {
+      // Represents records parsed from an XML document (<records><record transaction_id="..." .../>)
+      const xmlParsedRows = [
+        { transaction_id: 'XML-TXN-101', bank_code: '001', amount: '3500.00', currency: 'ETB' },
+        { transaction_id: 'XML-TXN-102', bank_code: '002', amount: '1240.50', currency: 'USD' }
+      ];
+
+      const xmlResult = await hashtagService.executeFileIngestionHashtag(typeATag, xmlParsedRows);
+      expect(xmlResult.valid).toBe(true);
+      expect(xmlResult.rowCount).toBe(2);
+      expect(xmlResult.enrichedRecords[0].bank_name).toBe('Commercial Bank of Ethiopia');
+      expect(xmlResult.enrichedRecords[1].bank_name).toBe('Awash International Bank');
+
+      // Represents records parsed from an Excel worksheet via sheet_to_json
+      const excelParsedRows = [
+        { transaction_id: 'XLS-ROW-501', bank_code: '001', amount: 890.25 },
+        { transaction_id: 'XLS-ROW-502', bank_code: '002', amount: 4400.00 }
+      ];
+
+      const excelResult = await hashtagService.executeFileIngestionHashtag(typeATag, excelParsedRows);
+      expect(excelResult.valid).toBe(true);
+      expect(excelResult.rowCount).toBe(2);
+      expect(excelResult.enrichedRecords[0].bank_name).toBe('Commercial Bank of Ethiopia');
+    });
   });
 
   describe('2. Type B Database-Direct Scanner: Zero-File Scan & Anomaly Detection', () => {
@@ -297,4 +322,50 @@ describe('Universal Hashtag Engine Full Integration & Governance Suite (GAP-14 R
       }
     });
   });
+
+  describe('10. Hashtag Update, Sharing & Deletion Lifecycle', () => {
+    const testLifecycleTag: HashtagPreset = {
+      tag: '#TEST_EDIT_SHARE_DELETE',
+      description: 'Original description for edit-share-delete test',
+      criteria: 'amount > 1000',
+      expectedFileStructure: ['tx_id', 'amount'],
+      solutionTemplate: "UPDATE txns SET status = 'FLAGGED' WHERE id = '{{tx_id}}';",
+      author: 'lifecycle_tester',
+      createdAt: new Date().toISOString(),
+      hashtagType: 'FILE_INGESTION',
+      dataSourceMode: 'FILE_UPLOAD'
+    };
+
+    it('creates, edits, shares payload, and deletes a hashtag preset cleanly', async () => {
+      // 1. Create
+      await postgresRepo.createHashtag(testLifecycleTag);
+      const created = await postgresRepo.getHashtagByTag('#TEST_EDIT_SHARE_DELETE');
+      expect(created).toBeDefined();
+      expect(created?.description).toBe('Original description for edit-share-delete test');
+
+      // 2. Edit / Update
+      const updated = await postgresRepo.updateHashtag('#TEST_EDIT_SHARE_DELETE', {
+        description: 'Updated description through edit button',
+        criteria: 'amount > 5000'
+      });
+      expect(updated).toBeDefined();
+      expect(updated?.description).toBe('Updated description through edit button');
+      expect(updated?.criteria).toBe('amount > 5000');
+
+      // 3. Share payload extraction
+      const { assetSharingService } = await import('../assetSharingService.js');
+      const sharePayload = await assetSharingService.getAssetPayload('HASHTAG', '#TEST_EDIT_SHARE_DELETE');
+      expect(sharePayload).toBeDefined();
+      expect(sharePayload?.visualPayload.title).toBe('#TEST_EDIT_SHARE_DELETE');
+      expect(sharePayload?.visualPayload.description).toBe('Updated description through edit button');
+
+      // 4. Delete
+      const deleted = await postgresRepo.deleteHashtag('#TEST_EDIT_SHARE_DELETE');
+      expect(deleted).toBe(true);
+
+      const afterDelete = await postgresRepo.getHashtagByTag('#TEST_EDIT_SHARE_DELETE');
+      expect(afterDelete).toBeNull();
+    });
+  });
 });
+

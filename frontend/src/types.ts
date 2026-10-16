@@ -276,6 +276,8 @@ export interface Issue {
   acceptedScriptProposalId?: string;
   initialSnapshot?: Record<string, any>[];
   attachments?: any[];
+  mappingTemplateId?: string;
+  templateRequiredColumns?: string[];
 }
 
 export interface CriteriaRule {
@@ -385,6 +387,234 @@ export interface HashtagPreset {
     onPass: 'EXECUTE_SQL' | 'STAGE_PROPOSAL' | 'NOTIFY_ONLY' | 'CLOSE_TASK';
     onFail: 'FLAG_INVESTIGATION' | 'STOP' | 'ESCALATE' | 'REPORT_ONLY';
   };
+  /** Optional linked saved file ingestion mapping template ID */
+  mappingTemplateId?: string | null;
+}
+
+// ── File Ingestion Mapping Templates & Recipes (Domain 7) ───────────────────
+
+export type SplitDelimiterType =
+  | 'SPACE'
+  | 'COMMA'
+  | 'HYPHEN'
+  | 'SLASH'
+  | 'UNDERSCORE'
+  | 'PIPE'
+  | 'SEMICOLON'
+  | 'CUSTOM';
+
+export interface SplitOperation {
+  id: string;
+  column: string;
+  delimiterType: SplitDelimiterType;
+  customDelimiter?: string;
+  partNames: string[];
+  keepOriginal: boolean;
+}
+
+export type MergeSeparatorType =
+  | 'SPACE'
+  | 'HYPHEN'
+  | 'UNDERSCORE'
+  | 'SLASH'
+  | 'COMMA'
+  | 'NONE'
+  | 'CUSTOM';
+
+export interface MergeOperation {
+  id: string;
+  col1: string;
+  col2: string;
+  separatorType: MergeSeparatorType;
+  customSeparator?: string;
+  resultColumnName: string;
+  keepSources: boolean;
+}
+
+export type TransformRuleType =
+  | 'UPPERCASE'
+  | 'LOWERCASE'
+  | 'TITLECASE'
+  | 'TRIM'
+  | 'DATE_ISO'
+  | 'STRIP_CURRENCY'
+  | 'MASK_MIDDLE'
+  | 'PHONE_ET'
+  | 'VALUE_REPLACE'
+  | 'VALUE_TRANSLATION_DICT'
+  | 'REGEX_EXTRACT';
+
+export interface TransformOperation {
+  id: string;
+  column: string;
+  ruleType: TransformRuleType | string;
+  param1?: string;
+  param2?: string;
+}
+
+export type CleaningActionType =
+  | 'DEDUPLICATE'
+  | 'REMOVE_EMPTY_ROWS'
+  | 'NORMALIZE_DATES'
+  | 'TRIM_WHITESPACE'
+  | 'MASK_PAN'
+  | 'FILL_BLANKS_NA';
+
+export interface FileIngestionCleaningRecipe {
+  emptyRowsAction?: 'DROP' | 'FILL_NA' | 'ERROR_BLOCK';
+  duplicateRowsAction?: 'DROP_EXACT' | 'KEEP_FIRST' | 'FLAG_FOR_REVIEW' | 'ERROR_BLOCK';
+  trimWhitespace?: boolean;
+  normalizeDatesToIso?: boolean;
+  maskCardPan?: boolean;
+  fillBlanksWithNa?: boolean;
+  splitOperations?: SplitOperation[];
+  mergeOperations?: MergeOperation[];
+  transformOperations?: TransformOperation[];
+  cleaningActions?: string[];
+  valueTranslations?: Record<string, string>;
+}
+
+export interface FileIngestionRecipe {
+  headerMode: 'ROW_INDEX' | 'HEADERLESS_MANUAL';
+  headerRowIndex: number; // 1-indexed (e.g. 1 = first row, 4 = after 3 preamble lines)
+  dataStartRowIndex?: number;
+  manualHeaders: Record<string, string>; // e.g. { "col_0": "Txn_Ref", "col_1": "Amount" }
+  deletedColumns: string[]; // List of original column names/indexes to permanently exclude
+  columnMappings: Record<string, string>; // sourceColumn -> canonicalGlobalStandardKey
+  requiredColumns: string[]; // Mandated columns enforced for this specific template
+  cleaningPolicies: {
+    emptyRowsAction: 'DROP' | 'FILL_NA' | 'ERROR_BLOCK';
+    duplicateRowsAction: 'DROP_EXACT' | 'KEEP_FIRST' | 'FLAG_FOR_REVIEW' | 'ERROR_BLOCK';
+    trimWhitespace: boolean;
+    normalizeDatesToIso: boolean;
+    maskCardPan: boolean;
+    fillBlanksWithNa: boolean;
+  };
+  splitOperations?: SplitOperation[];
+  mergeOperations?: MergeOperation[];
+  transformOperations?: TransformOperation[];
+  cleaningActions?: string[];
+  sourceType: 'csv' | 'xlsx' | 'xls' | 'xml';
+  sheetName?: string;
+  valueTranslations?: Record<string, string>; // column -> dictionaryId
+}
+
+export interface ValueTranslationDictionary {
+  id: string;
+  name: string;
+  description?: string;
+  category: 'BANK_CODES' | 'CHANNEL_CODES' | 'STATUS_CODES' | 'CURRENCIES' | 'CUSTOM';
+  mappings: { sourceValue: string; targetValue: string; notes?: string }[];
+  caseSensitive?: boolean;
+  trimWhitespace?: boolean;
+  defaultFallback?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export const DEFAULT_VALUE_TRANSLATION_DICTIONARIES: ValueTranslationDictionary[] = [
+  {
+    id: 'dict-bank-codes',
+    name: 'Ethiopian Bank Name to Bank Code',
+    description: 'Maps Ethiopian commercial bank names and abbreviations to national 2-digit clearing codes.',
+    category: 'BANK_CODES',
+    mappings: [
+      { sourceValue: 'Commercial Bank of Ethiopia', targetValue: '01', notes: 'CBE National' },
+      { sourceValue: 'CBE', targetValue: '01', notes: 'Short code' },
+      { sourceValue: 'Awash Bank', targetValue: '02', notes: 'Commercial' },
+      { sourceValue: 'AWASH', targetValue: '02' },
+      { sourceValue: 'Dashen Bank', targetValue: '03', notes: 'Commercial' },
+      { sourceValue: 'DASHEN', targetValue: '03' },
+      { sourceValue: 'Bank of Abyssinia', targetValue: '04', notes: 'Commercial' },
+      { sourceValue: 'BOA', targetValue: '04' },
+      { sourceValue: 'Wegagen Bank', targetValue: '05' },
+      { sourceValue: 'United Bank', targetValue: '06', notes: 'Hibret Bank' },
+      { sourceValue: 'Nib International Bank', targetValue: '07' },
+      { sourceValue: 'Cooperative Bank of Oromia', targetValue: '08', notes: 'COOP' },
+      { sourceValue: 'COOP', targetValue: '08' },
+      { sourceValue: 'Zemen Bank', targetValue: '09' },
+      { sourceValue: 'Oromia International Bank', targetValue: '10' }
+    ]
+  },
+  {
+    id: 'dict-channel-codes',
+    name: 'Payment Channel Name to Code',
+    description: 'Maps delivery channel descriptions to switch 2-digit channel IDs.',
+    category: 'CHANNEL_CODES',
+    mappings: [
+      { sourceValue: 'ATM', targetValue: '01', notes: 'Automated Teller Machine' },
+      { sourceValue: 'Automated Teller Machine', targetValue: '01' },
+      { sourceValue: 'POS', targetValue: '02', notes: 'Point of Sale Terminal' },
+      { sourceValue: 'Point of Sale', targetValue: '02' },
+      { sourceValue: 'Mobile Banking', targetValue: '03', notes: 'Mobile App / USSD' },
+      { sourceValue: 'Mobile App', targetValue: '03' },
+      { sourceValue: 'Internet Banking', targetValue: '04', notes: 'Web Portal' },
+      { sourceValue: 'Web', targetValue: '04' },
+      { sourceValue: 'Agent Banking', targetValue: '05', notes: 'Branch Agent' }
+    ]
+  },
+  {
+    id: 'dict-status-iso',
+    name: 'Transaction Status to ISO Response Code',
+    description: 'Translates transaction outcome text into ISO-8583 response codes.',
+    category: 'STATUS_CODES',
+    mappings: [
+      { sourceValue: 'SUCCESS', targetValue: '00', notes: 'Approved' },
+      { sourceValue: 'Approved', targetValue: '00' },
+      { sourceValue: 'INSUFFICIENT_FUNDS', targetValue: '51', notes: 'Declined' },
+      { sourceValue: 'EXPIRED_CARD', targetValue: '54' },
+      { sourceValue: 'INCORRECT_PIN', targetValue: '55' },
+      { sourceValue: 'SUSPECTED_FRAUD', targetValue: '59' },
+      { sourceValue: 'SYSTEM_ERROR', targetValue: '96', notes: 'Malfunction' }
+    ]
+  },
+  {
+    id: 'dict-currency-codes',
+    name: 'Currency to ISO-4217 Numeric',
+    description: 'Maps ISO alphabetic currency codes to 3-digit ISO numeric codes.',
+    category: 'CURRENCIES',
+    mappings: [
+      { sourceValue: 'ETB', targetValue: '230', notes: 'Ethiopian Birr' },
+      { sourceValue: 'USD', targetValue: '840', notes: 'US Dollar' },
+      { sourceValue: 'EUR', targetValue: '978', notes: 'Euro' },
+      { sourceValue: 'GBP', targetValue: '826', notes: 'Pound Sterling' }
+    ]
+  }
+];
+
+export interface FileIngestionMappingTemplate {
+  id: string;
+  name: string;
+  description?: string;
+  sourceType: 'csv' | 'xlsx' | 'xls' | 'xml';
+  headerMode: 'ROW_INDEX' | 'HEADERLESS_MANUAL';
+  headerRowIndex: number;
+  manualHeaders: Record<string, string>;
+  deletedColumns: string[];
+  requiredColumns: string[];
+  columnMappings: Record<string, string>;
+  cleaningRecipe: FileIngestionCleaningRecipe;
+  splitOperations?: SplitOperation[];
+  mergeOperations?: MergeOperation[];
+  transformOperations?: TransformOperation[];
+  cleaningActions?: string[];
+  valueTranslations?: Record<string, string>; // column -> dictionaryId
+  createdBy?: string;
+  teamId?: string;
+  isDefault?: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface IngestionDatasetPayload {
+  fileName: string;
+  rawHeaders: string[];
+  activeHeaders: string[];
+  parsedRows: Record<string, any>[];
+  transformedRows: Record<string, any>[];
+  columnMappings: Record<string, string>;
+  recipe: FileIngestionRecipe;
+  selectedTemplateId?: string | null;
 }
 
 export interface TransactionReversionSnapshot {
@@ -1644,12 +1874,38 @@ export interface DatabaseColumnConfiguration {
   updatedAt?: string;
 }
 
+export interface MultiLegStageData {
+  targetDb?: string;
+  targetTable: string;
+  queriedAt?: string;
+  matchCount: number;
+  legs: Array<Record<string, any>>;
+  aggregatedMetrics?: {
+    netAmount?: number;
+    feeAmount?: number;
+    settledAmount?: number;
+    hasReversal?: boolean;
+    legCount?: number;
+    [key: string]: any;
+  };
+}
+
+export interface MultiLegStageEnvelope {
+  stages?: Record<string, MultiLegStageData>;
+  audit?: {
+    lastExecutedAt?: string;
+    executionRunId?: string;
+    statusVersion?: number;
+  };
+  [key: string]: any;
+}
+
 export interface TaskDatasetTransactionEntity {
   id: string;
   task_id: string;
   row_number: number;
   batch_id?: string;
-  returned_data?: Record<string, Record<string, Array<Record<string, any>>>> | Array<Record<string, any>>;
+  returned_data?: MultiLegStageEnvelope | Record<string, Record<string, Array<Record<string, any>>>> | Array<Record<string, any>>;
   canonical_data: {
     _rowNumber?: number;
     _task_id?: string;

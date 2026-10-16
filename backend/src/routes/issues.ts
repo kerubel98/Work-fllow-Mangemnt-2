@@ -55,10 +55,65 @@ issuesRouter.post('/', async (req: Request, res: Response) => {
     let effectiveMapping: Record<string, string> | undefined = issueData.fileMapping;
     let effectiveHeaders: string[] = issueData.uploadedFileHeaders || [];
 
-    const rawRows = issueData.firstLevelMappedData || (issueData as any).records || (issueData as any).rows;
+    let rawRows = issueData.firstLevelMappedData || (issueData as any).records || (issueData as any).rows;
+
+    // Resolve mandated required columns from linked file mapping template or hashtag
+    const mandatedRequired = new Set<string>();
+
+    if (issueData.templateRequiredColumns && Array.isArray(issueData.templateRequiredColumns)) {
+      issueData.templateRequiredColumns.forEach((c: string) => c && mandatedRequired.add(c));
+    }
+
+    let templateSource: string | undefined = undefined;
+    let activeTemplate: any = null;
+
+    if (issueData.mappingTemplateId) {
+      try {
+        const t = await repo.getFileMappingTemplateById(issueData.mappingTemplateId);
+        if (t) {
+          activeTemplate = t;
+          templateSource = t.name;
+          (t.requiredColumns || []).forEach(c => mandatedRequired.add(c));
+        }
+      } catch (err: any) {
+        console.warn(`[IssueCreation] Could not load template ${issueData.mappingTemplateId}:`, err?.message);
+      }
+    }
+
+    if (issueData.linkedHashtag && issueData.linkedHashtag !== 'Untagged') {
+      try {
+        const cleanTag = issueData.linkedHashtag.startsWith('#') ? issueData.linkedHashtag : `#${issueData.linkedHashtag}`;
+        const tagPreset = await repo.getHashtagByTag(cleanTag);
+        if (tagPreset) {
+          (tagPreset.minimumRequiredColumns || []).forEach(c => mandatedRequired.add(c));
+          if (tagPreset.mappingTemplateId) {
+            const ht = await repo.getFileMappingTemplateById(tagPreset.mappingTemplateId);
+            if (ht) {
+              if (!templateSource) templateSource = ht.name;
+              if (!activeTemplate) activeTemplate = ht;
+              (ht.requiredColumns || []).forEach(c => mandatedRequired.add(c));
+            }
+          }
+        }
+      } catch (err: any) {
+        console.warn(`[IssueCreation] Could not load hashtag preset ${issueData.linkedHashtag}:`, err?.message);
+      }
+    }
+
+    const requiredFields = Array.from(mandatedRequired);
 
     if (rawRows && Array.isArray(rawRows) && rawRows.length > 0) {
       const { dataSanitizerService } = await import('../services/dataSanitizerService.js');
+      if (activeTemplate) {
+        let dicts: any[] = [];
+        try { dicts = await repo.getValueTranslationDictionaries(); } catch {}
+        const replayed = dataSanitizerService.replayTemplateOperations(rawRows, activeTemplate, dicts);
+        rawRows = replayed.processedRows;
+        (issueData as any).firstLevelMappedData = rawRows;
+        if (activeTemplate.columnMappings) {
+          effectiveMapping = { ...activeTemplate.columnMappings, ...effectiveMapping };
+        }
+      }
       const sampleRow = rawRows[0];
 
       if (effectiveHeaders.length === 0 && sampleRow && typeof sampleRow === 'object') {
@@ -66,10 +121,10 @@ issuesRouter.post('/', async (req: Request, res: Response) => {
       }
 
       // Pre-flight validation with automatic header mapping resolution
-      const validation = await dataSanitizerService.validateMapping(effectiveMapping, sampleRow);
+      const validation = await dataSanitizerService.validateMapping(effectiveMapping, sampleRow, requiredFields);
       if (!validation.valid) {
         return res.status(422).json({
-          error: 'Pre-flight mapping validation failed: Required standard fields are not mapped',
+          error: `Pre-flight mapping validation failed: Required columns${templateSource ? ` mandated by template '${templateSource}'` : ''} are not mapped or present: ${validation.missingFields.join(', ')}`,
           missingFields: validation.missingFields,
           requiredFields: validation.requiredFields
         });

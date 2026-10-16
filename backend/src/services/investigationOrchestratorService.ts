@@ -1058,13 +1058,24 @@ export const investigationOrchestratorService = {
           const rec = result.records[idx];
           const candidateKeys = getRecordCandidateKeys(rec, idx);
           const sanitizedTarget = sanitizeTargetRecord(rec._target_record);
+          const rawLegs = Array.isArray(rec._target_record?._rawRows)
+            ? rec._target_record._rawRows
+            : (Array.isArray(rec._target_records) ? rec._target_records : (rec._target_record ? [rec._target_record] : []));
+          const sanitizedLegs = rawLegs.map(sanitizeTargetRecord);
+
           const evalEntry = {
             status: rec._validation_status,
             details: rec._validation_details,
             targetRecord: sanitizedTarget || null,
+            targetRecords: sanitizedLegs,
             targetDb: rec._target_db || null,
             targetTable: rec._target_table || null,
-            auditTrail: rec.auditTrail || rec._stage_results || []
+            auditTrail: rec.auditTrail || rec._stage_results || [],
+            returned_data: sanitizedLegs.length > 0 ? {
+              [workflowId]: {
+                [rec._target_table || workflow.targetTable || 'default']: sanitizedLegs
+              }
+            } : null
           };
           for (const ck of candidateKeys) {
             resultMap[ck] = evalEntry;
@@ -1088,16 +1099,24 @@ export const investigationOrchestratorService = {
           sourceId,
           workflowId,
           workflow.name,
-          result.records.map((r, idx) => ({
-            key: r._rowNumber ? `ROW-${r._rowNumber}` : (r.row_number ? `ROW-${r.row_number}` : (getRecordCandidateKeys(r, idx)[0] || `ROW-${idx + 1}`)),
-            status: r._validation_status,
-            details: r._validation_details,
-            targetRecord: sanitizeTargetRecord(r._target_record) || null,
-            targetDb: r._target_db || null,
-            targetTable: r._target_table || null,
-            auditTrail: r.auditTrail || r._stage_results || [],
-            stageResults: r._stage_results || r.auditTrail || []
-          }))
+          result.records.map((r, idx) => {
+            const rawLegs = Array.isArray(r._target_record?._rawRows)
+              ? r._target_record._rawRows
+              : (Array.isArray(r._target_records) ? r._target_records : (r._target_record ? [r._target_record] : []));
+            const sanitizedLegs = rawLegs.map(sanitizeTargetRecord);
+            return {
+              key: r._rowNumber ? `ROW-${r._rowNumber}` : (r.row_number ? `ROW-${r.row_number}` : (getRecordCandidateKeys(r, idx)[0] || `ROW-${idx + 1}`)),
+              status: r._validation_status,
+              details: r._validation_details,
+              targetRecord: sanitizeTargetRecord(r._target_record) || null,
+              targetRecords: sanitizedLegs,
+              allStageLegs: r.returned_data ? (r.returned_data[workflowId] || r.returned_data) : undefined,
+              targetDb: r._target_db || null,
+              targetTable: r._target_table || null,
+              auditTrail: r.auditTrail || r._stage_results || [],
+              stageResults: r._stage_results || r.auditTrail || []
+            };
+          })
         );
 
         console.log(`[WorkflowEngine] Recorded execution and synced task_dataset_transactions for task '${sourceId}', workflow '${workflowId}'.`);
@@ -1305,6 +1324,7 @@ export const investigationOrchestratorService = {
       taskId,
       batchId: jobId,
       ruleBlockId: `rb-${workflow.id}`,
+      workflowId: workflow.id,
       stageId: '',
       stageName: '',
       totalRecords: inputRows.length,
@@ -1361,7 +1381,9 @@ export const investigationOrchestratorService = {
           failedCount: batchReport.failedCount,
           stageResults: batchReport.stageResults,
         },
-        _target_record: outcome?.targetRecord || r._target_record || null,
+        _target_record: outcome ? (outcome.targetRecord ?? null) : (r._target_record ?? null),
+        _target_records: outcome?.targetRecords || (outcome?.targetRecord ? [outcome.targetRecord] : (r._target_records ?? null)),
+        _all_stage_legs: outcome?.allStageLegs || null,
         _validation_workflow_id: workflowId,
         _validation_workflow_name: workflow.name,
         auditTrail: stepEntries,
@@ -1387,7 +1409,16 @@ export const investigationOrchestratorService = {
             action: rec._validation_action,
             details: rec._validation_details,
             targetRecord: rec._target_record,
+            targetRecords: rec._target_records || (rec._target_record ? [rec._target_record] : []),
+            targetDb: workflow.targetDbId || '',
+            targetTable: workflow.targetTable || '',
             auditTrail: rec.auditTrail,
+            returned_data: ((Array.isArray(rec._target_records) && rec._target_records.length > 0) || rec._target_record) ? {
+              [workflowId]: {
+                [workflow.targetTable || 'default']: rec._target_records || (rec._target_record ? [rec._target_record] : [])
+              },
+              ...(rec._all_stage_legs ? { [workflowId]: rec._all_stage_legs } : {})
+            } : null
           };
           resultMap[k] = evalEntry;
           resultMap[`ROW-${rec._row_number}`] = evalEntry;
@@ -1421,6 +1452,8 @@ export const investigationOrchestratorService = {
             status: r._validation_status,
             details: r._validation_details,
             targetRecord: r._target_record,
+            targetRecords: r._target_records || (r._target_record ? [r._target_record] : []),
+            allStageLegs: r._all_stage_legs,
             targetDb: workflow.targetDbId || '',
             targetTable: workflow.targetTable || '',
             auditTrail: r.auditTrail,

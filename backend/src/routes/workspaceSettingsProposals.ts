@@ -77,8 +77,8 @@ workspaceSettingsProposalsRouter.post('/', async (req: Request, res: Response) =
   }
 });
 
-// POST /api/settings/proposals/:id/review - Checker Review (Approve / Reject)
-workspaceSettingsProposalsRouter.post('/:id/review', async (req: Request, res: Response) => {
+// POST/PUT /api/settings/proposals/:id/review - Checker Review (Approve / Reject)
+const handleProposalReview = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
     const { checkerId, checkerName, action, feedback } = req.body;
@@ -112,7 +112,11 @@ workspaceSettingsProposalsRouter.post('/:id/review', async (req: Request, res: R
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
   }
-});
+};
+
+workspaceSettingsProposalsRouter.post('/:id/review', handleProposalReview);
+workspaceSettingsProposalsRouter.put('/:id/review', handleProposalReview);
+
 
 // POST /api/settings/proposals/:id/escalate - Escalate to Target Team in Escalation Matrix
 workspaceSettingsProposalsRouter.post('/:id/escalate', async (req: Request, res: Response) => {

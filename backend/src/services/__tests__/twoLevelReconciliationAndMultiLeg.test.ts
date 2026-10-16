@@ -190,4 +190,118 @@ describe('Two-Level Reconciliation & Multi-Leg Duplicate Detection (Physical Cod
     expect(records[1].pipelineAction).toBe('FLAG');
     expect((records[1].evaluationDetails as any)?.duplicateCount).toBe(2);
   });
+
+  it('rejects unsupported duplicate check operators with configuration error (Section 6.1)', () => {
+    const invalidConfig: DatabaseColumnConfiguration = {
+      id: 'cfg-dup-invalid-op',
+      name: 'Invalid Operator Check',
+      dbId: 'db-core',
+      tableName: 'tran_log',
+      ruleType: 'DUPLICATE_CHECK',
+      columns: [{ columnName: 'rrn', priority: 1, role: 'MATCH_KEY' }],
+      aggregationRules: [{ function: 'COUNT', operator: '%' as any, value: 1 }],
+      violationAction: 'STOP',
+      severity: 'CRITICAL',
+      isActive: true,
+    };
+
+    const method = new DbConfigValidationMethod(invalidConfig, 1, 'db-core', 'tran_log');
+    const multiLegs = [
+      { rrn: 'RRN-999', id: '1' },
+      { rrn: 'RRN-999', id: '2' }
+    ];
+    const res = method.evaluateConfig(multiLegs, { rrn: 'RRN-999' });
+    expect(res.status).toBe('ERROR');
+    expect(res.action).toBe('STOP');
+    expect(res.message).toContain('unsupported duplicate rule operator "%"');
+  });
+
+  it('honors configured operators (>=, <=, !=) and changes runtime behavior accordingly (Section 6.1)', () => {
+    // Test operator '>=': threshold 2 with 2 legs -> FAIL
+    const gteConfig: DatabaseColumnConfiguration = {
+      id: 'cfg-dup-gte',
+      name: 'GTE Operator Check',
+      dbId: 'db-core',
+      tableName: 'tran_log',
+      ruleType: 'DUPLICATE_CHECK',
+      columns: [{ columnName: 'rrn', priority: 1, role: 'MATCH_KEY' }],
+      aggregationRules: [{ function: 'COUNT', operator: '>=', value: 2 }],
+      violationAction: 'FLAG',
+      severity: 'CRITICAL',
+      isActive: true,
+    };
+    const methodGte = new DbConfigValidationMethod(gteConfig, 1, 'db-core', 'tran_log');
+    const twoLegs = [{ rrn: 'RRN-1', id: 'L1' }, { rrn: 'RRN-1', id: 'L2' }];
+    expect(methodGte.evaluateConfig(twoLegs, { rrn: 'RRN-1' }).status).toBe('FAIL');
+
+    // Test operator '<=': threshold 1 with 2 legs -> PASS (not <= 1)
+    const lteConfig: DatabaseColumnConfiguration = {
+      id: 'cfg-dup-lte',
+      name: 'LTE Operator Check',
+      dbId: 'db-core',
+      tableName: 'tran_log',
+      ruleType: 'DUPLICATE_CHECK',
+      columns: [{ columnName: 'rrn', priority: 1, role: 'MATCH_KEY' }],
+      aggregationRules: [{ function: 'COUNT', operator: '<=', value: 1 }],
+      violationAction: 'FLAG',
+      severity: 'CRITICAL',
+      isActive: true,
+    };
+    const methodLte = new DbConfigValidationMethod(lteConfig, 1, 'db-core', 'tran_log');
+    expect(methodLte.evaluateConfig(twoLegs, { rrn: 'RRN-1' }).status).toBe('PASS');
+  });
+
+  it('preserves diagnostics and identifiers for all violating legs (Section 6.2)', () => {
+    const dupConfig: DatabaseColumnConfiguration = {
+      id: 'cfg-dup-diag',
+      name: 'Multi-Leg Diagnostic Check',
+      dbId: 'db-core',
+      tableName: 'tran_log',
+      ruleType: 'DUPLICATE_CHECK',
+      columns: [{ columnName: 'rrn', priority: 1, role: 'MATCH_KEY' }],
+      aggregationRules: [{ function: 'COUNT', operator: '>', value: 1 }],
+      violationAction: 'FLAG',
+      severity: 'CRITICAL',
+      isActive: true,
+    };
+    const method = new DbConfigValidationMethod(dupConfig, 1, 'db-core', 'tran_log');
+    const threeLegs = [
+      { rrn: 'RRN-1', TR_HIS_ID: 'HIS-001', amount: '100' },
+      { rrn: 'RRN-1', TR_HIS_ID: 'HIS-002', amount: '200' },
+      { rrn: 'RRN-1', TR_HIS_ID: 'HIS-003', amount: '300' }
+    ];
+    const res = method.evaluateConfig(threeLegs, { rrn: 'RRN-1' });
+    expect(res.status).toBe('FAIL');
+    expect(res.details.duplicateCount).toBe(3);
+    expect(res.details.violatingLegIdentifiers).toEqual(['HIS-001', 'HIS-002', 'HIS-003']);
+    expect(res.details.matchingLegs?.length).toBe(3);
+  });
+
+  it('enforces strict null/missing semantics in filter conditions (Section 6.3)', () => {
+    const nullFilterConfig: DatabaseColumnConfiguration = {
+      id: 'cfg-dup-null',
+      name: 'Null Semantics Check',
+      dbId: 'db-core',
+      tableName: 'tran_log',
+      ruleType: 'DUPLICATE_CHECK',
+      columns: [{ columnName: 'rrn', priority: 1, role: 'MATCH_KEY' }],
+      filterConditions: [{ columnName: 'PROC_NAME', operator: '!=', value: 'RVS' }],
+      aggregationRules: [{ function: 'COUNT', operator: '>', value: 1 }],
+      violationAction: 'FLAG',
+      severity: 'CRITICAL',
+      isActive: true,
+    };
+    const method = new DbConfigValidationMethod(nullFilterConfig, 1, 'db-core', 'tran_log');
+
+    // Row where PROC_NAME is missing (undefined/null) must NOT be counted as != RVS
+    const rowsWithMissing = [
+      { rrn: 'RRN-1', PROC_NAME: 'SETT' }, // Qualifies
+      { rrn: 'RRN-1' },                     // Missing PROC_NAME -> MUST NOT qualify
+      { rrn: 'RRN-1', PROC_NAME: null }     // Null PROC_NAME -> MUST NOT qualify
+    ];
+    const res = method.evaluateConfig(rowsWithMissing, { rrn: 'RRN-1' });
+    // Only 1 qualifying leg -> not > 1 -> PASS
+    expect(res.status).toBe('PASS');
+    expect(res.details.duplicateCount).toBe(1);
+  });
 });

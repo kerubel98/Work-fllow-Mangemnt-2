@@ -2875,6 +2875,30 @@ As formally specified in [`MULTI_LEG_DUPLICATE_DETECTION_AND_JSONB_COORDINATE_SP
      - If the DB config is configured to mutate reconciliation status (`affectsReconciliationStatus: true`), a failure in the DB method flips `reconciliation_status` to `FAIL` (action `STOP`).
      - If not configured to mutate (`affectsReconciliationStatus: false`), `reconciliation_status` remains `PASS`, recording its findings strictly in the diagnostic task data report.
 
+#### 10.8.2 Decoupling Mirror Table SQL Reconciliation from Coordinate-Scoped DbConfigValidationMethod & Filter Preservation
+
+During execution audits of multi-leg settlement tasks (such as `ISS-6362` running workflow `wf-1791494381096` against `Sett.tran_log_tab`), a critical architectural defect was identified and rectified:
+
+1. **The Flaw of Batch-Wide Mirror Table Subqueries**:
+   - Compiling table-level `DatabaseColumnConfiguration` checks (such as `DUPLICATE_CHECK` grouped by `TR_GROUP_ID`) into the `UPDATE mirror_{db}_{table}` SQL statement generated a correlated subquery `(SELECT COUNT(*) FROM mirror_... _dup WHERE _dup._batch_id = m._batch_id AND _dup._task_id = m._task_id AND _dup."tr_group_id" = m."tr_group_id")`.
+   - Because `_dup._row_number = m._row_number` was not part of that subquery, the query counted across all transactions in the uploaded batch sharing the same `TR_GROUP_ID` (e.g. 2 to 6 rows sharing group `103265319307` produced `COUNT = 6 > 1`).
+   - This pre-emptively flipped `_validation_status` to `FAIL` in the mirror table, erroneously failing valid single-leg transactions before `DbConfigValidationMethod` could evaluate them.
+
+2. **Preservation of Coordinate-Level Filter Conditions (`PROC_NAME != 'RVS'`)**:
+   - In financial transaction processing, multiple candidate legs exist for a single coordinate in external ledgers (e.g., Sale legs with `PROC_NAME = 'SAL'` alongside Reversal legs with `PROC_NAME = 'RVS'`).
+   - The attached database column configuration defines:
+     `filterConditions: [ { columnName: 'PROC_NAME', operator: '!=', value: 'RVS' } ]`.
+   - When evaluating the candidate legs for that single transaction coordinate (e.g. `fe_utrnno = '2597220450'`), `DbConfigValidationMethod` applies the filter condition, eliminating the reversal leg.
+   - Exactly one valid settlement leg remains (`count = 1 <= 1`), correctly resulting in a **PASS** verdict. Any assessment claiming that transactions fail duplicate checks because multiple legs share a `TR_GROUP_ID` without applying the `PROC_NAME` filter is flawed.
+
+3. **Strict Separation of Concerns between Mirror Reconciliation and Table Rules**:
+   - **Mirror Table Set-Based Reconciliation (`compiledRules`)**:
+     The set-based SQL update on `mirror_{db}_{table}` executes strictly **step-level rules** (e.g., `EXISTENCE_CHECK`: `m._mirror_id IS NOT NULL`, `AMOUNT_MATCH`, `ISO_DECLINE_CODE`). When `dbConfigMethods` are present, `columnConfigurations` are stripped from `compiledRules` in [`WorkflowPipelineBuilder.ts`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/backend/src/services/pipeline/WorkflowPipelineBuilder.ts#L205) to prevent batch-wide correlated subqueries on the mirror table.
+   - **Coordinate-Scoped Table Method Evaluation (`dbConfigMethods`)**:
+     Evaluates `DUPLICATE_CHECK`, `COMPLETENESS_CHECK`, and `VALUE_RANGE_CHECK` in memory across the candidate rows (`targetRows`) belonging strictly to that transaction coordinate (`_row_number`), utilizing case-insensitive field resolution (`resolveField`) across uppercase MySQL projections (`BO_TYPE`, `PROC_NAME`) and lowercase PostgreSQL mirror attributes.
+   - **Case-Insensitive External Ingress Deduplication**:
+     External key mappings in `ExecutablePipeline.ts` are deduplicated case-insensitively by column name, preventing MySQL `(VALUES ...)` derived table queries from rejecting duplicate column names (`ERROR 1060: Duplicate column name 'fe_utrnno'`).
+
 ---
 
 ## 11. Implementation Flow, Audit Traceability & Revision Log
@@ -2893,6 +2917,7 @@ All engineering changes in this subsystem adhere to the central governance requi
 
 | Date | Scope | Rationale | Physical Code Impact |
 |---|---|---|---|
+| **2026-10-10** | **Decoupling Mirror Table SQL Reconciliation from Coordinate-Scoped DbConfigValidationMethod & Filter Preservation** | Eliminated batch-wide correlated subqueries on `mirror_{db}_{table}` that falsely failed transactions sharing group IDs. Delegated table-level column rules strictly to `DbConfigValidationMethod` executing on coordinate-scoped `targetRows`. Preserved multi-leg filter conditions (`PROC_NAME != 'RVS'`) and enforced case-insensitive field lookup (`resolveField`) and key mapping deduplication. Validated on Task `ISS-6362` (32 PASS, 18 FAIL). | [`WorkflowPipelineBuilder.ts`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/backend/src/services/pipeline/WorkflowPipelineBuilder.ts), [`ExecutablePipeline.ts`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/backend/src/services/pipeline/ExecutablePipeline.ts), [`DbConfigValidationMethod.ts`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/backend/src/services/pipeline/methods/DbConfigValidationMethod.ts), [`RULE_TO_METHOD_PIPELINE_ARCHITECTURE.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/RULE_TO_METHOD_PIPELINE_ARCHITECTURE.md) |
 | **2026-10-08** | **Multi-Leg Duplicate Detection via JSONB Coordinate Consolidation** | Decoupled input-file deduplication (enforced at task creation in `datasetIngestionService.ts`) from external ledger duplicate checking. Adopted JSONB leg array consolidation (`_target_records`) on `task_dataset_transactions` with explicit identifier column attribution (`identifierColumn`, `identifierValue`), completely eliminating fragile correlated mirror subqueries. Audited in [`VALIDATION_BOX_AND_ROW_COORDINATE_AUDIT_LOG.md §17`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/VALIDATION_BOX_AND_ROW_COORDINATE_AUDIT_LOG.md#L667). | [`MULTI_LEG_DUPLICATE_DETECTION_AND_JSONB_COORDINATE_SPECIFICATION.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/MULTI_LEG_DUPLICATE_DETECTION_AND_JSONB_COORDINATE_SPECIFICATION.md), [`VALIDATION_BOX_AND_ROW_COORDINATE_AUDIT_LOG.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/VALIDATION_BOX_AND_ROW_COORDINATE_AUDIT_LOG.md), [`RULE_TO_METHOD_PIPELINE_ARCHITECTURE.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/RULE_TO_METHOD_PIPELINE_ARCHITECTURE.md) |
 | **2026-10-04** | **Leg-Level Duplicate Scoping & Option 1 Search** | Eliminated false-positive duplicate check failures on multi-leg settlement files by scoping SQL duplicate checks with `_dup._row_number = m._row_number`. Implemented Option 1 (local mirror lookup first, external MySQL query fallback with backtick dialect quoting, auto-staging to mirror). | [`ruleSqlCompiler.ts`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/backend/src/services/ruleSqlCompiler.ts), [`investigationEngine.ts`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/backend/src/services/investigationEngine.ts), [`validationBoxes.ts`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/backend/src/routes/validationBoxes.ts), [`ruleSqlCompiler.test.ts`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/backend/src/services/__tests__/ruleSqlCompiler.test.ts) |
 | **2026-10-04** | **Database Column Configuration Hydration** | Hydrated attached column configurations onto validation box flowchart nodes and stages, linking PostgreSQL DDL table configurations directly to pipeline execution. | `postgresRepo.ts`, `workflows.ts`, `validationBoxes.ts`, `ExecutablePipeline.ts` |

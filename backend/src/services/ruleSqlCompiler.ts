@@ -130,14 +130,15 @@ export const ruleSqlCompiler = {
         const caseExpr = `CASE ${exprA}::text ${whenClauses} ELSE ${exprA}::text END`;
         baseSql = `LOWER(${caseExpr}) = LOWER(COALESCE(${exprB}::text, ''))`;
       } else {
-        baseSql = `LOWER(COALESCE(${exprA}::text, '')) = LOWER(COALESCE(${exprB}::text, ''))`;
+        throw new Error(`Rule ${rule.id || rule.name || 'unidentified'}: Unsupported dual-source comparator '${comp}'.`);
       }
     } else {
+      const hasColumnConfigs = Array.isArray(rule.columnConfigurations) && rule.columnConfigurations.length > 0;
       const targetCol = sanitizeCol(rule.targetField || rule.sourceField || (rule as any).inputField || '');
-      if (!targetCol && checkType !== 'SQL_CONDITION' && checkType !== 'EXISTENCE_CHECK') {
-        baseSql = 'TRUE';
+      if (!targetCol && checkType !== 'SQL_CONDITION' && checkType !== 'EXISTENCE_CHECK' && !hasColumnConfigs) {
+        throw new Error(`Rule ${rule.id || rule.name || 'unidentified'}: Missing targetField/sourceField for checkType '${checkType}'. Incomplete rules cannot be compiled.`);
       } else {
-        const colExpr = resolveColExpr(targetCol, mirrorColPrefix, validColumns);
+        const colExpr = targetCol ? resolveColExpr(targetCol, mirrorColPrefix, validColumns) : `${mirrorColPrefix}."id"`;
 
         switch (checkType as string) {
           case 'EXISTENCE_CHECK':
@@ -219,8 +220,13 @@ export const ruleSqlCompiler = {
           }
 
           case 'NUMERIC_THRESHOLD': {
-            const comp = rule.comparator || rule.operator || '>';
+            const rawComp = String(rule.comparator || rule.operator || '>').trim();
+            const validThresholdOps = ['>', '<', '>=', '<=', '=', '!='];
+            const comp = validThresholdOps.includes(rawComp) ? rawComp : '>';
             const val = Number(rule.compareValue ?? rule.expectedValue ?? 0);
+            if (!Number.isFinite(val)) {
+              throw new Error(`Rule ${rule.id || rule.name || 'unidentified'}: Invalid numeric threshold value '${rule.compareValue ?? rule.expectedValue}'.`);
+            }
             baseSql = `COALESCE((${colExpr})::numeric, 0) ${comp} ${val}`;
             break;
           }
@@ -235,13 +241,22 @@ export const ruleSqlCompiler = {
             if (rule.sqlCondition && rule.sqlCondition.trim()) {
               baseSql = sanitizeSqlConditionPredicate(rule.sqlCondition, mirrorColPrefix);
             } else {
-              baseSql = 'TRUE';
+              throw new Error(`Rule ${rule.id || rule.name || 'unidentified'}: SQL_CONDITION checkType requires a non-empty sqlCondition.`);
             }
             break;
           }
 
-          default:
+          case 'DATABASE_CONFIG_RULES':
+          case 'COLUMN_CONFIG':
             baseSql = 'TRUE';
+            break;
+
+          default:
+            if (hasColumnConfigs) {
+              baseSql = 'TRUE';
+            } else {
+              throw new Error(`Rule ${rule.id || rule.name || 'unidentified'}: Unsupported checkType '${checkType}'. Fail-closed enforcement rejects unknown check types.`);
+            }
             break;
         }
       }
@@ -446,12 +461,30 @@ export const ruleSqlCompiler = {
     const statusCaseSql = `CASE\n          ${statusWhenBranches.join('\n          ')}\n        END`;
     const actionCaseSql = `CASE\n          ${actionWhenBranches.join('\n          ')}\n        END`;
     const detailsJsonSql = `jsonb_build_object(${detailFields.join(', ')})`;
+    const needsInputJoin =
+      statusCaseSql.includes('t.') ||
+      actionCaseSql.includes('t.') ||
+      detailsJsonSql.includes('t.');
 
     // Generate self-contained set-based batch update query.
     // §Rule 13 / §7.3: Scope by BOTH _batch_id AND _rule_block_id to prevent
     // cross-task contamination when multiple tasks share the same _batch_id string.
     // $1 = batchId, $2 = ruleBlockId
-    const fullUpdateSql = `
+    const fullUpdateSql = needsInputJoin
+      ? `
+      UPDATE ${mirrorTableName} m
+      SET 
+        _validation_status = ${statusCaseSql},
+        _validation_action = ${actionCaseSql},
+        _validation_details = ${detailsJsonSql},
+        _mirrored_at = NOW()
+      FROM task_dataset_transactions t
+      WHERE m._batch_id = $1
+        AND m._rule_block_id = $2
+        AND m._task_id = t.task_id
+        AND m._row_number = t.row_number;
+    `
+      : `
       UPDATE ${mirrorTableName} m
       SET 
         _validation_status = ${statusCaseSql},

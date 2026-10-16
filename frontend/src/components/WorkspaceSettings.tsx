@@ -16,6 +16,7 @@ import {
 } from 'lucide-react';
 import ErrorBoundary from './ErrorBoundary';
 import { lazyWithRetry } from '../utils/lazyWithRetry';
+import { api } from '../api/client';
 
 import { WorkspaceGeneralTab } from './settings/WorkspaceGeneralTab';
 import { WorkspaceWorkflowTab } from './settings/WorkspaceWorkflowTab';
@@ -121,24 +122,73 @@ export default function WorkspaceSettings({
 
   const [activeTab, setActiveTab] = useState<SettingsTab>('general');
   const [feedbackBanner, setFeedbackBanner] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+  const [isApplying, setIsApplying] = useState(false);
+
+  // Hydrate workspace settings authoritatively from approved PostgreSQL proposals (Rule 7 & Rule 23)
+  useEffect(() => {
+    let isMounted = true;
+    api.getWorkspaceSettingProposals(currentUser.teamId, 'APPROVED')
+      .then(proposals => {
+        if (!isMounted || !Array.isArray(proposals)) return;
+        const matching = proposals.find(p => p.settingKey === STORAGE_KEY);
+        if (matching && matching.proposedChanges) {
+          setConfig(prev => ({ ...prev, ...matching.proposedChanges }));
+          try {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...DEFAULT_WORKSPACE_CONFIG, ...matching.proposedChanges }));
+          } catch {}
+        }
+      })
+      .catch(err => {
+        console.warn('[WorkspaceSettings] Could not fetch approved setting proposals from PostgreSQL:', err);
+      });
+
+    return () => { isMounted = false; };
+  }, [currentUser.teamId]);
 
   const handleSaveDraft = () => {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
-      setFeedbackBanner({ type: 'success', text: 'Workspace preferences saved as draft.' });
+      setFeedbackBanner({ type: 'success', text: 'Workspace preferences saved as offline draft.' });
       setTimeout(() => setFeedbackBanner(null), 3000);
     } catch (err) {
       console.warn('Could not save workspace draft:', err);
     }
   };
 
-  const handleApplyChanges = () => {
+  const handleApplyChanges = async () => {
+    setIsApplying(true);
     try {
+      // 1. Optimistic local cache update
       localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
-      setFeedbackBanner({ type: 'success', text: 'Workspace configuration applied successfully.' });
-      setTimeout(() => setFeedbackBanner(null), 3000);
-    } catch (err) {
-      console.warn('Could not apply workspace changes:', err);
+
+      // 2. Persist proposal to PostgreSQL backend (Rule 7 & Rule 23)
+      const userTeam = teams.find(t => t.id === currentUser.teamId) || teams[0];
+      await api.submitWorkspaceSettingProposal({
+        settingType: 'WORKSPACE_CONFIG',
+        settingKey: STORAGE_KEY,
+        title: `Workspace Configuration Update (${config.environmentMode})`,
+        proposedChanges: config,
+        currentSnapshot: DEFAULT_WORKSPACE_CONFIG,
+        justification: `Configuration updated by ${currentUser.name} (${currentUser.role})`,
+        makerId: currentUser.id,
+        makerName: currentUser.name,
+        teamId: currentUser.teamId || userTeam?.id || 'GLOBAL'
+      });
+
+      setFeedbackBanner({ 
+        type: 'success', 
+        text: 'Workspace configuration submitted for governance review & applied to active session.' 
+      });
+      setTimeout(() => setFeedbackBanner(null), 4000);
+    } catch (err: any) {
+      console.warn('Could not submit workspace proposal:', err);
+      setFeedbackBanner({ 
+        type: 'success', 
+        text: `Workspace configuration saved locally (${err.message || 'offline buffer active'}).` 
+      });
+      setTimeout(() => setFeedbackBanner(null), 4000);
+    } finally {
+      setIsApplying(false);
     }
   };
 
@@ -194,6 +244,32 @@ export default function WorkspaceSettings({
             </p>
           </div>
         </div>
+
+        {!isDedicatedScreen && (
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={handleSaveDraft}
+              className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-xl transition flex items-center gap-1.5 cursor-pointer border border-slate-200"
+            >
+              <Save size={14} />
+              <span>Save Draft</span>
+            </button>
+            <button
+              type="button"
+              disabled={isApplying}
+              onClick={handleApplyChanges}
+              className="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs font-bold rounded-xl transition flex items-center gap-1.5 shadow-xs cursor-pointer"
+            >
+              {isApplying ? (
+                <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+              ) : (
+                <ShieldCheck size={14} />
+              )}
+              <span>{isApplying ? 'Submitting...' : 'Apply & Propose'}</span>
+            </button>
+          </div>
+        )}
       </header>
 
       {/* Global Feedback Banner */}

@@ -37,6 +37,8 @@ interface IssueDetailViewProps {
   onDeleteIssue?: (issueId: string) => void;
   onCreateIssue?: (newIssue: Omit<Issue, 'id' | 'createdAt' | 'creatorId' | 'creatorName' | 'status'> & { id?: string }) => void;
   onCreateHashtagPreset: (newPreset: HashtagPreset) => void;
+  onUpdateHashtagPreset?: (preset: HashtagPreset) => void;
+  onDeleteHashtagPreset?: (tag: string) => void;
   onSendChatMessage: (issueId: string, messageText: string) => void;
   onUpdateCurrentUser?: (user: User) => void;
   onChangeTab?: (tab: string, issueId?: string) => void;
@@ -61,6 +63,8 @@ export default function IssueDetailView({
   onDeleteIssue,
   onCreateIssue,
   onCreateHashtagPreset,
+  onUpdateHashtagPreset,
+  onDeleteHashtagPreset,
   onSendChatMessage,
   onUpdateCurrentUser,
   onChangeTab,
@@ -1321,15 +1325,6 @@ export default function IssueDetailView({
         };
       });
 
-      try {
-        const savedWs = localStorage.getItem('workspace_table_records');
-        const existingRecords = savedWs ? JSON.parse(savedWs) : [];
-        const mergedRecords = [...workspaceRecords, ...existingRecords];
-        localStorage.setItem('workspace_table_records', JSON.stringify(mergedRecords));
-      } catch (err) {
-        console.warn('LocalStorage save error for workspace_table_records:', err);
-      }
-
       api.saveWorkspaceTableRecords(workspaceRecords).catch(err => {
         console.warn('Backend saveWorkspaceTableRecords error:', err);
       });
@@ -1414,15 +1409,6 @@ export default function IssueDetailView({
           createdAt: new Date().toISOString()
         };
       });
-
-      try {
-        const savedWs = localStorage.getItem('workspace_table_records');
-        const existingRecords = savedWs ? JSON.parse(savedWs) : [];
-        const mergedRecords = [...workspaceRecords, ...existingRecords];
-        localStorage.setItem('workspace_table_records', JSON.stringify(mergedRecords));
-      } catch (err) {
-        console.warn('LocalStorage save error for workspace_table_records:', err);
-      }
 
       api.saveWorkspaceTableRecords(workspaceRecords).catch(err => {
         console.warn('Backend saveWorkspaceTableRecords error:', err);
@@ -3770,6 +3756,8 @@ export default function IssueDetailView({
           hashtags={hashtags}
           currentUser={currentUser}
           onCreatePreset={onCreateHashtagPreset}
+          onUpdatePreset={onUpdateHashtagPreset}
+          onDeletePreset={onDeleteHashtagPreset}
           databases={databases}
         />
       )}
@@ -3803,6 +3791,8 @@ export default function IssueDetailView({
           hashtags={hashtags}
           currentUser={currentUser}
           onCreatePreset={onCreateHashtagPreset}
+          onUpdatePreset={onUpdateHashtagPreset}
+          onDeletePreset={onDeleteHashtagPreset}
           databases={databases}
           initialCreating={true}
           onClose={() => setCurrentMode('hashtags')}

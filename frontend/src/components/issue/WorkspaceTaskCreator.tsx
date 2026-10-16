@@ -3,13 +3,13 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import * as XLSX from 'xlsx';
 import { 
   Plus, ArrowLeft, Layers, FileText, Upload, Trash2, CheckCircle2, 
   Sparkles, Eraser, CheckCheck, ListFilter, Undo2, Wand2, BookmarkCheck, 
   Search, Check, X, MoreHorizontal, Edit3, Type, SlidersHorizontal, 
-  ShieldCheck, CheckSquare, RefreshCw, Save 
+  ShieldCheck, CheckSquare, RefreshCw, Save, AlertTriangle, GitBranch 
 } from 'lucide-react';
 import { 
   IssuePriority, 
@@ -23,6 +23,8 @@ import {
 import { api } from '../../api/client';
 import { globalMappingService } from '../../services/globalMappingService';
 import { Mail, Users, Lock } from 'lucide-react';
+import { StandardFileIngestionWorkspace, StandardFileIngestionWorkspaceRef } from '../common/StandardFileIngestionWorkspace';
+import { IngestionDatasetPayload } from '../../types';
 
 export interface WorkspaceTaskCreatorProps {
   currentUser: { id: string; username: string; role?: string; permanentTeamId?: string; shareWorkspaceWithTeam?: boolean; [key: string]: any };
@@ -78,6 +80,36 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
   const [createFileMapping, setCreateFileMapping] = useState<Record<string, string>>({});
   const [createParsedRows, setCreateParsedRows] = useState<Record<string, any>[]>([]);
   const [isProcessingFile, setIsProcessingFile] = useState(false);
+  const ingestionWorkspaceRef = React.useRef<StandardFileIngestionWorkspaceRef>(null);
+
+  // Workflows & Directive Validation Linkage
+  const [workflows, setWorkflows] = useState<any[]>([]);
+  useEffect(() => {
+    api.getWorkflows().then(data => {
+      if (Array.isArray(data)) setWorkflows(data);
+    }).catch(err => {
+      console.warn('Failed to load workflows in WorkspaceTaskCreator:', err);
+    });
+  }, []);
+
+  const selectedTagPreset = useMemo(() => {
+    if (!createHashtag || createHashtag === 'Untagged') return null;
+    return hashtags.find(h => h.tag === createHashtag) || null;
+  }, [createHashtag, hashtags]);
+
+  const linkedWorkflow = useMemo(() => {
+    if (!selectedTagPreset?.workflowId && !selectedTagPreset?.workflowName) return null;
+    return workflows.find(w => w.id === selectedTagPreset.workflowId || w.name === selectedTagPreset.workflowName) || null;
+  }, [selectedTagPreset, workflows]);
+
+  const missingHashtagColumns = useMemo(() => {
+    if (!selectedTagPreset || createRawHeaders.length === 0) return [];
+    const reqCols = (selectedTagPreset.minimumRequiredColumns && selectedTagPreset.minimumRequiredColumns.length > 0)
+      ? selectedTagPreset.minimumRequiredColumns
+      : (selectedTagPreset.expectedFileStructure || []);
+    if (reqCols.length === 0) return [];
+    return reqCols.filter(req => !createRawHeaders.some(h => h.trim().toLowerCase() === req.trim().toLowerCase()));
+  }, [selectedTagPreset, createRawHeaders]);
 
   // Data View & Cleaning States
   const [createActiveColumnMenu, setCreateActiveColumnMenu] = useState<string | null>(null);
@@ -475,6 +507,7 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
     
     setIsProcessingFile(true);
     const isExcel = file.name.endsWith('.xlsx') || file.name.endsWith('.xls');
+    const isXml = file.name.endsWith('.xml') || file.type === 'text/xml' || file.type === 'application/xml';
     const reader = new FileReader();
 
     reader.onload = (event) => {
@@ -489,10 +522,72 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
           if (firstSheet) {
             const raw = XLSX.utils.sheet_to_json(firstSheet, { header: 1 }) as any[][];
             if (raw.length > 0) {
-              headers = raw[0].map(h => String(h).trim());
+              headers = raw[0].map(h => String(h).trim()).filter(Boolean);
               parsedRows = XLSX.utils.sheet_to_json(firstSheet) as Record<string, any>[];
             }
           }
+        } else if (isXml) {
+          const text = event.target?.result as string;
+          const parser = new DOMParser();
+          const xmlDoc = parser.parseFromString(text, 'text/xml');
+          const parseErr = xmlDoc.getElementsByTagName('parsererror')[0];
+          if (parseErr) {
+            throw new Error('XML parsing syntax error: ' + (parseErr.textContent || 'Malformed XML structure'));
+          }
+
+          const allElements = Array.from(xmlDoc.getElementsByTagName('*'));
+          const tagCounts = new Map<string, Element[]>();
+          for (const el of allElements) {
+            if (el === xmlDoc.documentElement) continue;
+            const list = tagCounts.get(el.tagName) || [];
+            list.push(el);
+            tagCounts.set(el.tagName, list);
+          }
+
+          let candidateRows: Element[] = [];
+          let bestTag: string | null = null;
+          let maxCount = 0;
+          for (const [tag, elements] of tagCounts.entries()) {
+            if (elements.length > maxCount && elements.some(e => e.children.length > 0 || e.attributes.length > 0)) {
+              maxCount = elements.length;
+              bestTag = tag;
+            }
+          }
+
+          if (bestTag && maxCount > 1) {
+            candidateRows = tagCounts.get(bestTag) || [];
+          } else if (xmlDoc.documentElement.children.length > 0) {
+            candidateRows = Array.from(xmlDoc.documentElement.children);
+          } else {
+            candidateRows = [xmlDoc.documentElement];
+          }
+
+          const headerSet = new Set<string>();
+          for (const rowEl of candidateRows) {
+            const rowObj: Record<string, any> = {};
+            for (let i = 0; i < rowEl.attributes.length; i++) {
+              rowObj[rowEl.attributes[i].name] = rowEl.attributes[i].value;
+              headerSet.add(rowEl.attributes[i].name);
+            }
+            for (let i = 0; i < rowEl.children.length; i++) {
+              const child = rowEl.children[i];
+              if (child.children.length === 0) {
+                rowObj[child.tagName] = child.textContent?.trim() || '';
+                headerSet.add(child.tagName);
+              } else {
+                for (let j = 0; j < child.children.length; j++) {
+                  const key = `${child.tagName}_${child.children[j].tagName}`;
+                  rowObj[key] = child.children[j].textContent?.trim() || '';
+                  headerSet.add(key);
+                }
+              }
+            }
+            if (Object.keys(rowObj).length > 0) {
+              parsedRows.push(rowObj);
+            }
+          }
+
+          headers = Array.from(headerSet);
         } else {
           const text = event.target?.result as string;
           const lines = text.split('\n').filter(l => l.trim().length > 0);
@@ -513,8 +608,8 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
         setCreateRawHeaders(headers);
         setCreateFileMapping(autoGenerateColumnMapping(headers));
         setCreateParsedRows(parsedRows);
-      } catch (err) {
-        alert('Could not parse uploaded file. Please provide a valid CSV or Excel document.');
+      } catch (err: any) {
+        alert('Could not parse uploaded file: ' + (err?.message || 'Please provide a valid CSV, Excel, or XML document.'));
       } finally {
         setIsProcessingFile(false);
       }
@@ -542,17 +637,47 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
   };
 
   // Submit Handler
-  const handleCreateTaskSubmit = (e: React.FormEvent) => {
+  const handleCreateTaskSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!createTitle.trim()) {
       alert('Please enter a task title.');
       return;
     }
 
+    let finalPayload: IngestionDatasetPayload | undefined;
+
+    // Pre-Commit Integrity Gate: Validate file & enforce template/hashtag required columns
+    if (includeInvestigationSpace && ingestionWorkspaceRef.current?.hasFileAttached()) {
+      const outcome = await ingestionWorkspaceRef.current.validateAndPrepareDataset();
+      if (!outcome.isValid) {
+        alert(
+          `Task Creation Interrupted: Incomplete Dataset or Schema Mismatch!\n\n${outcome.blockingErrors.join('\n\n')}\n\nPlease satisfy all required column conditions before creating this task.`
+        );
+        return;
+      }
+      finalPayload = outcome.datasetPayload;
+    }
+
+    const effectiveFileName = finalPayload?.fileName || createFileName;
+    const effectiveHeaders = finalPayload?.activeHeaders || createRawHeaders;
+    const effectiveMapping = finalPayload?.columnMappings || createFileMapping;
+    const effectiveRows = finalPayload?.transformedRows || createParsedRows;
+    const effectiveTemplateId = finalPayload?.selectedTemplateId || selectedMappingId;
+
+    // Guard: Validate file schema against hashtag required columns
+    if (missingHashtagColumns.length > 0) {
+      const confirmProceed = window.confirm(
+        `File Schema Mismatch Alert!\n\nThe attached file "${effectiveFileName}" is missing ${missingHashtagColumns.length} required columns for hashtag directive ${selectedTagPreset?.tag}:\n- Missing: ${missingHashtagColumns.join(', ')}\n\nDo you wish to proceed and stage this discrepancy for investigation?`
+      );
+      if (!confirmProceed) {
+        return;
+      }
+    }
+
     const assignee = users.find(u => u.id === createAssigneeId);
     const generatedTaskId = `ISS-${Math.floor(1000 + Math.random() * 9000)}`;
 
-    const hasAttachedFile = Boolean(includeInvestigationSpace && createFileName && createFileName.trim().length > 0);
+    const hasAttachedFile = Boolean(includeInvestigationSpace && effectiveFileName && effectiveFileName.trim().length > 0);
 
     const newIssuePayload: any = {
       id: generatedTaskId,
@@ -563,11 +688,11 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
       assignedTechUserId: createAssigneeId || currentUser.id,
       assignedTechUserName: assignee ? assignee.username : currentUser.username,
       linkedHashtag: (createHashtag && createHashtag !== 'Untagged') ? createHashtag : undefined,
-      uploadedFileName: hasAttachedFile ? createFileName : undefined,
-      uploadedFileHeaders: (hasAttachedFile && createRawHeaders.length > 0) ? createRawHeaders : undefined,
-      fileMapping: (hasAttachedFile && Object.keys(createFileMapping).length > 0) ? createFileMapping : undefined,
-      firstLevelMappedData: (hasAttachedFile && createParsedRows.length > 0) ? createParsedRows : undefined,
-      mappingId: hasAttachedFile ? selectedMappingId : undefined,
+      uploadedFileName: hasAttachedFile ? effectiveFileName : undefined,
+      uploadedFileHeaders: (hasAttachedFile && effectiveHeaders.length > 0) ? effectiveHeaders : undefined,
+      fileMapping: (hasAttachedFile && Object.keys(effectiveMapping).length > 0) ? effectiveMapping : undefined,
+      firstLevelMappedData: (hasAttachedFile && effectiveRows.length > 0) ? effectiveRows : undefined,
+      mappingId: hasAttachedFile ? effectiveTemplateId : undefined,
       investigationEnvironment: 'production' as const,
       teamId: initialPreFill?.teamId || effectivePermanentTeamId || (currentUser as any)?.teamId,
       visibility: taskVisibility,
@@ -611,15 +736,6 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
           createdAt: new Date().toISOString()
         };
       });
-
-      try {
-        const savedWs = localStorage.getItem('workspace_table_records');
-        const existingRecords = savedWs ? JSON.parse(savedWs) : [];
-        const mergedRecords = [...workspaceRecords, ...existingRecords];
-        localStorage.setItem('workspace_table_records', JSON.stringify(mergedRecords));
-      } catch (err) {
-        console.warn('LocalStorage save error for workspace_table_records:', err);
-      }
 
       api.saveWorkspaceTableRecords(workspaceRecords).catch(err => {
         console.warn('Backend saveWorkspaceTableRecords error:', err);
@@ -737,6 +853,67 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
               </select>
             </div>
 
+            {/* Directive Info & Workflow Approval Banner */}
+            {selectedTagPreset && (
+              <div className="md:col-span-3 p-3 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs bg-indigo-50/60 border-indigo-200">
+                <div className="flex items-center gap-2">
+                  <span className="font-mono font-bold text-indigo-900">{selectedTagPreset.tag}</span>
+                  <span className="text-slate-600 truncate max-w-sm">{selectedTagPreset.description}</span>
+                </div>
+
+                {selectedTagPreset.workflowName && (
+                  <div className="flex items-center gap-2 shrink-0">
+                    <span className="text-slate-500 font-mono text-[11px]">Workflow:</span>
+                    <span className="font-bold text-slate-800">{selectedTagPreset.workflowName}</span>
+                    {(() => {
+                      const isApproved = linkedWorkflow?.status === 'APPROVED';
+                      return (
+                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold flex items-center gap-1 ${
+                          isApproved ? 'bg-emerald-100 text-emerald-800 border border-emerald-200' : 'bg-amber-100 text-amber-800 border border-amber-200'
+                        }`}>
+                          {isApproved ? <CheckCircle2 size={11} className="text-emerald-600" /> : <AlertTriangle size={11} className="text-amber-600" />}
+                          <span>{isApproved ? 'APPROVED WORKFLOW' : 'UNAPPROVED / DRAFT'}</span>
+                        </span>
+                      );
+                    })()}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* File Schema Mismatch Alert Banner */}
+            {missingHashtagColumns.length > 0 && (
+              <div className="md:col-span-3 p-3.5 bg-rose-50 border border-rose-200 rounded-xl space-y-2 text-xs animate-in fade-in duration-150">
+                <div className="flex items-center justify-between text-rose-800 font-bold">
+                  <div className="flex items-center gap-1.5">
+                    <AlertTriangle size={15} className="text-rose-600 shrink-0" />
+                    <span>File Schema Mismatch for Hashtag Directive {selectedTagPreset?.tag}</span>
+                  </div>
+                  <span className="text-[10px] bg-rose-100 text-rose-800 px-2 py-0.5 rounded-full font-mono font-bold">
+                    {missingHashtagColumns.length} Missing Column{missingHashtagColumns.length > 1 ? 's' : ''}
+                  </span>
+                </div>
+
+                <p className="text-rose-700 text-[11px] leading-relaxed">
+                  The attached file <strong>"{createFileName}"</strong> does not contain the minimum required columns expected by this hashtag directive.
+                </p>
+
+                <div className="flex items-center gap-1.5 flex-wrap">
+                  <span className="text-[10px] text-rose-600 font-bold uppercase font-mono">Missing Required:</span>
+                  {missingHashtagColumns.map(col => (
+                    <span key={col} className="px-2 py-0.5 rounded bg-rose-200/80 text-rose-900 font-mono text-[11px] font-bold border border-rose-300">
+                      ✕ {col}
+                    </span>
+                  ))}
+                </div>
+
+                <div className="pt-1.5 border-t border-rose-200/60 text-[10px] text-rose-600 font-mono flex items-center justify-between">
+                  <span>Detected Headers ({createRawHeaders.length}): {createRawHeaders.slice(0, 6).join(', ')}{createRawHeaders.length > 6 ? '...' : ''}</span>
+                  <span>Action: Provide missing columns or map fields below</span>
+                </div>
+              </div>
+            )}
+
             <div className="md:col-span-3">
               <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">
                 Task Description / Investigation Notes
@@ -847,567 +1024,21 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
             </div>
 
             {includeInvestigationSpace && (
-              <div className="space-y-4 pt-1">
-                {/* File Attachment & Quick Loader */}
-                <div className="p-4 bg-white border border-slate-200 rounded-xl space-y-3.5 shadow-xs">
-                  <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-2">
-                    <div>
-                      <span className="block text-[11px] font-bold text-slate-800">
-                        Upload File or Load Sample Batch
-                      </span>
-                      <span className="text-[10px] text-slate-500">
-                        Supports CSV, Excel (.xlsx). Auto-extracts column headers and populates data view.
-                      </span>
-                    </div>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={handleLoadSampleChargebacks}
-                        className="px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 text-[10px] font-semibold rounded-lg border border-blue-200 transition-all cursor-pointer"
-                      >
-                        📄 Chargebacks CSV
-                      </button>
-                      <button
-                        type="button"
-                        onClick={handleLoadSampleSettlements}
-                        className="px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 text-[10px] font-semibold rounded-lg border border-emerald-200 transition-all cursor-pointer"
-                      >
-                        📊 Settlement CSV
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* File Upload Zone / Active File Card */}
-                  {createFileName ? (
-                    <div className="p-3.5 bg-blue-50/50 border border-blue-200/80 rounded-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 animate-in fade-in duration-150">
-                      <div className="flex items-center space-x-3">
-                        <div className="p-2 bg-blue-100 text-blue-700 rounded-lg shrink-0">
-                          <FileText size={18} />
-                        </div>
-                        <div className="space-y-0.5">
-                          <div className="flex items-center space-x-2">
-                            <span className="text-xs font-bold text-slate-900">{createFileName}</span>
-                            <span className="text-[10px] bg-blue-100 text-blue-800 px-2 py-0.5 rounded font-mono font-semibold">
-                              {createParsedRows.length} Rows · {createRawHeaders.length} Cols
-                            </span>
-                          </div>
-                          <span className="text-[10px] text-slate-500 font-mono">
-                            File ready for mapping and data preview below
-                          </span>
-                        </div>
-                      </div>
-                      
-                      <div className="flex items-center space-x-2 shrink-0 self-end sm:self-auto">
-                        <label className="px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-700 text-xs font-semibold rounded-lg border border-slate-200 shadow-xs cursor-pointer transition-all flex items-center space-x-1.5">
-                          <Upload size={13} className="text-slate-500" />
-                          <span>Change File</span>
-                          <input
-                            id="task-create-file-upload-input"
-                            type="file"
-                            accept=".csv, .xlsx, .xls"
-                            onChange={handleCreateFileChange}
-                            className="hidden"
-                          />
-                        </label>
-                        <button
-                          type="button"
-                          onClick={handleRemoveCreateUploadedFile}
-                          className="px-3 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 text-xs font-bold rounded-lg border border-rose-200 shadow-xs flex items-center space-x-1.5 transition-all cursor-pointer"
-                          title="Remove uploaded data file"
-                        >
-                          <Trash2 size={13} className="text-rose-600" />
-                          <span>Remove Data</span>
-                        </button>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="flex items-center justify-center border-2 border-dashed border-slate-200 hover:border-blue-400 rounded-xl p-4 bg-slate-50/50 transition-all">
-                      <label className="flex flex-col items-center cursor-pointer w-full">
-                        <Upload size={20} className="text-blue-600 mb-1" />
-                        <span className="text-xs font-semibold text-slate-700">
-                          Choose CSV or Excel file
-                        </span>
-                        <span className="text-[9px] text-slate-400 mt-0.5">Click to browse local files or drag and drop</span>
-                        <input
-                          id="task-create-file-upload-input"
-                          type="file"
-                          accept=".csv, .xlsx, .xls"
-                          onChange={handleCreateFileChange}
-                          className="hidden"
-                        />
-                      </label>
-                    </div>
-                  )}
-
-                  {isProcessingFile && (
-                    <div className="text-center text-xs text-blue-600 font-semibold animate-pulse">
-                      Parsing file contents and extracting headers...
-                    </div>
-                  )}
-
-                  {/* Data View Table with Integrated Header Mapping & Cleaning Tools */}
-                  {createRawHeaders.length > 0 && (
-                    <div className="space-y-3 pt-2 border-t border-slate-100">
-                      {/* Cleaning Feedback Banner */}
-                      {createCleaningActionSuccess && (
-                        <div className="p-3 bg-emerald-50 border border-emerald-200 text-emerald-800 rounded-xl text-xs flex items-center justify-between animate-in fade-in duration-200">
-                          <div className="flex items-center space-x-2">
-                            <CheckCircle2 size={15} className="text-emerald-600 shrink-0" />
-                            <span className="font-semibold">{createCleaningActionSuccess}</span>
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() => setCreateCleaningActionSuccess(null)}
-                            className="text-emerald-600 hover:text-emerald-900 font-bold ml-2 text-xs cursor-pointer"
-                          >
-                            ✕
-                          </button>
-                        </div>
-                      )}
-
-                      {/* Data View Action & Filter Toolbar */}
-                      <div className="bg-slate-50/80 border border-slate-200/80 rounded-xl p-3 space-y-2.5">
-                        <div className="flex flex-col xl:flex-row items-stretch xl:items-center justify-between gap-2.5">
-                          {/* Left: Quick Data Cleaning & Template Actions */}
-                          <div className="flex flex-wrap items-center gap-1.5">
-                            <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mr-1 flex items-center gap-1">
-                              <Sparkles size={12} className="text-blue-500" />
-                              Tools:
-                            </span>
-
-                            <button
-                              type="button"
-                              onClick={() => handleCreateGlobalDatasetClean('trim_all')}
-                              className="px-2.5 py-1.5 bg-white hover:bg-slate-100 text-slate-700 text-[10px] font-bold rounded-lg border border-slate-200 shadow-xs flex items-center space-x-1 transition-all cursor-pointer"
-                              title="Trim whitespace across all columns and rows"
-                            >
-                              <Eraser size={11} className="text-amber-500" />
-                              <span>Trim All</span>
-                            </button>
-
-                            <button
-                              type="button"
-                              onClick={() => handleCreateGlobalDatasetClean('deduplicate')}
-                              className="px-2.5 py-1.5 bg-white hover:bg-slate-100 text-slate-700 text-[10px] font-bold rounded-lg border border-slate-200 shadow-xs flex items-center space-x-1 transition-all cursor-pointer"
-                              title="Remove duplicate rows"
-                            >
-                              <CheckCheck size={11} className="text-emerald-500" />
-                              <span>Deduplicate</span>
-                            </button>
-
-                            <button
-                              type="button"
-                              onClick={() => handleCreateGlobalDatasetClean('remove_empty_rows')}
-                              className="px-2.5 py-1.5 bg-white hover:bg-slate-100 text-slate-700 text-[10px] font-bold rounded-lg border border-slate-200 shadow-xs flex items-center space-x-1 transition-all cursor-pointer"
-                              title="Remove empty rows from dataset"
-                            >
-                              <ListFilter size={11} className="text-blue-500" />
-                              <span>Filter Empty</span>
-                            </button>
-
-                            {createCleaningUndoSnapshot && (
-                              <button
-                                type="button"
-                                onClick={handleCreateUndoCleaning}
-                                className="px-2.5 py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-800 text-[10px] font-bold rounded-lg border border-amber-300 shadow-xs flex items-center space-x-1 transition-all cursor-pointer animate-pulse"
-                                title="Undo last data cleaning operation"
-                              >
-                                <Undo2 size={11} className="text-amber-700" />
-                                <span>Undo</span>
-                              </button>
-                            )}
-
-                            <button
-                              type="button"
-                              onClick={() => setCreateFileMapping(autoGenerateColumnMapping(createRawHeaders))}
-                              className="px-2.5 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 text-[10px] font-bold rounded-lg border border-blue-200 shadow-xs flex items-center space-x-1 transition-all cursor-pointer"
-                              title="Auto-detect and map columns against target schema"
-                            >
-                              <Wand2 size={11} className="text-blue-600" />
-                              <span>Auto Map</span>
-                            </button>
-
-                            <button
-                              type="button"
-                              onClick={handleOpenSaveMappingModal}
-                              className="px-2.5 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 text-[10px] font-bold rounded-lg border border-emerald-300 shadow-xs flex items-center space-x-1.5 transition-all cursor-pointer"
-                              title="Save current column mapping configuration as a reusable template"
-                            >
-                              <BookmarkCheck size={11} className="text-emerald-600" />
-                              <span>Save Template</span>
-                            </button>
-
-                            {/* Remove button on Data View */}
-                            <button
-                              type="button"
-                              onClick={handleRemoveCreateUploadedFile}
-                              className="px-2.5 py-1.5 bg-rose-50 hover:bg-rose-100 text-rose-700 text-[10px] font-bold rounded-lg border border-rose-200 shadow-xs flex items-center space-x-1 transition-all cursor-pointer ml-auto sm:ml-0"
-                              title="Remove uploaded data and clear table preview"
-                            >
-                              <Trash2 size={11} className="text-rose-600" />
-                              <span>Remove Data</span>
-                            </button>
-                          </div>
-
-                          {/* Right: Choose Mapping Template for File Upload alongside Filter preview data input field */}
-                          <div className="flex flex-wrap items-center gap-2">
-                            {/* Choose Mapping Template for File Upload Dropdown */}
-                            <div className="flex items-center space-x-1.5">
-                              <label className="text-[10px] font-bold text-slate-700 uppercase whitespace-nowrap flex items-center gap-1 font-mono">
-                                <Layers size={12} className="text-blue-600" />
-                                <span className="hidden sm:inline">Mapping Template:</span>
-                                <span className="sm:hidden">Template:</span>
-                              </label>
-                              <select
-                                value={selectedMappingId}
-                                onChange={(e) => {
-                                  const newTplId = e.target.value;
-                                  setSelectedMappingId(newTplId);
-                                  if (newTplId) {
-                                    const selectedTpl = mappingTemplates.find(t => t.id === newTplId);
-                                    if (selectedTpl) {
-                                      if (selectedTpl.columnMappings && Object.keys(selectedTpl.columnMappings).length > 0) {
-                                        setCreateFileMapping(selectedTpl.columnMappings);
-                                      }
-                                      if (selectedTpl.sampleHeaders && selectedTpl.sampleHeaders.length > 0 && createRawHeaders.length === 0) {
-                                        setCreateRawHeaders(selectedTpl.sampleHeaders);
-                                        setCreateFileName(`template_${selectedTpl.name.toLowerCase().replace(/[^a-z0-9]/g, '_')}.${selectedTpl.sourceType || 'csv'}`);
-                                      }
-                                    }
-                                  } else {
-                                    if (createRawHeaders.length > 0) {
-                                      setCreateFileMapping(autoGenerateColumnMapping(createRawHeaders));
-                                    }
-                                  }
-                                }}
-                                className="bg-white border border-slate-200 rounded-lg px-2.5 py-1 text-[10px] font-semibold text-slate-800 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-200 cursor-pointer max-w-[210px]"
-                                title="Choose Mapping Template for File Upload"
-                              >
-                                <option value="">-- No Template (Map to Global Standard) --</option>
-                                {mappingTemplates.map(tpl => (
-                                  <option key={tpl.id} value={tpl.id}>
-                                    {tpl.name} ({tpl.id})
-                                  </option>
-                                ))}
-                              </select>
-                            </div>
-
-                            {/* Filter preview data input field */}
-                            <div className="relative">
-                              <Search size={12} className="absolute left-2.5 top-2 text-slate-400" />
-                              <input
-                                type="text"
-                                placeholder="Filter preview data..."
-                                value={createDataSearch}
-                                onChange={(e) => setCreateDataSearch(e.target.value)}
-                                className="bg-white border border-slate-200 rounded-lg pl-7 pr-2.5 py-1 text-[10px] text-slate-800 placeholder-slate-400 focus:outline-none focus:border-blue-500 w-36 sm:w-44"
-                              />
-                              {createDataSearch && (
-                                <button
-                                  type="button"
-                                  onClick={() => setCreateDataSearch('')}
-                                  className="absolute right-2 top-1.5 text-slate-400 hover:text-slate-600 text-[10px] cursor-pointer"
-                                >
-                                  ✕
-                                </button>
-                              )}
-                            </div>
-
-                            <span className="text-[10px] font-mono text-slate-500 bg-white border border-slate-200 px-2 py-1 rounded-md shrink-0 font-medium">
-                              {createParsedRows.length} rows · {createRawHeaders.length} cols
-                            </span>
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Data View Table with Integrated Header Mapping */}
-                      <div className="border border-slate-200 rounded-xl overflow-hidden shadow-xs bg-white">
-                        <div className="overflow-x-auto max-h-96">
-                          <table className="w-full text-left border-collapse text-xs">
-                            <thead className="sticky top-0 z-10 shadow-xs">
-                              {/* ROW 1: Column Headers & Quick Cleaning Dropdowns */}
-                              <tr className="bg-slate-100 border-b border-slate-200 font-bold text-slate-700 text-[11px]">
-                                <th className="py-2.5 px-3 w-12 text-center bg-slate-200/70 border-r border-slate-200 text-[10px] text-slate-500 font-mono">
-                                  #
-                                </th>
-                                {createRawHeaders.map((colKey) => (
-                                  <th
-                                    key={colKey}
-                                    className="py-2.5 px-3 min-w-[190px] border-r border-slate-200 font-sans group relative bg-slate-100"
-                                  >
-                                    {createEditingColumnKey === colKey ? (
-                                      <div className="flex items-center space-x-1" onClick={(e) => e.stopPropagation()}>
-                                        <input
-                                          type="text"
-                                          value={createNewColumnHeaderName}
-                                          onChange={(e) => setCreateNewColumnHeaderName(e.target.value)}
-                                          onKeyDown={(e) => {
-                                            if (e.key === 'Enter') handleCreateRenameColumn(colKey, createNewColumnHeaderName);
-                                            if (e.key === 'Escape') {
-                                              setCreateEditingColumnKey(null);
-                                              setCreateNewColumnHeaderName('');
-                                            }
-                                          }}
-                                          autoFocus
-                                          className="w-full bg-white border border-blue-500 rounded px-1.5 py-0.5 text-xs text-slate-900 focus:outline-none"
-                                        />
-                                        <button
-                                          type="button"
-                                          onClick={() => handleCreateRenameColumn(colKey, createNewColumnHeaderName)}
-                                          className="p-1 bg-emerald-600 text-white rounded hover:bg-emerald-700 cursor-pointer"
-                                          title="Save name"
-                                        >
-                                          <Check size={11} />
-                                        </button>
-                                        <button
-                                          type="button"
-                                          onClick={() => {
-                                            setCreateEditingColumnKey(null);
-                                            setCreateNewColumnHeaderName('');
-                                          }}
-                                          className="p-1 bg-slate-300 text-slate-700 rounded hover:bg-slate-400 cursor-pointer"
-                                          title="Cancel"
-                                        >
-                                          <X size={11} />
-                                        </button>
-                                      </div>
-                                    ) : (
-                                      <div className="flex items-center justify-between gap-1">
-                                        <span className="font-mono font-bold text-slate-800 text-xs truncate max-w-[130px]" title={colKey}>
-                                          {colKey}
-                                        </span>
-
-                                        <div className="flex items-center space-x-1 shrink-0">
-                                          {/* Column Menu Button */}
-                                          <div className="relative">
-                                            <button
-                                              type="button"
-                                              onClick={(e) => {
-                                                e.stopPropagation();
-                                                setCreateActiveColumnMenu(createActiveColumnMenu === colKey ? null : colKey);
-                                              }}
-                                              className="p-1 hover:bg-slate-200 rounded text-slate-600 hover:text-slate-900 transition-colors cursor-pointer"
-                                              title="Column tools & cleaning menu"
-                                            >
-                                              <MoreHorizontal size={13} />
-                                            </button>
-
-                                            {/* Dropdown Menu for Column */}
-                                            {createActiveColumnMenu === colKey && (
-                                              <div
-                                                className="absolute right-0 mt-1 w-52 bg-white rounded-xl shadow-xl border border-slate-200 py-1.5 z-50 text-left animate-in fade-in zoom-in-95 duration-100"
-                                                onClick={(e) => e.stopPropagation()}
-                                              >
-                                                <div className="px-3 py-1 text-[9px] font-bold text-slate-400 uppercase tracking-wider border-b border-slate-100">
-                                                  Column: {colKey}
-                                                </div>
-
-                                                <button
-                                                  type="button"
-                                                  onClick={() => {
-                                                    setCreateEditingColumnKey(colKey);
-                                                    setCreateNewColumnHeaderName(colKey);
-                                                    setCreateActiveColumnMenu(null);
-                                                  }}
-                                                  className="w-full px-3 py-1.5 text-xs text-slate-700 hover:bg-blue-50 hover:text-blue-700 flex items-center space-x-2 cursor-pointer font-sans"
-                                                >
-                                                  <Edit3 size={12} className="text-blue-500" />
-                                                  <span>Rename Column Header</span>
-                                                </button>
-
-                                                <div className="my-1 border-t border-slate-100"></div>
-                                                <div className="px-3 py-0.5 text-[9px] font-bold text-slate-400 uppercase tracking-wider">
-                                                  Clean Values
-                                                </div>
-
-                                                <button
-                                                  type="button"
-                                                  onClick={() => handleCreateTransformColumn(colKey, 'trim')}
-                                                  className="w-full px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50 flex items-center space-x-2 cursor-pointer font-sans"
-                                                >
-                                                  <Eraser size={12} className="text-amber-500" />
-                                                  <span>Trim Whitespace</span>
-                                                </button>
-
-                                                <button
-                                                  type="button"
-                                                  onClick={() => handleCreateTransformColumn(colKey, 'uppercase')}
-                                                  className="w-full px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50 flex items-center space-x-2 cursor-pointer font-sans"
-                                                >
-                                                  <Type size={12} className="text-indigo-500" />
-                                                  <span>UPPERCASE (ALL CAPS)</span>
-                                                </button>
-
-                                                <button
-                                                  type="button"
-                                                  onClick={() => handleCreateTransformColumn(colKey, 'lowercase')}
-                                                  className="w-full px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50 flex items-center space-x-2 cursor-pointer font-sans"
-                                                >
-                                                  <Type size={12} className="text-slate-400" />
-                                                  <span>lowercase (all small)</span>
-                                                </button>
-
-                                                <button
-                                                  type="button"
-                                                  onClick={() => handleCreateTransformColumn(colKey, 'strip_special')}
-                                                  className="w-full px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50 flex items-center space-x-2 cursor-pointer font-sans"
-                                                >
-                                                  <Sparkles size={12} className="text-emerald-500" />
-                                                  <span>Strip Special Characters</span>
-                                                </button>
-
-                                                <button
-                                                  type="button"
-                                                  onClick={() => handleCreateTransformColumn(colKey, 'number_clean')}
-                                                  className="w-full px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50 flex items-center space-x-2 cursor-pointer font-sans"
-                                                >
-                                                  <SlidersHorizontal size={12} className="text-blue-500" />
-                                                  <span>Format Number / 2 Decimals</span>
-                                                </button>
-
-                                                <button
-                                                  type="button"
-                                                  onClick={() => handleCreateTransformColumn(colKey, 'mask_card')}
-                                                  className="w-full px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50 flex items-center space-x-2 cursor-pointer font-sans"
-                                                >
-                                                  <ShieldCheck size={12} className="text-purple-500" />
-                                                  <span>Mask Card PAN (4111****)</span>
-                                                </button>
-
-                                                <button
-                                                  type="button"
-                                                  onClick={() => handleCreateTransformColumn(colKey, 'fill_blanks')}
-                                                  className="w-full px-3 py-1.5 text-xs text-slate-700 hover:bg-slate-50 flex items-center space-x-2 cursor-pointer font-sans"
-                                                >
-                                                  <CheckSquare size={12} className="text-slate-500" />
-                                                  <span>Fill Blanks with 'N/A'</span>
-                                                </button>
-
-                                                <div className="my-1 border-t border-slate-100"></div>
-
-                                                <button
-                                                  type="button"
-                                                  onClick={() => handleCreateDeleteColumn(colKey)}
-                                                  className="w-full px-3 py-1.5 text-xs text-red-600 hover:bg-red-50 flex items-center space-x-2 cursor-pointer font-sans font-semibold"
-                                                >
-                                                  <Trash2 size={12} className="text-red-500" />
-                                                  <span>Delete Column</span>
-                                                </button>
-                                              </div>
-                                            )}
-                                          </div>
-
-                                          {/* Quick Delete Column Button */}
-                                          <button
-                                            type="button"
-                                            onClick={() => handleCreateDeleteColumn(colKey)}
-                                            className="p-1 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded transition-colors cursor-pointer"
-                                            title={`Remove column ${colKey}`}
-                                          >
-                                            <Trash2 size={12} />
-                                          </button>
-                                        </div>
-                                      </div>
-                                    )}
-                                  </th>
-                                ))}
-                              </tr>
-
-                              {/* ROW 2: Integrated Schema Mapping Dropdown Row */}
-                              <tr className="bg-slate-50 border-b-2 border-slate-200 text-slate-600 text-[10px]">
-                                <th className="py-2 px-3 text-center bg-slate-100 border-r border-slate-200 font-mono text-[9px] text-blue-700 font-bold uppercase tracking-wider">
-                                  Maps To
-                                </th>
-                                {createRawHeaders.map((colKey) => {
-                                  const mappedField = createFileMapping[colKey];
-                                  const isMapped = mappedField && mappedField !== 'unmapped';
-
-                                  return (
-                                    <th key={`map-${colKey}`} className="py-1.5 px-2.5 border-r border-slate-200 bg-slate-50 font-normal">
-                                      <div className="flex items-center space-x-1">
-                                        <span className={`w-2 h-2 rounded-full shrink-0 ${isMapped ? 'bg-blue-600' : 'bg-slate-300'}`} />
-                                        <select
-                                          value={mappedField || 'unmapped'}
-                                          onChange={(e) => {
-                                            setCreateFileMapping(prev => ({
-                                              ...prev,
-                                              [colKey]: e.target.value
-                                            }));
-                                          }}
-                                          className={`w-full text-[11px] font-mono rounded px-2 py-1 border transition-all cursor-pointer ${
-                                            isMapped
-                                              ? 'bg-blue-50/90 border-blue-300 text-blue-900 font-semibold shadow-xs'
-                                              : 'bg-white border-slate-200 text-slate-600 hover:border-slate-300'
-                                          }`}
-                                        >
-                                          <option value="unmapped">-- Skip (Unmapped) --</option>
-                                          <optgroup label="Global Standard Column Dictionary">
-                                            {TARGET_DB_FIELDS.map(f => (
-                                              <option key={f.id} value={f.id}>{f.label}</option>
-                                            ))}
-                                          </optgroup>
-                                        </select>
-                                      </div>
-                                    </th>
-                                  );
-                                })}
-                              </tr>
-                            </thead>
-
-                            <tbody className="divide-y divide-slate-100 bg-white">
-                              {(() => {
-                                const filteredRows = createParsedRows.filter(row => {
-                                  if (!createDataSearch.trim()) return true;
-                                  const query = createDataSearch.toLowerCase();
-                                  return Object.values(row).some(val =>
-                                    String(val || '').toLowerCase().includes(query)
-                                  );
-                                });
-
-                                if (filteredRows.length === 0) {
-                                  return (
-                                    <tr>
-                                      <td
-                                        colSpan={createRawHeaders.length + 1}
-                                        className="py-8 text-center text-slate-400 font-sans text-xs"
-                                      >
-                                        {createDataSearch ? `No records matched filter "${createDataSearch}".` : 'No parsed records found.'}
-                                      </td>
-                                    </tr>
-                                  );
-                                }
-
-                                return filteredRows.map((row, idx) => (
-                                  <tr key={idx} className="hover:bg-blue-50/30 transition-colors">
-                                    <td className="py-2 px-3 text-center text-[10px] text-slate-400 font-mono bg-slate-50/50 border-r border-slate-100">
-                                      {idx + 1}
-                                    </td>
-                                    {createRawHeaders.map((colKey) => {
-                                      const cellVal = row[colKey];
-                                      return (
-                                        <td
-                                          key={colKey}
-                                          className="py-2 px-3 text-slate-700 font-mono text-[11px] truncate max-w-[200px] border-r border-slate-100"
-                                          title={cellVal !== undefined && cellVal !== null ? String(cellVal) : ''}
-                                        >
-                                          {cellVal !== undefined && cellVal !== null && String(cellVal).trim() !== '' ? (
-                                            String(cellVal)
-                                          ) : (
-                                            <span className="text-slate-300">-</span>
-                                          )}
-                                        </td>
-                                      );
-                                    })}
-                                  </tr>
-                                ));
-                              })()}
-                            </tbody>
-                          </table>
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                </div>
+              <div className="pt-2">
+                <StandardFileIngestionWorkspace
+                  ref={ingestionWorkspaceRef}
+                  currentUser={currentUser}
+                  selectedHashtag={selectedTagPreset}
+                  onDatasetReady={(payload) => {
+                    setCreateFileName(payload.fileName);
+                    setCreateRawHeaders(payload.activeHeaders);
+                    setCreateFileMapping(payload.columnMappings);
+                    setCreateParsedRows(payload.transformedRows);
+                    if (payload.selectedTemplateId) {
+                      setSelectedMappingId(payload.selectedTemplateId);
+                    }
+                  }}
+                />
               </div>
             )}
           </div>
@@ -1431,120 +1062,9 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
           </div>
         </form>
       </div>
-
-      {/* SAVE MAPPING TEMPLATE MODAL */}
-      {showSaveMappingModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4 animate-in fade-in duration-150">
-          <div className="bg-white border border-slate-200 rounded-2xl p-6 max-w-lg w-full shadow-2xl space-y-4 animate-in zoom-in-95 duration-150">
-            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-              <div className="flex items-center space-x-2.5">
-                <div className="w-9 h-9 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center">
-                  <BookmarkCheck size={18} />
-                </div>
-                <div>
-                  <h3 className="text-sm font-bold text-slate-900">Save Schema Mapping Template</h3>
-                  <p className="text-[11px] text-slate-500">Save your current column mappings to reuse across future tasks and datasets</p>
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={() => setShowSaveMappingModal(false)}
-                className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg cursor-pointer transition-colors"
-              >
-                <X size={16} />
-              </button>
-            </div>
-
-            <form onSubmit={handleSaveCurrentMapping} className="space-y-4">
-              <div>
-                <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1">
-                  Template Name <span className="text-rose-500">*</span>
-                </label>
-                <input
-                  type="text"
-                  value={saveMappingTemplateName}
-                  onChange={(e) => setSaveMappingTemplateName(e.target.value)}
-                  placeholder="e.g. Visa Settlement CSV Mapping"
-                  required
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-900 focus:outline-none focus:border-blue-500 focus:bg-white transition-all font-medium"
-                />
-              </div>
-
-              <div>
-                <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1">
-                  Description
-                </label>
-                <textarea
-                  value={saveMappingTemplateDesc}
-                  onChange={(e) => setSaveMappingTemplateDesc(e.target.value)}
-                  placeholder="Briefly describe the format or processor origin of this file..."
-                  rows={2}
-                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-900 focus:outline-none focus:border-blue-500 focus:bg-white transition-all"
-                />
-              </div>
-
-              {/* Mapped Columns Summary */}
-              <div className="space-y-1.5">
-                <div className="flex items-center justify-between text-[11px]">
-                  <span className="font-bold text-slate-700 uppercase tracking-wider">
-                    Mapped Column Headers ({Object.keys(createFileMapping).filter(k => createFileMapping[k] && createFileMapping[k] !== 'unmapped').length} of {createRawHeaders.length})
-                  </span>
-                  <span className="text-[10px] text-slate-500 font-mono">Format: CSV/Excel</span>
-                </div>
-
-                <div className="max-h-36 overflow-y-auto border border-slate-200 rounded-xl p-2.5 bg-slate-50/70 space-y-1.5 text-xs">
-                  {createRawHeaders.map((col) => {
-                    const mapped = createFileMapping[col];
-                    const isMapped = mapped && mapped !== 'unmapped';
-                    return (
-                      <div key={col} className="flex items-center justify-between py-1 px-2 bg-white border border-slate-200/80 rounded-lg text-[11px]">
-                        <span className="font-mono font-bold text-slate-800 truncate max-w-[160px]">{col}</span>
-                        <span className="text-slate-400 text-[10px]">→</span>
-                        {isMapped ? (
-                          <span className="font-mono text-blue-700 font-semibold bg-blue-50 border border-blue-200 px-2 py-0.5 rounded text-[10px]">
-                            {mapped}
-                          </span>
-                        ) : (
-                          <span className="text-slate-400 italic text-[10px]">unmapped (skipped)</span>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-
-              <div className="flex items-center justify-end space-x-2 pt-2 border-t border-slate-100">
-                <button
-                  type="button"
-                  onClick={() => setShowSaveMappingModal(false)}
-                  className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold text-xs rounded-xl transition-colors cursor-pointer"
-                >
-                  Cancel
-                </button>
-                <button
-                  type="submit"
-                  disabled={isSavingMapping || !saveMappingTemplateName.trim()}
-                  className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white font-bold text-xs rounded-xl shadow-xs transition-colors cursor-pointer flex items-center space-x-1.5"
-                >
-                  {isSavingMapping ? (
-                    <>
-                      <RefreshCw size={13} className="animate-spin" />
-                      <span>Saving Template...</span>
-                    </>
-                  ) : (
-                    <>
-                      <Save size={13} />
-                      <span>Save Template</span>
-                    </>
-                  )}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
     </div>
   );
 };
 
 export default WorkspaceTaskCreator;
+

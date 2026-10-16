@@ -529,22 +529,7 @@ export class GlobalMappingService {
    * Collects any uploaded records from workspace or seed archives to populate the central table
    */
   private harvestInitialUploadedRecords(): Record<string, any>[] {
-    try {
-      const ws = localStorage.getItem('workspace_table_records');
-      if (ws) {
-        const parsedWs = JSON.parse(ws);
-        if (Array.isArray(parsedWs) && parsedWs.length > 0) {
-          return parsedWs.map((r: any) => {
-            const raw = r.transformed_data || r.raw_data || {};
-            return this.transformRowToGlobalSchema(raw);
-          });
-        }
-      }
-    } catch (e) {
-      // Ignore
-    }
-
-    // Default: Return empty list if no workspace transactions uploaded yet
+    // Zero localStorage business state per AGENTS.md Rule 23
     return [];
   }
 
@@ -1683,16 +1668,17 @@ export class GlobalMappingService {
   }
 
   /**
-   * Pre-flight Gate: Validates that all required columns from the Global Schema are mapped
+   * Pre-flight Gate: Validates required columns based on caller/template requirements.
+   * If candidateFields are explicitly provided (e.g. from a FileIngestionMappingTemplate or caller),
+   * only those fields are enforced.
+   * If candidateFields is omitted or empty, no global required columns are enforced,
+   * eliminating rigid global column collision across heterogeneous feeds.
    */
   public validateRequiredColumns(
     fileMapping: Record<string, string>,
     candidateFields?: { key: string; label?: string; required?: boolean }[]
   ): RequiredColumnValidationResult {
-    const standardFields = candidateFields && candidateFields.length > 0
-      ? candidateFields
-      : this.getStandardFields();
-    const requiredFields = standardFields.filter(f => f.required);
+    const requiredFields = candidateFields ? candidateFields.filter(f => f.required) : [];
 
     const mappedTargetKeys = new Set(
       Object.values(fileMapping).filter(k => k && k !== 'unmapped' && k.trim() !== '')
@@ -1707,6 +1693,47 @@ export class GlobalMappingService {
       missingRequiredLabels: missingFields.map(f => f.label || f.key),
       mappedRequiredCount: requiredFields.length - missingFields.length,
       totalRequiredCount: requiredFields.length
+    };
+  }
+
+  /**
+   * Template-level pre-flight gate: Validates that all required columns mandated by a saved
+   * FileIngestionMappingTemplate or Hashtag directive are present in either the file's raw headers
+   * or mapped target keys.
+   */
+  public validateTemplateRequiredColumns(
+    rawHeaders: string[],
+    fileMapping: Record<string, string>,
+    templateRequiredColumns: string[]
+  ): RequiredColumnValidationResult {
+    if (!templateRequiredColumns || templateRequiredColumns.length === 0) {
+      return {
+        isValid: true,
+        missingRequiredKeys: [],
+        missingRequiredLabels: [],
+        mappedRequiredCount: 0,
+        totalRequiredCount: 0
+      };
+    }
+
+    const normalizedRaw = new Set(rawHeaders.map(h => h.trim().toLowerCase()));
+    const mappedTargetKeys = new Set(
+      Object.values(fileMapping)
+        .filter(k => k && k !== 'unmapped' && k.trim() !== '')
+        .map(k => k.trim().toLowerCase())
+    );
+
+    const missing = templateRequiredColumns.filter(req => {
+      const lower = req.trim().toLowerCase();
+      return !normalizedRaw.has(lower) && !mappedTargetKeys.has(lower);
+    });
+
+    return {
+      isValid: missing.length === 0,
+      missingRequiredKeys: missing,
+      missingRequiredLabels: missing,
+      mappedRequiredCount: templateRequiredColumns.length - missing.length,
+      totalRequiredCount: templateRequiredColumns.length
     };
   }
 

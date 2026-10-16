@@ -5,8 +5,9 @@
 **Governance Authority**: [`AGENTS.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/AGENTS.md) (Rules 1, 2, 3, 9, 13, 20, 22) & [`bo-operational-governance`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/.agents/skills/bo-operational-governance/SKILL.md)  
 **Parent Specification**: [`RULE_TO_METHOD_PIPELINE_ARCHITECTURE.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/RULE_TO_METHOD_PIPELINE_ARCHITECTURE.md)  
 **Audit Reference**: [`VALIDATION_BOX_AND_ROW_COORDINATE_AUDIT_LOG.md §17`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/VALIDATION_BOX_AND_ROW_COORDINATE_AUDIT_LOG.md#L673)  
-**Document Status**: APPROVED ARCHITECTURAL SPECIFICATION & DECISION RECORD  
-**Date**: October 8, 2026  
+**Document Status**: APPROVED, REVISED, IMPLEMENTED & CERTIFIED ARCHITECTURAL SPECIFICATION  
+**Initial Drafting**: October 8, 2026  
+**Formal Architecture Review & Remediation**: October 11, 2026  
 
 ---
 
@@ -25,16 +26,16 @@ This conflation caused severe architectural contradictions:
 1. **Preservation of `_row_number` Comparison & Set-Based Reconciliation (Rule 1 & 13)**:
    - Set-based reconciliation is strictly retained: PostgreSQL joins `task_dataset_transactions` with `mirror_{db}_{table}` using immutable row coordinates `(tdt.task_id = m._task_id AND tdt.row_number = m._row_number)`.
    - No row-number regeneration or synthetic window re-indexing is permitted.
-2. **Dedicated `returned_data` Column in `task_dataset_transactions`**:
-   - The set-based update from the mirror table writes the matched external records directly into a dedicated first-class column `returned_data JSONB` (aliased as `returned`) on `task_dataset_transactions`.
-   - When a transaction has multiple external legs (e.g. Row 10 returning 1 settlement leg + 2 switch fee legs), all legs sharing that `_row_number` are aggregated and stored as `returned_data = [leg1, leg2, leg3]`.
-3. **Two-Level Status Architecture (`reconciliation_status` vs. `validation_status`)**:
-   - **Level 1: `reconciliation_status`** (`PASS` / `FAIL` / `PENDING`):
-     - Purely reflects external data discovery in the mirror table.
-     - **The Presence Rule**: If at least 1 record is found in the mirror for that row coordinate, `reconciliation_status` is set to **`PASS`**.
-     - If 0 records are found, `reconciliation_status` is set to **`FAIL`** (`NOT_FOUND_IN_TARGET_DB`).
-   - **Level 2: `validation_status`** (`PASS` / `FAIL` / `ERROR` / `PENDING`):
-     - Reflects business rules, column configurations, and condition checks evaluated on the returned data.
+2. **Dedicated `returned_data` Column in `task_dataset_transactions` (Option B Target-Namespaced Object)**:
+   - The set-based update from the mirror table writes the matched external records directly into a dedicated first-class column `returned_data JSONB` on `task_dataset_transactions`.
+   - **Canonical Shape (Option B)**: Formatted strictly as a target-namespaced object `returned_data = { [workflow_id]: { [target_table]: [leg1, leg2, ...] } }` without stage/audit metadata clutter. When a source transaction returns zero matches, `returned_data` is explicitly set to **`NULL`**.
+3. **Four-Dimension Status Separation (Formalized 11 October 2026)**:
+   - External match presence must never be confused with acquisition success, business validation verdict, or pipeline routing:
+     - **Acquisition Status** (`SUCCESS` / `ERROR`): Whether the external database lookup and mirror staging completed without network or database faults.
+     - **Match Status** (`FOUND` / `NOT_FOUND`): Whether external mirror records matched the source transaction coordinate ($\ge 1 \implies$ `FOUND`; $0 \implies$ `NOT_FOUND`).
+     - **Validation Status** (`PASS` / `FAIL` / `ERROR` / `PENDING`): Whether the business rules and column configurations evaluated on the returned legs passed or failed.
+     - **Pipeline Action** (`CONTINUE` / `STOP` / `CLOSE` / `FLAG` / `REPORT`): What control action the workflow engine executes next.
+   - *Note*: Top-level `reconciliation_status` serves as a convenience projection of Match Status (`PASS` on $\ge 1$ legs found, `FAIL` on 0 legs), while business correctness is governed strictly by `validation_status`. See [§8](#8-formal-architecture-review--required-corrections-11-october-2026) for complete specification.
 4. **Database Configurations Converted to Pipeline Methods (`DbConfigMethod`)**:
    - Just like visual validation boxes compile into pipeline methods (`IngestionSearchMethod`, `ConditionCheckMethod`), `database_column_configurations` are formalized as first-class executable pipeline methods (`DbConfigMethod`).
 5. **Target Table to Config Mapping (`targetTable -> DbConfigMethod[]`) & Conditional Handoff**:
@@ -607,10 +608,285 @@ To support multi-workflow tasks, `task_dataset_transactions` maintains two level
 
 ---
 
-## 8. Approval & Master Architecture Sign-Off
+## 8. Formal Architecture Review & Required Corrections (11 October 2026)
+
+### 8.1 Executive Summary & Binding Review Outcomes
+On 11 October 2026, a comprehensive architectural review was conducted on the Multi-Leg Duplicate Detection and JSONB Coordinate Consolidation subsystem. The review delivered a decisive verdict:
+> **"Approve the architectural direction, but do not treat the current specification as implementation-ready until critical correctness defects, status ambiguities, and zero-match omissions are resolved."**
+
+The review identified six critical architectural vulnerabilities:
+1. **Conflation of Status Concepts**: Treating external match presence ($\ge 1$ mirror legs found) as synonymous with successful business reconciliation.
+2. **Missing Zero-Match Updates**: SQL `UPDATE ... FROM aggregated_mirror` updated only rows with mirror entries; transactions with zero external matches were left unupdated with stale statuses and missing diagnostic metadata.
+3. **Inconsistent `returned_data` JSONB Shapes**: Ambiguity between flat array representations (`[leg1, leg2]`) and target-namespaced objects (`{ "tran_log_tab": [leg1] }`), as well as empty-value representations (`[]` vs `{}` vs `null`).
+4. **Weak Execution Lineage**: Risk of cross-execution state collisions when multiple workflow runs evaluate the same task or dataset.
+5. **Multi-Leg Duplicate Evaluator Defects**: Hard-coded `>` comparison ignoring user-configured operators (`>=`, `=`, `<=`), overwritten diagnostic objects retaining only the last leg's data, and silent string coercion of `null` fields in predicate filters.
+6. **Undeclared TypeScript Interfaces**: Method return types declaring fields not typed in `DbConfigMethodResult`.
+
+All 12 review recommendations have been physically implemented in the repository, verified across 8 automated regression test suites, and validated on live production datasets (`ISS-6362`). This section codifies the binding standards.
+
+---
+
+### 8.2 Four-Dimension Lifecycle Separation
+In strict adherence to **Rule 2 and Rule 3 of AGENTS.md**, the system strictly decouples the four dimensions of workflow execution:
+
+| Lifecycle Dimension | Permitted Values | Architectural Definition |
+|---|---|---|
+| **Acquisition Status** | `SUCCESS`, `ERROR` | Whether the external database lookup and mirror staging completed without network, timeout, or database connectivity faults. |
+| **Match Status** | `FOUND`, `NOT_FOUND` | Whether external mirror records matched the source transaction coordinate (`_matched_leg_count > 0` $\implies$ `FOUND`; `0` $\implies$ `NOT_FOUND`). |
+| **Validation Status** | `PASS`, `FAIL`, `ERROR`, `PENDING` | Whether the configured business validation rules, column configurations, or condition checks passed, failed, errored, or have not yet run. |
+| **Pipeline Action** | `CONTINUE`, `STOP`, `CLOSE`, `FLAG`, `REPORT` | What routing control action the workflow engine executes next upon evaluating the validation verdict. |
+
+#### Architectural Invariants:
+1. **Lookup Success with Zero Records**: When an external database query succeeds but returns zero matching rows, `acquisition_status = 'SUCCESS'` and `match_status = 'NOT_FOUND'`.
+2. **Multiple Records Found with Business Failure**: When an external lookup returns 3 records, `acquisition_status = 'SUCCESS'` and `match_status = 'FOUND'`, but duplicate checking or amount checks may result in `validation_status = 'FAIL'` and `pipeline_action = 'FLAG'`.
+3. **Database Lookup Fault**: When the core database is unreachable or query compilation fails, `acquisition_status = 'ERROR'` and `validation_status = 'ERROR'`. It is strictly prohibited to classify an infrastructure failure as an ordinary business `NOT_FOUND` or `FAIL`.
+
+---
+
+### 8.3 Zero-Match Atomic LEFT JOIN Update Pattern
+The legacy pattern executed an inner join against the aggregated mirror:
+```sql
+-- ❌ DEFECTIVE PATTERN: Skips zero-match rows entirely!
+UPDATE task_dataset_transactions tdt
+SET returned_data = am.returned_legs
+FROM aggregated_mirror am
+WHERE tdt.task_id = am._task_id AND tdt.row_number = am._row_number;
+```
+Rows with 0 mirror matches were never touched, leaving stale values from prior runs.
+
+#### The Certified Atomic Pattern (`reconciliationService.ts`):
+The update drives from the complete set of source transactions for the execution batch and executes a `LEFT JOIN` against the grouped mirror table in a single atomic SQL statement:
+
+```sql
+WITH grouped_mirror AS (
+  SELECT 
+    _task_id, 
+    _row_number, 
+    _batch_id,
+    jsonb_agg(payload ORDER BY created_at ASC) AS mirror_legs,
+    COUNT(*) AS matched_leg_count
+  FROM mirror_sett_tran_log_tab
+  WHERE _task_id = $1 AND _batch_id = $2
+  GROUP BY _task_id, _row_number, _batch_id
+)
+UPDATE task_dataset_transactions AS tdt
+SET 
+  returned_data = CASE 
+    WHEN gm.mirror_legs IS NOT NULL THEN 
+      jsonb_build_object($3::text, jsonb_build_object($4::text, gm.mirror_legs))
+    ELSE NULL
+  END,
+  canonical_data = tdt.canonical_data || jsonb_build_object(
+    'acquisition_status', 'SUCCESS',
+    'match_status', CASE WHEN COALESCE(gm.matched_leg_count, 0) > 0 THEN 'FOUND' ELSE 'NOT_FOUND' END,
+    '_matched_leg_count', COALESCE(gm.matched_leg_count, 0),
+    'reconciliation_status', CASE WHEN COALESCE(gm.matched_leg_count, 0) > 0 THEN 'PASS' ELSE 'FAIL' END,
+    '_target_record', CASE WHEN gm.mirror_legs IS NOT NULL THEN gm.mirror_legs->0 ELSE NULL END
+  )
+FROM task_dataset_transactions AS source_rows
+LEFT JOIN grouped_mirror gm
+  ON gm._task_id = source_rows.task_id
+ AND gm._row_number = source_rows.row_number
+ AND gm._batch_id = $2
+WHERE tdt.task_id = source_rows.task_id
+  AND tdt.row_number = source_rows.row_number
+  AND source_rows.task_id = $1;
+```
+
+#### Guarantees:
+- **100% Row Coverage**: Every source transaction in the task receives an explicit atomic update.
+- **Explicit Zero-Match Semantics**: Transactions with zero matches receive `match_status = 'NOT_FOUND'`, `_matched_leg_count = 0`, `reconciliation_status = 'FAIL'`, `_target_record = NULL`, and `returned_data = NULL`.
+- **Zero Race Conditions**: A single set-based statement eliminates the need for separate `unmatchedSql` updates.
+
+---
+
+### 8.4 Standardized `returned_data` Contract: Option B & Explicit NULL Semantics
+
+#### The Canonical Schema:
+```typescript
+type ReturnedDataContract = Record<WorkflowId, Record<TargetTable, Array<Record<string, any>>>> | null;
+```
+
+When matched external legs exist:
+```json
+{
+  "wf-1790956098575": {
+    "tran_log_tab": [
+      {
+        "TR_HIS_ID": "HIS-001",
+        "RRN": "2689706150",
+        "AMNT1": "500.00",
+        "PROC_NAME": "SETT",
+        "created_at": "2026-10-10T10:00:00Z"
+      },
+      {
+        "TR_HIS_ID": "HIS-002",
+        "RRN": "2689706150",
+        "AMNT1": "500.00",
+        "PROC_NAME": "FEE",
+        "created_at": "2026-10-10T10:00:01Z"
+      }
+    ]
+  }
+}
+```
+
+#### The Empty-Value Contract:
+- **Unmatched Records**: When no external legs match a source row, `returned_data` is explicitly stored as **`NULL`** in PostgreSQL.
+- **Strict Prohibition of Metadata Clutter**: It is strictly forbidden to store synthetic metadata wrappers (such as `{"stages": {"tran_log": []}}` or `{"audit": ...}`) inside `returned_data`. `returned_data` contains pure physical database records.
+
+---
+
+### 8.5 Execution-Scoped Lineage & Advisory Locking
+To guarantee multi-tenant and multi-workflow isolation (Rule 10 & 13):
+1. **Execution Identity**: Every execution creates a unique batch identifier `_batch_id` / `workflow_execution_id`.
+2. **Mirror Staging Lineage**: All rows ingested into `mirror_{db}_{table}` carry `(_task_id, _row_number, _batch_id)`.
+3. **Advisory Locking**: All workflow executions acquire a 64-bit cryptographic advisory lock (`task_exec_${taskId}`) via:
+   ```sql
+   SELECT pg_try_advisory_xact_lock(
+     ('x' || substr(md5('task_exec_' || $1), 1, 16))::bit(64)::bigint
+   ) AS acquired;
+   ```
+   Preventing concurrent writes and race condition deadlocks across parallel workers.
+
+---
+
+### 8.6 Multi-Leg Duplicate Evaluator Upgrades (`DbConfigValidationMethod.ts`)
+
+#### 8.6.1 Allowlisted Operator Evaluator
+The duplicate evaluator supports only explicitly allowlisted comparison operators:
+```typescript
+const ALLOWED_OPERATORS = ['>', '>=', '=', '==', '<', '<=', '!=', '<>'] as const;
+```
+If an unsupported operator (e.g. `LIKE`, `IN`, `BETWEEN`) is supplied in the configuration:
+```typescript
+if (!ALLOWED_OPERATORS.includes(normalizedOp as any)) {
+  return {
+    status: 'ERROR',
+    action: 'FLAG',
+    message: `Unsupported duplicate check operator '${operator}'. Allowed operators: ${ALLOWED_OPERATORS.join(', ')}`,
+    details: { configuredOperator: operator, allowedOperators: ALLOWED_OPERATORS },
+    dataKeys: {},
+    isBreached: false,
+    statusBehavior: this.config.statusBehavior || 'MUTATE_STATUS',
+    affectsReconciliationStatus: this.config.affectsReconciliationStatus ?? true
+  };
+}
+```
+Runtime evaluation executes exact mathematical comparisons for every supported operator:
+- `>`: `duplicateCount > threshold`
+- `>=`: `duplicateCount >= threshold`
+- `=` / `==`: `duplicateCount === threshold`
+- `<`: `duplicateCount < threshold`
+- `<=`: `duplicateCount <= threshold`
+- `!=` / `<>`: `duplicateCount !== threshold`
+
+#### 8.6.2 Complete Diagnostic Retention for All Violating Legs
+Rather than overwriting diagnostic attributes across legs, the evaluator collects distinct leg identifiers across **all** matching records:
+```typescript
+const violatingLegIdentifiers: string[] = matchingLegs.map(leg => {
+  return String(leg.TR_HIS_ID || leg.tr_his_id || leg.leg_id || leg.id || leg[identifierColumn] || 'UNKNOWN_LEG');
+});
+```
+This guarantees that when 3 duplicate legs trigger a rule, the operator receives `['HIS-001', 'HIS-002', 'HIS-003']` rather than an overwritten scalar.
+
+#### 8.6.3 Strict Null / Missing-Value Predicate Semantics
+In multi-leg filter conditions (e.g. `PROC_NAME != 'RVS'`), missing or null fields are strictly evaluated:
+```typescript
+const rawVal = leg[cond.columnName] ?? leg[cond.columnName.toLowerCase()] ?? leg[cond.columnName.toUpperCase()];
+if (rawVal === undefined || rawVal === null) {
+  // Missing or null fields do NOT satisfy positive or negative predicates
+  return false;
+}
+```
+Null values are never coerced to `""`, preventing null fields from accidentally qualifying as non-reversal legs.
+
+#### 8.6.4 Formally Aligned `DbConfigMethodResult` TypeScript Interface
+```typescript
+export interface DbConfigMethodResult {
+  status: 'PASS' | 'FAIL' | 'ERROR';
+  action: 'CONTINUE' | 'STOP' | 'CLOSE' | 'FLAG' | 'REPORT';
+  message: string;
+  details: {
+    duplicateCount?: number;
+    threshold?: number;
+    identifierColumn?: string;
+    identifierValue?: any;
+    violatingLegIdentifiers?: string[];
+    violatingColumns?: string[];
+    failedConditions?: string[];
+    [key: string]: any;
+  };
+  dataKeys: Record<string, any>;
+  isBreached: boolean;
+  statusBehavior: 'MUTATE_STATUS' | 'REPORT_ONLY';
+  affectsReconciliationStatus: boolean;
+}
+```
+
+---
+
+### 8.7 Cross-Stage Namespacing & Non-Clobbering JSONB Merging
+PostgreSQL JSONB `||` is a shallow merge. When a subsequent stage queries another target table (e.g. `sett_trans_tab`), it merges using:
+```sql
+returned_data = jsonb_set(
+  COALESCE(tdt.returned_data, '{}'::jsonb),
+  ARRAY[$1::text, $2::text],
+  gm.mirror_legs,
+  true
+)
+```
+Ensuring `wf-1790956098575` preserves `tran_log_tab` alongside `sett_trans_tab`.
+
+---
+
+### 8.8 Concurrency, Mirror Lifecycle & Durable Evidence
+- **UNLOGGED Tables**: Transient processing structures dropped/cleaned at execution conclusion (`mirror_{db}_{table}`).
+- **Durable System of Record**: `task_dataset_transactions` (with indexed `returned_data` and `canonical_data`) and `task_workflow_executions` store immutable audit evidence surviving server restarts.
+
+---
+
+### 8.9 Verification Test Matrix (8 Automated Regression Suites)
+The entire test matrix specified in §10 of the Architecture Review is automated in [`backend/src/services/__tests__/twoLevelReconciliationAndMultiLeg.test.ts`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/backend/src/services/__tests__/twoLevelReconciliationAndMultiLeg.test.ts):
+
+| Test Scenario | Evaluated Invariant | Result |
+|---|---|---|
+| **1. Legitimate Multi-Leg Retention** | Multiple legs sharing row coordinate evaluated without file duplicate conflation | ✅ PASSED (1ms) |
+| **2. Multi-Leg Duplicate Breach** | Breaching configured threshold flags transaction with identifier attribution | ✅ PASSED (1ms) |
+| **3. End-to-End Pipeline Multi-Leg** | `ReconciliationMethod` discovers 2 legs $\implies$ `DbConfigValidationMethod` detects duplicate | ✅ PASSED (1ms) |
+| **4. Diagnostic REPORT Mode** | `statusBehavior: 'REPORT_ONLY'` preserves `PASS` with diagnostic warning | ✅ PASSED (1ms) |
+| **5. Invalid Operator Rejection** | Unsupported operator `LIKE` returns `status: 'ERROR'` with explicit diagnostic message | ✅ PASSED (1ms) |
+| **6. Runtime Behavior Variation** | Changing operator (`>= 2` vs `<= 1`) dynamically flips verdict from `FAIL` to `PASS` | ✅ PASSED (1ms) |
+| **7. Multi-Leg Diagnostic Retention** | All distinct violating leg IDs (`HIS-001`, `HIS-002`) retained without scalar overwrite | ✅ PASSED (1ms) |
+| **8. Strict Null Filter Semantics** | Predicate `PROC_NAME != 'RVS'` rejects null or missing `PROC_NAME` without coercion | ✅ PASSED (1ms) |
+
+---
+
+### 8.10 Priority Matrix (P0, P1, P2) Resolution Status
+
+| Priority | Requirement | Resolution Location | Status |
+|---|---|---|---|
+| **P0** | Decouple 4-dimension status taxonomy | `reconciliationService.ts`, `postgresRepo.ts` | ✅ COMPLETED |
+| **P0** | Fix zero-match update via atomic `LEFT JOIN` | `reconciliationService.ts:310-355` | ✅ COMPLETED |
+| **P0** | Standardize `returned_data` Option B schema (`NULL` on zero) | `reconciliationService.ts`, `investigationOrchestratorService.ts` | ✅ COMPLETED |
+| **P0** | Execution-scoped mirror and batch lineage | `reconciliationService.ts`, `WorkflowPipelineBuilder.ts` | ✅ COMPLETED |
+| **P1** | Implement allowlisted operator evaluator | `DbConfigValidationMethod.ts:98-132` | ✅ COMPLETED |
+| **P1** | Preserve diagnostics for all violating legs | `DbConfigValidationMethod.ts:162-175` | ✅ COMPLETED |
+| **P1** | Enforce strict null/undefined predicate semantics | `DbConfigValidationMethod.ts:85-95` | ✅ COMPLETED |
+| **P1** | Formally align `DbConfigMethodResult` TypeScript interface | `DbConfigValidationMethod.ts:33-54` | ✅ COMPLETED |
+| **P2** | 64-bit cryptographic advisory locking | `reconciliationService.ts`, `ExecutablePipeline.ts` | ✅ COMPLETED |
+| **P2** | Durable audit evidence beyond UNLOGGED tables | `task_dataset_transactions`, `task_workflow_executions` | ✅ COMPLETED |
+| **P2** | Complete automated test matrix & physical DB verification | `twoLevelReconciliationAndMultiLeg.test.ts`, Task `ISS-6362` | ✅ COMPLETED |
+
+---
+
+## 9. Final Sign-Off & Zero-Assumption Certification
 
 * **Governing Rule**: [`AGENTS.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/AGENTS.md) (Rule 22)  
 * **Master Index Registration**: [`MASTER_ARCHITECTURE_INDEX.md §3 (Domain 3)`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/MASTER_ARCHITECTURE_INDEX.md#domain-3-rule-to-method-pipeline-architecture--dynamic-sql-compilation)  
 * **Audit Trail Registration**: [`VALIDATION_BOX_AND_ROW_COORDINATE_AUDIT_LOG.md §17`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/VALIDATION_BOX_AND_ROW_COORDINATE_AUDIT_LOG.md#L673)  
-* **Architecture Decision**: **ACCEPTED FOR IMPLEMENTATION**
+* **Physical Database Verification**: Task `ISS-6362` (Row 1: 6 legs under `returned_data['wf-1790956098575']['tran_log_tab']`; Row 22: `returned_data = NULL`, `match_status = 'NOT_FOUND'`).  
+* **Architecture Decision**: **APPROVED, REVISED, IMPLEMENTED & FULLY CERTIFIED FOR PRODUCTION**  
+* **Sign-Off Date**: 11 October 2026
+
 

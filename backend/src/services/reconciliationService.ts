@@ -30,7 +30,11 @@ export const reconciliationService = {
     externalSystemId: string,
     records: MirrorRecord[]
   ): Promise<number> {
-    if (!records.length || !isPostgresConnected) return records.length;
+    if (!records.length) return 0;
+    if (!isPostgresConnected) {
+      console.warn('[reconciliationService] PostgreSQL is not connected; cannot persist mirror batch.');
+      return 0;
+    }
     const pool = getPostgresPool();
 
     const CHUNK_SIZE = 500;
@@ -305,8 +309,9 @@ export const reconciliationService = {
             (CASE WHEN bool_or(_validation_status = 'FAIL') THEN 'FAIL' ELSE 'PASS' END) AS _validation_status,
             (CASE WHEN bool_or(_validation_status = 'FAIL') THEN 'STOP' ELSE 'CONTINUE' END) AS _validation_action,
             jsonb_agg(
-              to_jsonb(m) - '_batch_id' - '_rule_block_id' - '_task_id' - '_mirrored_at' - '_validation_status' - '_validation_action' - '_validation_details'
-            ) AS mirror_legs
+              COALESCE(m.payload, to_jsonb(m)) - '_batch_id' - '_rule_block_id' - '_task_id' - '_mirrored_at' - '_validation_status' - '_validation_action' - '_validation_details' - '_row_number' - 'row_num' - '_mirror_id'
+            ) AS mirror_legs,
+            COUNT(*) AS matched_leg_count
           FROM ${safeMirror} m
           WHERE _batch_id = $1
             AND _rule_block_id = $2
@@ -315,30 +320,48 @@ export const reconciliationService = {
         )
         UPDATE task_dataset_transactions tdt
         SET
-          returned_data = jsonb_set(
-            COALESCE(tdt.returned_data, '{}'::jsonb) || jsonb_build_object(
-              $6::text,
-              COALESCE(tdt.returned_data->$6::text, '{}'::jsonb)
-            ),
-            ARRAY[$6::text, $7::text],
-            gm.mirror_legs,
-            true
-          ),
-          canonical_data = (tdt.canonical_data - 'auditTrail' - 'stageResults') || jsonb_build_object(
-            '_validation_status', gm._validation_status,
-            'reconciliation_status', gm._validation_status,
-            '_validation_action', gm._validation_action,
+          -- Section 4: Standardize returned_data: populated for matches, NULL when zero matches
+          returned_data = CASE
+            WHEN gm.matched_leg_count > 0 THEN
+              jsonb_set(
+                COALESCE(tdt.returned_data, '{}'::jsonb),
+                ARRAY[$6::text, $7::text],
+                gm.mirror_legs,
+                true
+              )
+            ELSE
+              -- Unmatched: clear target entry or leave NULL
+              CASE
+                WHEN tdt.returned_data IS NULL THEN NULL
+                WHEN (tdt.returned_data - $6::text) = '{}'::jsonb THEN NULL
+                ELSE (tdt.returned_data - $6::text)
+              END
+          END,
+          canonical_data = (tdt.canonical_data - 'auditTrail' - 'stageResults' - '_target_records' - '_target_record') || jsonb_build_object(
+            'acquisition_status', 'SUCCESS',
+            'match_status', CASE WHEN COALESCE(gm.matched_leg_count, 0) > 0 THEN 'FOUND' ELSE 'NOT_FOUND' END,
+            '_matched_leg_count', COALESCE(gm.matched_leg_count, 0),
+            '_validation_status', CASE WHEN COALESCE(gm.matched_leg_count, 0) > 0 THEN gm._validation_status ELSE 'FAIL' END,
+            'reconciliation_status', CASE WHEN COALESCE(gm.matched_leg_count, 0) > 0 THEN gm._validation_status ELSE 'FAIL' END,
+            '_validation_action', CASE WHEN COALESCE(gm.matched_leg_count, 0) > 0 THEN gm._validation_action ELSE 'STOP' END,
+            '_target_record', CASE WHEN gm.matched_leg_count > 0 THEN gm.mirror_legs->0 ELSE null END,
+            '_target_records', CASE WHEN gm.matched_leg_count > 0 THEN gm.mirror_legs ELSE null END,
             '_validation_details', jsonb_build_object(
               'stage_id', $4::text,
               'rule_block_id', $2::text,
               'mirror_table', $5::text,
-              'legs_count', jsonb_array_length(gm.mirror_legs),
+              'legs_count', COALESCE(gm.matched_leg_count, 0),
+              'existence', CASE WHEN COALESCE(gm.matched_leg_count, 0) > 0 THEN 'FOUND' ELSE 'NOT_FOUND_IN_TARGET_DB' END,
               'reconciled_at', NOW()
             )
           )
-        FROM grouped_mirror gm
-        WHERE tdt.task_id = gm._task_id
-          AND tdt.row_number = gm._row_number;
+        FROM task_dataset_transactions source_rows
+        LEFT JOIN grouped_mirror gm
+          ON gm._task_id = source_rows.task_id
+         AND gm._row_number = source_rows.row_number
+        WHERE tdt.task_id = source_rows.task_id
+          AND tdt.row_number = source_rows.row_number
+          AND source_rows.task_id = $3;
       `;
 
       const res = await pool.query(updateSql, [batchId, ruleBlockId, taskId, stageId, safeMirror, workflowId || 'default', effectiveTable]);

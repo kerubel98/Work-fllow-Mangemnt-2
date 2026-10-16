@@ -115,14 +115,14 @@ export const reversionService = {
     }
 
     // Restore task_dataset_transactions
-    await pool.query('BEGIN;');
+    const client = await pool.connect();
     try {
-      // Scope 64-bit advisory lock exclusively to this task (non-blocking for concurrent tasks)
-      await pool.query(
+      await client.query('BEGIN');
+      await client.query(
         `SELECT pg_advisory_xact_lock(('x' || substr(md5('task_revert_' || $1), 1, 16))::bit(64)::bigint)`,
         [taskId]
       );
-      await pool.query('DELETE FROM task_dataset_transactions WHERE task_id = $1;', [taskId]);
+      await client.query('DELETE FROM task_dataset_transactions WHERE task_id = $1;', [taskId]);
 
       for (let i = 0; i < originalRows.length; i++) {
         const row = originalRows[i];
@@ -131,16 +131,15 @@ export const reversionService = {
         const canonical = row.canonical_data || row;
         const raw = row.raw_data || row;
 
-        await pool.query(
+        await client.query(
           `INSERT INTO task_dataset_transactions (task_id, batch_id, row_number, canonical_data, raw_data, created_at)
            VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP);`,
           [taskId, batchId, rowNum, JSON.stringify(canonical), JSON.stringify(raw)]
         );
       }
 
-      // Also restore in issues table
       const canonicalRows = originalRows.map(r => r.canonical_data || r);
-      await pool.query(
+      await client.query(
         `UPDATE issues
          SET first_level_mapped_data = $1,
              solution_executed = FALSE,
@@ -150,15 +149,14 @@ export const reversionService = {
         [JSON.stringify(canonicalRows), taskId]
       );
 
-      // Mark snapshot as reverted
-      await pool.query(
+      await client.query(
         `UPDATE transaction_reversion_snapshots
          SET reverted_at = CURRENT_TIMESTAMP, reverted_by = $1
          WHERE id = $2;`,
         [userId, snapId]
       );
 
-      await pool.query('COMMIT;');
+      await client.query('COMMIT');
 
       const result = {
         success: true,
@@ -169,8 +167,10 @@ export const reversionService = {
       eventService.broadcastEvent('reversion:task_reverted', { taskId, snapshotId: snapId, revertedBy: userId });
       return result;
     } catch (err: any) {
-      await pool.query('ROLLBACK;');
+      await client.query('ROLLBACK');
       throw err;
+    } finally {
+      client.release();
     }
   },
 

@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { queryPg } from '../config/postgres.js';
+import { queryPg, getPostgresPool, withTransaction } from '../config/postgres.js';
 import { eventService } from './events.js';
 import { 
   WorkflowBundle, 
@@ -203,8 +203,7 @@ export const workflowBundleService = {
     const isApprove = action === 'APPROVE';
     const newStatus: WorkflowBundleStatus = isApprove ? 'APPROVED' : 'REJECTED';
 
-    await queryPg('BEGIN;');
-    try {
+    const bundle = await withTransaction(async (client) => {
       const updateSql = `
         UPDATE workflow_bundles
         SET status = $1,
@@ -217,7 +216,7 @@ export const workflowBundleService = {
         RETURNING *;
       `;
 
-      const res = await queryPg(updateSql, [
+      const res = await client.query(updateSql, [
         newStatus,
         checkerId,
         checkerName,
@@ -227,11 +226,10 @@ export const workflowBundleService = {
 
       const row = res.rows[0];
 
-      // If approved, update workflow visibility to match the bundle scope
       if (isApprove) {
         const visibility = row.scope === 'GLOBAL_ENTERPRISE' ? 'public' : 'team';
         const isPublic = row.scope === 'GLOBAL_ENTERPRISE';
-        await queryPg(
+        await client.query(
           `UPDATE database_validation_workflows 
            SET visibility = $1, is_public = $2, updated_at = NOW() 
            WHERE id = $3`,
@@ -239,15 +237,11 @@ export const workflowBundleService = {
         );
       }
 
-      await queryPg('COMMIT;');
+      return this._mapRowToBundle(row);
+    });
 
-      const bundle = this._mapRowToBundle(row);
-      eventService.broadcastEvent('workflow_bundle:reviewed', bundle);
-      return bundle;
-    } catch (err) {
-      await queryPg('ROLLBACK;');
-      throw err;
-    }
+    eventService.broadcastEvent('workflow_bundle:reviewed', bundle);
+    return bundle;
   },
 
   /**

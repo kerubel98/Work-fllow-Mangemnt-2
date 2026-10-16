@@ -17,6 +17,8 @@
 
 import crypto from 'crypto';
 import { queryPg, getPostgresPool } from '../config/postgres.js';
+import { repo } from '../store/repository.js';
+import { dataSanitizerService } from './dataSanitizerService.js';
 import {
   HashtagPreset, HashtagExecutionRun, HashtagExecutionVerdict,
   DictionaryLookupMapping
@@ -200,19 +202,46 @@ export async function executeFileIngestionHashtag(
   preset: HashtagPreset,
   rawRecords: Record<string, any>[]
 ): Promise<FileIngestionResult> {
-  const required = preset.minimumRequiredColumns || [];
+  const mandatedRequired = new Set<string>(preset.minimumRequiredColumns || []);
+  let templateName: string | undefined = undefined;
+
+  // Enforce required columns and replay operations from linked file mapping template
+  if (preset.mappingTemplateId) {
+    try {
+      const template = await repo.getFileMappingTemplateById(preset.mappingTemplateId);
+      if (template) {
+        templateName = template.name;
+        (template.requiredColumns || []).forEach(col => mandatedRequired.add(col));
+
+        // Replay template operations (splits, merges, transforms, cleaning actions)
+        let dicts: any[] = [];
+        try {
+          dicts = await repo.getValueTranslationDictionaries();
+        } catch {}
+        const replayed = dataSanitizerService.replayTemplateOperations(rawRecords, template, dicts);
+        rawRecords = replayed.processedRows;
+      }
+    } catch (err: any) {
+      console.warn(`[HashtagService] Could not resolve mapping template ${preset.mappingTemplateId}:`, err?.message);
+    }
+  }
+
+  const required = Array.from(mandatedRequired);
   const actualColumns = rawRecords.length > 0 ? Object.keys(rawRecords[0]) : [];
 
   const missingColumns = required.filter(col => !actualColumns.includes(col));
 
   if (missingColumns.length > 0) {
+    const errorPrefix = templateName 
+      ? `Missing required columns mandated by template '${templateName}': `
+      : 'Missing required columns: ';
     return {
       valid: false,
       missingColumns,
       enrichedRecords: [],
       lookupResolution: [],
       rowCount: 0,
-      errors: [`Missing required columns: ${missingColumns.join(', ')}`]
+      errors: [`${errorPrefix}${missingColumns.join(', ')}`]
     };
   }
 
@@ -399,55 +428,58 @@ export async function executeExtractionStaging(
 
   try {
     const pool = getPostgresPool();
+    const client = await pool.connect();
     const lockBigInt = derive64BitAdvisoryLockBigInt(`provision_staging_${stagingTable}`);
-
-    await pool.query('BEGIN');
-    // Acquire task-scoped 64-bit advisory lock for provisioning via parameterized query (Rule 10 & 11)
-    await pool.query('SELECT pg_advisory_xact_lock($1::bigint)', [lockBigInt]);
-
-    // Provision the dedicated staging table if it doesn't exist (clean ANSI quoting, no string interpolation)
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS ${tableIdent} (
-        id              VARCHAR(64)  PRIMARY KEY DEFAULT gen_random_uuid()::VARCHAR,
-        ingested_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
-        ingested_by     VARCHAR(100) NOT NULL,
-        source_ref      TEXT,
-        hashtag_tag     VARCHAR(128) NOT NULL,
-        transformed_payload JSONB    NOT NULL DEFAULT '{}'::jsonb
-      );
-      CREATE INDEX IF NOT EXISTS idx_${suffix}_ingested ON ${tableIdent}(ingested_at DESC);
-      CREATE INDEX IF NOT EXISTS idx_${suffix}_tag      ON ${tableIdent}(hashtag_tag);
-    `);
-
-    // Extract source data (from the configured target table in the internal DB / mirror)
     let sourceRows: Record<string, any>[] = [];
-    if (preset.targetTableName) {
-      const srcIdent = `"${preset.targetTableName.replace(/"/g, '""')}"`;
-      const extractSql = preset.solutionTemplate?.trim().toUpperCase().startsWith('SELECT')
-        ? preset.solutionTemplate
-        : `SELECT * FROM ${srcIdent} LIMIT 10000`;
-      const { rows } = await pool.query(extractSql, []);
-      sourceRows = rows;
-    }
-
-    // Apply dictionary lookups (e.g. bank_code → bank_name)
-    const mappings = preset.dictionaryLookupMappings || {};
-    const { enriched } = await applyDictionaryLookups(sourceRows, mappings);
-
-    // Batch-insert enriched records into the staging table in set-based chunks of 500
     let rowsInserted = 0;
-    const chunkSize = 500;
-    for (let i = 0; i < enriched.length; i += chunkSize) {
-      const chunk = enriched.slice(i, i + chunkSize);
-      await pool.query(
-        `INSERT INTO ${tableIdent} (ingested_by, hashtag_tag, transformed_payload)
-         SELECT $1, $2, value FROM jsonb_array_elements($3::jsonb)`,
-        [executedBy, preset.tag, JSON.stringify(chunk)]
-      );
-      rowsInserted += chunk.length;
-    }
 
-    await pool.query('COMMIT');
+    try {
+      await client.query('BEGIN');
+      await client.query('SELECT pg_advisory_xact_lock($1::bigint)', [lockBigInt]);
+
+      await client.query(`
+        CREATE TABLE IF NOT EXISTS ${tableIdent} (
+          id              VARCHAR(64)  PRIMARY KEY DEFAULT gen_random_uuid()::VARCHAR,
+          ingested_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+          ingested_by     VARCHAR(100) NOT NULL,
+          source_ref      TEXT,
+          hashtag_tag     VARCHAR(128) NOT NULL,
+          transformed_payload JSONB    NOT NULL DEFAULT '{}'::jsonb
+        );
+        CREATE INDEX IF NOT EXISTS idx_${suffix}_ingested ON ${tableIdent}(ingested_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_${suffix}_tag      ON ${tableIdent}(hashtag_tag);
+      `);
+
+      if (preset.targetTableName) {
+        const srcIdent = `"${preset.targetTableName.replace(/"/g, '""')}"`;
+        const extractSql = preset.solutionTemplate?.trim().toUpperCase().startsWith('SELECT')
+          ? preset.solutionTemplate
+          : `SELECT * FROM ${srcIdent} LIMIT 10000`;
+        const { rows } = await client.query(extractSql, []);
+        sourceRows = rows;
+      }
+
+      const mappings = preset.dictionaryLookupMappings || {};
+      const { enriched } = await applyDictionaryLookups(sourceRows, mappings);
+
+      const chunkSize = 500;
+      for (let i = 0; i < enriched.length; i += chunkSize) {
+        const chunk = enriched.slice(i, i + chunkSize);
+        await client.query(
+          `INSERT INTO ${tableIdent} (ingested_by, hashtag_tag, transformed_payload)
+           SELECT $1, $2, value FROM jsonb_array_elements($3::jsonb)`,
+          [executedBy, preset.tag, JSON.stringify(chunk)]
+        );
+        rowsInserted += chunk.length;
+      }
+
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
 
     return {
       rowsExtracted: sourceRows.length,
@@ -457,7 +489,6 @@ export async function executeExtractionStaging(
       errors
     };
   } catch (err: any) {
-    try { const pool = getPostgresPool(); await pool.query('ROLLBACK'); } catch {}
     return {
       rowsExtracted: 0,
       rowsInserted: 0,
@@ -592,7 +623,24 @@ export async function testPreFlight(
   try {
     if (preset.hashtagType === 'FILE_INGESTION' || !preset.hashtagType) {
       // Validate column presence
-      const required = preset.minimumRequiredColumns || [];
+      const mandatedRequired = new Set<string>(preset.minimumRequiredColumns || []);
+      let templateName: string | undefined = undefined;
+      if (preset.mappingTemplateId) {
+        try {
+          const template = await repo.getFileMappingTemplateById(preset.mappingTemplateId);
+          if (template) {
+            templateName = template.name;
+            (template.requiredColumns || []).forEach(col => mandatedRequired.add(col));
+            let dicts: any[] = [];
+            try { dicts = await repo.getValueTranslationDictionaries(); } catch {}
+            const replayed = dataSanitizerService.replayTemplateOperations(sampleRows || [], template, dicts);
+            sampleRows = replayed.processedRows;
+          }
+        } catch (err: any) {
+          console.warn(`[HashtagService] Could not resolve mapping template ${preset.mappingTemplateId}:`, err?.message);
+        }
+      }
+      const required = Array.from(mandatedRequired);
       const actualCols = sampleRows?.length ? Object.keys(sampleRows[0]) : [];
 
       for (const col of required) {
@@ -618,6 +666,12 @@ export async function testPreFlight(
       }
 
       const missingRequired = columnValidation.filter(c => !c.valid).map(c => c.column);
+      const errorMsg = missingRequired.length > 0
+        ? (templateName
+            ? `Missing required columns mandated by template '${templateName}': ${missingRequired.join(', ')}`
+            : `Missing required columns: ${missingRequired.join(', ')}`)
+        : undefined;
+
       return {
         success: missingRequired.length === 0,
         matchedRows: sampleRows?.length || 0,
@@ -625,9 +679,7 @@ export async function testPreFlight(
         columnValidation,
         lookupResolution,
         sampleRows: (sampleRows || []).slice(0, 10),
-        errors: missingRequired.length > 0
-          ? [`Missing required columns: ${missingRequired.join(', ')}`]
-          : []
+        errors: errorMsg ? [errorMsg] : []
       };
     }
 

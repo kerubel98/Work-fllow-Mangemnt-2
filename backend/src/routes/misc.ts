@@ -57,6 +57,28 @@ miscRouter.put('/hashtags/:tag/kpis', async (req: Request, res: Response) => {
   }
 });
 
+// PUT /api/hashtags/:tag - Update an existing hashtag preset
+miscRouter.put('/hashtags/:tag', async (req: Request, res: Response) => {
+  try {
+    const updated = await repo.updateHashtag(req.params.tag, req.body);
+    if (!updated) return res.status(404).json({ error: `Hashtag '${req.params.tag}' not found` });
+    return res.json(updated);
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE /api/hashtags/:tag - Delete an existing hashtag preset
+miscRouter.delete('/hashtags/:tag', async (req: Request, res: Response) => {
+  try {
+    const success = await repo.deleteHashtag(req.params.tag);
+    if (!success) return res.status(404).json({ error: `Hashtag '${req.params.tag}' not found` });
+    return res.json({ success: true, deletedTag: req.params.tag });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 // POST /api/hashtags/create-from-issue/:issueId - Define reusable hashtag out of a resolved issue
 miscRouter.post('/hashtags/create-from-issue/:issueId', async (req: Request, res: Response) => {
   try {
@@ -497,3 +519,176 @@ miscRouter.get('/metrics', async (_req: Request, res: Response) => {
     return res.status(500).json({ error: err.message });
   }
 });
+
+// ================= FILE INGESTION MAPPING TEMPLATES (Domain 7) =================
+miscRouter.get('/file-mapping-templates', async (req: Request, res: Response) => {
+  try {
+    const teamId = typeof req.query.teamId === 'string' ? req.query.teamId : undefined;
+    const templates = await repo.getFileMappingTemplates(teamId);
+    return res.json(templates);
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+miscRouter.get('/file-mapping-templates/:id', async (req: Request, res: Response) => {
+  try {
+    const template = await repo.getFileMappingTemplateById(req.params.id);
+    if (!template) {
+      return res.status(404).json({ error: 'File mapping template not found' });
+    }
+    return res.json(template);
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+miscRouter.post('/file-mapping-templates', async (req: Request, res: Response) => {
+  try {
+    const payload = req.body;
+    if (!payload.name) {
+      return res.status(400).json({ error: 'Template name is required' });
+    }
+    const saved = await repo.createOrUpdateFileMappingTemplate(payload);
+    return res.status(201).json(saved);
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+miscRouter.delete('/file-mapping-templates/:id', async (req: Request, res: Response) => {
+  try {
+    const success = await repo.deleteFileMappingTemplate(req.params.id);
+    if (!success) {
+      return res.status(404).json({ error: 'File mapping template not found or already deleted' });
+    }
+    return res.json({ success: true, id: req.params.id });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ================= VALUE TRANSLATION DICTIONARIES (Domain 7 / Governance Rule 23) =================
+miscRouter.get('/value-translation-dictionaries', async (req: Request, res: Response) => {
+  try {
+    const category = typeof req.query.category === 'string' ? req.query.category : undefined;
+    const dicts = await repo.getValueTranslationDictionaries(category);
+    return res.json(dicts);
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+miscRouter.get('/value-translation-dictionaries/:id', async (req: Request, res: Response) => {
+  try {
+    const dict = await repo.getValueTranslationDictionaryById(req.params.id);
+    if (!dict) {
+      return res.status(404).json({ error: 'Value translation dictionary not found' });
+    }
+    return res.json(dict);
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+miscRouter.post('/value-translation-dictionaries', async (req: Request, res: Response) => {
+  try {
+    const payload = req.body;
+    if (!payload.name) {
+      return res.status(400).json({ error: 'Dictionary name is required' });
+    }
+    const saved = await repo.createOrUpdateValueTranslationDictionary(payload);
+    return res.status(201).json(saved);
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+miscRouter.put('/value-translation-dictionaries/:id', async (req: Request, res: Response) => {
+  try {
+    const payload = { ...req.body, id: req.params.id };
+    if (!payload.name) {
+      return res.status(400).json({ error: 'Dictionary name is required' });
+    }
+    const saved = await repo.createOrUpdateValueTranslationDictionary(payload);
+    return res.json(saved);
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+miscRouter.delete('/value-translation-dictionaries/:id', async (req: Request, res: Response) => {
+  try {
+    const success = await repo.deleteValueTranslationDictionary(req.params.id);
+    if (!success) {
+      return res.status(404).json({ error: 'Value translation dictionary not found or already deleted' });
+    }
+    return res.json({ success: true, id: req.params.id });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ================= SYSTEM TRANSFORMATION RULES (Domain 7 / Governance Rule 23) =================
+miscRouter.get('/settings/transformation-rules', async (req: Request, res: Response) => {
+  try {
+    const category = typeof req.query.category === 'string' ? req.query.category : undefined;
+    const rules = await repo.getSystemTransformationRules(category);
+    return res.json(rules);
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+miscRouter.get('/settings/transformation-rules/:id', async (req: Request, res: Response) => {
+  try {
+    const rule = await repo.getSystemTransformationRuleById(req.params.id);
+    if (!rule) {
+      return res.status(404).json({ error: 'System transformation rule not found' });
+    }
+    return res.json(rule);
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+miscRouter.post('/settings/transformation-rules', async (req: Request, res: Response) => {
+  try {
+    const payload = req.body;
+    if (!payload.name) {
+      return res.status(400).json({ error: 'Transformation rule name is required' });
+    }
+    const saved = await repo.createOrUpdateSystemTransformationRule(payload);
+    return res.status(201).json(saved);
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+miscRouter.put('/settings/transformation-rules/:id', async (req: Request, res: Response) => {
+  try {
+    const payload = { ...req.body, id: req.params.id };
+    if (!payload.name) {
+      return res.status(400).json({ error: 'Transformation rule name is required' });
+    }
+    const saved = await repo.createOrUpdateSystemTransformationRule(payload);
+    return res.json(saved);
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+miscRouter.delete('/settings/transformation-rules/:id', async (req: Request, res: Response) => {
+  try {
+    const success = await repo.deleteSystemTransformationRule(req.params.id);
+    if (!success) {
+      return res.status(404).json({ error: 'System transformation rule not found or already deleted' });
+    }
+    return res.json({ success: true, id: req.params.id });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+
+

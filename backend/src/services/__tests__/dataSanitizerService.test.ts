@@ -2,28 +2,37 @@ import { describe, it, expect, vi } from 'vitest';
 import { dataSanitizerService } from '../dataSanitizerService.js';
 
 describe('dataSanitizerService', () => {
-  it('identifies missing required fields in fileMapping', async () => {
+  it('identifies missing required fields in fileMapping when mandated by template', async () => {
     // Only refnum mapped, missing reqamt and terminal_id
     const incompleteMapping = {
       'Txn_Ref': 'refnum'
     };
 
-    const res = await dataSanitizerService.validateMapping(incompleteMapping);
+    const res = await dataSanitizerService.validateMapping(incompleteMapping, undefined, ['refnum', 'reqamt', 'terminal_id']);
     expect(res.valid).toBe(false);
     expect(res.missingFields).toContain('reqamt');
     expect(res.missingFields).toContain('terminal_id');
   });
 
-  it('accepts mapping when all required standard fields are mapped', async () => {
+  it('accepts mapping when all required template fields are mapped', async () => {
     const completeMapping = {
       'Txn_Ref': 'refnum',
       'Amount': 'reqamt',
       'Term_Code': 'terminal_id'
     };
 
-    const res = await dataSanitizerService.validateMapping(completeMapping);
+    const res = await dataSanitizerService.validateMapping(completeMapping, undefined, ['refnum', 'reqamt', 'terminal_id']);
     expect(res.valid).toBe(true);
     expect(res.missingFields.length).toBe(0);
+  });
+
+  it('permits ad-hoc custom fields without error when no template required fields mandated', async () => {
+    const adHocMapping = {
+      'Custom_Col': 'custom_col'
+    };
+    const res = await dataSanitizerService.validateMapping(adHocMapping);
+    expect(res.valid).toBe(true);
+    expect(res.missingFields).toHaveLength(0);
   });
 
   it('automatically strips unmapped raw headers from rows', async () => {

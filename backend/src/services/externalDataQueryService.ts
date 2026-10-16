@@ -119,7 +119,10 @@ export function buildQueryFromExtraction(
       const andClauses = allMappings
         .filter(m => single[m.sourceField] !== undefined)
         .map(m => `${quoteIdentifier(m.sourceField, dialect)} = ${nextPlaceholder(single[m.sourceField])}`);
-      whereClause = andClauses.length > 0 ? andClauses.join(' AND ') : '1=1';
+      if (andClauses.length === 0) {
+        throw new Error(`[ExternalDataQueryService] Security Violation / Configuration Error: Composite tuple contains no mapped values for '${targetTable}'. Refusing to execute unrestricted table scan.`);
+      }
+      whereClause = andClauses.join(' AND ');
     } else if (dialect === 'PostgreSQL' || dialect === 'MySQL') {
       // Vector IN compilation: WHERE ("col1", "col2", "col3") IN (($1, $2, $3), ($4, $5, $6), ...)
       const compositeCols = allMappings.map(m => m.sourceField);
@@ -135,7 +138,10 @@ export function buildQueryFromExtraction(
         const conditions = allMappings
           .filter(m => t[m.sourceField] !== undefined)
           .map(m => `${quoteIdentifier(m.sourceField, dialect)} = ${nextPlaceholder(t[m.sourceField])}`);
-        return conditions.length > 0 ? `(${conditions.join(' AND ')})` : '(1=1)';
+        if (conditions.length === 0) {
+          throw new Error(`[ExternalDataQueryService] Security Violation / Configuration Error: Generic composite tuple contains no valid condition values for '${targetTable}'. Refusing to execute unrestricted table scan.`);
+        }
+        return `(${conditions.join(' AND ')})`;
       });
       whereClause = rowClauses.join(' OR ');
     }
@@ -166,7 +172,7 @@ export function buildQueryFromExtraction(
       const inPlaceholders = effectivePrimaryIds.map(id => nextPlaceholder(id)).join(', ');
       whereClause = `${safePrimaryTargetCol} IN (${inPlaceholders})`;
     } else {
-      whereClause = '1=1';
+      throw new Error(`[ExternalDataQueryService] Security Violation / Configuration Error: No valid extraction keys or transaction IDs provided for query against '${targetTable}'. Refusing to execute unrestricted table scan (WHERE 1=1).`);
     }
   }
 

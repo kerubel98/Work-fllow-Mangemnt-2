@@ -1,5 +1,12 @@
 import { repo } from '../store/repository.js';
-import { GlobalStandardDirectoryRecord } from '../types.js';
+import {
+  GlobalStandardDirectoryRecord,
+  FileIngestionMappingTemplate,
+  SplitOperation,
+  MergeOperation,
+  TransformOperation,
+  ValueTranslationDictionary
+} from '../types.js';
 
 export interface MappingValidationResult {
   valid: boolean;
@@ -256,18 +263,16 @@ export const dataSanitizerService = {
   },
 
   /**
-   * Validates that required global standard fields are mapped.
-   * If not explicitly provided, attempts auto-mapping on sample data headers to satisfy requirements.
+   * Validates that required template/mandated fields are mapped.
+   * If requiredFields is provided (e.g. from saved mapping template or hashtag),
+   * checks whether those exact fields are satisfied.
+   * If requiredFields is empty or omitted, global standard fields are NOT enforced by default.
    */
   async validateMapping(
     fileMapping?: Record<string, string>,
-    sampleRow?: Record<string, any>
+    sampleRow?: Record<string, any>,
+    requiredFields?: string[]
   ): Promise<MappingValidationResult> {
-    const requiredFields = await this.getRequiredDirectoryFields();
-    if (requiredFields.length === 0) {
-      return { valid: true, missingFields: [], requiredFields: [] };
-    }
-
     const effectiveMapping = { ...(fileMapping || {}) };
 
     // If sampleRow is present, attempt auto-mapping for any unmapped headers
@@ -279,6 +284,11 @@ export const dataSanitizerService = {
           effectiveMapping[hdr] = target;
         }
       }
+    }
+
+    const fieldsToValidate = (requiredFields || []).map(f => f.toLowerCase().trim()).filter(Boolean);
+    if (fieldsToValidate.length === 0) {
+      return { valid: true, missingFields: [], requiredFields: [], autoMapping: effectiveMapping };
     }
 
     // Identify mapped targets
@@ -298,12 +308,12 @@ export const dataSanitizerService = {
       }
     }
 
-    const missingFields = requiredFields.filter(rf => !mappedTargets.has(rf));
+    const missingFields = fieldsToValidate.filter(rf => !mappedTargets.has(rf));
 
     return {
       valid: missingFields.length === 0,
       missingFields,
-      requiredFields,
+      requiredFields: fieldsToValidate,
       autoMapping: effectiveMapping
     };
   },
@@ -466,5 +476,292 @@ export const dataSanitizerService = {
       droppedNullsCount,
       effectiveMapping
     };
-  }
+  },
+
+  applyTransformationRule,
+  replayTemplateOperations
 };
+
+/**
+ * Executes a single transformation rule on a scalar cell value
+ */
+export function applyTransformationRule(
+  value: any,
+  ruleType: string,
+  param1?: string,
+  param2?: string,
+  valueDictionaries?: ValueTranslationDictionary[]
+): any {
+  if (value === null || value === undefined) return '';
+  const str = String(value);
+
+  switch (ruleType) {
+    case 'UPPERCASE':
+      return str.toUpperCase();
+    case 'LOWERCASE':
+      return str.toLowerCase();
+    case 'TITLECASE':
+      return str.replace(/\b\w/g, c => c.toUpperCase());
+    case 'TRIM':
+      return str.trim().replace(/\s+/g, ' ');
+    case 'DATE_ISO': {
+      const val = str.trim();
+      if (/^\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4}$/.test(val)) {
+        const parts = val.split(/[\/\-]/);
+        if (parts.length === 3) {
+          const yr = parts[2];
+          const p0 = parts[0].padStart(2, '0');
+          const p1 = parts[1].padStart(2, '0');
+          return `${yr}-${p0}-${p1}`;
+        }
+      }
+      return cleanDate(val) || val;
+    }
+    case 'STRIP_CURRENCY':
+      return str.replace(/[^0-9.-]/g, '');
+    case 'MASK_MIDDLE':
+      if (str.length > 8) {
+        const first = str.slice(0, 4);
+        const last = str.slice(-4);
+        return `${first}${'*'.repeat(Math.max(4, str.length - 8))}${last}`;
+      }
+      return str;
+    case 'PHONE_ET': {
+      const cleanPhone = str.replace(/[^0-9+]/g, '');
+      if (/^(?:\+251|251|0)?(9\d{8}|7\d{8})$/.test(cleanPhone)) {
+        const m = cleanPhone.match(/(9\d{8}|7\d{8})$/);
+        return m ? `+251${m[1]}` : str;
+      }
+      return str;
+    }
+    case 'VALUE_REPLACE':
+      if (param1) {
+        return str.split(param1).join(param2 || '');
+      }
+      return str;
+    case 'VALUE_TRANSLATION_DICT': {
+      if (param1 && valueDictionaries) {
+        const dict = valueDictionaries.find(d => d.id === param1);
+        if (dict) {
+          const match = dict.mappings.find(
+            m => m.sourceValue.trim().toLowerCase() === str.trim().toLowerCase()
+          );
+          return match ? match.targetValue : str;
+        }
+      }
+      return str;
+    }
+    case 'REGEX_EXTRACT':
+      if (param1) {
+        try {
+          const re = new RegExp(param1);
+          const match = str.match(re);
+          return match ? (match[1] !== undefined ? match[1] : match[0]) : '';
+        } catch {
+          return str;
+        }
+      }
+      return str;
+    default:
+      return str;
+  }
+}
+
+/**
+ * Replays all operations captured by a FileIngestionMappingTemplate:
+ * 1. Column exclusions (deletedColumns)
+ * 2. Split column operations (splitOperations)
+ * 3. Merge column operations (mergeOperations)
+ * 4. Column data transformations & value translations (transformOperations)
+ * 5. Cleaning actions & policies (trim, normalize dates, mask PAN, dedup, drop empty)
+ */
+export function replayTemplateOperations(
+  rows: Record<string, any>[],
+  template: FileIngestionMappingTemplate,
+  valueDictionaries?: ValueTranslationDictionary[]
+): {
+  processedRows: Record<string, any>[];
+  headers: string[];
+} {
+  if (!rows || rows.length === 0) {
+    return { processedRows: [], headers: [] };
+  }
+
+  const recipe = template.cleaningRecipe || {};
+  const splitOps: SplitOperation[] = template.splitOperations || recipe.splitOperations || [];
+  const mergeOps: MergeOperation[] = template.mergeOperations || recipe.mergeOperations || [];
+  const transformOps: TransformOperation[] = template.transformOperations || recipe.transformOperations || [];
+  const cleaningActions: string[] = template.cleaningActions || recipe.cleaningActions || [];
+  const deletedCols: string[] = template.deletedColumns || [];
+
+  let currentRows: Record<string, any>[] = rows.map(r => ({ ...r }));
+
+  // 1. Column exclusions / deletions
+  if (deletedCols.length > 0) {
+    const delSet = new Set(deletedCols);
+    currentRows = currentRows.map(r => {
+      const out = { ...r };
+      delSet.forEach(col => { delete out[col]; });
+      return out;
+    });
+  }
+
+  // 2. Replay Splits
+  for (const splitOp of splitOps) {
+    if (!splitOp.column || !splitOp.partNames?.length) continue;
+    let delim = ' ';
+    if (splitOp.delimiterType === 'COMMA') delim = ',';
+    else if (splitOp.delimiterType === 'HYPHEN') delim = '-';
+    else if (splitOp.delimiterType === 'SLASH') delim = '/';
+    else if (splitOp.delimiterType === 'UNDERSCORE') delim = '_';
+    else if (splitOp.delimiterType === 'PIPE') delim = '|';
+    else if (splitOp.delimiterType === 'SEMICOLON') delim = ';';
+    else if (splitOp.delimiterType === 'CUSTOM') delim = splitOp.customDelimiter || ' ';
+
+    const validPartNames = splitOp.partNames.map((n, i) => n.trim() || `${splitOp.column}_part${i + 1}`);
+
+    currentRows = currentRows.map(row => {
+      const out = { ...row };
+      const rawVal = String(out[splitOp.column] ?? '');
+      const parts = (splitOp.delimiterType === 'SPACE' || delim === ' ')
+        ? (rawVal.trim().length > 0 ? rawVal.trim().split(/\s+/) : [])
+        : rawVal.split(delim);
+      validPartNames.forEach((name, idx) => {
+        out[name] = parts[idx] !== undefined ? parts[idx].trim() : '';
+      });
+      if (!splitOp.keepOriginal) {
+        delete out[splitOp.column];
+      }
+      return out;
+    });
+  }
+
+  // 3. Replay Merges
+  for (const mergeOp of mergeOps) {
+    if (!mergeOp.col1 || !mergeOp.col2 || !mergeOp.resultColumnName) continue;
+    let sep = ' ';
+    if (mergeOp.separatorType === 'HYPHEN') sep = '-';
+    else if (mergeOp.separatorType === 'UNDERSCORE') sep = '_';
+    else if (mergeOp.separatorType === 'SLASH') sep = '/';
+    else if (mergeOp.separatorType === 'COMMA') sep = ', ';
+    else if (mergeOp.separatorType === 'NONE') sep = '';
+    else if (mergeOp.separatorType === 'CUSTOM') sep = mergeOp.customSeparator || '';
+
+    currentRows = currentRows.map(row => {
+      const out = { ...row };
+      const v1 = row[mergeOp.col1] !== undefined && row[mergeOp.col1] !== null ? String(row[mergeOp.col1]).trim() : '';
+      const v2 = row[mergeOp.col2] !== undefined && row[mergeOp.col2] !== null ? String(row[mergeOp.col2]).trim() : '';
+      out[mergeOp.resultColumnName] = (v1 && v2) ? `${v1}${sep}${v2}` : (v1 || v2 || '');
+      if (!mergeOp.keepSources) {
+        delete out[mergeOp.col1];
+        delete out[mergeOp.col2];
+      }
+      return out;
+    });
+  }
+
+  // 4. Replay Column Transformations
+  for (const transOp of transformOps) {
+    if (!transOp.column || !transOp.ruleType) continue;
+    currentRows = currentRows.map(row => {
+      const out = { ...row };
+      out[transOp.column] = applyTransformationRule(
+        out[transOp.column],
+        transOp.ruleType,
+        transOp.param1,
+        transOp.param2,
+        valueDictionaries
+      );
+      return out;
+    });
+  }
+
+  // 5. Replay Cleaning Actions & Policies
+  const shouldTrim = cleaningActions.includes('TRIM_WHITESPACE') || recipe.trimWhitespace;
+  const shouldNormDates = cleaningActions.includes('NORMALIZE_DATES') || recipe.normalizeDatesToIso;
+  const shouldMaskPan = cleaningActions.includes('MASK_PAN') || recipe.maskCardPan;
+  const shouldDropEmpty = cleaningActions.includes('REMOVE_EMPTY_ROWS') || recipe.emptyRowsAction === 'DROP';
+  const shouldDedup = cleaningActions.includes('DEDUPLICATE') || recipe.duplicateRowsAction === 'DROP_EXACT';
+  const shouldFillNa = cleaningActions.includes('FILL_BLANKS_NA') || recipe.emptyRowsAction === 'FILL_NA' || recipe.fillBlanksWithNa;
+
+  if (shouldTrim) {
+    currentRows = currentRows.map(row => {
+      const out: Record<string, any> = {};
+      Object.keys(row).forEach(k => {
+        out[k] = typeof row[k] === 'string' ? row[k].trim() : row[k];
+      });
+      return out;
+    });
+  }
+
+  if (shouldNormDates) {
+    currentRows = currentRows.map(row => {
+      const out = { ...row };
+      Object.keys(out).forEach(k => {
+        const val = String(out[k] || '').trim();
+        if (/^\d{1,2}[\/\-]\d{1,2}[\/\-]\d{4}$/.test(val)) {
+          const parts = val.split(/[\/\-]/);
+          if (parts.length === 3) {
+            const yr = parts[2];
+            const p0 = parts[0].padStart(2, '0');
+            const p1 = parts[1].padStart(2, '0');
+            out[k] = `${yr}-${p0}-${p1}`;
+          }
+        }
+      });
+      return out;
+    });
+  }
+
+  if (shouldMaskPan) {
+    currentRows = currentRows.map(row => {
+      const out: Record<string, any> = {};
+      Object.keys(row).forEach(k => {
+        const val = String(row[k] || '').replace(/[\s-]/g, '');
+        if (/^\d{13,19}$/.test(val)) {
+          out[k] = `${val.slice(0, 6)}${'*'.repeat(val.length - 10)}${val.slice(-4)}`;
+        } else {
+          out[k] = row[k];
+        }
+      });
+      return out;
+    });
+  }
+
+  if (shouldDropEmpty) {
+    currentRows = currentRows.filter(r =>
+      Object.values(r).some(v => v !== null && v !== undefined && String(v).trim() !== '' && String(v) !== '-')
+    );
+  }
+
+  if (shouldDedup) {
+    const seen = new Set<string>();
+    currentRows = currentRows.filter(r => {
+      const k = JSON.stringify(r);
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
+  }
+
+  if (shouldFillNa) {
+    currentRows = currentRows.map(row => {
+      const out = { ...row };
+      Object.keys(out).forEach(k => {
+        if (out[k] === null || out[k] === undefined || String(out[k]).trim() === '') {
+          out[k] = 'N/A';
+        }
+      });
+      return out;
+    });
+  }
+
+  // Determine final headers
+  const headerSet = new Set<string>();
+  currentRows.slice(0, 20).forEach(r => Object.keys(r).forEach(k => headerSet.add(k)));
+
+  return {
+    processedRows: currentRows,
+    headers: Array.from(headerSet)
+  };
+}

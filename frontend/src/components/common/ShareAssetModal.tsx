@@ -1,12 +1,12 @@
 import React, { useState, useEffect } from 'react';
-import { X, Share2, Users, User, Send, CheckCircle2, AlertCircle, Box, Workflow, Database } from 'lucide-react';
+import { X, Share2, Users, User, Send, CheckCircle2, AlertCircle, Box, Workflow, Database, Tag } from 'lucide-react';
 import { api } from '../../api/client';
 import { User as UserType, Team } from '../../types';
 
 export interface ShareAssetModalProps {
   isOpen: boolean;
   onClose: () => void;
-  assetType: 'WORKFLOW' | 'VALIDATION_BOX' | 'DB_CONFIG';
+  assetType: 'WORKFLOW' | 'VALIDATION_BOX' | 'DB_CONFIG' | 'HASHTAG';
   assetId: string;
   assetTitle: string;
   assetDescription?: string;
@@ -117,6 +117,7 @@ export const ShareAssetModal: React.FC<ShareAssetModalProps> = ({
   const getAssetIcon = () => {
     if (assetType === 'WORKFLOW') return <Workflow size={18} className="text-blue-600" />;
     if (assetType === 'VALIDATION_BOX') return <Box size={18} className="text-purple-600" />;
+    if (assetType === 'HASHTAG') return <Tag size={18} className="text-indigo-600" />;
     return <Database size={18} className="text-emerald-600" />;
   };
 
