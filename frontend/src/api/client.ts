@@ -4,7 +4,7 @@
  */
 
 import { 
-  DatabaseColumnConfiguration, WorkspaceSettingProposal, TeamEscalationTarget, 
+  User, DatabaseColumnConfiguration, WorkspaceSettingProposal, TeamEscalationTarget, 
   TeamAdminPrivileges, WorkflowBundle, MailboxResponse, HashtagPreset, HashtagExecutionRun,
   FileIngestionMappingTemplate, ValueTranslationDictionary
 } from '../types';
@@ -1343,10 +1343,19 @@ export const api = {
       `/assets/direct-shares${userId ? `?userId=${encodeURIComponent(userId)}` : ''}`
     ),
 
-  // ================= Team Mailbox & Threading =================
+  // ================= Team & Personal Mailbox =================
   getTeamMailbox: (teamId?: string, filter: string = 'all', search?: string) => {
     const params = new URLSearchParams();
     if (teamId) params.append('teamId', teamId);
+    if (filter) params.append('filter', filter);
+    if (search) params.append('search', search);
+    const qs = params.toString();
+    return fetchApi<MailboxResponse>(`/messages/mailbox${qs ? `?${qs}` : ''}`);
+  },
+
+  getPersonalMailbox: (userId: string, filter: string = 'all', search?: string) => {
+    const params = new URLSearchParams();
+    if (userId) params.append('userId', userId);
     if (filter) params.append('filter', filter);
     if (search) params.append('search', search);
     const qs = params.toString();
@@ -1364,6 +1373,7 @@ export const api = {
 
   replyToMessage: (payload: {
     teamId?: string;
+    userId?: string;
     channel?: string;
     to: string;
     subject?: string;
@@ -1372,6 +1382,7 @@ export const api = {
     conversationId?: string;
     threadId?: string;
     inReplyToMessageId?: string;
+    senderAddress?: string;
   }) =>
     fetchApi<{ success: boolean; id: string; status: string }>(
       '/messages/reply',
@@ -1528,7 +1539,17 @@ export const api = {
   deleteSystemTransformationRule: (id: string) =>
     fetchApi<{ success: boolean; id: string }>(`/settings/transformation-rules/${encodeURIComponent(id)}`, {
       method: 'DELETE'
-    })
+    }),
+
+  // User Profile & Settings (PostgreSQL Persisted - Rule 23)
+  updateUserProfile: (userId: string, profile: Partial<User>) =>
+    fetchApi<{ message: string; user: User }>(`/auth/users/${encodeURIComponent(userId)}/profile`, {
+      method: 'PUT',
+      body: JSON.stringify(profile)
+    }),
+
+  getAuthUsers: () =>
+    fetchApi<User[]>('/auth/users')
 };
 
 export const apiClient = api;

@@ -24,6 +24,8 @@ import {
   Paperclip, FileText, FileDown, ExternalLink, Tag, GitCompare, HelpCircle
 } from 'lucide-react';
 import { ErrorBoundary } from '../ErrorBoundary';
+import UnifiedChatInput, { InChatDirectiveType } from '../chat/UnifiedChatInput';
+import CasesWorkspaceView from './CasesWorkspaceView';
 
 export interface StepExecutionResult {
   stepId: string;
@@ -524,6 +526,9 @@ export default function ValidationOrchestratorWorkspace({
   const [isScanningDuplicates, setIsScanningDuplicates] = useState<boolean>(false);
   const [isMovingOrRemoving, setIsMovingOrRemoving] = useState<boolean>(false);
 
+  // View mode: 'modern_cases' (matching 01_cases_workspace.png) vs 'advanced_grid'
+  const [viewMode, setViewMode] = useState<'modern_cases' | 'advanced_grid'>('modern_cases');
+
   // Available batches for the current task
   const [availableBatches, setAvailableBatches] = useState<{ batchId: string; count: number }[]>([]);
   const [selectedBatchId, setSelectedBatchId] = useState<string>('ALL');
@@ -945,6 +950,58 @@ export default function ValidationOrchestratorWorkspace({
   const [outcomeFilter, setOutcomeFilter] = useState<'ALL' | 'FLAGGED' | 'CLEAN'>('ALL');
   const [investigationStatusFilter, setInvestigationStatusFilter] = useState<'ALL' | 'INVESTIGATING' | 'RECONCILED' | 'FLAGGED' | 'CLOSED'>('ALL');
   const [showValidationDropdown, setShowValidationDropdown] = useState(false);
+  const [showActionsMenu, setShowActionsMenu] = useState(false);
+  const [showWorkflowHashtagPopover, setShowWorkflowHashtagPopover] = useState(false);
+  const [customHashtagInput, setCustomHashtagInput] = useState('');
+
+  const activeTags: string[] = useMemo(() => {
+    const set = new Set<string>();
+    if (selectedIssue?.linkedHashtag) set.add(selectedIssue.linkedHashtag.toUpperCase());
+    if ((selectedIssue as any)?.hashtag) set.add(String((selectedIssue as any).hashtag).toUpperCase());
+    if (Array.isArray(activeWorkflow?.hashtags)) {
+      activeWorkflow.hashtags.forEach(t => set.add(String(t).toUpperCase()));
+    }
+    if (set.size === 0) {
+      set.add('#AIB_SETTLEMENT_2026');
+      set.add('#CARD_SETTLEMENT_2026');
+    }
+    return Array.from(set);
+  }, [selectedIssue?.linkedHashtag, (selectedIssue as any)?.hashtag, activeWorkflow?.hashtags]);
+
+  const handleAttachHashtag = (tagToAdd: string) => {
+    let cleanTag = tagToAdd.trim();
+    if (!cleanTag) return;
+    if (!cleanTag.startsWith('#')) cleanTag = '#' + cleanTag;
+    cleanTag = cleanTag.toUpperCase();
+    if (selectedIssue?.id) {
+      onUpdateIssue(selectedIssue.id, { linkedHashtag: cleanTag });
+      api.updateIssue(selectedIssue.id, { linkedHashtag: cleanTag } as any).catch(() => null);
+    }
+    if (activeWorkflow?.id) {
+      const existing = Array.isArray(activeWorkflow.hashtags) ? activeWorkflow.hashtags : [];
+      if (!existing.includes(cleanTag)) {
+        const nextTags = [...existing, cleanTag];
+        const updatedWf = { ...activeWorkflow, hashtags: nextTags };
+        setActiveWorkflow(updatedWf);
+        api.updateWorkflow(activeWorkflow.id, { hashtags: nextTags } as any).catch(() => null);
+      }
+    }
+    setCustomHashtagInput('');
+    setShowWorkflowHashtagPopover(false);
+  };
+
+  const handleRemoveHashtag = (tagToRemove: string) => {
+    if (selectedIssue?.linkedHashtag?.toUpperCase() === tagToRemove.toUpperCase()) {
+      onUpdateIssue(selectedIssue.id, { linkedHashtag: undefined });
+      api.updateIssue(selectedIssue.id, { linkedHashtag: null } as any).catch(() => null);
+    }
+    if (activeWorkflow?.id && Array.isArray(activeWorkflow.hashtags)) {
+      const nextTags = activeWorkflow.hashtags.filter(t => t.toUpperCase() !== tagToRemove.toUpperCase());
+      const updatedWf = { ...activeWorkflow, hashtags: nextTags };
+      setActiveWorkflow(updatedWf);
+      api.updateWorkflow(activeWorkflow.id, { hashtags: nextTags } as any).catch(() => null);
+    }
+  };
   const [inspectingRow, setInspectingRow] = useState<OrchestratedRow | null>(null);
   const [outcomeDrilldownRow, setOutcomeDrilldownRow] = useState<any | null>(null);
   const [drilldownLegIndex, setDrilldownLegIndex] = useState<number>(-1);
@@ -1028,20 +1085,23 @@ export default function ValidationOrchestratorWorkspace({
   // Keep selectedCell in sync when effectiveRows or columnDefs change
   useEffect(() => {
     if (effectiveRows.length > 0 && columnDefs.length > 0) {
-      const firstCol = columnDefs[0];
+      const targetCol = visibleDatasetColumns[0] || columnDefs.find(c => !c.key.startsWith('_') && c.key !== 'returned_data') || columnDefs[0];
       setSelectedCell(prev => {
         if (prev.colKey && columnDefs.some(c => c.key === prev.colKey)) {
           const row = effectiveRows[prev.rowIdx] || effectiveRows[0];
+          const raw = row?.[prev.colKey];
           return {
             ...prev,
-            value: String(row?.[prev.colKey] ?? '')
+            value: typeof raw === 'object' && raw !== null ? JSON.stringify(raw) : String(raw ?? '')
           };
         }
+        const row = effectiveRows[0];
+        const raw = row?.[targetCol.key];
         return {
           rowIdx: 0,
-          colKey: firstCol.key,
-          colLabel: firstCol.label,
-          value: String(effectiveRows[0]?.[firstCol.key] ?? '')
+          colKey: targetCol.key,
+          colLabel: targetCol.label,
+          value: typeof raw === 'object' && raw !== null ? JSON.stringify(raw) : String(raw ?? '')
         };
       });
     } else {
@@ -1052,7 +1112,7 @@ export default function ValidationOrchestratorWorkspace({
         value: ''
       });
     }
-  }, [effectiveRows, columnDefs]);
+  }, [effectiveRows, columnDefs, visibleDatasetColumns]);
 
   const [activeSheetTab, setActiveSheetTab] = useState<'dataset' | 'sheet1_central' | 'anomalies' | 'reconciled' | 'attachments'>('dataset');
   const [selectedAttachmentIdx, setSelectedAttachmentIdx] = useState<number>(0);
@@ -1407,10 +1467,91 @@ export default function ValidationOrchestratorWorkspace({
   const [proposedScriptProcessType, setProposedScriptProcessType] = useState<SolutionProcessType>('INTERNAL_STAGED_FIX');
   const [acceptingProposalId, setAcceptingProposalId] = useState<string | null>(null);
 
-  const handleSendChat = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!chatInputText.trim() && !proposeScriptActive) return;
+  const handleExecuteInvestigationDirective = (directive: InChatDirectiveType, contextText?: string) => {
+    let confirmationEvent = '';
+    if (directive === 'create-task') {
+      if (onOpenNewCase) {
+        onOpenNewCase();
+        confirmationEvent = `📋 Directive [/create-task] executed: Opened new operational case workspace.`;
+      } else {
+        confirmationEvent = `📋 Directive [/create-task] executed: Created linked subtask for Issue #${selectedIssue?.id || ''}.`;
+      }
+    } else if (directive === 'create-escalate') {
+      if (selectedIssue) {
+        onUpdateIssue(selectedIssue.id, { priority: 'Critical', status: 'Investigating' });
+        api.updateIssue(selectedIssue.id, { priority: 'Critical', status: 'Investigating' } as any).catch(() => null);
+      }
+      confirmationEvent = `🚨 Directive [/create-escalate] executed: Case #${selectedIssue?.id || ''} elevated to Critical priority and routed to Incident Escalation Room.`;
+    } else if (directive === 'create-hashtag') {
+      const tag = (contextText || '').trim().split(/\s+/)[0] || '#INVESTIGATION_AUTO';
+      const cleanTag = tag.startsWith('#') ? tag.toUpperCase() : `#${tag.toUpperCase()}`;
+      if (selectedIssue) {
+        onUpdateIssue(selectedIssue.id, { linkedHashtag: cleanTag });
+        api.updateIssue(selectedIssue.id, { linkedHashtag: cleanTag } as any).catch(() => null);
+      }
+      confirmationEvent = `🏷️ Directive [/create-hashtag] executed: Registered and bound universal automation preset ${cleanTag} to this investigation.`;
+    } else if (directive === 'call-hashtag') {
+      const targetTag = (contextText || '').trim() || selectedIssue?.linkedHashtag || '#AIB_SETTLEMENT_2026';
+      const cleanTag = targetTag.startsWith('#') ? targetTag.toUpperCase() : `#${targetTag.toUpperCase()}`;
+      if (selectedIssue) {
+        onUpdateIssue(selectedIssue.id, { linkedHashtag: cleanTag });
+        api.updateIssue(selectedIssue.id, { linkedHashtag: cleanTag } as any).catch(() => null);
+      }
+      confirmationEvent = `⚡ Directive [/call-hashtag] executed: Linked universal hashtag ${cleanTag} and triggered automated validation scan.`;
+      handleRunHashtagDryRun();
+    } else if (directive === 'request-approval') {
+      setProposeScriptActive(true);
+      confirmationEvent = `🛡️ Directive [/request-approval] executed: Activated Four-Eyes Maker proposal script editor.`;
+    }
+
+    if (confirmationEvent && selectedIssue?.id) {
+      handleSendChat(undefined, confirmationEvent);
+    }
+  };
+
+  const handleSendChat = async (e?: React.FormEvent, explicitText?: string) => {
+    if (e && e.preventDefault) e.preventDefault();
+    const textToSend = (explicitText !== undefined ? explicitText : chatInputText).trim();
+    if (!textToSend && !proposeScriptActive) return;
     if (!selectedIssue?.id) return;
+
+    // Check if the message is a directive command that was typed manually (e.g. /create-escalate, /call-hashtag)
+    if (textToSend.startsWith('/')) {
+      const parts = textToSend.split(/\s+/);
+      const command = parts[0].slice(1).toLowerCase();
+      const argument = parts.slice(1).join(' ');
+      const matched = ['create-task', 'create-escalate', 'create-hashtag', 'call-hashtag', 'request-approval'].find(d => d === command);
+      if (matched) {
+        setChatInputText('');
+        handleExecuteInvestigationDirective(matched as InChatDirectiveType, argument);
+        return;
+      }
+    }
+
+    // Detect any @user and @@team mentions inside textToSend if not already in chatMentions
+    const extractedMentions = [...chatMentions];
+    if (textToSend) {
+      const userMatches = textToSend.match(/(?:^|\s)@([a-zA-Z0-9_-]+)/g);
+      if (userMatches) {
+        userMatches.forEach(m => {
+          const raw = m.trim().replace(/^@+/, '');
+          const foundUser = users.find(u => u.username.toLowerCase() === raw.toLowerCase());
+          if (foundUser && !extractedMentions.some(em => em.id === foundUser.id)) {
+            extractedMentions.push({ type: 'user', id: foundUser.id, name: foundUser.username });
+          }
+        });
+      }
+      const teamMatches = textToSend.match(/(?:^|\s)@@([a-zA-Z0-9_\s-]+)/g);
+      if (teamMatches) {
+        teamMatches.forEach(m => {
+          const raw = m.trim().replace(/^@@+/, '').trim();
+          const foundTeam = (teams || []).find(t => t.name.toLowerCase() === raw.toLowerCase());
+          if (foundTeam && !extractedMentions.some(em => em.id === foundTeam.id)) {
+            extractedMentions.push({ type: 'team', id: foundTeam.id, name: foundTeam.name });
+          }
+        });
+      }
+    }
 
     setIsSendingChat(true);
     try {
@@ -1433,7 +1574,7 @@ export default function ValidationOrchestratorWorkspace({
         };
       }
 
-      const msgText = chatInputText.trim() || (proposalPayload ? 'Proposed a solution script for peer consensus.' : 'Investigation update.');
+      const msgText = textToSend || (proposalPayload ? 'Proposed a solution script for peer consensus.' : 'Investigation update.');
       const clientMessage: any = {
         id: `msg-${Date.now()}`,
         senderId: currentUser.id,
@@ -1441,7 +1582,7 @@ export default function ValidationOrchestratorWorkspace({
         senderRole: currentUser.role,
         text: msgText,
         timestamp: new Date().toISOString(),
-        mentions: chatMentions.length > 0 ? chatMentions : undefined,
+        mentions: extractedMentions.length > 0 ? extractedMentions : undefined,
         attachedSummary: summaryPayload || undefined,
         solutionProposal: proposalPayload ? {
           id: `prop-${Date.now()}`,
@@ -1463,7 +1604,7 @@ export default function ValidationOrchestratorWorkspace({
         senderName: currentUser.username,
         senderRole: currentUser.role,
         text: msgText,
-        mentions: chatMentions,
+        mentions: extractedMentions,
         attachedSummary: summaryPayload,
         solutionProposal: proposalPayload,
         issueContext: {
@@ -3433,83 +3574,432 @@ export default function ValidationOrchestratorWorkspace({
     );
   };
 
+  if (viewMode === 'modern_cases') {
+    return (
+      <div className="h-full flex flex-col min-h-0 overflow-hidden bg-[#F8FAFC]">
+        <CasesWorkspaceView
+          issues={issues}
+          selectedIssueId={selectedIssue?.id}
+          onSelectIssueId={onSelectIssueId}
+          onRunValidation={() => handleRunValidation(true)}
+          onRevertCase={handleRevertEntireTask}
+          onUpdateIssue={onUpdateIssue}
+          onOpenNewCase={onOpenNewCase}
+          workflow={activeWorkflow}
+          sourceRecords={orchestratedRows}
+          onSwitchToAdvancedGrid={() => setViewMode('advanced_grid')}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-0 font-sans text-slate-800 border border-slate-300 rounded-xl shadow-sm overflow-hidden bg-white">
       {/* =========================================================================
-          1. ULTRA-COMPACT UNIFIED TOP TOOLBAR (SIMPLIFIED TO MAXIMIZE TABLE SPACE)
+          1. PRIMARY WORKSPACE COMMAND BAR (ROW 1: NAVY COMMAND BAR)
           ========================================================================= */}
-      <div className="bg-[#107c41] text-white px-3 py-1.5 flex flex-wrap items-center justify-between gap-2 border-b border-[#0b5a2f] text-xs">
-        {/* Left: Excel Mini Icon, File Name Chip & Compact Case Selector */}
-        <div className="flex items-center gap-2 flex-wrap">
-          <div className="flex items-center gap-1 font-bold text-xs tracking-tight text-white pr-0.5">
-            <span className="p-0.5 bg-white/20 rounded">
+      <div className="bg-[#0d1527] text-white px-3 py-1.5 flex items-center justify-between gap-2 border-b border-slate-800 text-xs select-none min-h-[42px]">
+        {/* Left: Identity, Source File, Attached View, Case Switcher, Workflow Selector */}
+        <div className="flex items-center gap-2 min-w-0 flex-wrap">
+          <div className="flex items-center gap-1.5 font-bold text-xs tracking-tight text-white pr-1 border-r border-slate-700/60 shrink-0">
+            <span className="p-0.5 bg-emerald-600 rounded text-white shadow-2xs">
               <FileSpreadsheet size={13} className="text-white" />
             </span>
-            <span>Data Grid</span>
+            <span className="font-semibold">Data Grid</span>
           </div>
 
-          {/* Source File Name Pill */}
-          <span
-            className="text-[11px] bg-[#0b5a2f] text-emerald-100 px-2 py-0.5 rounded font-mono font-semibold border border-emerald-400/20 max-w-[220px] truncate"
-            title={`Dataset File: ${sourceFileName}`}
+          <button
+            type="button"
+            onClick={() => setViewMode('modern_cases')}
+            className="flex items-center gap-1.5 px-2.5 py-1 bg-[#F27421] hover:bg-[#d65f15] text-white text-[11px] font-semibold rounded-md shadow-xs transition cursor-pointer shrink-0"
+            title="Switch to Modern Cases Workspace View"
           >
-            {sourceFileName}
-          </span>
+            <span>← Modern Cases</span>
+          </button>
+
+          {/* Source File Name Pill */}
+          {sourceFileName && (
+            <span
+              className="text-[11px] bg-[#0b5a2f] text-emerald-100 px-2.5 py-0.5 rounded font-mono font-semibold border border-emerald-400/20 max-w-[170px] truncate shrink-0"
+              title={`Dataset File: ${sourceFileName}`}
+            >
+              {sourceFileName}
+            </span>
+          )}
 
           {/* Attached Files Count Pill */}
           {selectedIssue?.attachments && selectedIssue.attachments.length > 0 && (
             <button
               type="button"
               onClick={() => setActiveSheetTab('attachments')}
-              className="text-[11px] bg-blue-900/90 hover:bg-blue-800 text-blue-100 px-2 py-0.5 rounded font-mono font-semibold border border-blue-400/30 flex items-center gap-1 cursor-pointer transition shadow-2xs"
+              className="text-[11px] bg-blue-900/90 hover:bg-blue-800 text-blue-100 px-2 py-0.5 rounded font-mono font-semibold border border-blue-400/30 flex items-center gap-1 cursor-pointer transition shadow-2xs shrink-0"
               title={`Attached Message Files:\n${selectedIssue.attachments.map((a: any) => `• ${a.filename} (${a.contentType || 'file'})`).join('\n')}\n\nClick to inspect attachment content!`}
             >
               <Paperclip size={11} className="text-blue-300" />
               <span>{selectedIssue.attachments.length} attached</span>
-              <span className="text-[10px] text-blue-300 underline font-sans ml-0.5">view</span>
             </button>
           )}
 
-          {/* Active Multi-Stage Workflow Pill */}
-          {activeWorkflow ? (
-            <span
-              className="text-[11px] bg-emerald-800/80 text-white px-2 py-0.5 rounded font-mono font-semibold border border-emerald-400/30 max-w-[240px] truncate flex items-center gap-1"
-              title={`Active Workflow: ${activeWorkflow.name}`}
-            >
-              <Layers size={11} className="text-emerald-300" />
-              <span className="truncate">{activeWorkflow.name}</span>
-            </span>
-          ) : (
-            <span
-              className="text-[11px] bg-emerald-950/80 text-emerald-300/80 px-2 py-0.5 rounded font-mono border border-emerald-500/20 flex items-center gap-1"
-            >
-              <AlertTriangle size={11} className="text-amber-400" />
-              <span>No Workflow Configured</span>
-            </span>
-          )}
-
-          {/* Compact Case Switcher */}
-          <div className="flex items-center gap-1 bg-white/10 px-1.5 py-0.5 rounded border border-white/15">
-            <span className="text-[10px] text-emerald-100 font-mono">Case:</span>
+          {/* Case Switcher */}
+          <div className="flex items-center gap-1 bg-white/10 px-2 py-0.5 rounded border border-white/15 shrink-0">
+            <span className="text-[10px] text-slate-300 font-mono font-bold uppercase tracking-wider">CASE:</span>
             <select
               value={selectedIssue.id}
               onChange={(e) => onSelectIssueId(e.target.value)}
-              className="text-[11px] bg-white text-slate-900 font-medium px-1.5 py-0.5 rounded focus:outline-none cursor-pointer max-w-[160px] truncate"
+              className="text-[11px] bg-transparent text-white font-medium focus:outline-none cursor-pointer max-w-[160px] truncate"
             >
               {issues.map(iss => (
-                <option key={iss.id} value={iss.id}>
+                <option key={iss.id} value={iss.id} className="bg-slate-900 text-white font-normal">
                   #{iss.id} — {iss.title}
                 </option>
               ))}
             </select>
           </div>
+
+          {/* Active Multi-Stage Workflow Selector Button (Triggers Popup Modal) */}
+          <div className="relative shrink-0">
+            <button
+              type="button"
+              onClick={() => setShowValidationDropdown(prev => !prev)}
+              className="flex items-center gap-1.5 bg-cyan-950/40 hover:bg-cyan-950/60 text-cyan-200 border border-cyan-500/40 px-2.5 py-1 rounded text-[11px] font-mono cursor-pointer transition shadow-2xs"
+              title="Switch or view active validation workflow"
+            >
+              <GitBranch size={11} className="text-cyan-400 shrink-0" />
+              <span className="text-cyan-400 font-bold uppercase tracking-wider text-[10px]">WORKFLOW:</span>
+              <span className="truncate max-w-[170px] font-semibold text-white">
+                {activeWorkflow ? activeWorkflow.name : 'Select Workflow'}
+              </span>
+              <ChevronDown size={11} className={`text-cyan-400 transition-transform ${showValidationDropdown ? 'rotate-180' : ''}`} />
+            </button>
+
+            {showValidationDropdown && (
+              <div
+                className="absolute left-0 top-full mt-1 w-80 bg-white rounded-lg border border-slate-300 shadow-2xl p-2 z-50 space-y-1 text-slate-800"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="px-2 py-1 text-[10px] font-bold text-slate-500 uppercase tracking-wider font-mono border-b border-slate-100 flex items-center justify-between">
+                  <span>Available Validation Pipelines</span>
+                  <button
+                    type="button"
+                    onClick={() => setShowValidationDropdown(false)}
+                    className="text-slate-400 hover:text-slate-700"
+                  >
+                    <X size={12} />
+                  </button>
+                </div>
+                <div className="max-h-64 overflow-y-auto space-y-1">
+                  {availableWorkflows.length === 0 ? (
+                    <div className="p-3 text-center text-xs text-slate-500">
+                      No validation workflows configured.
+                    </div>
+                  ) : (
+                    availableWorkflows.map((wf) => (
+                      <button
+                        key={wf.id}
+                        type="button"
+                        onClick={() => {
+                          handleApplyWorkflow(wf);
+                          setShowValidationDropdown(false);
+                        }}
+                        className={`w-full text-left p-2 rounded text-xs font-medium flex items-center justify-between transition cursor-pointer ${
+                          activeWorkflow?.id === wf.id
+                            ? 'bg-emerald-50 text-emerald-950 font-bold border border-emerald-300'
+                            : 'hover:bg-slate-50 text-slate-800'
+                        }`}
+                      >
+                        <div className="truncate mr-2">
+                          <div className="font-semibold text-slate-900 truncate">{wf.name}</div>
+                          <div className="text-[10px] text-slate-500">
+                            {(wf.stages || []).length} Stages • {wf.steps?.length || 0} Rules • {wf.category}
+                          </div>
+                        </div>
+                        {activeWorkflow?.id === wf.id ? (
+                          <Check size={13} className="text-emerald-700 shrink-0 font-bold" />
+                        ) : (
+                          <Play size={11} className="text-slate-400 shrink-0" />
+                        )}
+                      </button>
+                    ))
+                  )}
+                </div>
+              </div>
+            )}
+          </div>
         </div>
 
-        {/* Right: Actions, Filters, Search & Export in Single Row */}
+        {/* Right: Export, Revert, Discussion, Actions ▾, ▶ Run Validation */}
+        <div className="flex items-center gap-2 shrink-0">
+          {/* Export Button */}
+          <button
+            type="button"
+            onClick={handleExportExcel}
+            className="px-2.5 py-1 bg-emerald-800/80 hover:bg-emerald-700 text-white rounded text-[11px] font-bold flex items-center gap-1 transition cursor-pointer border border-emerald-400/30 shadow-2xs"
+            title="Export Excel Worksheet"
+          >
+            <Download size={11} className="text-emerald-200" />
+            <span>Export</span>
+          </button>
+
+          {/* Revert Button with History Toggle */}
+          <div className="flex items-center bg-rose-950/70 border border-rose-500/40 rounded overflow-hidden">
+            <button
+              type="button"
+              onClick={handleRevertEntireTask}
+              disabled={isRevertingTask}
+              className="px-2.5 py-1 text-rose-200 hover:bg-rose-900/50 text-[11px] font-bold flex items-center gap-1 transition cursor-pointer"
+              title="Revert all staged changes on this task dataset back to pre-change snapshot"
+            >
+              <RotateCcw size={11} className={isRevertingTask ? 'animate-spin' : ''} />
+              <span>Revert</span>
+            </button>
+            <button
+              type="button"
+              onClick={handleViewReversionHistory}
+              className="px-1.5 py-1 border-l border-rose-500/30 text-rose-300 hover:bg-rose-900/50 text-[11px] cursor-pointer"
+              title="View task reversion snapshot history"
+            >
+              <History size={11} />
+            </button>
+          </div>
+
+          {/* Discussion Button */}
+          <button
+            type="button"
+            onClick={() => setShowChatDrawer(true)}
+            className="px-3 py-1 bg-indigo-600 hover:bg-indigo-500 text-white rounded text-[11px] font-bold flex items-center gap-1.5 transition cursor-pointer shadow-xs border border-indigo-400/40"
+            title="Open Collaborative Discussion"
+          >
+            <MessageSquare size={12} />
+            <span>Discussion</span>
+            {(selectedIssue.chat || []).length > 0 && (
+              <span className="bg-white/20 text-white px-1.5 py-0.2 rounded-full text-[9px] font-mono">
+                {(selectedIssue.chat || []).length}
+              </span>
+            )}
+          </button>
+
+          {/* Actions Dropdown Button */}
+          <div className="relative actions-menu-container">
+            <button
+              type="button"
+              onClick={() => setShowActionsMenu(prev => !prev)}
+              className="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 border border-amber-400/40 rounded text-[11px] font-bold flex items-center gap-1 transition cursor-pointer"
+              title="Investigation actions & evolution tools"
+            >
+              <Zap size={11} className="text-amber-300" />
+              <span>Actions</span>
+              <ChevronDown size={11} className={`transition-transform ${showActionsMenu ? 'rotate-180' : ''}`} />
+            </button>
+            {showActionsMenu && (
+              <div
+                className="absolute right-0 top-full mt-1 w-64 bg-white rounded-lg border border-slate-300 shadow-2xl p-2 z-50 text-xs font-sans text-slate-800 space-y-1"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="px-2 py-1 text-[10px] font-bold text-slate-500 uppercase tracking-wider font-mono border-b border-slate-200">
+                  Investigation Tools
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowAddBoxModal(true);
+                    setShowActionsMenu(false);
+                  }}
+                  className="w-full text-left p-1.5 rounded hover:bg-slate-50 flex items-center gap-2 text-slate-700 cursor-pointer"
+                >
+                  <Plus size={13} className="text-emerald-600" />
+                  <div>
+                    <div className="font-semibold text-xs">Add In-Flight Box</div>
+                    <div className="text-[10px] text-slate-400">Add dynamic validation step</div>
+                  </div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowSwapWorkflowModal(true);
+                    setShowActionsMenu(false);
+                  }}
+                  className="w-full text-left p-1.5 rounded hover:bg-slate-50 flex items-center gap-2 text-slate-700 cursor-pointer"
+                >
+                  <GitBranch size={13} className="text-blue-600" />
+                  <div>
+                    <div className="font-semibold text-xs">Swap Workflow</div>
+                    <div className="text-[10px] text-slate-400">Change active pipeline rules</div>
+                  </div>
+                </button>
+                {selectedIssue?.linkedHashtag && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      handleResetToHashtagDefault();
+                      setShowActionsMenu(false);
+                    }}
+                    className="w-full text-left p-1.5 rounded hover:bg-slate-50 flex items-center gap-2 text-slate-700 cursor-pointer"
+                  >
+                    <RotateCcw size={13} className="text-amber-600" />
+                    <div>
+                      <div className="font-semibold text-xs">Reset to Hashtag Preset</div>
+                      <div className="text-[10px] text-slate-400">Restore default workflow</div>
+                    </div>
+                  </button>
+                )}
+                {(hasExecutedValidation || taskWorkflowExecutions.length > 0) && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      handleClearResults();
+                      setShowActionsMenu(false);
+                    }}
+                    className="w-full text-left p-1.5 rounded hover:bg-rose-50 text-rose-700 flex items-center gap-2 cursor-pointer border-t border-slate-100"
+                  >
+                    <X size={13} />
+                    <div>
+                      <div className="font-semibold text-xs">Clear Validation Results</div>
+                      <div className="text-[10px] text-rose-400">Reset task execution state</div>
+                    </div>
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+
+          {/* RUN VALIDATION TRIGGER BUTTON */}
+          <button
+            type="button"
+            onClick={() => handleRunValidation(true)}
+            disabled={isVerifying || !activeWorkflow}
+            className={`px-3.5 py-1 rounded text-xs font-black flex items-center gap-1.5 transition shadow-sm cursor-pointer ${
+              !activeWorkflow
+                ? 'bg-emerald-800/40 text-emerald-300/40 cursor-not-allowed border border-emerald-700/40'
+                : 'bg-emerald-600 hover:bg-emerald-500 text-white border border-emerald-400/50'
+            }`}
+            title={!activeWorkflow ? 'Select or create a workflow first' : 'Run validation rules on current dataset'}
+          >
+            {isVerifying ? (
+              <RotateCcw size={12} className="animate-spin" />
+            ) : (
+              <Play size={12} className="fill-white" />
+            )}
+            <span>{isVerifying ? 'Evaluating...' : '▶ Run Validation'}</span>
+          </button>
+        </div>
+      </div>
+
+      {/* =========================================================================
+          2. TAGS & TELEMETRY SUB-BAR (ROW 2: DARK CHARCOAL SUB-BAR)
+          ========================================================================= */}
+      <div className="bg-[#090d16] text-white px-3 py-1.5 flex items-center justify-between border-b border-slate-800 text-xs">
+        {/* Left: Linked Universal Hashtags & + Tag Button */}
         <div className="flex items-center gap-1.5 flex-wrap">
+          <span className="text-slate-400 text-[10px] font-mono font-bold uppercase tracking-wider mr-1">TAGS:</span>
+          {activeTags.map(tag => (
+            <span
+              key={tag}
+              className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-indigo-950 text-indigo-200 border border-indigo-500/40 text-[10px] font-mono font-bold"
+              title="Universal hashtag attached to case or workflow"
+            >
+              <span>{tag}</span>
+              <button
+                type="button"
+                onClick={() => handleRemoveHashtag(tag)}
+                className="text-indigo-400 hover:text-white cursor-pointer font-bold leading-none ml-0.5"
+                title={`Remove ${tag}`}
+              >
+                ×
+              </button>
+            </span>
+          ))}
+
+          {/* + Tag Popover Button */}
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setShowWorkflowHashtagPopover(!showWorkflowHashtagPopover)}
+              className="px-2 py-0.5 bg-white/10 hover:bg-white/20 text-white border border-white/20 rounded text-[10px] font-semibold flex items-center gap-1 transition cursor-pointer"
+              title="Attach universal #hashtag"
+            >
+              <Tag size={10} className="text-emerald-300" />
+              <span>+ Tag</span>
+            </button>
+
+            {showWorkflowHashtagPopover && (
+              <div
+                className="absolute left-0 top-full mt-1 w-72 bg-white rounded-lg border border-slate-300 shadow-2xl p-3 z-50 text-slate-800 text-xs font-sans space-y-2.5"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="flex items-center justify-between border-b border-slate-200 pb-1.5">
+                  <span className="font-bold text-[11px] text-slate-800 flex items-center gap-1">
+                    <Tag size={12} className="text-emerald-700" />
+                    Attach Universal #Hashtag
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setShowWorkflowHashtagPopover(false)}
+                    className="text-slate-400 hover:text-slate-700 p-0.5 rounded cursor-pointer"
+                  >
+                    <X size={12} />
+                  </button>
+                </div>
+
+                <div className="space-y-1">
+                  <span className="text-[10px] font-bold text-slate-500 uppercase font-mono">Custom Hashtag</span>
+                  <div className="flex items-center gap-1">
+                    <input
+                      type="text"
+                      value={customHashtagInput}
+                      onChange={(e) => setCustomHashtagInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && customHashtagInput.trim()) {
+                          e.preventDefault();
+                          handleAttachHashtag(customHashtagInput);
+                        }
+                      }}
+                      placeholder="#TAG_NAME"
+                      className="flex-1 px-2 py-1 text-xs bg-slate-50 border border-slate-300 rounded focus:outline-none focus:ring-1 focus:ring-emerald-600 font-mono text-slate-900"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => handleAttachHashtag(customHashtagInput)}
+                      disabled={!customHashtagInput.trim()}
+                      className="px-2 py-1 bg-emerald-700 hover:bg-emerald-800 disabled:opacity-40 text-white rounded text-[11px] font-bold cursor-pointer"
+                    >
+                      Attach
+                    </button>
+                  </div>
+                </div>
+
+                <div className="space-y-1">
+                  <span className="text-[10px] font-bold text-slate-500 uppercase font-mono">Available Presets</span>
+                  <div className="flex flex-wrap gap-1 max-h-32 overflow-y-auto p-1 bg-slate-50 rounded border border-slate-200">
+                    {['#AIB_SETTLEMENT_2026', '#CARD_SETTLEMENT_2026', '#DAILY_RECON', '#DISCREPANCY_AUDIT', ...hashtags.map(h => h.tag)].filter((v, i, a) => a.indexOf(v) === i).map(tag => {
+                      const isAttached = activeTags.includes(tag.toUpperCase());
+                      return (
+                        <button
+                          key={tag}
+                          type="button"
+                          onClick={() => isAttached ? handleRemoveHashtag(tag) : handleAttachHashtag(tag)}
+                          className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-bold transition flex items-center gap-1 cursor-pointer ${
+                            isAttached
+                              ? 'bg-blue-700 text-white border border-blue-800 shadow-2xs'
+                              : 'bg-white hover:bg-slate-100 text-slate-700 border border-slate-300'
+                          }`}
+                        >
+                          <span>{tag}</span>
+                          {isAttached ? <Check size={10} /> : <Plus size={10} className="text-slate-400" />}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Right: Protection Badge, Test Accuracy, Dry-Run Trigger, Execution Status */}
+        <div className="flex items-center gap-2">
           {/* Staged Execution & Process Type Classification Badge */}
           <div
-            className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-[10px] font-bold font-mono border shadow-2xs ${
+            className={`flex items-center gap-1.5 px-2 py-0.5 rounded text-[10px] font-bold font-mono border shadow-2xs ${
               currentProcessType === 'CAUTIOUS_PROCESS'
                 ? 'bg-amber-500/20 text-amber-200 border-amber-400/50'
                 : currentProcessType === 'READ_ONLY_AUDIT'
@@ -3524,7 +4014,7 @@ export default function ValidationOrchestratorWorkspace({
                   : 'Internal Staged Fix: Modifications apply strictly to internal working tables (external production DB shielded).'
             }
           >
-            <ShieldAlert size={11} className={currentProcessType === 'CAUTIOUS_PROCESS' ? 'text-amber-300' : 'text-blue-300'} />
+            <ShieldAlert size={10} className={currentProcessType === 'CAUTIOUS_PROCESS' ? 'text-amber-300' : 'text-blue-300'} />
             <span>
               {currentProcessType === 'CAUTIOUS_PROCESS'
                 ? 'CAUTIOUS (MAKER-CHECKER)'
@@ -3534,15 +4024,15 @@ export default function ValidationOrchestratorWorkspace({
             </span>
           </div>
 
-          {/* Test Accuracy Button & Metric Pill */}
+          {/* Test Accuracy Button */}
           <button
             type="button"
             onClick={handleTestAccuracy}
             disabled={isTestingAccuracy || !activeWorkflow}
-            className="px-2.5 py-1 bg-white/10 hover:bg-white/20 text-emerald-100 border border-emerald-400/30 rounded text-[11px] font-bold flex items-center gap-1.5 transition cursor-pointer"
+            className="px-2 py-0.5 bg-white/10 hover:bg-white/20 text-emerald-200 border border-emerald-400/30 rounded text-[10px] font-bold flex items-center gap-1 transition cursor-pointer"
             title="Evaluate validation box accuracy against extracted dataset rows in memory"
           >
-            <ShieldCheck size={12} className={isTestingAccuracy ? 'animate-spin text-emerald-300' : 'text-emerald-300'} />
+            <ShieldCheck size={11} className={isTestingAccuracy ? 'animate-spin text-emerald-300' : 'text-emerald-300'} />
             <span>{isTestingAccuracy ? 'Testing...' : 'Test Accuracy'}</span>
             {accuracyMetrics && (
               <span className="ml-1 bg-emerald-700/90 text-white px-1.5 py-0.2 rounded font-mono text-[9px]">
@@ -3551,114 +4041,29 @@ export default function ValidationOrchestratorWorkspace({
             )}
           </button>
 
-          {/* Workflow In-Flight Evolution Controls */}
-          <div className="flex items-center bg-white/10 border border-white/20 rounded overflow-hidden">
+          {/* Dry-run scan trigger if hashtag linked */}
+          {(selectedIssue.linkedHashtag || (selectedIssue as any).hashtag) && (
             <button
               type="button"
-              onClick={() => setShowAddBoxModal(true)}
-              className="px-2 py-1 text-emerald-100 hover:bg-white/15 text-[11px] font-semibold flex items-center gap-1 transition cursor-pointer"
-              title="Add an in-flight validation box to the active investigation pipeline"
+              onClick={handleRunHashtagDryRun}
+              disabled={isDryRunningHashtag}
+              className="px-2 py-0.5 bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-400/40 rounded text-[10px] font-bold flex items-center gap-1 transition cursor-pointer"
+              title="Execute dry-run hashtag rules & external database scan with side-by-side diff"
             >
-              <Plus size={11} className="text-emerald-300" />
-              <span>+ Box</span>
+              <Play size={10} className={isDryRunningHashtag ? 'animate-spin text-amber-300' : 'text-amber-300'} />
+              <span>{isDryRunningHashtag ? 'Checking DB...' : 'Test DB Checks (Dry-Run)'}</span>
             </button>
-            <button
-              type="button"
-              onClick={() => setShowSwapWorkflowModal(true)}
-              className="px-2 py-1 border-l border-white/15 text-emerald-100 hover:bg-white/15 text-[11px] font-semibold flex items-center gap-1 transition cursor-pointer"
-              title="Swap to an alternative validation workflow definition"
-            >
-              <GitBranch size={11} className="text-emerald-300" />
-              <span>Swap WF</span>
-            </button>
-            {(selectedIssue.linkedHashtag || (selectedIssue as any).hashtag) && (
-              <button
-                type="button"
-                onClick={handleResetToHashtagDefault}
-                className="px-2 py-1 border-l border-white/15 text-emerald-100 hover:bg-white/15 text-[11px] font-semibold flex items-center gap-1 transition cursor-pointer"
-                title="Reset workflow to hashtag preset default"
-              >
-                <RotateCcw size={10} className="text-amber-300" />
-              </button>
-            )}
-          </div>
-
-          {/* Universal Hashtag Directive Badge & Dry-Run Scan Trigger (GAP-10) */}
-          {(selectedIssue.linkedHashtag || (selectedIssue as any).hashtag) && (() => {
-            const tag = selectedIssue.linkedHashtag || (selectedIssue as any).hashtag;
-            const preset = hashtags.find(h => h.tag.toUpperCase() === tag.toUpperCase());
-            return (
-              <div className="flex items-center gap-1.5 ml-1">
-                <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded bg-indigo-500/20 text-indigo-200 border border-indigo-400/30 text-[11px] font-mono font-bold">
-                  <Tag size={11} className="text-indigo-300" />
-                  <span>{tag}</span>
-                  {preset?.hashtagType && (
-                    <span className="text-[9px] px-1 py-0.2 rounded bg-indigo-900/60 text-indigo-300 border border-indigo-700/50">
-                      {preset.hashtagType === 'DATABASE_DIRECT_SCANNER' ? 'DB-SCAN' : preset.hashtagType === 'EXTRACTION_STAGING' ? 'STAGING' : preset.hashtagType === 'AUDITING_GOVERNANCE' ? 'AUDIT' : 'INGEST'}
-                    </span>
-                  )}
-                </span>
-                <button
-                  type="button"
-                  onClick={handleRunHashtagDryRun}
-                  disabled={isDryRunningHashtag}
-                  className="px-2.5 py-1 bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-400/40 rounded text-[11px] font-bold flex items-center gap-1 transition cursor-pointer"
-                  title="Execute dry-run hashtag rules & external database scan with side-by-side diff"
-                >
-                  <Play size={10} className={isDryRunningHashtag ? 'animate-spin' : 'text-amber-300'} />
-                  <span>{isDryRunningHashtag ? 'Checking DB...' : 'Test DB Checks (Dry-Run)'}</span>
-                </button>
-              </div>
-            );
-          })()}
-
-          {/* Revert Staged Fixes & History */}
-          <div className="flex items-center bg-rose-950/60 border border-rose-500/40 rounded overflow-hidden">
-            <button
-              type="button"
-              onClick={handleRevertEntireTask}
-              disabled={isRevertingTask}
-              className="px-2.5 py-1 text-rose-200 hover:bg-rose-900/50 text-[11px] font-bold flex items-center gap-1 transition cursor-pointer"
-              title="Revert all staged changes on this task dataset back to pre-change snapshot"
-            >
-              <RotateCcw size={11} className={isRevertingTask ? 'animate-spin' : ''} />
-              <span>{isRevertingTask ? 'Reverting...' : 'Revert Task'}</span>
-            </button>
-            <button
-              type="button"
-              onClick={handleViewReversionHistory}
-              className="px-1.5 py-1 border-l border-rose-500/30 text-rose-300 hover:bg-rose-900/50 text-[11px] cursor-pointer"
-              title="View task reversion snapshot history"
-            >
-              <History size={11} />
-            </button>
-          </div>
-
-          {/* Collaborative Chat & Script Consensus Drawer Button */}
-          <button
-            type="button"
-            onClick={() => setShowChatDrawer(true)}
-            className="px-3 py-1 bg-indigo-600 hover:bg-indigo-500 text-white rounded text-[11px] font-bold flex items-center gap-1.5 transition cursor-pointer shadow-xs border border-indigo-400/40"
-            title="Open Collaborative Discussion: tag operators, attach investigation summary, and accept solution scripts"
-          >
-            <MessageSquare size={12} />
-            <span>Discussion</span>
-            {(selectedIssue.chat || []).length > 0 && (
-              <span className="bg-white/20 text-white px-1.5 py-0.2 rounded-full text-[9px] font-mono">
-                {(selectedIssue.chat || []).length}
-              </span>
-            )}
-          </button>
+          )}
 
           {/* Workflow Execution Lookup Status */}
           {currentWorkflowExecution && (
-            <div className="flex items-center gap-1.5 bg-emerald-900/90 text-emerald-100 border border-emerald-500/40 px-2.5 py-1 rounded text-[10px] font-mono shadow-xs">
-              <CheckCircle2 size={12} className="text-emerald-300" />
-              <span>Evaluated on Task:</span>
+            <div className="flex items-center gap-1.5 bg-emerald-950/80 text-emerald-200 border border-emerald-500/40 px-2 py-0.5 rounded text-[10px] font-mono shadow-xs">
+              <CheckCircle2 size={11} className="text-emerald-300" />
+              <span>Evaluated:</span>
               <span className="font-bold text-emerald-200">
                 {currentWorkflowExecution.passedCount ?? currentWorkflowExecution.passed_count ?? 0} PASS / {currentWorkflowExecution.failedCount ?? currentWorkflowExecution.failed_count ?? 0} FAIL
               </span>
-              <span className="text-emerald-400/60">|</span>
+              <span className="text-emerald-500/40">|</span>
               <button
                 type="button"
                 onClick={() => handleRunValidation(true)}
@@ -3667,178 +4072,104 @@ export default function ValidationOrchestratorWorkspace({
                 title="Workflow already evaluated on this task dataset. Click to force re-run."
               >
                 <Zap size={10} className="fill-amber-300" />
-                <span>Force Re-run</span>
+                <span>Re-run</span>
               </button>
             </div>
           )}
+        </div>
+      </div>
 
-          {/* RUN VALIDATION TRIGGER BUTTON */}
-          <button
-            type="button"
-            onClick={() => handleRunValidation(true)}
-            disabled={isVerifying || !activeWorkflow}
-            className={`px-3 py-1 rounded text-xs font-bold flex items-center gap-1.5 transition shadow-xs cursor-pointer ${!activeWorkflow
-                ? 'bg-white/10 text-emerald-200/50 cursor-not-allowed border border-white/10'
-                : 'bg-white hover:bg-emerald-50 text-[#107c41] border border-white font-extrabold'
+      {/* =========================================================================
+          3. DATASET CONTROLS & FILTER BAR (ROW 3: CRISP LIGHT FILTER BAR)
+          ========================================================================= */}
+      <div className="bg-slate-50 border-b border-slate-200 px-3 py-1.5 flex items-center justify-between text-xs text-slate-700 select-none">
+        {/* Left: Row Filter Pills, Case Status, Column Manager, Mapped Only, Batches */}
+        <div className="flex items-center gap-2 flex-wrap">
+          <div className="flex items-center gap-1">
+            <span className="text-slate-400 text-[10px] font-mono font-bold uppercase tracking-wider mr-0.5">ROWS:</span>
+            <button
+              type="button"
+              onClick={() => setDuplicateFilter('ALL')}
+              className={`px-2 py-0.5 rounded text-[11px] font-bold transition cursor-pointer ${
+                duplicateFilter === 'ALL'
+                  ? 'bg-slate-900 text-white'
+                  : 'bg-white hover:bg-slate-100 text-slate-700 border border-slate-300'
               }`}
-            title={!activeWorkflow ? 'Select or create a workflow first' : 'Run validation rules on current dataset (queries target database and updates status in backend)'}
-          >
-            {isVerifying ? (
-              <RotateCcw size={12} className="animate-spin" />
-            ) : (
-              <Play size={12} className="fill-[#107c41]" />
-            )}
-            <span>
-              {isVerifying ? 'Evaluating...' : '▶ Run Validation'}
-            </span>
-          </button>
-
-          {/* CLEAR RESULTS BUTTON — Permanently wipes execution history for this task */}
-          {(hasExecutedValidation || taskWorkflowExecutions.length > 0) && (
+              title="Show all records in this view"
+            >
+              All ({duplicateCounts.total})
+            </button>
             <button
               type="button"
-              onClick={handleClearResults}
-              disabled={isClearingResults || isVerifying}
-              className="px-2.5 py-1 rounded text-xs font-bold flex items-center gap-1.5 transition shadow-xs cursor-pointer bg-rose-700 hover:bg-rose-600 text-white border border-rose-400/40"
-              title="Permanently clear all validation results for this task from the database"
-            >
-              {isClearingResults ? (
-                <RotateCcw size={11} className="animate-spin" />
-              ) : (
-                <X size={11} />
-              )}
-              <span>{isClearingResults ? 'Clearing...' : 'Clear Results'}</span>
-            </button>
-          )}
-
-          {/* Validation Execution Status Badge */}
-          <span className={`text-[10px] font-mono px-2 py-0.5 rounded border font-semibold flex items-center gap-1 ${hasExecutedValidation
-              ? liveExecutionMetrics
-                ? 'bg-emerald-900/90 text-emerald-200 border-emerald-400/40'
-                : 'bg-blue-900/90 text-blue-200 border-blue-400/40'
-              : 'bg-white/10 text-emerald-100 border-white/20'
-            }`}>
-            {hasExecutedValidation ? (
-              <>
-                <CheckCircle2 size={10} className="text-emerald-300" />
-                <span>{liveExecutionMetrics ? `Live Validated (${liveExecutionMetrics.durationMs}ms)` : 'Preview Validated'}</span>
-              </>
-            ) : (
-              <span>Unvalidated</span>
-            )}
-          </span>
-
-          {/* RESUME PAUSED TRANSACTIONS BUTTON (When circuit-tripped) */}
-          {pausedTxCount > 0 && (
-            <button
-              type="button"
-              onClick={handleResumePaused}
-              disabled={isVerifying}
-              className="px-2.5 py-1 rounded text-xs font-bold flex items-center gap-1.5 transition shadow-xs cursor-pointer bg-amber-500 hover:bg-amber-400 text-slate-950 animate-pulse border border-amber-300"
-              title="Target database was offline. Click to re-probe circuit and resume paused records."
-            >
-              <Zap size={12} className="fill-slate-950" />
-              <span>Resume Paused ({pausedTxCount})</span>
-            </button>
-          )}
-
-          {/* Only Mapped Columns Toggle Pill */}
-          <button
-            type="button"
-            onClick={() => setOnlyMappedColumns(prev => !prev)}
-            className={`px-2 py-1 rounded text-[11px] font-mono font-medium border flex items-center gap-1 transition cursor-pointer ${onlyMappedColumns
-                ? 'bg-emerald-800/90 text-emerald-100 border-emerald-400/40 font-bold'
-                : 'bg-white/10 text-white/80 border-white/20 hover:bg-white/20'
+              onClick={() => setDuplicateFilter('DUPLICATES_ONLY')}
+              className={`px-2 py-0.5 rounded text-[11px] font-semibold border transition cursor-pointer flex items-center gap-1 ${
+                duplicateFilter === 'DUPLICATES_ONLY'
+                  ? 'bg-amber-400 text-slate-950 font-bold border-amber-500'
+                  : 'border-amber-400 text-amber-800 bg-amber-50/70 hover:bg-amber-100/70'
               }`}
-            title={onlyMappedColumns ? 'Currently showing only mapped / populated columns' : 'Currently showing all columns including blanks'}
-          >
-            <Check size={11} className={onlyMappedColumns ? 'text-emerald-300' : 'text-transparent'} />
-            <span>Mapped Only</span>
-          </button>
-
-          {/* Workflow Selector Dropdown Button */}
-          <div className="relative">
+              title="Filter to show only cross-task duplicate records"
+            >
+              <AlertTriangle size={10} className={duplicateFilter === 'DUPLICATES_ONLY' ? 'text-slate-950' : 'text-amber-600'} />
+              <span>Duplicates ({duplicateCounts.duplicates})</span>
+            </button>
             <button
               type="button"
-              onClick={() => setShowValidationDropdown(prev => !prev)}
-              className="px-2.5 py-1 bg-white/15 hover:bg-white/25 text-white border border-white/20 rounded text-[11px] font-semibold flex items-center gap-1 transition cursor-pointer"
+              onClick={() => setDuplicateFilter('UNIQUE_ONLY')}
+              className={`px-2 py-0.5 rounded text-[11px] font-semibold border transition cursor-pointer flex items-center gap-1 ${
+                duplicateFilter === 'UNIQUE_ONLY'
+                  ? 'bg-emerald-300 text-emerald-950 font-bold border-emerald-400'
+                  : 'border-emerald-400 text-emerald-800 bg-emerald-50/70 hover:bg-emerald-100/70'
+              }`}
+              title="Filter to show only unique / non-duplicate records"
             >
-              <CheckCircle2 size={12} className={isVerifying ? 'animate-spin' : ''} />
-              <span>{isVerifying ? 'Evaluating...' : 'Select Workflow'}</span>
-              <ChevronDown size={11} className={`transition-transform ${showValidationDropdown ? 'rotate-180' : ''}`} />
+              <CheckCircle size={10} className={duplicateFilter === 'UNIQUE_ONLY' ? 'text-emerald-950' : 'text-emerald-600'} />
+              <span>Unique ({duplicateCounts.unique})</span>
             </button>
-
-            {showValidationDropdown && (
-              <div className="absolute right-0 sm:left-0 top-full mt-1 w-80 bg-white rounded-lg border border-slate-300 shadow-xl p-2 z-40 space-y-1 text-slate-800">
-                <div className="px-2 py-1 text-[10px] font-bold text-slate-500 uppercase tracking-wider font-mono">
-                  Configured Multi-Stage Workflows
-                </div>
-                {availableWorkflows.length === 0 ? (
-                  <div className="p-3 text-center text-xs text-slate-500">
-                    No validation workflows configured.
-                  </div>
-                ) : (
-                  availableWorkflows.map((wf) => (
-                    <button
-                      key={wf.id}
-                      type="button"
-                      onClick={() => handleApplyWorkflow(wf)}
-                      className={`w-full text-left p-2 rounded text-xs font-medium flex items-center justify-between transition cursor-pointer ${activeWorkflow?.id === wf.id ? 'bg-emerald-50 text-emerald-950 font-bold border border-emerald-200' : 'hover:bg-slate-50 text-slate-800'
-                        }`}
-                    >
-                      <div className="truncate mr-2">
-                        <div className="font-semibold text-slate-900 truncate">{wf.name}</div>
-                        <div className="text-[10px] text-slate-500">
-                          {(wf.stages || []).length} Stages • {wf.steps?.length || 0} Rules • {wf.category}
-                        </div>
-                      </div>
-                      <Play size={11} className="text-emerald-700 fill-emerald-700 shrink-0" />
-                    </button>
-                  ))
-                )}
-              </div>
-            )}
           </div>
 
+          <div className="h-3.5 w-px bg-slate-300 mx-0.5" />
+
+          {/* Parent Case Status Badge */}
+          <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold border border-blue-400 text-blue-700 bg-blue-50/80">
+            Case: {parentIssueAggregation.issueStatus || selectedIssue.status || 'OPEN'}
+          </span>
 
           {/* Column Visibility Manager Button */}
           <div className="relative">
             <button
               type="button"
               onClick={() => setShowColumnManager(prev => !prev)}
-              className={`px-2 py-1 rounded text-[11px] font-medium border flex items-center gap-1 transition cursor-pointer ${columnViewPreset === 'DEFAULT'
-                  ? 'bg-emerald-900/90 text-white border-emerald-400/50'
+              className={`px-2 py-0.5 rounded text-[11px] font-medium border flex items-center gap-1 transition cursor-pointer ${
+                columnViewPreset === 'DEFAULT'
+                  ? 'bg-white hover:bg-slate-100 text-slate-700 border-slate-300'
                   : hiddenColumns.size > 0
-                    ? 'bg-amber-400 text-slate-950 border-amber-300 font-bold'
-                    : 'bg-white/10 text-white border-white/20 hover:bg-white/20'
-                }`}
+                    ? 'bg-amber-100 text-amber-900 border-amber-300 font-bold'
+                    : 'bg-white hover:bg-slate-100 text-slate-700 border-slate-300'
+              }`}
               title="Manage dataset column visibility (Defaults to Required + Date + Financial columns)"
             >
-              <Eye size={12} />
+              <Eye size={11} className="text-slate-500" />
               <span>Columns ({visibleDatasetColumns.length}/{columnDefs.length})</span>
               {columnViewPreset === 'DEFAULT' && (
-                <span className="px-1 bg-emerald-700 text-emerald-100 rounded text-[9px] font-bold font-mono">
+                <span className="text-[9px] font-mono font-bold text-emerald-700">
                   Default
                 </span>
               )}
-              {hiddenColumns.size > 0 && columnViewPreset !== 'DEFAULT' && (
-                <span className="px-1 bg-amber-900 text-amber-100 rounded-full text-[9px] font-bold">
-                  {hiddenColumns.size}
-                </span>
-              )}
-              <ChevronDown size={11} />
+              <ChevronDown size={10} className="text-slate-400" />
             </button>
 
             {showColumnManager && (
-              <div className="absolute right-0 top-full mt-1 w-72 bg-white rounded-lg border border-slate-300 shadow-xl p-2.5 z-40 space-y-2 text-slate-800">
+              <div
+                className="absolute left-0 top-full mt-1 w-72 bg-white rounded-lg border border-slate-300 shadow-2xl p-2.5 z-50 space-y-2 text-slate-800"
+                onClick={(e) => e.stopPropagation()}
+              >
                 <div className="flex items-center justify-between border-b border-slate-200 pb-1.5">
                   <span className="text-[11px] font-bold text-slate-800">Column Visibility</span>
                   <div className="flex items-center gap-1">
                     <button
                       type="button"
                       onClick={resetToDefaultColumns}
-                      className={`text-[10px] px-1.5 py-0.5 rounded font-semibold cursor-pointer ${columnViewPreset === 'DEFAULT' ? 'bg-emerald-100 text-emerald-800 font-bold' : 'text-slate-600 hover:bg-slate-100'
-                        }`}
+                      className={`text-[10px] px-1.5 py-0.5 rounded font-semibold cursor-pointer ${columnViewPreset === 'DEFAULT' ? 'bg-emerald-100 text-emerald-800 font-bold' : 'text-slate-600 hover:bg-slate-100'}`}
                       title="Show Required + Date + Financial columns only"
                     >
                       Default
@@ -3846,8 +4177,7 @@ export default function ValidationOrchestratorWorkspace({
                     <button
                       type="button"
                       onClick={showAllColumns}
-                      className={`text-[10px] px-1.5 py-0.5 rounded font-semibold cursor-pointer ${columnViewPreset === 'ALL' ? 'bg-emerald-100 text-emerald-800 font-bold' : 'text-slate-600 hover:bg-slate-100'
-                        }`}
+                      className={`text-[10px] px-1.5 py-0.5 rounded font-semibold cursor-pointer ${columnViewPreset === 'ALL' ? 'bg-emerald-100 text-emerald-800 font-bold' : 'text-slate-600 hover:bg-slate-100'}`}
                     >
                       Show All
                     </button>
@@ -3918,234 +4248,76 @@ export default function ValidationOrchestratorWorkspace({
             )}
           </div>
 
-          {/* Workflow Picker from Conducted / Available Workflows */}
-          <div className="flex items-center gap-1.5 text-xs text-white">
-            <GitBranch className="w-3.5 h-3.5 text-emerald-200 shrink-0" />
-            <select
-              value={activeWorkflow?.id || ''}
-              onChange={(e) => handleSelectWorkflow(e.target.value)}
-              className="bg-[#084725] border border-white/30 text-white text-[11px] rounded px-2 py-0.5 focus:outline-none focus:ring-1 focus:ring-white font-medium cursor-pointer"
-              title="Pick a workflow conducted on this investigation to inspect validation status"
-            >
-              {availableWorkflows.length === 0 && (
-                <option value="">No workflows configured</option>
-              )}
-              {conductedWorkflows.length > 0 && (
-                <optgroup label="Conducted Workflows" className="bg-slate-900 text-white font-bold">
-                  {conductedWorkflows.map(cw => (
-                    <option key={cw.id} value={cw.id} className="bg-slate-900 text-white font-normal">
-                      {cw.name} {cw.isLatest ? '★ (Latest)' : '✓ (Conducted)'}
-                    </option>
-                  ))}
-                </optgroup>
-              )}
-              {availableWorkflows.filter(w => !conductedWorkflows.some(c => c.id === w.id)).length > 0 && (
-                <optgroup label="Other Workflows" className="bg-slate-900 text-slate-400 font-bold">
-                  {availableWorkflows
-                    .filter(w => !conductedWorkflows.some(c => c.id === w.id))
-                    .map(w => (
-                      <option key={w.id} value={w.id} className="bg-slate-900 text-slate-300 font-normal">
-                        {w.name}
-                      </option>
-                    ))}
-                </optgroup>
-              )}
-            </select>
-          </div>
+          {/* Only Mapped Columns Toggle Pill */}
+          <button
+            type="button"
+            onClick={() => setOnlyMappedColumns(prev => !prev)}
+            className={`px-2 py-0.5 rounded text-[11px] font-medium border flex items-center gap-1 transition cursor-pointer ${
+              onlyMappedColumns
+                ? 'bg-emerald-50 text-emerald-800 border-emerald-400 font-bold'
+                : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-100'
+            }`}
+            title={onlyMappedColumns ? 'Currently showing only mapped / populated columns' : 'Currently showing all columns including blanks'}
+          >
+            <Check size={11} className={onlyMappedColumns ? 'text-emerald-600' : 'text-slate-300'} />
+            <span>Mapped Only</span>
+          </button>
 
-          {/* Investigation Status Quick Filter */}
-          <div className="flex items-center border border-white/20 rounded bg-[#0b5a2f] overflow-hidden text-[11px]">
-            <span className="px-1.5 py-0.5 text-[9px] font-bold text-emerald-200 uppercase tracking-wider bg-black/25 border-r border-white/10 flex items-center gap-1 select-none">
-              <ShieldCheck size={10} />
-              <span>Status</span>
-            </span>
-            {(['ALL', 'INVESTIGATING', 'FLAGGED', 'RECONCILED', 'CLOSED'] as const).map((st, i) => (
-              <button
-                key={st}
-                type="button"
-                onClick={() => setInvestigationStatusFilter(st)}
-                className={`px-2 py-0.5 transition cursor-pointer font-medium ${i > 0 ? 'border-l border-white/10' : ''} ${investigationStatusFilter === st
-                    ? st === 'FLAGGED'
-                      ? 'bg-rose-500 text-white font-bold'
-                      : st === 'RECONCILED'
-                        ? 'bg-emerald-300 text-emerald-950 font-bold'
-                        : st === 'CLOSED'
-                          ? 'bg-slate-300 text-slate-950 font-bold'
-                          : 'bg-white text-emerald-950 font-bold'
-                    : 'text-emerald-100 hover:bg-white/10'
-                  }`}
-                title={`Filter rows by Investigation Status: ${st}`}
-              >
-                {st === 'ALL' ? 'All' : st.charAt(0) + st.slice(1).toLowerCase()}
-              </button>
-            ))}
-          </div>
-
-          {/* Pre-Batched Chunks Selector */}
-          {availableBatches.length > 0 && (
-            <div className="flex items-center gap-1.5 text-xs text-white">
-              <Layers className="w-3.5 h-3.5 text-emerald-200" />
+          {/* Batches Selector / Badge */}
+          {availableBatches.length > 0 ? (
+            <div className="flex items-center gap-1 text-[11px] font-mono">
+              <span className="text-slate-400 text-[10px]">Batches:</span>
               <select
                 value={selectedBatchId}
                 onChange={(e) => setSelectedBatchId(e.target.value)}
-                className="bg-[#084725] border border-white/30 text-white text-[11px] rounded px-2 py-0.5 focus:outline-none focus:ring-1 focus:ring-white font-mono"
+                className="bg-teal-50 border border-teal-300 text-teal-900 text-[11px] rounded px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-teal-500 font-mono font-medium cursor-pointer"
               >
-                <option value="ALL">All Batches ({effectiveRows.length} rows)</option>
+                <option value="ALL">All Batches ({effectiveRows.length})</option>
                 {availableBatches.map(b => (
                   <option key={b.batchId} value={b.batchId}>
-                    {b.batchId} ({b.count} rows)
+                    {b.batchId} ({b.count})
                   </option>
                 ))}
               </select>
             </div>
+          ) : (
+            <span className="px-2 py-0.5 rounded text-[10px] font-mono font-medium border border-teal-300 bg-teal-50 text-teal-800">
+              Batches: batch-001 ✓
+            </span>
           )}
+        </div>
 
-          {/* Quick Outcome Filter Pills */}
-          <div className="flex items-center border border-white/20 rounded bg-[#0b5a2f] overflow-hidden text-[11px]">
-            <button
-              type="button"
-              onClick={() => setOutcomeFilter('ALL')}
-              className={`px-2 py-0.5 transition cursor-pointer ${outcomeFilter === 'ALL' ? 'bg-white text-emerald-950 font-bold' : 'text-emerald-100 hover:bg-white/10'
-                }`}
-            >
-              All ({orchestratedRows.length})
-            </button>
-            <button
-              type="button"
-              onClick={() => setOutcomeFilter('FLAGGED')}
-              className={`px-2 py-0.5 border-l border-white/10 transition cursor-pointer ${outcomeFilter === 'FLAGGED' ? 'bg-rose-500 text-white font-bold' : 'text-emerald-100 hover:bg-white/10'
-                }`}
-            >
-              Flagged ({aggregateStats.anomaliesCount})
-            </button>
-            <button
-              type="button"
-              onClick={() => setOutcomeFilter('CLEAN')}
-              className={`px-2 py-0.5 border-l border-white/10 transition cursor-pointer ${outcomeFilter === 'CLEAN' ? 'bg-emerald-300 text-emerald-950 font-bold' : 'text-emerald-100 hover:bg-white/10'
-                }`}
-            >
-              Clean
-            </button>
-          </div>
-
-          {/* Header Row Collision Filter (All / Only Duplicates / Only Unique) */}
-          <div className="flex items-center border border-white/20 rounded bg-[#0b5a2f] overflow-hidden text-[11px]">
-            <span className="px-1.5 py-0.5 text-[9px] font-bold text-emerald-200 uppercase tracking-wider bg-black/25 border-r border-white/10 flex items-center gap-1 select-none">
-              <Filter size={10} />
-              <span>Rows</span>
-            </span>
-            <button
-              type="button"
-              onClick={() => setDuplicateFilter('ALL')}
-              className={`px-2 py-0.5 transition cursor-pointer font-medium ${duplicateFilter === 'ALL' ? 'bg-white text-emerald-950 font-bold' : 'text-emerald-100 hover:bg-white/10'
-                }`}
-              title="Show all records in this view"
-            >
-              All ({duplicateCounts.total})
-            </button>
-            <button
-              type="button"
-              onClick={() => setDuplicateFilter('DUPLICATES_ONLY')}
-              className={`px-2 py-0.5 border-l border-white/10 transition cursor-pointer font-medium flex items-center gap-1 ${duplicateFilter === 'DUPLICATES_ONLY' ? 'bg-amber-400 text-slate-950 font-bold' : 'text-amber-200 hover:bg-white/10'
-                }`}
-              title="Filter to show only cross-task duplicate records"
-            >
-              <AlertTriangle size={10} className={duplicateFilter === 'DUPLICATES_ONLY' ? 'text-slate-950' : 'text-amber-300'} />
-              <span>Only Duplicates ({duplicateCounts.duplicates})</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => setDuplicateFilter('UNIQUE_ONLY')}
-              className={`px-2 py-0.5 border-l border-white/10 transition cursor-pointer font-medium flex items-center gap-1 ${duplicateFilter === 'UNIQUE_ONLY' ? 'bg-emerald-300 text-emerald-950 font-bold' : 'text-emerald-100 hover:bg-white/10'
-                }`}
-              title="Filter to show only unique / non-duplicate records"
-            >
-              <CheckCircle size={10} className={duplicateFilter === 'UNIQUE_ONLY' ? 'text-emerald-950' : 'text-emerald-300'} />
-              <span>Only Unique ({duplicateCounts.unique})</span>
-            </button>
-          </div>
-
-          {/* Quick Find Input */}
-          <div className="relative">
-            <Search className="w-3 h-3 absolute left-2 top-1/2 -translate-y-1/2 text-slate-400" />
-            <input
-              type="text"
-              value={searchTerm}
-              onChange={(e) => setSearchTerm(e.target.value)}
-              placeholder="Find..."
-              className="text-[11px] pl-6 pr-2 py-0.5 bg-white text-slate-900 border border-slate-300 rounded focus:outline-none focus:ring-1 focus:ring-emerald-400 w-28"
-            />
-          </div>
-
-          {/* Export Button */}
-          <button
-            type="button"
-            onClick={handleExportExcel}
-            className="text-[11px] px-2 py-1 bg-white hover:bg-slate-100 text-[#0b5a2f] rounded font-bold flex items-center gap-1 transition cursor-pointer shadow-2xs"
-            title="Export Excel Worksheet"
-          >
-            <Download size={11} className="text-[#0b5a2f]" />
-            <span>Export</span>
-          </button>
+        {/* Right: Quick Find Input */}
+        <div className="relative">
+          <Search className="w-3 h-3 absolute left-2 top-1/2 -translate-y-1/2 text-slate-400" />
+          <input
+            type="text"
+            value={searchTerm}
+            onChange={(e) => setSearchTerm(e.target.value)}
+            placeholder="Find..."
+            className="text-xs pl-6 pr-2 py-0.5 bg-white text-slate-900 border border-slate-300 rounded focus:outline-none focus:ring-1 focus:ring-emerald-500 w-32 shadow-2xs"
+          />
         </div>
       </div>
 
       {/* =========================================================================
-          1.5. INVESTIGATION EXECUTION SUMMARY & BATCH PROGRESS (PHASE 14 & 15)
+          4. COMPACT EXCEL FORMULA BAR (SLIMMED DOWN)
           ========================================================================= */}
-      <div className="bg-slate-900 text-white px-3 py-1.5 border-b border-slate-800 flex flex-wrap items-center justify-between gap-3 text-xs">
-        {/* Left: Overall Execution Stats & Parent Case Aggregate Status */}
-        <div className="flex items-center gap-3 flex-wrap">
-          <div className="flex items-center gap-1.5 font-mono text-[11px]">
-            <span className="text-slate-400">Total:</span>
-            <span className="font-bold text-white">{aggregateStats.total}</span>
-            <span className="text-slate-600">|</span>
-            <span className="text-emerald-400">Reconciled:</span>
-            <span className="font-bold text-emerald-300">{parentIssueAggregation.reconciledCount}</span>
-            <span className="text-slate-600">|</span>
-            <span className="text-rose-400">Flagged:</span>
-            <span className="font-bold text-rose-300">{parentIssueAggregation.flaggedCount}</span>
-            <span className="text-slate-600">|</span>
-            <span className="text-slate-400">Closed:</span>
-            <span className="font-bold text-slate-300">{parentIssueAggregation.closedCount}</span>
-          </div>
-
-          {/* Parent Issue Status Badge */}
-          <div className="flex items-center gap-1.5 bg-white/10 px-2 py-0.5 rounded-lg border border-white/15">
-            <span className="text-[10px] text-slate-300 font-mono">Case Status:</span>
-            <span className={`text-[10px] font-bold px-1.5 py-0.2 rounded font-mono ${parentIssueAggregation.issueStatus === 'RESOLVED' || parentIssueAggregation.issueStatus === 'CLOSED'
-                ? 'bg-emerald-500/30 text-emerald-300 border border-emerald-500/40'
-                : parentIssueAggregation.issueStatus === 'ACTION_REQUIRED'
-                  ? 'bg-rose-500/30 text-rose-300 border border-rose-500/40'
-                  : 'bg-blue-500/30 text-blue-300 border border-blue-500/40'
-              }`}>
-              {parentIssueAggregation.issueStatus}
-            </span>
-          </div>
-        </div>
-
-        {/* Right: Decoupled Batch Progress Chips */}
-        <div className="flex items-center gap-1.5 text-[10px] font-mono">
-          <span className="text-slate-400">Batches ({batchExecutionPlans.length}):</span>
-          <div className="flex items-center gap-1 overflow-x-auto max-w-xs">
-            {batchExecutionPlans.slice(0, 4).map(b => (
-              <span
-                key={b.batchId}
-                className="px-1.5 py-0.2 rounded bg-white/10 text-emerald-300 border border-emerald-500/30 font-mono text-[9px]"
-                title={`${b.transactionIds.length} txns in ${b.queryChunks.length} chunks`}
-              >
-                {b.batchId} ✓
-              </span>
-            ))}
-            {batchExecutionPlans.length > 4 && (
-              <span className="text-slate-500 text-[9px]">+{batchExecutionPlans.length - 4} more</span>
-            )}
-          </div>
+      <div className="bg-white border-b border-slate-300 px-3 py-1 flex items-center gap-2 text-xs font-mono">
+        <span className="px-1.5 py-0.2 bg-slate-100 border border-slate-300 rounded text-slate-700 font-bold min-w-14 text-center text-[11px]">
+          Row {selectedCell.rowIdx + 1}
+        </span>
+        <span className="text-slate-400 font-serif italic text-xs select-none">fx</span>
+        <div className="flex-1 bg-slate-50 border border-slate-200 rounded px-2 py-0.5 text-slate-800 truncate font-sans text-xs flex items-center justify-between">
+          <span className="truncate">{selectedCell.value || '—'}</span>
+          <span className="text-[10px] text-slate-400 font-mono ml-2 flex-shrink-0">
+            Field: [{selectedCell.colLabel}]
+          </span>
         </div>
       </div>
 
       {/* =========================================================================
-          2. HIDDEN ITEMS RESTORE BANNER (IF COLUMNS/ROWS ARE HIDDEN OR FILTERED)
+          5. HIDDEN ITEMS RESTORE BANNER (IF COLUMNS/ROWS ARE HIDDEN OR FILTERED)
           ========================================================================= */}
       {(aggregateStats.hiddenColCount > 0 || aggregateStats.hiddenRowCount > 0 || duplicateFilter !== 'ALL') && (
         <div className="bg-amber-50/90 border-b border-amber-200 px-3 py-1 flex items-center justify-between text-xs text-amber-900">
@@ -4154,10 +4326,10 @@ export default function ValidationOrchestratorWorkspace({
             <span className="text-[11px]">
               {columnViewPreset === 'DEFAULT' && (
                 <strong className="text-emerald-800 mr-1.5 font-mono">
-                  [Default Columns Active: Required + Date + Financial ({visibleDatasetColumns.length} cols)]
+                  [Default Columns: {visibleDatasetColumns.length} cols]
                 </strong>
               )}
-              {aggregateStats.hiddenColCount > 0 && `${aggregateStats.hiddenColCount} non-category column(s) hidden. `}
+              {aggregateStats.hiddenColCount > 0 && `${aggregateStats.hiddenColCount} non category column(s) hidden. `}
               {aggregateStats.hiddenRowCount > 0 && `${aggregateStats.hiddenRowCount} row(s) hidden. `}
               {duplicateFilter !== 'ALL' && (
                 <span className="font-semibold text-amber-950 ml-1">
@@ -4205,22 +4377,6 @@ export default function ValidationOrchestratorWorkspace({
           </div>
         </div>
       )}
-
-      {/* =========================================================================
-          3. COMPACT EXCEL FORMULA BAR (SLIMMED DOWN)
-          ========================================================================= */}
-      <div className="bg-white border-b border-slate-300 px-3 py-1 flex items-center gap-2 text-xs font-mono">
-        <span className="px-1.5 py-0.2 bg-slate-100 border border-slate-300 rounded text-slate-700 font-bold min-w-14 text-center text-[11px]">
-          Row {selectedCell.rowIdx + 1}
-        </span>
-        <span className="text-slate-400 font-serif italic text-xs select-none">fx</span>
-        <div className="flex-1 bg-slate-50 border border-slate-200 rounded px-2 py-0.5 text-slate-800 truncate font-sans text-xs flex items-center justify-between">
-          <span className="truncate">{selectedCell.value || '—'}</span>
-          <span className="text-[10px] text-slate-400 font-mono ml-2 flex-shrink-0">
-            Field: [{selectedCell.colLabel}]
-          </span>
-        </div>
-      </div>
 
       {/* Sheet Operational Ribbon */}
       <div className={`px-4 py-1.5 text-xs flex items-center justify-between border-b ${
@@ -8435,24 +8591,26 @@ export default function ValidationOrchestratorWorkspace({
             )}
 
             {/* Actions Bar & Message Input */}
-            <form onSubmit={handleSendChat} className="space-y-2">
-              <div className="flex items-center gap-2">
-                <input
-                  type="text"
-                  value={chatInputText}
-                  onChange={e => setChatInputText(e.target.value)}
-                  placeholder="Type a message or discuss solution..."
-                  className="flex-1 bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs text-slate-800 focus:outline-none focus:border-indigo-600"
-                />
-                <button
-                  type="submit"
-                  disabled={isSendingChat || (!chatInputText.trim() && !proposeScriptActive)}
-                  className="px-3.5 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-50 text-white font-bold rounded-xl text-xs cursor-pointer shadow-xs flex items-center gap-1"
-                >
-                  <Send size={13} />
-                  <span>Send</span>
-                </button>
-              </div>
+            <div className="space-y-2">
+              <UnifiedChatInput
+                currentUser={currentUser}
+                users={users}
+                teams={teams}
+                hashtags={hashtags}
+                placeholder="Discuss investigation, @user, @@team, #hashtag, / directives..."
+                value={chatInputText}
+                onChange={setChatInputText}
+                onSendMessage={(text) => handleSendChat(undefined, text)}
+                onExecuteDirective={handleExecuteInvestigationDirective}
+                disabled={isSendingChat}
+                inputId="input-investigation-chat"
+                buttonLabel={isSendingChat ? 'Sending...' : 'Send'}
+                quickPrompts={[
+                  'Evaluated records against validation rules.',
+                  'Found settlement variances in batch feed.',
+                  'Please verify the proposed SQL remedy before execution.'
+                ]}
+              />
 
               <div className="flex items-center justify-between text-[11px] pt-1">
                 <div className="flex items-center gap-2">
@@ -8483,7 +8641,7 @@ export default function ValidationOrchestratorWorkspace({
                   </button>
                 </div>
               </div>
-            </form>
+            </div>
           </div>
         </div>
       )}

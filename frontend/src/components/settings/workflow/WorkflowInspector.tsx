@@ -194,28 +194,26 @@ export const WorkflowInspector: React.FC<WorkflowInspectorProps> = ({
 
     return (
       <aside 
-        className="w-80 bg-[#071318] border-l border-[#163848] flex flex-col h-full text-slate-200 overflow-y-auto font-sans"
+        className="w-80 bg-white border-l border-slate-200 flex flex-col h-full text-slate-800 overflow-y-auto font-sans shadow-sm"
         aria-label="Node Inspector"
       >
-        {/* Panel Header matching screenshot */}
-        <div className="p-3.5 border-b border-[#163848] flex items-center justify-between bg-[#09171f] sticky top-0 z-10">
-          <div className="flex items-center space-x-2.5">
-            <div className="p-1.5 bg-[#181c38] border border-purple-500/50 text-purple-300 rounded-lg shadow-xs">
-              <Sliders size={16} />
-            </div>
-            <div>
-              <h3 className="text-xs font-bold text-white tracking-wide">
-                {inspectorTitle}
+        {/* Panel Header matching 03_workflow_studio.png */}
+        <div className="p-4 border-b border-slate-200 flex items-center justify-between bg-white sticky top-0 z-10">
+          <div className="min-w-0 flex-1 mr-2">
+            <span className="text-[11px] font-medium text-slate-400 block">Selected block</span>
+            <div className="flex items-center gap-2 mt-0.5">
+              <h3 className="text-sm font-bold text-slate-900 tracking-tight truncate">
+                {selectedNode.name || 'Block Inspector'}
               </h3>
-              <p className="text-[10px] text-teal-400/80 font-mono truncate max-w-[170px]">
-                {inspectorSubtitle}
-              </p>
+              <span className="bg-orange-50 text-[#F27421] border border-orange-200 text-[10px] font-semibold px-2 py-0.5 rounded-full shrink-0">
+                {selectedNode.type === 'VALIDATION' || selectedNode.type === 'VALIDATION_BOX' ? 'Condition check' : selectedNode.type}
+              </span>
             </div>
           </div>
           <button
             type="button"
             onClick={onCloseNode}
-            className="p-1 text-slate-400 hover:text-white rounded-lg hover:bg-[#163848] transition cursor-pointer"
+            className="p-1.5 text-slate-400 hover:text-slate-700 rounded-lg hover:bg-slate-100 transition cursor-pointer"
             title="Close Inspector"
           >
             <X size={16} />
@@ -223,14 +221,14 @@ export const WorkflowInspector: React.FC<WorkflowInspectorProps> = ({
         </div>
 
         {/* Tab Navigation: Config | Rules */}
-        <div className="flex items-center border-b border-[#163848] bg-[#071318] px-4">
+        <div className="flex items-center border-b border-slate-200 bg-white px-4">
           <button
             type="button"
             onClick={() => setInspectorTab('config')}
-            className={`px-4 py-2 text-xs font-semibold border-b-2 transition cursor-pointer ${
+            className={`px-4 py-2.5 text-xs font-semibold border-b-2 transition cursor-pointer ${
               inspectorTab === 'config'
-                ? 'border-[#00e5b3] text-[#00e5b3] font-bold'
-                : 'border-transparent text-slate-400 hover:text-slate-200'
+                ? 'border-[#F27421] text-[#F27421] font-bold'
+                : 'border-transparent text-slate-500 hover:text-slate-800'
             }`}
           >
             Config
@@ -238,10 +236,10 @@ export const WorkflowInspector: React.FC<WorkflowInspectorProps> = ({
           <button
             type="button"
             onClick={() => setInspectorTab('rules')}
-            className={`px-4 py-2 text-xs font-semibold border-b-2 transition cursor-pointer ${
+            className={`px-4 py-2.5 text-xs font-semibold border-b-2 transition cursor-pointer ${
               inspectorTab === 'rules'
-                ? 'border-[#00e5b3] text-[#00e5b3] font-bold'
-                : 'border-transparent text-slate-400 hover:text-slate-200'
+                ? 'border-[#F27421] text-[#F27421] font-bold'
+                : 'border-transparent text-slate-500 hover:text-slate-800'
             }`}
           >
             Rules {currentAttachedIds.length > 0 && `(${currentAttachedIds.length})`}
@@ -250,85 +248,80 @@ export const WorkflowInspector: React.FC<WorkflowInspectorProps> = ({
 
         {inspectorTab === 'config' ? (
           <div className="p-4 space-y-4 text-xs flex-1">
-            {/* Summary Metadata Key-Value List matching screenshot */}
-            <div className="space-y-1.5 py-1 text-xs">
-              <div className="flex items-center justify-between font-mono">
-                <span className="text-slate-400">Node Type:</span>
-                <span className="font-bold text-[#2dd4bf]">
+            {/* Summary Metadata Key-Value List */}
+            <div className="space-y-1.5 py-1 text-xs bg-slate-50 p-3 rounded-xl border border-slate-200">
+              <div className="flex items-center justify-between font-mono text-[11px]">
+                <span className="text-slate-500">Node Type:</span>
+                <span className="font-bold text-slate-800">
                   {selectedNode.type === 'VALIDATION' ? 'VALIDATION_BOX' : selectedNode.type}
                 </span>
               </div>
-              <div className="flex items-center justify-between font-mono">
-                <span className="text-slate-400">Validation Box:</span>
-                <span className="text-[#2dd4bf] font-mono truncate max-w-[150px]">
+              <div className="flex items-center justify-between font-mono text-[11px]">
+                <span className="text-slate-500">Validation Box:</span>
+                <span className="text-slate-800 font-mono truncate max-w-[150px]">
                   {boundBox?.name || selectedNode.name || 'auth_log_tab'}
                 </span>
               </div>
-              <div className="flex items-center justify-between font-mono">
-                <span className="text-slate-400">Target Table:</span>
-                <span className="text-[#2dd4bf] font-mono truncate max-w-[150px]">
+              <div className="flex items-center justify-between font-mono text-[11px]">
+                <span className="text-slate-500">Target Table:</span>
+                <span className="text-[#F27421] font-mono font-bold truncate max-w-[150px]">
                   {effectiveTable || 'tran_log_tab'}
                 </span>
               </div>
             </div>
 
             {/* Editable Block Label */}
-            <div className="space-y-1">
-              <label className="block text-[10px] font-mono text-slate-400 uppercase font-semibold">
-                Label Override
+            <div className="space-y-1.5">
+              <label className="block text-[11px] font-semibold text-slate-700">
+                Label
               </label>
               <input
                 type="text"
                 value={selectedNode.name || ''}
                 onChange={(e) => onUpdateNode({ ...selectedNode, name: e.target.value })}
-                className="w-full bg-[#091a22] border border-[#163848] rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-[#00e5b3] font-sans"
+                className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-900 focus:outline-none focus:border-[#F27421] font-sans shadow-2xs"
               />
             </div>
 
             {/* DB Configuration Section with SQL Box */}
             {!isTerminal && (
-              <div className="space-y-2">
-                <div className="text-[11px] font-mono font-bold uppercase tracking-wider text-slate-400">
-                  DB Configuration
-                </div>
-
+              <div className="space-y-2.5">
                 {/* Collapsible Rule Definition Accordion */}
-                <div className="bg-[#091a22] border border-[#163848] rounded-xl overflow-hidden shadow-sm">
+                <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-2xs">
                   <button
                     type="button"
                     onClick={() => setRuleDefOpen(!ruleDefOpen)}
-                    className="w-full px-3.5 py-2 flex items-center justify-between text-left text-xs font-bold text-white hover:bg-[#0c242e] transition cursor-pointer"
+                    className="w-full px-3.5 py-2.5 flex items-center justify-between text-left text-xs font-bold text-slate-800 hover:bg-slate-50 transition cursor-pointer"
                   >
-                    <span className="text-slate-200">Rule Definition</span>
-                    <ChevronDown size={14} className={`text-cyan-400 transition-transform ${ruleDefOpen ? 'rotate-180' : ''}`} />
+                    <span className="text-slate-800">Rule definition</span>
+                    <ChevronDown size={14} className={`text-slate-500 transition-transform ${ruleDefOpen ? 'rotate-180' : ''}`} />
                   </button>
 
                   {ruleDefOpen && (
-                    <div className="p-3 border-t border-[#163848] space-y-3 bg-[#07151c]">
-                      {/* Code Block with line numbers matching screenshot */}
+                    <div className="p-3 border-t border-slate-200 space-y-3 bg-white">
+                      {/* Dark Code Block with line numbers matching 03_workflow_studio.png */}
                       <div>
-                        <label className="block text-[10px] font-mono text-slate-400 mb-1 font-bold">SQL</label>
-                        <div className="bg-[#051c22] border border-[#16424f] rounded-lg p-2.5 font-mono text-xs text-cyan-300 leading-relaxed shadow-inner">
+                        <div className="bg-[#0F142A] border border-slate-800 rounded-xl p-3 font-mono text-xs text-slate-200 leading-relaxed shadow-inner space-y-1">
                           <div className="flex gap-3">
-                            <span className="text-slate-500 select-none">1</span>
-                            <span>SELECT ({selectedDbObj?.type ? selectedDbObj.type.toUpperCase() : 'MySQL'})</span>
+                            <span className="text-slate-500 select-none w-3">1</span>
+                            <span>SELECT ({selectedDbObj?.type ? selectedDbObj.type.toUpperCase() : 'MYSQL'})</span>
                           </div>
                           <div className="flex gap-3">
-                            <span className="text-slate-500 select-none">2</span>
-                            <span>TARGET: <span className="text-emerald-300">{effectiveTable}</span></span>
+                            <span className="text-slate-500 select-none w-3">2</span>
+                            <span>TARGET: <span className="text-amber-400">{effectiveTable}</span></span>
                           </div>
                           <div className="flex gap-3">
-                            <span className="text-slate-500 select-none">3</span>
+                            <span className="text-slate-500 select-none w-3">3</span>
                             <span>FROM {effectiveTable}</span>
                           </div>
                         </div>
                       </div>
 
                       {/* Database & Table Selectors */}
-                      <div className="space-y-2">
+                      <div className="space-y-2.5">
                         <div>
-                          <label className="block text-[10px] font-mono text-slate-400 mb-1 font-semibold">
-                            Target Database Connection:
+                          <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                            Database connection
                           </label>
                           <select
                             value={effectiveDbId}
@@ -347,7 +340,7 @@ export const WorkflowInspector: React.FC<WorkflowInspectorProps> = ({
                                 columnConfigurationIds: []
                               });
                             }}
-                            className="w-full bg-[#091a22] border border-[#163848] rounded-lg px-2.5 py-1.5 text-xs font-semibold focus:outline-none font-mono text-cyan-300 focus:border-[#00e5b3]"
+                            className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-semibold focus:outline-none font-mono text-slate-800 focus:border-[#F27421] shadow-2xs"
                           >
                             {databases.length === 0 ? (
                               <option value="">Default Database</option>
@@ -362,8 +355,8 @@ export const WorkflowInspector: React.FC<WorkflowInspectorProps> = ({
                         </div>
 
                         <div>
-                          <label className="block text-[10px] font-mono text-slate-400 mb-1 font-semibold">
-                            Target Table / View:
+                          <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                            Table / view
                           </label>
                           {availableTables.length > 0 ? (
                             <select
@@ -376,7 +369,7 @@ export const WorkflowInspector: React.FC<WorkflowInspectorProps> = ({
                                   columnConfigurationIds: []
                                 });
                               }}
-                              className="w-full bg-[#091a22] border border-[#163848] rounded-lg px-2.5 py-1.5 text-xs font-semibold focus:outline-none font-mono text-emerald-300 focus:border-emerald-500"
+                              className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-semibold focus:outline-none font-mono text-slate-800 focus:border-[#F27421] shadow-2xs"
                             >
                               {availableTables.map(t => (
                                 <option key={t} value={t}>{t}</option>
@@ -388,16 +381,16 @@ export const WorkflowInspector: React.FC<WorkflowInspectorProps> = ({
                               value={selectedNode.targetTable || effectiveTable}
                               onChange={(e) => onUpdateNode({ ...selectedNode, targetTable: e.target.value })}
                               placeholder="e.g. transactions"
-                              className="w-full bg-[#091a22] border border-[#163848] rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-cyan-400 font-mono"
+                              className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs text-slate-800 focus:outline-none focus:border-[#F27421] font-mono shadow-2xs"
                             />
                           )}
                         </div>
                       </div>
 
-                      {/* Cardinality Policy */}
+                      {/* Row matching (Cardinality Policy) */}
                       <div className="space-y-1.5 pt-1">
-                        <label className="block text-[10px] font-mono text-cyan-400 font-bold">
-                          Multi-Row Cardinality Policy:
+                        <label className="block text-[11px] font-semibold text-slate-700">
+                          Row matching
                         </label>
                         <select
                           value={selectedNode.cardinalityPolicy || 'STRICT_SINGLE'}
@@ -405,18 +398,18 @@ export const WorkflowInspector: React.FC<WorkflowInspectorProps> = ({
                             ...selectedNode, 
                             cardinalityPolicy: e.target.value as MultiRowCardinalityPolicy 
                           })}
-                          className="w-full bg-[#091a22] border border-[#163848] rounded-lg px-2.5 py-1.5 text-xs font-semibold focus:outline-none font-mono text-cyan-300 focus:border-cyan-500"
+                          className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-semibold focus:outline-none font-mono text-slate-800 focus:border-[#F27421] shadow-2xs"
                         >
-                          <option value="STRICT_SINGLE">STRICT_SINGLE (1:1 Exact Match)</option>
-                          <option value="ONE_TO_MANY">ONE_TO_MANY (1:N Matches Allowed)</option>
-                          <option value="EXPLICIT_LATEST">EXPLICIT_LATEST (Latest by Order Column)</option>
-                          <option value="EXPLICIT_FIRST">EXPLICIT_FIRST (Earliest by Order Column)</option>
-                          <option value="ALL_ROWS">ALL_ROWS (Process All Rows)</option>
+                          <option value="STRICT_SINGLE">Strict single (1:1 Exact match)</option>
+                          <option value="ONE_TO_MANY">One-to-many (1:N matches allowed)</option>
+                          <option value="EXPLICIT_LATEST">Explicit latest (Latest by order column)</option>
+                          <option value="EXPLICIT_FIRST">Explicit first (Earliest by order column)</option>
+                          <option value="ALL_ROWS">All rows (Process all rows)</option>
                         </select>
 
                         {(selectedNode.cardinalityPolicy === 'EXPLICIT_LATEST' || selectedNode.cardinalityPolicy === 'EXPLICIT_FIRST') && (
                           <div className="pt-1">
-                            <label className="block text-[10px] font-mono text-amber-400 mb-1 font-bold">
+                            <label className="block text-[10px] font-mono text-amber-600 mb-1 font-bold">
                               Order By Column (Mandatory):
                             </label>
                             <input
@@ -424,14 +417,14 @@ export const WorkflowInspector: React.FC<WorkflowInspectorProps> = ({
                               value={selectedNode.orderByColumn || ''}
                               onChange={(e) => onUpdateNode({ ...selectedNode, orderByColumn: e.target.value })}
                               placeholder="e.g. created_at, timestamp, txn_time"
-                              className="w-full bg-[#091a22] border border-amber-600/70 rounded-lg px-2.5 py-1.5 text-xs font-mono text-amber-200 focus:outline-none focus:border-amber-400"
+                              className="w-full bg-white border border-amber-300 rounded-xl px-3 py-1.5 text-xs font-mono text-amber-900 focus:outline-none focus:border-amber-500 shadow-2xs"
                             />
                           </div>
                         )}
 
                         <div className="pt-1">
-                          <label className="block text-[10px] font-mono text-slate-400 mb-1 font-semibold">
-                            Aggregation Strategy:
+                          <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                            Aggregation strategy
                           </label>
                           <select
                             value={selectedNode.aggregationStrategy || 'NONE'}
@@ -439,13 +432,13 @@ export const WorkflowInspector: React.FC<WorkflowInspectorProps> = ({
                               ...selectedNode, 
                               aggregationStrategy: e.target.value as AggregationStrategy 
                             })}
-                            className="w-full bg-[#091a22] border border-[#163848] rounded-lg px-2.5 py-1.5 text-xs font-semibold focus:outline-none font-mono text-slate-200 focus:border-[#00e5b3]"
+                            className="w-full bg-white border border-slate-200 rounded-xl px-3 py-2 text-xs font-semibold focus:outline-none font-mono text-slate-800 focus:border-[#F27421] shadow-2xs"
                           >
-                            <option value="NONE">NONE (No Aggregation)</option>
-                            <option value="SUM">SUM (Sum Numeric Fields)</option>
-                            <option value="COUNT">COUNT (Row Count)</option>
-                            <option value="MIN">MIN (Minimum Value)</option>
-                            <option value="MAX">MAX (Maximum Value)</option>
+                            <option value="NONE">NONE (No aggregation)</option>
+                            <option value="SUM">SUM (Sum numeric fields)</option>
+                            <option value="COUNT">COUNT (Row count)</option>
+                            <option value="MIN">MIN (Minimum value)</option>
+                            <option value="MAX">MAX (Maximum value)</option>
                           </select>
                         </div>
                       </div>
@@ -455,56 +448,56 @@ export const WorkflowInspector: React.FC<WorkflowInspectorProps> = ({
               </div>
             )}
 
-            {/* Outputs Section matching screenshot */}
+            {/* Outputs Section */}
             {!isTerminal && (
               <div className="space-y-2">
-                <div className="text-[11px] font-mono font-bold uppercase tracking-wider text-slate-400">
+                <div className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
                   Outputs
                 </div>
 
                 {/* PASS Output Accordion */}
-                <div className="bg-[#091a22] border border-[#163848] rounded-xl overflow-hidden">
+                <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-2xs">
                   <button
                     type="button"
                     onClick={() => setPassOpen(!passOpen)}
-                    className="w-full px-3.5 py-2 flex items-center justify-between text-left text-xs font-bold text-white hover:bg-[#0c242e] transition cursor-pointer"
+                    className="w-full px-3.5 py-2 flex items-center justify-between text-left text-xs font-bold text-slate-800 hover:bg-slate-50 transition cursor-pointer"
                   >
                     <div className="flex items-center gap-2">
-                      <span className="w-2 h-2 rounded-full bg-[#00e5b3] shadow-[0_0_6px_#00e5b3]"></span>
-                      <span className="font-mono text-slate-200">PASS</span>
+                      <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+                      <span className="font-mono text-slate-800">PASS</span>
                     </div>
                     <ChevronDown size={14} className={`text-slate-400 transition-transform ${passOpen ? 'rotate-180' : ''}`} />
                   </button>
                   {passOpen && (
-                    <div className="p-3 border-t border-[#163848] bg-[#07151c] space-y-2">
-                      <label className="block text-[10px] font-mono text-[#00e5b3] mb-1 font-bold">On PASS Action:</label>
+                    <div className="p-3 border-t border-slate-200 bg-white space-y-2">
+                      <label className="block text-[10px] font-mono text-emerald-700 mb-1 font-bold">On PASS Action:</label>
                       <select
                         value={selectedNode.onPassAction || 'CONTINUE'}
                         onChange={(e) => onUpdateNode({ ...selectedNode, onPassAction: e.target.value as FlowchartOutputAction })}
-                        className="w-full bg-[#091a22] border border-[#163848] rounded-lg px-2.5 py-1.5 text-xs font-semibold focus:outline-none font-mono text-[#00e5b3] focus:border-[#00e5b3]"
+                        className="w-full bg-white border border-slate-200 rounded-xl px-3 py-1.5 text-xs font-semibold focus:outline-none font-mono text-emerald-700 focus:border-emerald-500 shadow-2xs"
                       >
                         <option value="CONTINUE">CONTINUE (Advance Downstream)</option>
                         <option value="STOP">STOP (Halt Pipeline)</option>
                         <option value="REPORT">REPORT (Add Intermediate Col)</option>
                       </select>
                       {selectedNode.onPassAction === 'REPORT' && (
-                        <div className="space-y-2 pt-1 border-t border-[#163848]">
+                        <div className="space-y-2 pt-1 border-t border-slate-200">
                           <div>
-                            <label className="block text-[10px] font-mono text-slate-300 mb-1">Grid Header Title:</label>
+                            <label className="block text-[10px] font-mono text-slate-600 mb-1">Grid Header Title:</label>
                             <input
                               type="text"
                               value={selectedNode.reportColumnName || ''}
                               onChange={(e) => onUpdateNode({ ...selectedNode, reportColumnName: e.target.value })}
                               placeholder="e.g. Auth Pass Status"
-                              className="w-full bg-[#091a22] border border-[#163848] rounded-lg px-2.5 py-1.5 text-xs text-white"
+                              className="w-full bg-white border border-slate-200 rounded-xl px-3 py-1.5 text-xs text-slate-800"
                             />
                           </div>
                           <div>
-                            <label className="block text-[10px] font-mono text-slate-300 mb-1">Standard Field:</label>
+                            <label className="block text-[10px] font-mono text-slate-600 mb-1">Standard Field:</label>
                             <select
                               value={selectedNode.reportField || ''}
                               onChange={(e) => onUpdateNode({ ...selectedNode, reportField: e.target.value })}
-                              className="w-full bg-[#091a22] border border-[#163848] rounded-lg px-2.5 py-1.5 text-xs text-white font-mono"
+                              className="w-full bg-white border border-slate-200 rounded-xl px-3 py-1.5 text-xs text-slate-800 font-mono"
                             >
                               <option value="">-- Select Field --</option>
                               {globalMappingService.getStandardFields().map(f => (
@@ -519,48 +512,48 @@ export const WorkflowInspector: React.FC<WorkflowInspectorProps> = ({
                 </div>
 
                 {/* FAIL Output Accordion */}
-                <div className="bg-[#091a22] border border-[#163848] rounded-xl overflow-hidden">
+                <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-2xs">
                   <button
                     type="button"
                     onClick={() => setFailOpen(!failOpen)}
-                    className="w-full px-3.5 py-2 flex items-center justify-between text-left text-xs font-bold text-white hover:bg-[#0c242e] transition cursor-pointer"
+                    className="w-full px-3.5 py-2 flex items-center justify-between text-left text-xs font-bold text-slate-800 hover:bg-slate-50 transition cursor-pointer"
                   >
                     <div className="flex items-center gap-2">
-                      <span className="w-2 h-2 rounded-full bg-rose-500 shadow-[0_0_6px_#ef4444]"></span>
-                      <span className="font-mono text-slate-200">FAIL</span>
+                      <span className="w-2 h-2 rounded-full bg-rose-500"></span>
+                      <span className="font-mono text-slate-800">FAIL</span>
                     </div>
                     <ChevronDown size={14} className={`text-slate-400 transition-transform ${failOpen ? 'rotate-180' : ''}`} />
                   </button>
                   {failOpen && (
-                    <div className="p-3 border-t border-[#163848] bg-[#07151c] space-y-2">
-                      <label className="block text-[10px] font-mono text-rose-400 mb-1 font-bold">On FAIL Action:</label>
+                    <div className="p-3 border-t border-slate-200 bg-white space-y-2">
+                      <label className="block text-[10px] font-mono text-rose-700 mb-1 font-bold">On FAIL Action:</label>
                       <select
                         value={selectedNode.onFailAction || 'STOP'}
                         onChange={(e) => onUpdateNode({ ...selectedNode, onFailAction: e.target.value as FlowchartOutputAction })}
-                        className="w-full bg-[#091a22] border border-[#163848] rounded-lg px-2.5 py-1.5 text-xs font-semibold focus:outline-none font-mono text-rose-300 focus:border-rose-500"
+                        className="w-full bg-white border border-slate-200 rounded-xl px-3 py-1.5 text-xs font-semibold focus:outline-none font-mono text-rose-700 focus:border-rose-500 shadow-2xs"
                       >
                         <option value="STOP">STOP (Halt Pipeline)</option>
                         <option value="CONTINUE">CONTINUE (Advance Downstream)</option>
                         <option value="REPORT">REPORT (Add Intermediate Col)</option>
                       </select>
                       {selectedNode.onFailAction === 'REPORT' && (
-                        <div className="space-y-2 pt-1 border-t border-[#163848]">
+                        <div className="space-y-2 pt-1 border-t border-slate-200">
                           <div>
-                            <label className="block text-[10px] font-mono text-slate-300 mb-1">Grid Header Title:</label>
+                            <label className="block text-[10px] font-mono text-slate-600 mb-1">Grid Header Title:</label>
                             <input
                               type="text"
                               value={selectedNode.reportColumnName || ''}
                               onChange={(e) => onUpdateNode({ ...selectedNode, reportColumnName: e.target.value })}
                               placeholder="e.g. Auth Error Code"
-                              className="w-full bg-[#091a22] border border-[#163848] rounded-lg px-2.5 py-1.5 text-xs text-white"
+                              className="w-full bg-white border border-slate-200 rounded-xl px-3 py-1.5 text-xs text-slate-800"
                             />
                           </div>
                           <div>
-                            <label className="block text-[10px] font-mono text-slate-300 mb-1">Standard Field:</label>
+                            <label className="block text-[10px] font-mono text-slate-600 mb-1">Standard Field:</label>
                             <select
                               value={selectedNode.reportField || ''}
                               onChange={(e) => onUpdateNode({ ...selectedNode, reportField: e.target.value })}
-                              className="w-full bg-[#091a22] border border-[#163848] rounded-lg px-2.5 py-1.5 text-xs text-white font-mono"
+                              className="w-full bg-white border border-slate-200 rounded-xl px-3 py-1.5 text-xs text-slate-800 font-mono"
                             >
                               <option value="">-- Select Field --</option>
                               {globalMappingService.getStandardFields().map(f => (
@@ -576,26 +569,26 @@ export const WorkflowInspector: React.FC<WorkflowInspectorProps> = ({
               </div>
             )}
 
-            {/* Logs Section matching screenshot */}
+            {/* Logs Section */}
             <div className="space-y-2">
-              <div className="text-[11px] font-mono font-bold uppercase tracking-wider text-slate-400">
+              <div className="text-[11px] font-bold uppercase tracking-wider text-slate-500">
                 Logs
               </div>
-              <div className="bg-[#091a22] border border-[#163848] rounded-xl overflow-hidden">
+              <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-2xs">
                 <button
                   type="button"
                   onClick={() => setLogsOpen(!logsOpen)}
-                  className="w-full px-3.5 py-2 flex items-center justify-between text-left text-xs font-bold text-white hover:bg-[#0c242e] transition cursor-pointer"
+                  className="w-full px-3.5 py-2 flex items-center justify-between text-left text-xs font-bold text-slate-800 hover:bg-slate-50 transition cursor-pointer"
                 >
-                  <span className="text-slate-200">Execution Readiness</span>
+                  <span className="text-slate-800">Execution readiness</span>
                   <ChevronDown size={14} className={`text-slate-400 transition-transform ${logsOpen ? 'rotate-180' : ''}`} />
                 </button>
                 {logsOpen && (
-                  <div className="p-3 border-t border-[#163848] bg-[#051c22] font-mono text-[10px] text-cyan-300/80 space-y-1">
+                  <div className="p-3 border-t border-slate-200 bg-[#0F142A] font-mono text-[10px] text-slate-300 space-y-1">
                     <div>[STAGE] {selectedNode.type} :: {selectedNode.name}</div>
                     <div>[TARGET] {effectiveTable} on {selectedDbObj?.name || 'default'}</div>
                     <div>[RULES] {currentAttachedIds.length} attached rules</div>
-                    <div className="text-[#00e5b3]">[STATE] Ready for pipeline execution</div>
+                    <div className="text-emerald-400">[STATE] Ready for pipeline execution</div>
                   </div>
                 )}
               </div>
@@ -606,17 +599,17 @@ export const WorkflowInspector: React.FC<WorkflowInspectorProps> = ({
           <div className="p-4 space-y-4 text-xs flex-1">
             <div className="space-y-2.5">
               <div className="flex items-center justify-between">
-                <span className="font-bold text-cyan-300 flex items-center space-x-1.5 text-[11px] font-mono uppercase">
-                  <Sliders size={13} className="text-[#00e5b3]" />
+                <span className="font-bold text-slate-800 flex items-center space-x-1.5 text-[11px] font-mono uppercase">
+                  <Sliders size={13} className="text-[#F27421]" />
                   <span>Column Rules ({currentAttachedIds.length})</span>
                 </span>
-                <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-[#072422] border border-[#00e5b3]/40 text-[#00e5b3] font-bold">
+                <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-orange-50 border border-orange-200 text-[#F27421] font-bold">
                   {currentAttachedIds.length} / {availableConfigs.length} Active
                 </span>
               </div>
 
-              <p className="text-[10px] text-slate-400 leading-tight">
-                Attach explicit completeness, range, and format rules configured for <code className="text-[#00e5b3] font-mono">{effectiveTable}</code>:
+              <p className="text-[11px] text-slate-500 leading-tight">
+                Attach explicit completeness, range, and format rules configured for <code className="text-slate-800 font-mono font-bold">{effectiveTable}</code>:
               </p>
 
               {availableConfigs.length > 0 && (
@@ -624,14 +617,14 @@ export const WorkflowInspector: React.FC<WorkflowInspectorProps> = ({
                   <button
                     type="button"
                     onClick={selectAllConfigs}
-                    className="text-[10px] bg-[#072422] hover:bg-[#093532] text-[#00e5b3] border border-[#00e5b3]/50 px-2 py-0.5 rounded-lg font-mono font-semibold transition cursor-pointer"
+                    className="text-[10px] bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 px-2 py-0.5 rounded-lg font-mono font-semibold transition cursor-pointer"
                   >
                     Select All
                   </button>
                   <button
                     type="button"
                     onClick={clearAllConfigs}
-                    className="text-[10px] bg-[#091a22] hover:bg-[#0c242e] text-slate-400 border border-[#163848] px-2 py-0.5 rounded-lg font-mono transition cursor-pointer"
+                    className="text-[10px] bg-white hover:bg-slate-50 text-slate-600 border border-slate-200 px-2 py-0.5 rounded-lg font-mono transition cursor-pointer"
                   >
                     Clear All
                   </button>
@@ -645,7 +638,7 @@ export const WorkflowInspector: React.FC<WorkflowInspectorProps> = ({
                           columnConfigurationIds: workflowAttachedDbConfigIds
                         });
                       }}
-                      className="text-[10px] bg-emerald-950/80 hover:bg-emerald-900 text-emerald-300 border border-emerald-800/80 px-2 py-0.5 rounded-lg font-mono font-semibold transition cursor-pointer flex items-center gap-1"
+                      className="text-[10px] bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 px-2 py-0.5 rounded-lg font-mono font-semibold transition cursor-pointer flex items-center gap-1"
                       title="Inherit accepted workflow rules for this table"
                     >
                       <ShieldCheck size={10} />
@@ -657,13 +650,13 @@ export const WorkflowInspector: React.FC<WorkflowInspectorProps> = ({
 
               {loadingConfigs ? (
                 <div className="py-4 text-center text-xs text-slate-400 flex items-center justify-center gap-1.5">
-                  <RefreshCw size={12} className="animate-spin text-cyan-400" />
+                  <RefreshCw size={12} className="animate-spin text-[#F27421]" />
                   <span>Loading table configurations...</span>
                 </div>
               ) : availableConfigs.length === 0 ? (
-                <div className="p-3 bg-[#091a22] border border-[#163848] rounded-xl text-center space-y-1">
-                  <p className="text-[11px] text-slate-400">
-                    No column rules configured yet for <code className="text-cyan-300 font-mono">{effectiveTable}</code>.
+                <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl text-center space-y-1">
+                  <p className="text-[11px] text-slate-600">
+                    No column rules configured yet for <code className="text-slate-800 font-mono font-bold">{effectiveTable}</code>.
                   </p>
                   <p className="text-[10px] text-slate-500">
                     Create completeness, range, or duplicate rules in <strong>Database Column Configurations</strong> to bind them here.
@@ -678,26 +671,26 @@ export const WorkflowInspector: React.FC<WorkflowInspectorProps> = ({
                       <div
                         key={cfg.id}
                         onClick={() => toggleConfigId(cfg.id)}
-                        className={`p-2.5 rounded-xl border text-[11px] cursor-pointer transition flex items-start gap-2.5 ${
+                        className={`p-2.5 rounded-xl border text-[11px] cursor-pointer transition flex items-start gap-2.5 shadow-2xs ${
                           isAttached
-                            ? 'bg-[#072422] border-[#00e5b3]/70 text-white shadow-xs'
-                            : 'bg-[#091a22] border-[#163848] text-slate-400 hover:border-cyan-500/50 hover:bg-[#0c242e]'
+                            ? 'bg-orange-50/40 border-[#F27421] text-slate-900'
+                            : 'bg-white border-slate-200 text-slate-600 hover:border-slate-300'
                         }`}
                       >
                         <input
                           type="checkbox"
                           checked={isAttached}
                           onChange={() => {}}
-                          className="mt-0.5 w-3.5 h-3.5 rounded bg-[#091a22] border-[#163848] text-[#00e5b3] focus:ring-0 cursor-pointer shrink-0"
+                          className="mt-0.5 w-3.5 h-3.5 rounded border-slate-300 text-[#F27421] focus:ring-[#F27421] cursor-pointer shrink-0"
                         />
                         <div className="min-w-0 flex-1">
                           <div className="flex items-center justify-between gap-1 mb-0.5">
-                            <span className={`font-semibold truncate text-[11px] ${isAttached ? 'text-white' : 'text-slate-300'}`}>
+                            <span className={`font-semibold truncate text-[11px] ${isAttached ? 'text-slate-900 font-bold' : 'text-slate-700'}`}>
                               {cfg.name}
                             </span>
                             <div className="flex items-center gap-1 shrink-0">
                               {cfg.statusBehavior === 'REPORT_ONLY' && (
-                                <span className="text-[7px] font-mono uppercase px-1 py-0.2 rounded bg-purple-950/80 text-purple-300 border border-purple-500/40">
+                                <span className="text-[7px] font-mono uppercase px-1 py-0.2 rounded bg-purple-50 text-purple-700 border border-purple-200">
                                   REPORT ONLY
                                 </span>
                               )}
@@ -706,7 +699,7 @@ export const WorkflowInspector: React.FC<WorkflowInspectorProps> = ({
                               </span>
                             </div>
                           </div>
-                          <div className="text-[9px] text-slate-400 truncate font-mono">
+                          <div className="text-[9px] text-slate-500 truncate font-mono">
                             {cfg.columns?.map(c => c.columnName).join(', ') || cfg.tableName}
                           </div>
                         </div>
@@ -720,14 +713,14 @@ export const WorkflowInspector: React.FC<WorkflowInspectorProps> = ({
         )}
 
         {/* Footer Delete Action */}
-        <div className="p-4 border-t border-[#163848] bg-[#09171f] sticky bottom-0">
+        <div className="p-4 border-t border-slate-200 bg-white sticky bottom-0">
           <button
             type="button"
             onClick={() => onDeleteNode(selectedNode.id)}
-            className="w-full py-2 px-3 bg-[#271115] hover:bg-[#38161c] border border-rose-500/50 text-rose-300 rounded-xl text-xs font-mono font-bold flex items-center justify-center space-x-2 transition cursor-pointer shadow-xs"
+            className="w-full py-2.5 px-3 bg-white hover:bg-rose-50 border border-rose-200 text-rose-600 rounded-xl text-xs font-sans font-bold flex items-center justify-center space-x-2 transition cursor-pointer shadow-2xs"
           >
             <Trash2 size={13} />
-            <span>Delete Block</span>
+            <span>Delete block</span>
           </button>
         </div>
       </aside>
@@ -738,19 +731,19 @@ export const WorkflowInspector: React.FC<WorkflowInspectorProps> = ({
   if (selectedConnection) {
     return (
       <aside 
-        className="w-80 bg-[#071318] border-l border-[#163848] flex flex-col h-full text-slate-200 overflow-y-auto font-sans"
+        className="w-80 bg-white border-l border-slate-200 flex flex-col h-full text-slate-800 overflow-y-auto font-sans shadow-sm"
         aria-label="Connection Wire Inspector"
       >
-        <div className="p-3.5 border-b border-[#163848] flex items-center justify-between bg-[#09171f] sticky top-0 z-10">
+        <div className="p-4 border-b border-slate-200 flex items-center justify-between bg-white sticky top-0 z-10">
           <div className="flex items-center space-x-2.5">
-            <div className="p-1.5 bg-[#092b3a] border border-cyan-500/50 text-cyan-300 rounded-lg shadow-xs">
+            <div className="p-1.5 bg-orange-50 border border-orange-200 text-[#F27421] rounded-lg shadow-2xs">
               <Link2 size={16} />
             </div>
             <div>
-              <h3 className="text-xs font-bold text-white uppercase tracking-wider font-mono">
+              <h3 className="text-xs font-bold text-slate-900 uppercase tracking-wider font-mono">
                 Wire Outcome
               </h3>
-              <p className="text-[10px] text-teal-400 font-mono">
+              <p className="text-[10px] text-slate-500 font-mono">
                 Port: {selectedConnection.fromPort.toUpperCase()}
               </p>
             </div>
@@ -758,7 +751,7 @@ export const WorkflowInspector: React.FC<WorkflowInspectorProps> = ({
           <button
             type="button"
             onClick={onCloseConnection}
-            className="p-1 text-slate-400 hover:text-white rounded-lg hover:bg-[#163848] transition cursor-pointer"
+            className="p-1.5 text-slate-400 hover:text-slate-700 rounded-lg hover:bg-slate-100 transition cursor-pointer"
             title="Close Inspector"
           >
             <X size={16} />
@@ -766,7 +759,7 @@ export const WorkflowInspector: React.FC<WorkflowInspectorProps> = ({
         </div>
 
         <div className="p-4 space-y-3.5 text-xs flex-1">
-          <p className="text-[11px] text-slate-400 leading-relaxed font-sans">
+          <p className="text-[11px] text-slate-500 leading-relaxed font-sans">
             Configure transaction routing behavior when evaluation traverses this wire:
           </p>
 
@@ -796,36 +789,36 @@ export const WorkflowInspector: React.FC<WorkflowInspectorProps> = ({
                 <div
                   key={opt.id}
                   onClick={() => onUpdateConnection({ ...selectedConnection, action: opt.id, label: opt.label })}
-                  className={`p-3 rounded-xl border transition cursor-pointer space-y-1 ${
+                  className={`p-3 rounded-xl border transition cursor-pointer space-y-1 shadow-2xs ${
                     isSelected
-                      ? 'bg-[#072422] border-[#00e5b3] text-white shadow-xs'
-                      : 'bg-[#091a22] border-[#163848] text-slate-400 hover:border-cyan-500/50 hover:bg-[#0c242e]'
+                      ? 'bg-orange-50/50 border-[#F27421] text-slate-900'
+                      : 'bg-white border-slate-200 text-slate-600 hover:border-slate-300'
                   }`}
                 >
                   <div className="flex items-center justify-between">
-                    <span className="font-bold text-xs text-white">{opt.label}</span>
+                    <span className="font-bold text-xs text-slate-900">{opt.label}</span>
                     <span className={`text-[10px] font-mono font-bold ${
-                      opt.id === 'CONTINUE' ? 'text-[#00e5b3]' :
-                      opt.id === 'STOP' ? 'text-rose-400' : 'text-purple-400'
+                      opt.id === 'CONTINUE' ? 'text-emerald-600' :
+                      opt.id === 'STOP' ? 'text-rose-600' : 'text-purple-600'
                     }`}>
                       {opt.badge}
                     </span>
                   </div>
-                  <p className="text-[11px] text-slate-400">{opt.desc}</p>
+                  <p className="text-[11px] text-slate-500">{opt.desc}</p>
                 </div>
               );
             })}
           </div>
         </div>
 
-        <div className="p-4 border-t border-[#163848] bg-[#09171f] sticky bottom-0">
+        <div className="p-4 border-t border-slate-200 bg-white sticky bottom-0">
           <button
             type="button"
             onClick={() => onDeleteConnection(selectedConnection.id)}
-            className="w-full py-2 px-3 bg-[#271115] hover:bg-[#38161c] border border-rose-500/50 text-rose-300 rounded-xl text-xs font-mono font-bold flex items-center justify-center space-x-2 transition cursor-pointer shadow-xs"
+            className="w-full py-2.5 px-3 bg-white hover:bg-rose-50 border border-rose-200 text-rose-600 rounded-xl text-xs font-sans font-bold flex items-center justify-center space-x-2 transition cursor-pointer shadow-2xs"
           >
             <Unlink size={13} />
-            <span>Delete Wire</span>
+            <span>Delete wire</span>
           </button>
         </div>
       </aside>
@@ -861,60 +854,60 @@ export const WorkflowInspector: React.FC<WorkflowInspectorProps> = ({
 
   return (
     <aside 
-      className="w-80 bg-[#071318] border-l border-[#163848] flex flex-col h-full text-slate-200 overflow-y-auto font-sans"
+      className="w-80 bg-white border-l border-slate-200 flex flex-col h-full text-slate-800 overflow-y-auto font-sans shadow-sm"
       aria-label="Workflow Properties Inspector"
     >
       {/* Panel Header */}
-      <div className="p-3.5 border-b border-[#163848] flex items-center justify-between bg-[#09171f] sticky top-0 z-10">
+      <div className="p-4 border-b border-slate-200 flex items-center justify-between bg-white sticky top-0 z-10">
         <div className="flex items-center space-x-2.5">
-          <div className="w-7 h-7 rounded-lg bg-[#181c38] border border-purple-500/50 flex items-center justify-center text-purple-300 shadow-xs">
-            <Database size={14} />
+          <div className="w-8 h-8 rounded-lg bg-orange-50 border border-orange-200 flex items-center justify-center text-[#F27421] shadow-2xs">
+            <Database size={15} />
           </div>
           <div>
-            <span className="font-bold text-xs text-white block">Workflow DB Governance</span>
-            <span className="text-[10px] font-mono text-cyan-400">Scope &amp; Rule Acceptance</span>
+            <span className="font-bold text-xs text-slate-900 block">Workflow DB Governance</span>
+            <span className="text-[10px] font-mono text-slate-500">Scope &amp; Rule Acceptance</span>
           </div>
         </div>
         {onCloseInspector && (
           <button
             type="button"
             onClick={onCloseInspector}
-            className="p-1 text-slate-400 hover:text-white rounded-lg hover:bg-[#163848] transition cursor-pointer"
+            className="p-1.5 text-slate-400 hover:text-slate-700 rounded-lg hover:bg-slate-100 transition cursor-pointer"
             title="Close Panel"
           >
-            <X size={15} />
+            <X size={16} />
           </button>
         )}
       </div>
 
       <div className="p-4 space-y-4 flex-1">
         {/* Workflow Info Banner */}
-        <div className="p-3 bg-[#091a22] border border-[#163848] rounded-xl space-y-1">
+        <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-1 shadow-2xs">
           <div className="flex items-center justify-between">
-            <span className="font-bold text-xs text-white truncate max-w-[170px]" title={workflowName}>
+            <span className="font-bold text-xs text-slate-900 truncate max-w-[170px]" title={workflowName}>
               {workflowName || 'Workflow Pipeline'}
             </span>
-            <span className="px-2 py-0.5 rounded text-[10px] font-mono font-semibold bg-[#072422] text-[#00e5b3] border border-[#00e5b3]/40">
+            <span className="px-2 py-0.5 rounded text-[10px] font-mono font-semibold bg-white text-[#F27421] border border-orange-200 shadow-2xs">
               {workflowCategory || 'Settlement'}
             </span>
           </div>
           {workflowDescription && (
-            <p className="text-[11px] text-slate-400 line-clamp-2 leading-relaxed">
+            <p className="text-[11px] text-slate-500 line-clamp-2 leading-relaxed">
               {workflowDescription}
             </p>
           )}
         </div>
 
         {/* Database & Table Scope Selectors */}
-        <div className="p-3 bg-[#091a22] border border-[#163848] rounded-xl space-y-2.5">
-          <span className="font-bold text-slate-300 flex items-center space-x-1.5 text-[11px] font-mono uppercase">
-            <Database size={13} className="text-cyan-400" />
+        <div className="p-3.5 bg-white border border-slate-200 rounded-xl space-y-2.5 shadow-2xs">
+          <span className="font-bold text-slate-800 flex items-center space-x-1.5 text-[11px] font-mono uppercase">
+            <Database size={13} className="text-[#F27421]" />
             <span>Target Database Scope</span>
           </span>
 
           <div className="space-y-2">
             <div>
-              <label className="block text-[10px] font-mono text-slate-400 mb-1 font-semibold">
+              <label className="block text-[11px] font-semibold text-slate-700 mb-1">
                 Target Database Connection:
               </label>
               <select
@@ -934,7 +927,7 @@ export const WorkflowInspector: React.FC<WorkflowInspectorProps> = ({
                     });
                   }
                 }}
-                className="w-full bg-[#071318] border border-[#163848] rounded-lg px-2.5 py-1.5 text-xs font-semibold focus:outline-none font-mono text-cyan-300 focus:border-[#00e5b3]"
+                className="w-full bg-white border border-slate-200 rounded-xl px-3 py-1.5 text-xs font-semibold focus:outline-none font-mono text-slate-800 focus:border-[#F27421] shadow-2xs"
               >
                 {databases.length === 0 ? (
                   <option value="">(No Database Configured)</option>
@@ -949,7 +942,7 @@ export const WorkflowInspector: React.FC<WorkflowInspectorProps> = ({
             </div>
 
             <div>
-              <label className="block text-[10px] font-mono text-slate-400 mb-1 font-semibold">
+              <label className="block text-[11px] font-semibold text-slate-700 mb-1">
                 Scope Table / View:
               </label>
               {availableWfTables.length > 0 ? (
@@ -963,7 +956,7 @@ export const WorkflowInspector: React.FC<WorkflowInspectorProps> = ({
                       });
                     }
                   }}
-                  className="w-full bg-[#071318] border border-[#163848] rounded-lg px-2.5 py-1.5 text-xs font-semibold focus:outline-none font-mono text-emerald-300 focus:border-emerald-500"
+                  className="w-full bg-white border border-slate-200 rounded-xl px-3 py-1.5 text-xs font-semibold focus:outline-none font-mono text-slate-800 focus:border-[#F27421] shadow-2xs"
                 >
                   <option value="">(Select Table)</option>
                   {availableWfTables.map((t: string) => (
@@ -982,7 +975,7 @@ export const WorkflowInspector: React.FC<WorkflowInspectorProps> = ({
                     }
                   }}
                   placeholder="e.g. core_transactions"
-                  className="w-full bg-[#071318] border border-[#163848] rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-cyan-400 font-mono"
+                  className="w-full bg-white border border-slate-200 rounded-xl px-3 py-1.5 text-xs text-slate-800 focus:outline-none focus:border-[#F27421] font-mono shadow-2xs"
                 />
               )}
             </div>
@@ -990,27 +983,27 @@ export const WorkflowInspector: React.FC<WorkflowInspectorProps> = ({
         </div>
 
         {/* Anti-Contamination Mandate Banner */}
-        <div className="p-2.5 rounded-xl bg-amber-950/20 border border-amber-500/30 text-amber-200/90 text-[10px] flex items-start gap-2 leading-relaxed">
-          <ShieldCheck size={14} className="text-amber-400 shrink-0 mt-0.5" />
+        <div className="p-2.5 rounded-xl bg-orange-50/50 border border-orange-200 text-orange-950 text-[10px] flex items-start gap-2 leading-relaxed">
+          <ShieldCheck size={14} className="text-[#F27421] shrink-0 mt-0.5" />
           <span>
             <strong>Anti-Contamination Mandate (§10 &amp; Rule 21):</strong> Workflows only apply explicitly accepted database column configurations. Table-level rules are strictly excluded unless checked below.
           </span>
         </div>
 
         {/* Workflow-Level Column Configuration Acceptance */}
-        <div className="p-3 bg-[#091a22] border border-[#163848] rounded-xl space-y-2.5">
+        <div className="p-3.5 bg-white border border-slate-200 rounded-xl space-y-2.5 shadow-2xs">
           <div className="flex items-center justify-between">
-            <span className="font-bold text-cyan-300 flex items-center space-x-1.5 text-[11px] font-mono uppercase">
-              <Sliders size={13} className="text-[#00e5b3]" />
+            <span className="font-bold text-slate-800 flex items-center space-x-1.5 text-[11px] font-mono uppercase">
+              <Sliders size={13} className="text-[#F27421]" />
               <span>Accepted Table Rules</span>
             </span>
-            <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-[#072422] border border-[#00e5b3]/40 text-[#00e5b3] font-bold">
+            <span className="text-[10px] font-mono px-2 py-0.5 rounded-full bg-orange-50 border border-orange-200 text-[#F27421] font-bold">
               {currentWfAttachedIds.length} / {availableConfigs.length} Accepted
             </span>
           </div>
 
-          <p className="text-[10px] text-slate-400 leading-tight">
-            Select which database column configurations registered on <code className="text-[#00e5b3] font-mono">{effectiveTable || 'target table'}</code> apply to this workflow:
+          <p className="text-[11px] text-slate-500 leading-tight">
+            Select which database column configurations registered on <code className="text-slate-800 font-mono font-bold">{effectiveTable || 'target table'}</code> apply to this workflow:
           </p>
 
           {availableConfigs.length > 0 && onUpdateWorkflowDbConfig && (
@@ -1018,14 +1011,14 @@ export const WorkflowInspector: React.FC<WorkflowInspectorProps> = ({
               <button
                 type="button"
                 onClick={selectAllWfConfigs}
-                className="text-[10px] bg-[#072422] hover:bg-[#093532] text-[#00e5b3] border border-[#00e5b3]/50 px-2 py-0.5 rounded-lg font-mono font-semibold transition cursor-pointer"
+                className="text-[10px] bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-300 px-2 py-0.5 rounded-lg font-mono font-semibold transition cursor-pointer"
               >
                 Accept All
               </button>
               <button
                 type="button"
                 onClick={clearAllWfConfigs}
-                className="text-[10px] bg-[#091a22] hover:bg-[#0c242e] text-slate-400 border border-[#163848] px-2 py-0.5 rounded-lg font-mono transition cursor-pointer"
+                className="text-[10px] bg-white hover:bg-slate-50 text-slate-600 border border-slate-200 px-2 py-0.5 rounded-lg font-mono transition cursor-pointer"
               >
                 Clear All
               </button>
@@ -1034,13 +1027,13 @@ export const WorkflowInspector: React.FC<WorkflowInspectorProps> = ({
 
           {loadingConfigs ? (
             <div className="py-4 text-center text-xs text-slate-400 flex items-center justify-center gap-1.5">
-              <RefreshCw size={12} className="animate-spin text-cyan-400" />
+              <RefreshCw size={12} className="animate-spin text-[#F27421]" />
               <span>Loading table column rules...</span>
             </div>
           ) : availableConfigs.length === 0 ? (
-            <div className="p-3 bg-[#071318] border border-[#163848] rounded-xl text-center space-y-1">
-              <p className="text-[11px] text-slate-400">
-                No column rules configured yet for <code className="text-[#00e5b3] font-mono">{effectiveTable || 'this table'}</code>.
+            <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl text-center space-y-1">
+              <p className="text-[11px] text-slate-600">
+                No column rules configured yet for <code className="text-slate-800 font-mono font-bold">{effectiveTable || 'this table'}</code>.
               </p>
               <p className="text-[10px] text-slate-500">
                 Create rules in <strong>Database Column Configurations</strong> to accept them here.
@@ -1057,26 +1050,26 @@ export const WorkflowInspector: React.FC<WorkflowInspectorProps> = ({
                   <div
                     key={cfg.id}
                     onClick={() => toggleWfConfigId(cfg.id)}
-                    className={`p-2 rounded-xl border text-xs cursor-pointer transition select-none ${
+                    className={`p-2.5 rounded-xl border text-xs cursor-pointer transition select-none shadow-2xs ${
                       isAttached
-                        ? 'bg-[#072422] border-[#00e5b3]/70 text-white shadow-xs'
-                        : 'bg-[#071318] border-[#163848] text-slate-400 hover:border-cyan-500/50'
+                        ? 'bg-orange-50/40 border-[#F27421] text-slate-900'
+                        : 'bg-white border-slate-200 text-slate-600 hover:border-slate-300'
                     }`}
                   >
                     <div className="flex items-start justify-between gap-1.5">
                       <div className="flex items-center space-x-1.5 min-w-0">
                         {isAttached ? (
-                          <CheckSquare size={13} className="text-[#00e5b3] shrink-0" />
+                          <CheckSquare size={13} className="text-[#F27421] shrink-0" />
                         ) : (
-                          <Square size={13} className="text-slate-600 shrink-0" />
+                          <Square size={13} className="text-slate-400 shrink-0" />
                         )}
-                        <span className="font-semibold text-xs text-white truncate" title={cfg.name}>
+                        <span className={`font-semibold text-xs truncate ${isAttached ? 'text-slate-900 font-bold' : 'text-slate-700'}`} title={cfg.name}>
                           {cfg.name}
                         </span>
                       </div>
                       <div className="flex items-center gap-1 shrink-0">
                         {cfg.statusBehavior === 'REPORT_ONLY' && (
-                          <span className="text-[7px] font-mono uppercase px-1 py-0.2 rounded bg-purple-950/80 text-purple-300 border border-purple-500/40">
+                          <span className="text-[7px] font-mono uppercase px-1 py-0.2 rounded bg-purple-50 text-purple-700 border border-purple-200">
                             REPORT ONLY
                           </span>
                         )}
@@ -1087,25 +1080,25 @@ export const WorkflowInspector: React.FC<WorkflowInspectorProps> = ({
                     </div>
 
                     {colNames.length > 0 && (
-                      <div className="mt-1 pl-5 text-[10px] font-mono text-slate-400 truncate" title={colNames.join(', ')}>
+                      <div className="mt-1 pl-5 text-[10px] font-mono text-slate-500 truncate" title={colNames.join(', ')}>
                         cols: {colNames.join(', ')}
                       </div>
                     )}
 
                     <div className="mt-1 pl-5 flex items-center gap-1.5 text-[9px] font-mono">
                       <span className={`px-1 py-0.2 rounded border ${
-                        cfg.violationAction === 'STOP' ? 'bg-[#271115] border-rose-500/50 text-rose-300' :
-                        cfg.violationAction === 'FLAG' ? 'bg-amber-950/80 border-amber-800 text-amber-300' :
-                        'bg-[#072422] border-[#00e5b3]/40 text-[#00e5b3]'
+                        cfg.violationAction === 'STOP' ? 'bg-rose-50 border-rose-200 text-rose-700' :
+                        cfg.violationAction === 'FLAG' ? 'bg-amber-50 border-amber-200 text-amber-800' :
+                        'bg-emerald-50 border-emerald-200 text-emerald-800'
                       }`}>
                         {cfg.violationAction}
                       </span>
-                      <span className="text-slate-500">•</span>
-                      <span className="text-slate-400">{cfg.severity}</span>
+                      <span className="text-slate-400">•</span>
+                      <span className="text-slate-500">{cfg.severity}</span>
                       {cfg.filterConditions && cfg.filterConditions.length > 0 && (
                         <>
-                          <span className="text-slate-500">•</span>
-                          <span className="text-cyan-400">{cfg.filterConditions.length} filters</span>
+                          <span className="text-slate-400">•</span>
+                          <span className="text-[#F27421]">{cfg.filterConditions.length} filters</span>
                         </>
                       )}
                     </div>
@@ -1117,13 +1110,13 @@ export const WorkflowInspector: React.FC<WorkflowInspectorProps> = ({
         </div>
 
         {/* Downstream Stage Inheritance Guidance */}
-        <div className="p-3 bg-[#091a22] border border-[#163848] rounded-xl space-y-1 text-slate-400">
-          <div className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-300 font-mono">
-            <Info size={12} className="text-cyan-400 shrink-0" />
+        <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-1 text-slate-600 shadow-2xs">
+          <div className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-800 font-mono">
+            <Info size={12} className="text-[#F27421] shrink-0" />
             <span>Stage Inheritance</span>
           </div>
           <p className="text-[10px] leading-relaxed">
-            Flowchart nodes targeting <code className="text-[#00e5b3] font-mono">{effectiveTable || 'this table'}</code> automatically inherit accepted rules unless individual stages specify custom overrides.
+            Flowchart nodes targeting <code className="text-slate-800 font-mono font-bold">{effectiveTable || 'this table'}</code> automatically inherit accepted rules unless individual stages specify custom overrides.
           </p>
         </div>
       </div>

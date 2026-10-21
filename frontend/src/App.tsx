@@ -4,13 +4,13 @@
  */
 
 import React, { useState, useEffect, useCallback, Suspense, lazy } from 'react';
-import { 
-  User, Issue, HashtagPreset, Plugin, DatabaseConnection, 
-  Transaction, ChatMessage, EnvironmentSystem, QueryApprovalRequest, 
+import {
+  User, Issue, HashtagPreset, Plugin, DatabaseConnection,
+  Transaction, ChatMessage, EnvironmentSystem, QueryApprovalRequest,
   DbAccessRequest, ConnectionUsageLog, UserRole, Team, TeamTask, TeamInsight, TeamDiscussionMessage, AppNotification, DirectMessage, TaskPreFillFromMessage
 } from './types';
-import { 
-  INITIAL_USERS, INITIAL_HASHTAGS, INITIAL_PLUGINS, 
+import {
+  INITIAL_USERS, INITIAL_HASHTAGS, INITIAL_PLUGINS,
   INITIAL_DBS, INITIAL_ISSUES, INITIAL_SYSTEMS, INITIAL_TEAMS,
   INITIAL_TEAM_TASKS, INITIAL_TEAM_INSIGHTS, INITIAL_TEAM_MESSAGES, INITIAL_NOTIFICATIONS, INITIAL_DIRECT_MESSAGES
 } from './mockData';
@@ -36,6 +36,12 @@ const AdminPanel = lazy(() => import('./components/AdminPanel'));
 const WorkspaceSettings = lazy(() => import('./components/WorkspaceSettings'));
 const SystemSettings = lazy(() => import('./components/settings/SystemSettings'));
 const AdminTeamResourcesMonitor = lazy(() => import('./components/AdminTeamResourcesMonitor'));
+const GlobalTransactionSettings = lazy(() => import('./components/GlobalTransactionSettings'));
+const WorkflowStudioFlowchart = lazy(() => import('./components/settings/WorkflowStudioFlowchart'));
+const ValidationBoxManager = lazy(() => import('./components/settings/ValidationBoxManager'));
+const AutomationsView = lazy(() => import('./components/automations/AutomationsView'));
+const IntakeView = lazy(() => import('./components/intake/IntakeView').then(m => ({ default: m.IntakeView })));
+import TopBar from './components/TopBar';
 import { GovernanceProvider } from './context/GovernanceContext';
 import { GlobalMappingService } from './services/globalMappingService';
 
@@ -114,7 +120,7 @@ export default function App() {
       const params = new URLSearchParams(window.location.search);
       const tab = params.get('tab');
       if (tab && tab !== 'governance') return tab;
-    } catch {}
+    } catch { }
     return 'workspace';
   });
 
@@ -473,7 +479,7 @@ export default function App() {
 
   const handleMarkDirectMessagesRead = (senderId: string) => {
     if (!currentUser) return;
-    setDirectMessages(prev => prev.map(m => 
+    setDirectMessages(prev => prev.map(m =>
       (m.senderId === senderId && m.receiverId === currentUser.id) ? { ...m, isRead: true } : m
     ));
     api.markDirectMessagesRead(senderId, currentUser.id).catch(err => console.warn('Could not mark DMs read on API:', err));
@@ -724,10 +730,10 @@ export default function App() {
   };
 
   const handleUpdateUserPrivileges = (
-    userId: string, 
-    updates: { 
-      canExecuteSelect?: boolean; 
-      canExecuteUpdate?: boolean; 
+    userId: string,
+    updates: {
+      canExecuteSelect?: boolean;
+      canExecuteUpdate?: boolean;
       role?: UserRole;
       allowedDbIds?: string[];
     }
@@ -792,7 +798,7 @@ export default function App() {
     setDatabases(prev => prev.filter(db => db.id !== dbId));
     api.deleteDatabase(dbId).catch(err => {
       console.warn('Could not delete database in backend API:', err);
-      api.getDatabases().then(dbs => setDatabases(dbs)).catch(() => {});
+      api.getDatabases().then(dbs => setDatabases(dbs)).catch(() => { });
       alert('Failed to delete database connection: ' + (err.message || 'Server error'));
     });
   };
@@ -998,342 +1004,504 @@ export default function App() {
     m => m.receiverId === effectiveUser.id && !m.isRead
   ).length : 0;
 
-  return (
-    <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col font-sans" id="applet-viewport">
-      {/* 1. Desktop TitleBar */}
-      <TitleBar 
-        currentUser={effectiveUser || currentUser} 
-        onLogout={handleLogout} 
-        onlineCount={onlineCount} 
-        activeNavigation={activeNavigation}
-        activeTeamName={activeTeamName}
-        workspaceSubView={workspaceSubView}
-      />
+  const handleUserUpdated = (updatedUser: User) => {
+    setCurrentUser(updatedUser);
+    setUsers(prev => prev.map(u => u.id === updatedUser.id ? updatedUser : u));
+  };
 
-      {/* 2. Primary Layout Switcher */}
+  return (
+    <div className="h-screen w-screen overflow-hidden bg-[#F8FAFC] text-slate-900 flex flex-col font-sans" id="applet-viewport">
       {!currentUser ? (
-        <LoginScreen 
-          users={users} 
-          onLoginSuccess={handleLoginSuccess} 
-          onRegisterUser={handleRegisterUser} 
-        />
+        <div className="h-full w-full overflow-y-auto">
+          <LoginScreen
+            users={users}
+            onLoginSuccess={handleLoginSuccess}
+            onRegisterUser={handleRegisterUser}
+          />
+        </div>
       ) : (
-        <GovernanceProvider 
-          currentUser={effectiveUser || currentUser!} 
+        <GovernanceProvider
+          currentUser={effectiveUser || currentUser!}
           userTeamId={teams.find(t => t.memberIds.includes((effectiveUser || currentUser)?.id))?.id}
         >
-          <div className="flex-grow flex flex-col lg:flex-row" id="app-desktop-workspace">
-          
-          {/* Left Vertical Native Sidebar Component */}
-          <SideNav 
-            currentUser={effectiveUser || currentUser} 
-            teams={teams}
-            activeNavigation={activeNavigation} 
-            activeAdminSubTab={adminPanelSubTab}
-            onSelectNavigation={handleSelectNavigation} 
-            isAuthorizedTab={isAuthorizedTab} 
-            onCreateTeamClick={handleTriggerCreateTeam}
-            notifications={notifications}
-            unreadDirectMessageCount={unreadDirectMessageCount}
-            onMarkNotificationAsRead={handleMarkNotificationAsRead}
-            onMarkAllNotificationsAsRead={handleMarkAllNotificationsAsRead}
-            onClearNotifications={handleClearNotifications}
-            onNotificationClick={handleNotificationClick}
-          />
+          <div className="flex h-screen w-screen overflow-hidden bg-[#F8FAFC]" id="app-desktop-workspace">
+            {/* 1. Left Vertical Native Sidebar Component (Full Height) */}
+            <SideNav
+              currentUser={effectiveUser || currentUser!}
+              teams={teams}
+              activeNavigation={activeNavigation}
+              activeAdminSubTab={adminPanelSubTab}
+              onSelectNavigation={handleSelectNavigation}
+              isAuthorizedTab={isAuthorizedTab}
+              onCreateTeamClick={handleTriggerCreateTeam}
+              notifications={notifications}
+              unreadDirectMessageCount={unreadDirectMessageCount}
+              pendingProposalsCount={queryApprovals.filter(q => q.status === 'PENDING').length}
+              openIssuesCount={issues.filter(i => i.status !== 'Closed').length || 237}
+              intakeCount={60}
+              automationsCount={hashtags.length || 7}
+              onlineDatabasesCount={onlineCount || 3}
+              totalDatabasesCount={databases.length || 4}
+              onMarkNotificationAsRead={handleMarkNotificationAsRead}
+              onMarkAllNotificationsAsRead={handleMarkAllNotificationsAsRead}
+              onClearNotifications={handleClearNotifications}
+              onNotificationClick={handleNotificationClick}
+              onUserUpdated={handleUserUpdated}
+            />
 
-          {/* Main Context Dynamic Panel Router */}
-          <main className={`flex-grow p-2 lg:p-3 max-h-[calc(100vh-2.25rem)] ${
-            activeNavigation === 'team_workspace' ? 'overflow-hidden flex flex-col h-[calc(100vh-2.25rem)] min-h-0' : 'overflow-y-auto'
-          }`}>
-            <Suspense fallback={<PanelLoadingSkeleton />}>
-            {(activeNavigation === 'workspace' || activeNavigation === 'my_tasks' || activeNavigation === 'hashtags' || activeNavigation === 'open_case') && (
-              <ErrorBoundary fallbackTitle="Workspace Display Error" fallbackMessage="An error occurred while loading the workspace. You can retry rendering or reset settings.">
-                <IssueDetailView 
-                  issues={issues} 
-                  hashtags={hashtags} 
-                  currentUser={effectiveUser || currentUser} 
-                  systems={systems}
-                  users={users}
-                  teams={teams}
-                  databases={databases}
-                  transactions={transactions}
-                  queryApprovals={queryApprovals}
-                  onSubmitQueryApproval={handleSubmitQueryApproval}
-                  onUpdateIssue={handleUpdateIssue} 
-                  onDeleteIssue={handleDeleteIssue}
-                  onCreateIssue={handleCreateIssue}
-                  onCreateHashtagPreset={handleCreateHashtagPreset} 
-                  onUpdateHashtagPreset={handleUpdateHashtagPreset}
-                  onDeleteHashtagPreset={handleDeleteHashtagPreset}
-                  onSendChatMessage={handleSendChatMessage} 
-                  onChangeTab={handleTabChange}
-                  onWorkspaceSubViewChange={setWorkspaceSubView}
-                  initialSelectedIssueId={deepLinkIssueId}
-                  activeMode={
-                    activeNavigation === 'my_tasks'
-                      ? 'my_tasks'
-                      : activeNavigation === 'hashtags'
-                      ? 'hashtags'
-                      : activeNavigation === 'open_case'
-                      ? 'open_case'
-                      : 'workspace'
-                  }
-                  mailboxTaskPreFill={mailboxTaskPreFill}
-                />
-              </ErrorBoundary>
-            )}
-
-            {activeNavigation === 'team_workspace' && (
-              <ErrorBoundary fallbackTitle="Team Workspace Error">
-                <TeamWorkspace 
-                  currentUser={effectiveUser || currentUser}
-                  users={users}
-                  teams={teams}
-                  databases={databases}
-                  tasks={teamTasks}
-                  insights={teamInsights}
-                  messages={teamMessages}
-                  issues={issues}
-                  onCreateTeam={handleCreateTeam}
-                  onUpdateTeam={handleUpdateTeam}
-                  onAddTask={handleAddTeamTask}
-                  onUpdateTaskStatus={handleUpdateTeamTaskStatus}
-                  onUpdateTask={handleUpdateTeamTask}
-                  onDeleteTask={handleDeleteTeamTask}
-                  onAddInsight={handleAddTeamInsight}
-                  onDeleteInsight={handleDeleteTeamInsight}
-                  onSendMessage={handleSendTeamMessage}
-                  openCreateModalSignal={createTeamSignal}
-                  initialSelectedTeamId={deepLinkTeamId}
-                  initialActiveTab={deepLinkTeamTab}
-                  initialSelectedTaskId={deepLinkTaskId}
-                  onOpenPersonalChat={handleOpenPersonalChat}
-                  onActiveTeamChange={setActiveTeamName}
-                  onNavigateToTaskCreation={handleCreateTaskFromMessage}
-                  onOpenIssueInWorkspace={(issueId) => {
-                    setDeepLinkIssueId(issueId);
-                    setActiveNavigation('workspace');
-                  }}
-                />
-              </ErrorBoundary>
-            )}
-
-            {activeNavigation === 'direct_chat' && (
-              <PersonalChat 
+            {/* 2. Main Context Dynamic Area: TopBar + Canvas */}
+            <div className="flex-1 flex flex-col min-w-0 h-full overflow-hidden bg-[#F8FAFC]">
+              <TopBar
                 currentUser={effectiveUser || currentUser}
-                users={users}
-                directMessages={directMessages}
-                initialSelectedUserId={deepLinkDirectUserId}
-                onSendDirectMessage={handleSendDirectMessage}
-                onMarkDirectMessagesRead={handleMarkDirectMessagesRead}
-                onNavigateToTeamWorkspace={() => setActiveNavigation('team_workspace')}
+                activeNavigation={activeNavigation}
+                activeTeamName={activeTeamName}
+                onLogout={handleLogout}
+                onSelectNavigation={setActiveNavigation}
+                unreadNotificationsCount={notifications.filter(n => !n.isRead).length}
+                onToggleNotifications={() => handleSelectNavigation('team_workspace')}
+                environmentName="Production"
               />
-            )}
 
-            {activeNavigation === 'db_explorer' && isAuthorizedTab('db_explorer') && (
-              <DbQueryTool 
-                databases={databases} 
-                transactions={transactions} 
-                currentUser={effectiveUser || currentUser}
-                onAddDatabase={handleAddDatabase}
-                onRequestDbAccess={handleRequestDbAccess}
-                onLogQueryExecution={handleLogQueryExecution}
-                onImportToIssue={handleLinkTransactionToIssue} 
-              />
-            )}
+              {/* Main Dynamic Viewport */}
+              <main className="flex-1 min-h-0 overflow-hidden flex flex-col bg-[#F8FAFC]">
+              <Suspense fallback={<PanelLoadingSkeleton />}>
+                {(activeNavigation === 'workspace' || activeNavigation === 'my_tasks' || activeNavigation === 'hashtags' || activeNavigation === 'open_case') && (
+                  <ErrorBoundary fallbackTitle="Workspace Display Error" fallbackMessage="An error occurred while loading the workspace. You can retry rendering or reset settings.">
+                    <IssueDetailView
+                      issues={issues}
+                      hashtags={hashtags}
+                      currentUser={effectiveUser || currentUser}
+                      systems={systems}
+                      users={users}
+                      teams={teams}
+                      databases={databases}
+                      transactions={transactions}
+                      queryApprovals={queryApprovals}
+                      onSubmitQueryApproval={handleSubmitQueryApproval}
+                      onUpdateIssue={handleUpdateIssue}
+                      onDeleteIssue={handleDeleteIssue}
+                      onCreateIssue={handleCreateIssue}
+                      onCreateHashtagPreset={handleCreateHashtagPreset}
+                      onUpdateHashtagPreset={handleUpdateHashtagPreset}
+                      onDeleteHashtagPreset={handleDeleteHashtagPreset}
+                      onSendChatMessage={handleSendChatMessage}
+                      onChangeTab={handleTabChange}
+                      onWorkspaceSubViewChange={setWorkspaceSubView}
+                      initialSelectedIssueId={deepLinkIssueId}
+                      activeMode={
+                        activeNavigation === 'my_tasks'
+                          ? 'my_tasks'
+                          : activeNavigation === 'hashtags'
+                            ? 'hashtags'
+                            : activeNavigation === 'open_case'
+                              ? 'open_case'
+                              : 'workspace'
+                      }
+                      mailboxTaskPreFill={mailboxTaskPreFill}
+                    />
+                  </ErrorBoundary>
+                )}
 
-            {activeNavigation === 'create_case' && isAuthorizedTab('create_case') && (
-              <WorkspaceTaskCreator 
-                hashtags={hashtags} 
-                currentUser={effectiveUser || currentUser} 
-                systems={systems}
-                databases={databases}
-                teams={teams}
-                users={users}
-                onCreateIssue={handleCreateIssue} 
-                onBackToWorkspace={() => {
-                  setMailboxTaskPreFill(null);
-                  setActiveNavigation('workspace');
-                }}
-                onTaskCreated={(generatedTaskId) => {
-                  if (mailboxTaskPreFill?.sourceMessageId && generatedTaskId) {
-                    api.linkMessageToIssue(mailboxTaskPreFill.sourceMessageId, generatedTaskId).catch(err => {
-                      console.warn('Could not link message to issue:', err);
-                    });
-                  }
-                  setMailboxTaskPreFill(null);
-                  setActiveNavigation('workspace');
-                  if (generatedTaskId) {
-                    setDeepLinkIssueId(generatedTaskId);
-                  }
-                }}
-                initialPreFill={mailboxTaskPreFill}
-              />
-            )}
+                {activeNavigation === 'team_workspace' && (
+                  <ErrorBoundary fallbackTitle="Team Workspace Error">
+                    <TeamWorkspace
+                      currentUser={effectiveUser || currentUser}
+                      users={users}
+                      teams={teams}
+                      databases={databases}
+                      tasks={teamTasks}
+                      insights={teamInsights}
+                      messages={teamMessages}
+                      issues={issues}
+                      onCreateTeam={handleCreateTeam}
+                      onUpdateTeam={handleUpdateTeam}
+                      onAddTask={handleAddTeamTask}
+                      onUpdateTaskStatus={handleUpdateTeamTaskStatus}
+                      onUpdateTask={handleUpdateTeamTask}
+                      onDeleteTask={handleDeleteTeamTask}
+                      onAddInsight={handleAddTeamInsight}
+                      onDeleteInsight={handleDeleteTeamInsight}
+                      onSendMessage={handleSendTeamMessage}
+                      openCreateModalSignal={createTeamSignal}
+                      initialSelectedTeamId={deepLinkTeamId}
+                      initialActiveTab={deepLinkTeamTab}
+                      initialSelectedTaskId={deepLinkTaskId}
+                      onOpenPersonalChat={handleOpenPersonalChat}
+                      onActiveTeamChange={setActiveTeamName}
+                      onNavigateToTaskCreation={handleCreateTaskFromMessage}
+                      onOpenIssueInWorkspace={(issueId) => {
+                        setDeepLinkIssueId(issueId);
+                        setActiveNavigation('workspace');
+                      }}
+                    />
+                  </ErrorBoundary>
+                )}
 
-            {activeNavigation === 'manager_analytics' && isAuthorizedTab('manager_analytics') && (
-              <ManagerialDashboard 
-                issues={issues} 
-                hashtags={hashtags} 
-                currentUser={effectiveUser || currentUser}
-                users={users}
-                teams={teams}
-                onCreateTeam={handleCreateTeam}
-                onUpdateTeam={handleUpdateTeam}
-                onDeleteTeam={handleDeleteTeam}
-                onUpdateIssue={handleUpdateIssue}
-                onChangeTab={handleTabChange}
-              />
-            )}
+                {(activeNavigation === 'direct_chat' || activeNavigation === 'messages') && (
+                  <PersonalChat
+                    currentUser={effectiveUser || currentUser}
+                    users={users}
+                    teams={teams}
+                    hashtags={hashtags}
+                    directMessages={directMessages}
+                    initialSelectedUserId={deepLinkDirectUserId}
+                    onSendDirectMessage={handleSendDirectMessage}
+                    onMarkDirectMessagesRead={handleMarkDirectMessagesRead}
+                    onNavigateToTeamWorkspace={() => setActiveNavigation('team_workspace')}
+                    onNavigateToTaskCreation={handleCreateTaskFromMessage}
+                  />
+                )}
 
-            {activeNavigation === 'admin_panel' && isAuthorizedTab('admin_panel') && (
-              <AdminPanel 
-                currentUser={effectiveUser || currentUser}
-                teams={teams}
-                users={users} 
-                databases={databases} 
-                plugins={plugins} 
-                systems={systems}
-                queryApprovals={queryApprovals}
-                dbAccessRequests={dbAccessRequests}
-                connectionUsageLogs={connectionUsageLogs}
-                onResolveQueryApproval={handleResolveQueryApproval}
-                onResolveDbAccessRequest={handleResolveDbAccessRequest}
-                onApproveUser={handleApproveUser} 
-                onDeleteUser={handleDeleteUser} 
-                onTogglePlugin={handleTogglePlugin} 
-                onAddDatabase={handleAddDatabase} 
-                onToggleDbStatus={handleToggleDbStatus} 
-                onDeleteDb={handleDeleteDb} 
-                onUpdateDb={handleUpdateDatabase} 
-                onAddSystem={(sys) => setSystems(prev => [...prev, sys])}
-                onDeleteSystem={(sysId) => setSystems(prev => prev.filter(s => s.id !== sysId))}
-                onUpdateSystem={(updatedSys) => setSystems(prev => prev.map(s => s.id === updatedSys.id ? updatedSys : s))}
-                onUpdateUserPrivileges={handleUpdateUserPrivileges}
-                activeSubTab={adminPanelSubTab}
-                onSelectSubTab={setAdminPanelSubTab}
-              />
-            )}
+                {activeNavigation === 'db_explorer' && isAuthorizedTab('db_explorer') && (
+                  <DbQueryTool
+                    databases={databases}
+                    transactions={transactions}
+                    currentUser={effectiveUser || currentUser}
+                    onAddDatabase={handleAddDatabase}
+                    onRequestDbAccess={handleRequestDbAccess}
+                    onLogQueryExecution={handleLogQueryExecution}
+                    onImportToIssue={handleLinkTransactionToIssue}
+                  />
+                )}
 
-            {activeNavigation === 'user_admin' && isAuthorizedTab('user_admin') && (
-              <AdminPanel 
-                currentUser={effectiveUser || currentUser}
-                teams={teams}
-                users={users} 
-                databases={databases} 
-                plugins={plugins} 
-                systems={systems}
-                queryApprovals={queryApprovals}
-                dbAccessRequests={dbAccessRequests}
-                connectionUsageLogs={connectionUsageLogs}
-                onResolveQueryApproval={handleResolveQueryApproval}
-                onResolveDbAccessRequest={handleResolveDbAccessRequest}
-                onApproveUser={handleApproveUser} 
-                onDeleteUser={handleDeleteUser} 
-                onTogglePlugin={handleTogglePlugin} 
-                onAddDatabase={handleAddDatabase} 
-                onToggleDbStatus={handleToggleDbStatus} 
-                onDeleteDb={handleDeleteDb} 
-                onUpdateDb={handleUpdateDatabase} 
-                onAddSystem={(sys) => setSystems(prev => [...prev, sys])}
-                onDeleteSystem={(sysId) => setSystems(prev => prev.filter(s => s.id !== sysId))}
-                onUpdateSystem={(updatedSys) => setSystems(prev => prev.map(s => s.id === updatedSys.id ? updatedSys : s))}
-                onUpdateUserPrivileges={handleUpdateUserPrivileges}
-                activeSubTab="user_admin"
-                onSelectSubTab={setAdminPanelSubTab}
-              />
-            )}
+                {activeNavigation === 'create_case' && isAuthorizedTab('create_case') && (
+                  <WorkspaceTaskCreator
+                    hashtags={hashtags}
+                    currentUser={effectiveUser || currentUser}
+                    systems={systems}
+                    databases={databases}
+                    teams={teams}
+                    users={users}
+                    onCreateIssue={handleCreateIssue}
+                    onBackToWorkspace={() => {
+                      setMailboxTaskPreFill(null);
+                      setActiveNavigation('workspace');
+                    }}
+                    onTaskCreated={(generatedTaskId) => {
+                      if (mailboxTaskPreFill?.sourceMessageId && generatedTaskId) {
+                        api.linkMessageToIssue(mailboxTaskPreFill.sourceMessageId, generatedTaskId).catch(err => {
+                          console.warn('Could not link message to issue:', err);
+                        });
+                      }
+                      setMailboxTaskPreFill(null);
+                      setActiveNavigation('workspace');
+                      if (generatedTaskId) {
+                        setDeepLinkIssueId(generatedTaskId);
+                      }
+                    }}
+                    initialPreFill={mailboxTaskPreFill}
+                  />
+                )}
+
+                {activeNavigation === 'manager_analytics' && isAuthorizedTab('manager_analytics') && (
+                  <ManagerialDashboard
+                    issues={issues}
+                    hashtags={hashtags}
+                    currentUser={effectiveUser || currentUser}
+                    users={users}
+                    teams={teams}
+                    onCreateTeam={handleCreateTeam}
+                    onUpdateTeam={handleUpdateTeam}
+                    onDeleteTeam={handleDeleteTeam}
+                    onUpdateIssue={handleUpdateIssue}
+                    onChangeTab={handleTabChange}
+                  />
+                )}
+
+                {activeNavigation === 'admin_panel' && isAuthorizedTab('admin_panel') && (
+                  <AdminPanel
+                    currentUser={effectiveUser || currentUser}
+                    teams={teams}
+                    users={users}
+                    databases={databases}
+                    plugins={plugins}
+                    systems={systems}
+                    queryApprovals={queryApprovals}
+                    dbAccessRequests={dbAccessRequests}
+                    connectionUsageLogs={connectionUsageLogs}
+                    onResolveQueryApproval={handleResolveQueryApproval}
+                    onResolveDbAccessRequest={handleResolveDbAccessRequest}
+                    onApproveUser={handleApproveUser}
+                    onDeleteUser={handleDeleteUser}
+                    onTogglePlugin={handleTogglePlugin}
+                    onAddDatabase={handleAddDatabase}
+                    onToggleDbStatus={handleToggleDbStatus}
+                    onDeleteDb={handleDeleteDb}
+                    onUpdateDb={handleUpdateDatabase}
+                    onAddSystem={(sys) => setSystems(prev => [...prev, sys])}
+                    onDeleteSystem={(sysId) => setSystems(prev => prev.filter(s => s.id !== sysId))}
+                    onUpdateSystem={(updatedSys) => setSystems(prev => prev.map(s => s.id === updatedSys.id ? updatedSys : s))}
+                    onUpdateUserPrivileges={handleUpdateUserPrivileges}
+                    activeSubTab={adminPanelSubTab}
+                    onSelectSubTab={setAdminPanelSubTab}
+                  />
+                )}
+
+                {activeNavigation === 'user_admin' && isAuthorizedTab('user_admin') && (
+                  <AdminPanel
+                    currentUser={effectiveUser || currentUser}
+                    teams={teams}
+                    users={users}
+                    databases={databases}
+                    plugins={plugins}
+                    systems={systems}
+                    queryApprovals={queryApprovals}
+                    dbAccessRequests={dbAccessRequests}
+                    connectionUsageLogs={connectionUsageLogs}
+                    onResolveQueryApproval={handleResolveQueryApproval}
+                    onResolveDbAccessRequest={handleResolveDbAccessRequest}
+                    onApproveUser={handleApproveUser}
+                    onDeleteUser={handleDeleteUser}
+                    onTogglePlugin={handleTogglePlugin}
+                    onAddDatabase={handleAddDatabase}
+                    onToggleDbStatus={handleToggleDbStatus}
+                    onDeleteDb={handleDeleteDb}
+                    onUpdateDb={handleUpdateDatabase}
+                    onAddSystem={(sys) => setSystems(prev => [...prev, sys])}
+                    onDeleteSystem={(sysId) => setSystems(prev => prev.filter(s => s.id !== sysId))}
+                    onUpdateSystem={(updatedSys) => setSystems(prev => prev.map(s => s.id === updatedSys.id ? updatedSys : s))}
+                    onUpdateUserPrivileges={handleUpdateUserPrivileges}
+                    activeSubTab="user_admin"
+                    onSelectSubTab={setAdminPanelSubTab}
+                  />
+                )}
 
 
-            {(activeNavigation === 'workspace_settings' || activeNavigation === 'setting') && (
-              <ErrorBoundary fallbackTitle="Workspace Settings Error" fallbackMessage="Could not display workspace settings. You can retry or reset local settings.">
-                <WorkspaceSettings
-                  currentUser={effectiveUser || currentUser!}
-                  teams={teams}
-                  databases={databases}
-                  onNavigateToWorkspace={() => setActiveNavigation('workspace')}
-                  onNavigateToAuthorityCenter={() => setActiveNavigation('authority_center')}
-                />
-              </ErrorBoundary>
-            )}
+                {(activeNavigation === 'workspace_settings' || activeNavigation === 'setting') && (
+                  <ErrorBoundary fallbackTitle="Workspace Settings Error" fallbackMessage="Could not display workspace settings. You can retry or reset local settings.">
+                    <WorkspaceSettings
+                      currentUser={effectiveUser || currentUser!}
+                      teams={teams}
+                      databases={databases}
+                      onNavigateToWorkspace={() => setActiveNavigation('workspace')}
+                      onNavigateToAuthorityCenter={() => setActiveNavigation('authority_center')}
+                    />
+                  </ErrorBoundary>
+                )}
 
-            {activeNavigation === 'system_settings' && isAuthorizedTab('system_settings') && (
-              <ErrorBoundary fallbackTitle="System Settings Error" fallbackMessage="Could not display System Settings. You can retry or return to workspace.">
-                <SystemSettings
-                  currentUser={effectiveUser || currentUser!}
-                  teams={teams}
-                  databases={databases}
-                  systems={systems}
-                  onAddDatabase={handleAddDatabase}
-                  onToggleDbStatus={handleToggleDbStatus}
-                  onDeleteDb={handleDeleteDb}
-                  onUpdateDb={handleUpdateDatabase}
-                  onNavigateToWorkspace={() => setActiveNavigation('workspace')}
-                  initialTab={systemSettingsTab}
-                />
-              </ErrorBoundary>
-            )}
+                {activeNavigation === 'system_settings' && isAuthorizedTab('system_settings') && (
+                  <ErrorBoundary fallbackTitle="System Settings Error" fallbackMessage="Could not display System Settings. You can retry or return to workspace.">
+                    <SystemSettings
+                      currentUser={effectiveUser || currentUser!}
+                      teams={teams}
+                      databases={databases}
+                      systems={systems}
+                      onAddDatabase={handleAddDatabase}
+                      onToggleDbStatus={handleToggleDbStatus}
+                      onDeleteDb={handleDeleteDb}
+                      onUpdateDb={handleUpdateDatabase}
+                      onNavigateToWorkspace={() => setActiveNavigation('workspace')}
+                      initialTab={systemSettingsTab}
+                    />
+                  </ErrorBoundary>
+                )}
 
-            {activeNavigation === 'admin_team_resources' && isAuthorizedTab('admin_team_resources') && (
-              <ErrorBoundary fallbackTitle="Admin Team Resources Monitor Error">
-                <AdminTeamResourcesMonitor
-                  currentUser={effectiveUser || currentUser!}
-                  teams={teams}
-                  databases={databases}
-                  onRefreshDatabases={() => {
-                    api.getDatabases().then(dbs => setDatabases(dbs)).catch(() => {});
-                  }}
-                  onNavigateToWorkspace={() => setActiveNavigation('workspace')}
-                />
-              </ErrorBoundary>
-            )}
+                {activeNavigation === 'admin_team_resources' && isAuthorizedTab('admin_team_resources') && (
+                  <ErrorBoundary fallbackTitle="Admin Team Resources Monitor Error">
+                    <AdminTeamResourcesMonitor
+                      currentUser={effectiveUser || currentUser!}
+                      teams={teams}
+                      databases={databases}
+                      onRefreshDatabases={() => {
+                        api.getDatabases().then(dbs => setDatabases(dbs)).catch(() => { });
+                      }}
+                      onNavigateToWorkspace={() => setActiveNavigation('workspace')}
+                    />
+                  </ErrorBoundary>
+                )}
 
-            {activeNavigation === 'txn_settings' && isAuthorizedTab('txn_settings') && (
-              <ErrorBoundary fallbackTitle="System Settings Error" fallbackMessage="Could not display System Settings. You can retry or return to workspace.">
-                <SystemSettings
-                  currentUser={effectiveUser || currentUser!}
-                  teams={teams}
-                  databases={databases}
-                  systems={systems}
-                  onAddDatabase={handleAddDatabase}
-                  onToggleDbStatus={handleToggleDbStatus}
-                  onDeleteDb={handleDeleteDb}
-                  onUpdateDb={handleUpdateDatabase}
-                  onNavigateToWorkspace={() => setActiveNavigation('workspace')}
-                  initialTab="dictionary"
-                />
-              </ErrorBoundary>
-            )}
+                {activeNavigation === 'txn_settings' && isAuthorizedTab('txn_settings') && (
+                  <ErrorBoundary fallbackTitle="System Settings Error" fallbackMessage="Could not display System Settings. You can retry or return to workspace.">
+                    <SystemSettings
+                      currentUser={effectiveUser || currentUser!}
+                      teams={teams}
+                      databases={databases}
+                      systems={systems}
+                      onAddDatabase={handleAddDatabase}
+                      onToggleDbStatus={handleToggleDbStatus}
+                      onDeleteDb={handleDeleteDb}
+                      onUpdateDb={handleUpdateDatabase}
+                      onNavigateToWorkspace={() => setActiveNavigation('workspace')}
+                      initialTab="dictionary"
+                    />
+                  </ErrorBoundary>
+                )}
 
-            {/* Unauthorized Administrative Route Guard Screen */}
-            {['admin_panel', 'user_admin', 'txn_settings', 'system_settings', 'admin_team_resources'].includes(activeNavigation) && !isAuthorizedTab(activeNavigation) && (
-              <div className="flex flex-col items-center justify-center min-h-[60vh] text-center p-6 space-y-4" id="admin-access-denied-screen">
-                <div className="w-16 h-16 rounded-2xl bg-rose-50 border border-rose-200 flex items-center justify-center text-rose-600 shadow-xs">
-                  <ShieldAlert size={32} />
-                </div>
-                <div className="space-y-1 max-w-md">
-                  <h2 className="text-base font-bold text-slate-900">Access Restricted to Administrators</h2>
-                  <p className="text-xs text-slate-500 font-sans">
-                    Administrative panels (User Administration, System Settings, Global Dictionaries, and Central Team Resource Monitors) require Workspace Administrator authorization.
-                  </p>
-                </div>
-                <div className="pt-2">
-                  <button
-                    onClick={() => setActiveNavigation('workspace')}
-                    className="px-4 py-2 bg-[#155DFC] hover:bg-[#155DFC]/90 text-white text-xs font-bold rounded-xl transition-all shadow-xs cursor-pointer"
-                  >
-                    Return to Operations Workspace
-                  </button>
-                </div>
-              </div>
-            )}
-            </Suspense>
-          </main>
+                {/* REDESIGNED WORKSPACE ROUTES */}
+                {(activeNavigation === 'automations') && (
+                  <ErrorBoundary fallbackTitle="Automations Error">
+                    <AutomationsView />
+                  </ErrorBoundary>
+                )}
 
+                {(activeNavigation === 'workflows' || activeNavigation === 'workflow_studio') && (
+                  <ErrorBoundary fallbackTitle="Workflow Studio Error">
+                    <WorkflowStudioFlowchart
+                      currentUser={effectiveUser || currentUser!}
+                    />
+                  </ErrorBoundary>
+                )}
+
+                {(activeNavigation === 'rules' || activeNavigation === 'rules_library') && (
+                  <ErrorBoundary fallbackTitle="Rules Library Error">
+                    <ValidationBoxManager
+                      currentUser={effectiveUser || currentUser!}
+                    />
+                  </ErrorBoundary>
+                )}
+
+                {activeNavigation === 'intake' && (
+                  <ErrorBoundary fallbackTitle="Intake Cockpit Error">
+                    <IntakeView
+                      currentTeam={teams.find(t => t.id === deepLinkTeamId) || teams[0] || null}
+                      currentUser={effectiveUser || currentUser}
+                      onNavigateToCase={(caseId) => {
+                        setDeepLinkIssueId(caseId);
+                        setActiveNavigation('workspace');
+                      }}
+                    />
+                  </ErrorBoundary>
+                )}
+
+                {activeNavigation === 'create_case' && (
+                  <ErrorBoundary fallbackTitle="Intake Error">
+                    <WorkspaceTaskCreator
+                      hashtags={hashtags}
+                      currentUser={effectiveUser || currentUser}
+                      systems={systems}
+                      databases={databases}
+                      teams={teams}
+                      users={users}
+                      onCreateIssue={handleCreateIssue}
+                      onBackToWorkspace={() => {
+                        setMailboxTaskPreFill(null);
+                        setActiveNavigation('workspace');
+                      }}
+                      onTaskCreated={(generatedTaskId) => {
+                        if (mailboxTaskPreFill?.sourceMessageId && generatedTaskId) {
+                          api.linkMessageToIssue(mailboxTaskPreFill.sourceMessageId, generatedTaskId).catch(err => {
+                            console.warn('Could not link message to issue:', err);
+                          });
+                        }
+                        setMailboxTaskPreFill(null);
+                        setActiveNavigation('workspace');
+                        if (generatedTaskId) {
+                          setDeepLinkIssueId(generatedTaskId);
+                        }
+                      }}
+                      initialPreFill={mailboxTaskPreFill}
+                    />
+                  </ErrorBoundary>
+                )}
+
+                {activeNavigation === 'connections' && (
+                  <ErrorBoundary fallbackTitle="Connections Error">
+                    <AdminPanel
+                      currentUser={effectiveUser || currentUser}
+                      teams={teams}
+                      users={users}
+                      databases={databases}
+                      plugins={plugins}
+                      systems={systems}
+                      queryApprovals={queryApprovals}
+                      dbAccessRequests={dbAccessRequests}
+                      connectionUsageLogs={connectionUsageLogs}
+                      onResolveQueryApproval={handleResolveQueryApproval}
+                      onResolveDbAccessRequest={handleResolveDbAccessRequest}
+                      onApproveUser={handleApproveUser}
+                      onDeleteUser={handleDeleteUser}
+                      onTogglePlugin={handleTogglePlugin}
+                      onAddDatabase={handleAddDatabase}
+                      onToggleDbStatus={handleToggleDbStatus}
+                      onDeleteDb={handleDeleteDb}
+                      onUpdateDb={handleUpdateDatabase}
+                      onAddSystem={(sys) => setSystems(prev => [...prev, sys])}
+                      onDeleteSystem={(sysId) => setSystems(prev => prev.filter(s => s.id !== sysId))}
+                      onUpdateSystem={(updatedSys) => setSystems(prev => prev.map(s => s.id === updatedSys.id ? updatedSys : s))}
+                      onUpdateUserPrivileges={handleUpdateUserPrivileges}
+                      activeSubTab="connection_settings"
+                      onSelectSubTab={setAdminPanelSubTab}
+                    />
+                  </ErrorBoundary>
+                )}
+
+                {activeNavigation === 'data_setup' && (
+                  <ErrorBoundary fallbackTitle="Data Setup Error">
+                    <SystemSettings
+                      currentUser={effectiveUser || currentUser!}
+                      teams={teams}
+                      databases={databases}
+                      systems={systems}
+                      onAddDatabase={handleAddDatabase}
+                      onToggleDbStatus={handleToggleDbStatus}
+                      onDeleteDb={handleDeleteDb}
+                      onUpdateDb={handleUpdateDatabase}
+                      onNavigateToWorkspace={() => setActiveNavigation('workspace')}
+                      initialTab="dictionary"
+                    />
+                  </ErrorBoundary>
+                )}
+
+                {activeNavigation === 'approvals' && (
+                  <ErrorBoundary fallbackTitle="Approvals Error">
+                    <AdminPanel
+                      currentUser={effectiveUser || currentUser}
+                      teams={teams}
+                      users={users}
+                      databases={databases}
+                      plugins={plugins}
+                      systems={systems}
+                      queryApprovals={queryApprovals}
+                      dbAccessRequests={dbAccessRequests}
+                      connectionUsageLogs={connectionUsageLogs}
+                      onResolveQueryApproval={handleResolveQueryApproval}
+                      onResolveDbAccessRequest={handleResolveDbAccessRequest}
+                      onApproveUser={handleApproveUser}
+                      onDeleteUser={handleDeleteUser}
+                      onTogglePlugin={handleTogglePlugin}
+                      onAddDatabase={handleAddDatabase}
+                      onToggleDbStatus={handleToggleDbStatus}
+                      onDeleteDb={handleDeleteDb}
+                      onUpdateDb={handleUpdateDatabase}
+                      onAddSystem={(sys) => setSystems(prev => [...prev, sys])}
+                      onDeleteSystem={(sysId) => setSystems(prev => prev.filter(s => s.id !== sysId))}
+                      onUpdateSystem={(updatedSys) => setSystems(prev => prev.map(s => s.id === updatedSys.id ? updatedSys : s))}
+                      onUpdateUserPrivileges={handleUpdateUserPrivileges}
+                      activeSubTab="analytics"
+                      onSelectSubTab={setAdminPanelSubTab}
+                    />
+                  </ErrorBoundary>
+                )}
+
+                {/* Unauthorized Administrative Route Guard Screen */}
+                {['admin_panel', 'user_admin', 'txn_settings', 'system_settings', 'admin_team_resources'].includes(activeNavigation) && !isAuthorizedTab(activeNavigation) && (
+                  <div className="flex flex-col items-center justify-center min-h-[60vh] text-center p-6 space-y-4" id="admin-access-denied-screen">
+                    <div className="w-16 h-16 rounded-2xl bg-rose-50 border border-rose-200 flex items-center justify-center text-rose-600 shadow-xs">
+                      <ShieldAlert size={32} />
+                    </div>
+                    <div className="space-y-1 max-w-md">
+                      <h2 className="text-base font-bold text-slate-900 font-heading">Access Restricted to Administrators</h2>
+                      <p className="text-xs text-slate-500 font-sans">
+                        Administrative panels (User Administration, System Settings, Global Dictionaries, and Central Team Resource Monitors) require Workspace Administrator authorization.
+                      </p>
+                    </div>
+                    <div className="pt-2">
+                      <button
+                        onClick={() => setActiveNavigation('workspace')}
+                        className="px-4 py-2 btn-primary-orange text-xs font-bold rounded-xl transition-all shadow-xs cursor-pointer"
+                      >
+                        Return to Operations Workspace
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </Suspense>
+            </main>
+          </div>
         </div>
-        </GovernanceProvider>
-      )}
-      <MessageModal />
-    </div>
-  );
+      </GovernanceProvider>
+    )}
+    <MessageModal />
+  </div>
+);
 }

@@ -41,7 +41,8 @@ import {
   Share2,
   Table,
   GripVertical,
-  FileText
+  FileText,
+  ChevronLeft
 } from 'lucide-react';
 import { api } from '../../api/client';
 import { globalMappingService } from '../../services/globalMappingService';
@@ -128,7 +129,7 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
   const [workflowViewMode, setWorkflowViewMode] = useState<'DAG' | 'LIST'>('DAG');
   const [leftPanelCollapsed, setLeftPanelCollapsed] = useState(false);
   const [rightPanelCollapsed, setRightPanelCollapsed] = useState(true);
-  const [canvasTheme, setCanvasTheme] = useState<'dark' | 'light'>('dark');
+  const [canvasTheme, setCanvasTheme] = useState<'dark' | 'light'>('light');
 
   const canvasRef = useRef<HTMLDivElement>(null);
 
@@ -1532,32 +1533,21 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
     const node = nodes.find(n => n.id === nodeId);
     if (!node) return { x: 0, y: 0 };
 
-    // Terminal Node (START / END) -> Stadium Oval (w: 220, h: 60)
+    // Terminal Node (START / END) -> Stadium Oval (w: 240, h: 52)
     if (node.type === 'START' || node.type === 'END') {
-      const width = 220;
-      const height = 60;
+      const width = 240;
+      const height = 52;
       if (port === 'input') return { x: node.x + width / 2, y: node.y };
       return { x: node.x + width / 2, y: node.y + height };
     }
 
-    const isSearch = isNodeSearchBox(node);
-    if (isSearch) {
-      // Search & Ingest -> Rectangle (w: 260, h: 140)
-      const width = 260;
-      const height = 140;
-      if (port === 'input') return { x: node.x + width / 2, y: node.y };
-      if (port === 'pass') return { x: node.x + 70, y: node.y + height };
-      if (port === 'fail') return { x: node.x + 190, y: node.y + height };
-      return { x: node.x + width / 2, y: node.y + height };
-    }
-
-    // Condition Check -> Rhombus / Diamond (w: 240, h: 210)
-    const width = 240;
-    const height = 210;
-    if (port === 'input') return { x: node.x + width / 2, y: node.y + 6 };
-    if (port === 'pass') return { x: node.x + 48, y: node.y + 192 };
-    if (port === 'fail') return { x: node.x + 192, y: node.y + 192 };
-    return { x: node.x + width / 2, y: node.y + 204 };
+    // Process / Condition / Ingestion / Reconciliation / Report Box (w: 280, h: 185)
+    const width = 280;
+    const height = 185;
+    if (port === 'input') return { x: node.x + width / 2, y: node.y };
+    if (port === 'pass') return { x: node.x + 48, y: node.y + height };
+    if (port === 'fail') return { x: node.x + width - 48, y: node.y + height };
+    return { x: node.x + width / 2, y: node.y + height };
   };
 
   const filteredBoxes = validationBoxes.filter(b => 
@@ -1567,117 +1557,44 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
 
   const canvasSurfaceClasses = canvasTheme === 'dark'
     ? 'bg-[#071318] border-[#163848]'
-    : 'bg-slate-100 border-slate-200';
+    : 'bg-[#FCFCFD] border-slate-200';
   const canvasGridClasses = canvasTheme === 'dark'
     ? 'bg-[radial-gradient(#1b4353_1.2px,transparent_1.2px)]'
-    : 'bg-[radial-gradient(#cbd5e1_1px,transparent_1px)]';
+    : 'bg-[radial-gradient(#e2e8f0_1.2px,transparent_1.2px)]';
 
   return (
-    <div className="h-full flex flex-col min-h-0 overflow-hidden space-y-2">
+    <div className="h-full flex flex-col min-h-0 overflow-hidden space-y-2.5">
       {/* Consolidated Workflow Navigation & Controls Card */}
-      <div className="bg-[#091a22] border border-[#163848] rounded-2xl p-3 sm:p-3.5 text-white shadow-lg space-y-2.5 shrink-0" id="workflow-studio-header">
-        <div className="flex flex-wrap items-center justify-between gap-2.5">
-          {/* Workflow Identity & Metadata Inputs */}
-          <div className="flex flex-wrap items-center gap-2 flex-1 min-w-[260px]">
-            <div className="p-1.5 bg-[#0e212b] text-cyan-400 border border-[#1b4353] rounded-lg shrink-0">
-              <GitFork size={16} />
-            </div>
+      <div className="bg-white border border-slate-200 rounded-2xl p-4 text-slate-800 shadow-2xs space-y-3 shrink-0" id="workflow-studio-header">
+        {/* Top: Breadcrumb */}
+        <div className="flex items-center gap-1.5 text-xs text-slate-500 font-medium">
+          <span className="hover:text-slate-800 cursor-pointer">Workflows</span>
+          <span>/</span>
+          <span className="text-slate-900 font-semibold">Studio</span>
+        </div>
+
+        {/* Middle: Back button, Title & Status, Actions */}
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-center gap-2.5 flex-1 min-w-[260px]">
+            {/* Back Button */}
+            <button
+              type="button"
+              onClick={() => onSelectWorkflow && onSelectWorkflow(null as any)}
+              className="w-8 h-8 rounded-xl border border-slate-200 hover:bg-slate-50 text-slate-600 flex items-center justify-center transition cursor-pointer shadow-2xs"
+              title="Back to Workflows"
+            >
+              <ChevronLeft size={16} />
+            </button>
 
             {/* Editable Workflow Title */}
             <input
               type="text"
               value={workflowName}
               onChange={(e) => setWorkflowName(e.target.value)}
-              placeholder="Workflow Pipeline Name..."
-              className="text-xs sm:text-sm font-bold text-white bg-[#071318] hover:bg-[#0b1d26] focus:bg-[#071318] border border-[#163848] rounded-xl px-2.5 py-1 focus:outline-none focus:border-cyan-400 focus:ring-1 focus:ring-cyan-500/20 transition min-w-[180px] max-w-sm flex-1 font-sans"
+              placeholder="New Validation Pipeline..."
+              className="text-base sm:text-lg font-bold text-slate-900 bg-transparent hover:bg-slate-50 focus:bg-white border border-transparent hover:border-slate-200 focus:border-[#F27421] rounded-xl px-2.5 py-1 focus:outline-none transition min-w-[180px] max-w-sm flex-1 font-sans"
               title="Click to rename workflow"
             />
-
-            {/* Category Selector Pill */}
-            <select
-              value={workflowCategory}
-              onChange={(e: any) => setWorkflowCategory(e.target.value)}
-              className="text-xs font-semibold bg-[#071318] border border-[#163848] rounded-xl px-2.5 py-1 text-cyan-300 focus:outline-none focus:border-cyan-400 cursor-pointer shadow-2xs"
-              title="Workflow Business Category"
-            >
-              <option value="Settlement">Settlement</option>
-              <option value="Reconciliation">Reconciliation</option>
-              <option value="Compliance">Compliance</option>
-              <option value="Fulfillment">Fulfillment</option>
-              <option value="Custom">Custom</option>
-            </select>
-
-            {/* Target Database & Scope Table Target Selection */}
-            <div className="flex items-center gap-1.5 bg-[#071318] border border-[#163848] rounded-xl px-2.5 py-1 text-xs text-slate-300 shadow-2xs">
-              <Database size={13} className="text-cyan-400 shrink-0" />
-              <select
-                value={workflowDbId}
-                onChange={(e) => {
-                  const newDbId = e.target.value;
-                  setWorkflowDbId(newDbId);
-                  const db = databases.find(d => String(d.id) === String(newDbId));
-                  const tbls: string[] = db?.availableTables || db?.allowedTables || (db?.metadata?.tables) || [];
-                  if (tbls.length > 0 && (!workflowTable || !tbls.includes(workflowTable))) {
-                    setWorkflowTable(tbls[0]);
-                  } else if (!newDbId) {
-                    setWorkflowTable('');
-                  }
-                }}
-                className="bg-transparent border-none text-xs font-semibold text-cyan-300 focus:outline-none cursor-pointer max-w-[130px] truncate"
-                title="Target Database Connection"
-              >
-                <option value="" className="bg-[#071318] text-slate-400">(No Target DB)</option>
-                {databases.map(db => (
-                  <option key={db.id} value={db.id} className="bg-[#071318] text-white">{db.name || db.database || db.id}</option>
-                ))}
-              </select>
-
-              {workflowDbId && (
-                <>
-                  <span className="text-slate-600">/</span>
-                  <Table size={12} className="text-slate-500 shrink-0" />
-                  <select
-                    value={workflowTable}
-                    onChange={(e) => setWorkflowTable(e.target.value)}
-                    className="bg-transparent border-none text-xs font-medium text-emerald-300 focus:outline-none cursor-pointer max-w-[120px] truncate"
-                    title="Scope Table"
-                  >
-                    <option value="" className="bg-[#071318] text-slate-400">(All Tables)</option>
-                    {(() => {
-                      const db = databases.find(d => String(d.id) === String(workflowDbId));
-                      const tbls: string[] = db?.availableTables || db?.allowedTables || (db?.metadata?.tables) || [];
-                      return tbls.map((tbl: string) => (
-                        <option key={tbl} value={tbl} className="bg-[#071318] text-white">{tbl}</option>
-                      ));
-                    })()}
-                  </select>
-                </>
-              )}
-            </div>
-
-            {/* Workflow DB Column Rules Acceptance Button */}
-            <button
-              type="button"
-              onClick={() => {
-                setSelectedNode(null);
-                setSelectedConnection(null);
-                setRightPanelCollapsed(false);
-              }}
-              className={`flex items-center gap-1.5 px-2.5 py-1 rounded-xl text-xs font-mono font-semibold transition cursor-pointer border shadow-2xs ${
-                workflowAttachedDbConfigIds.length > 0
-                  ? 'bg-[#0c2e35] border-[#144f56] text-[#00e5b3] hover:bg-[#0e3b44]'
-                  : 'bg-[#071318] border-[#163848] text-slate-400 hover:text-white'
-              }`}
-              title="Open Workflow DB Column Configuration Acceptance Panel"
-            >
-              <ShieldCheck size={13} className={workflowAttachedDbConfigIds.length > 0 ? 'text-[#00e5b3]' : 'text-slate-400'} />
-              <span>DB Rules: {workflowAttachedDbConfigIds.length} Accepted</span>
-            </button>
-
-            {/* Scoped Team Tag */}
-            <span className="text-[10px] font-mono text-cyan-400 bg-[#0c222b] px-2 py-0.5 rounded-lg border border-[#184457] whitespace-nowrap">
-              #{activeWorkflow?.teamId || currentUser?.teamId || 'team-cards'}
-            </span>
 
             {/* Live Status Badge */}
             <AssetStatusBadge
@@ -1690,43 +1607,39 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
           {/* Actions: Save, Share & Delete */}
           <div className="flex items-center gap-2 shrink-0">
             {hasUnsavedChanges && (
-              <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-amber-500/15 text-amber-400 border border-amber-500/30 flex items-center gap-1.5 shadow-2xs">
-                <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse"></span>
+              <span className="px-2.5 py-1 rounded-full text-[10px] font-mono font-bold bg-amber-50 text-amber-700 border border-amber-200 flex items-center gap-1.5 shadow-2xs">
+                <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse"></span>
                 <span>Unsaved</span>
               </span>
+            )}
+
+            {activeWorkflow && (
+              <button
+                type="button"
+                onClick={() => setShowShareModal(true)}
+                className="px-3.5 py-2 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 rounded-xl text-xs font-semibold flex items-center gap-1.5 cursor-pointer shadow-2xs transition"
+                title={`Share workflow "${activeWorkflow.name}"`}
+              >
+                <Share2 size={13} className="text-slate-500" />
+                <span>Share</span>
+              </button>
             )}
 
             <button
               type="button"
               onClick={() => handleSaveWorkflow()}
               disabled={isSaving}
-              className={`px-3.5 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-xs transition disabled:opacity-50 ${
-                hasUnsavedChanges
-                  ? 'bg-amber-600 hover:bg-amber-500 text-white ring-2 ring-amber-500/30 shadow-md'
-                  : 'bg-[#092b34] hover:bg-[#0c3844] text-cyan-300 border border-cyan-500/60 hover:border-cyan-400'
-              }`}
+              className="px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-sm transition disabled:opacity-50 bg-[#F27421] hover:bg-[#e06516] text-white"
             >
               <Save size={13} />
-              <span>{isSaving ? 'Saving...' : 'Save Flowchart'}</span>
+              <span>{isSaving ? 'Saving...' : 'Save flowchart'}</span>
             </button>
 
             {activeWorkflow && (
               <button
                 type="button"
-                onClick={() => setShowShareModal(true)}
-                className="px-3 py-1.5 bg-[#0d222b] hover:bg-[#122c38] text-cyan-300 border border-[#163848] hover:border-cyan-500/50 rounded-xl text-xs font-semibold flex items-center gap-1.5 cursor-pointer shadow-xs transition"
-                title={`Share workflow "${activeWorkflow.name}"`}
-              >
-                <Share2 size={13} className="text-cyan-400" />
-                <span>Share</span>
-              </button>
-            )}
-
-            {activeWorkflow && (
-              <button
-                type="button"
                 onClick={handleDeleteWorkflow}
-                className="p-1.5 text-slate-500 hover:text-rose-400 hover:bg-rose-950/40 border border-transparent hover:border-rose-900/60 rounded-xl transition cursor-pointer"
+                className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 border border-transparent hover:border-rose-200 rounded-xl transition cursor-pointer"
                 title={`Delete workflow "${activeWorkflow.name}"`}
               >
                 <Trash2 size={14} />
@@ -1735,28 +1648,104 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
           </div>
         </div>
 
-        {/* Compact Description Line */}
-        <div className="flex items-center gap-2 pt-2 border-t border-[#163848] text-xs">
-          <span className="text-[11px] font-medium text-slate-400 shrink-0">Description:</span>
-          <input
-            type="text"
-            value={workflowDescription}
-            onChange={(e) => setWorkflowDescription(e.target.value)}
-            className="w-full bg-[#071318] border border-[#163848] rounded-xl px-2.5 py-1 text-xs text-slate-200 focus:outline-none focus:border-cyan-400 focus:bg-[#071318] placeholder:text-slate-500 transition"
-            placeholder="Brief operational summary of this flowchart pipeline..."
-          />
+        {/* Bottom Row: Badges (Category, DB/Table, hashtag, rules accepted) */}
+        <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-100 text-xs">
+          {/* Category Selector Pill */}
+          <select
+            value={workflowCategory}
+            onChange={(e: any) => setWorkflowCategory(e.target.value)}
+            className="text-xs font-medium bg-slate-100 hover:bg-slate-200/60 border border-slate-200 rounded-full px-3 py-1 text-slate-700 focus:outline-none focus:border-[#F27421] cursor-pointer shadow-2xs"
+            title="Workflow Business Category"
+          >
+            <option value="Settlement">Settlement</option>
+            <option value="Reconciliation">Reconciliation</option>
+            <option value="Compliance">Compliance</option>
+            <option value="Fulfillment">Fulfillment</option>
+            <option value="Custom">Custom</option>
+          </select>
+
+          {/* Target Database & Scope Table Target Selection */}
+          <div className="flex items-center gap-1.5 bg-slate-100 border border-slate-200 rounded-full px-3 py-1 text-xs text-slate-700 shadow-2xs">
+            <Database size={13} className="text-slate-500 shrink-0" />
+            <select
+              value={workflowDbId}
+              onChange={(e) => {
+                const newDbId = e.target.value;
+                setWorkflowDbId(newDbId);
+                const db = databases.find(d => String(d.id) === String(newDbId));
+                const tbls: string[] = db?.availableTables || db?.allowedTables || (db?.metadata?.tables) || [];
+                if (tbls.length > 0 && (!workflowTable || !tbls.includes(workflowTable))) {
+                  setWorkflowTable(tbls[0]);
+                } else if (!newDbId) {
+                  setWorkflowTable('');
+                }
+              }}
+              className="bg-transparent border-none text-xs font-semibold text-slate-800 focus:outline-none cursor-pointer max-w-[130px] truncate"
+              title="Target Database Connection"
+            >
+              <option value="">(No Target DB)</option>
+              {databases.map(db => (
+                <option key={db.id} value={db.id}>{db.name || db.database || db.id}</option>
+              ))}
+            </select>
+
+            {workflowDbId && (
+              <>
+                <span className="text-slate-400">/</span>
+                <select
+                  value={workflowTable}
+                  onChange={(e) => setWorkflowTable(e.target.value)}
+                  className="bg-transparent border-none text-xs font-medium text-slate-800 focus:outline-none cursor-pointer max-w-[120px] truncate font-mono"
+                  title="Scope Table"
+                >
+                  <option value="">(All Tables)</option>
+                  {(() => {
+                    const db = databases.find(d => String(d.id) === String(workflowDbId));
+                    const tbls: string[] = db?.availableTables || db?.allowedTables || (db?.metadata?.tables) || [];
+                    return tbls.map((tbl: string) => (
+                      <option key={tbl} value={tbl}>{tbl}</option>
+                    ));
+                  })()}
+                </select>
+              </>
+            )}
+          </div>
+
+          {/* Scoped Team Tag */}
+          <span className="text-xs font-mono font-medium text-slate-700 bg-slate-100 px-3 py-1 rounded-full border border-slate-200 whitespace-nowrap shadow-2xs">
+            #{activeWorkflow?.teamId || currentUser?.teamId || 'team-cards'}
+          </span>
+
+          {/* Workflow DB Column Rules Acceptance Button */}
+          <button
+            type="button"
+            onClick={() => {
+              setSelectedNode(null);
+              setSelectedConnection(null);
+              setRightPanelCollapsed(false);
+            }}
+            className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold transition cursor-pointer border shadow-2xs ${
+              workflowAttachedDbConfigIds.length > 0
+                ? 'bg-orange-50 border-orange-200 text-[#F27421] hover:bg-orange-100'
+                : 'bg-slate-100 border-slate-200 text-slate-600 hover:text-slate-900'
+            }`}
+            title="Open Workflow DB Column Configuration Acceptance Panel"
+          >
+            <ShieldCheck size={13} className={workflowAttachedDbConfigIds.length > 0 ? 'text-[#F27421]' : 'text-slate-500'} />
+            <span>{workflowAttachedDbConfigIds.length} DB rules accepted</span>
+          </button>
         </div>
 
         {saveSuccessMsg && (
-          <div className="p-2 bg-emerald-950/80 border border-emerald-500/50 rounded-xl text-emerald-300 text-xs flex items-center gap-2 animate-in fade-in">
-            <CheckCircle2 size={14} className="text-[#00e5b3] shrink-0" />
+          <div className="p-2.5 bg-emerald-50 border border-emerald-200 rounded-xl text-emerald-800 text-xs flex items-center gap-2 animate-in fade-in">
+            <CheckCircle2 size={14} className="text-emerald-600 shrink-0" />
             <span>{saveSuccessMsg}</span>
           </div>
         )}
       </div>
 
       {/* Main Studio Area: 3-Pane Power-User Architecture */}
-      <div className="flex-1 min-h-0 flex flex-col xl:flex-row gap-0 bg-[#071318] rounded-2xl border border-[#163848] overflow-hidden shadow-2xl items-stretch">
+      <div className="flex-1 min-h-0 flex flex-col xl:flex-row gap-0 bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-xs items-stretch">
         {!leftPanelCollapsed && (
           <div className="shrink-0 h-full flex flex-col min-h-0">
             <WorkflowPalette
@@ -1778,105 +1767,129 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
         )}
 
         {/* Center: Interactive Vertical Flowchart Canvas */}
-        <div className={`relative flex-1 w-full h-full min-h-0 ${canvasSurfaceClasses} flex flex-col min-w-0 ${!rightPanelCollapsed ? 'border-r border-[#163848]' : ''} ${canvasTheme === 'light' ? 'shadow-inner' : ''}`}>
-          {/* Pre-Flight Validation Topology Bar */}
-          <div className={`p-2 border-b shrink-0 ${canvasTheme === 'dark' ? 'bg-[#09151d] border-[#163848]' : 'bg-slate-50 border-slate-200'}`}>
+        <div className={`relative flex-1 w-full h-full min-h-0 bg-[#FCFCFD] flex flex-col min-w-0 ${!rightPanelCollapsed ? 'border-r border-slate-200' : ''}`}>
+          {/* Top Floating / Pre-Flight Topology and Toolbar Row */}
+          <div className="bg-white/80 backdrop-blur-md px-4 py-2.5 border-b border-slate-200 flex items-center justify-between text-xs text-slate-700 shrink-0 z-20">
+            {/* Left: Pre-Flight Validation Status Badge */}
             <WorkflowValidationSummary nodes={nodes} connections={connections} />
-          </div>
 
-          {/* Canvas Floating / Top Bar Toolbar */}
-          <div className="bg-[#09151d] px-4 py-2 border-b border-[#163848] flex items-center justify-between text-xs text-slate-300 shrink-0">
-            {/* Left: View Mode Toggle */}
-            <div className="inline-flex items-center rounded-xl border border-[#163848] bg-[#0b1f28]/90 p-1 backdrop-blur-md shadow-xs">
-              {(['DAG', 'LIST'] as const).map(mode => (
-                <button
-                  key={mode}
-                  type="button"
-                  onClick={() => setWorkflowViewMode(mode)}
-                  className={`px-3 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${
-                    workflowViewMode === mode 
-                      ? 'bg-white text-slate-900 shadow-sm' 
-                      : 'text-cyan-300 hover:text-white'
-                  }`}
-                >
-                  {mode === 'DAG' ? 'DAG View' : 'List View'}
-                </button>
-              ))}
-            </div>
-
-            {/* Center: DAG Counter Pill */}
-            <div className="px-4 py-1.5 rounded-xl bg-[#0b1f28]/90 border border-[#163848] text-cyan-300 text-xs font-mono backdrop-blur-md shadow-xs flex items-center gap-1.5">
-              <span>DAG: {nodes.length} Nodes, {connections.length} Wires</span>
-            </div>
-
-            {/* Right: 5 Square Action Buttons */}
+            {/* Right: View Mode Toggle, Auto-align, Zoom, Actions */}
             <div className="flex items-center gap-2">
+              {/* View Mode Toggle */}
+              <div className="inline-flex items-center rounded-xl border border-slate-200 bg-slate-100 p-0.5 shadow-2xs">
+                {(['DAG', 'LIST'] as const).map(mode => (
+                  <button
+                    key={mode}
+                    type="button"
+                    onClick={() => setWorkflowViewMode(mode)}
+                    className={`px-3 py-1 rounded-lg text-xs font-semibold transition cursor-pointer ${
+                      workflowViewMode === mode 
+                        ? 'bg-white text-slate-900 shadow-xs' 
+                        : 'text-slate-500 hover:text-slate-800'
+                    }`}
+                  >
+                    {mode === 'DAG' ? 'Canvas' : 'List'}
+                  </button>
+                ))}
+              </div>
+
+              {/* Auto-Align Button */}
+              <button
+                type="button"
+                onClick={handleAutoAlignVertical}
+                className="px-3 py-1.5 rounded-xl bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer shadow-2xs"
+                title="Auto-align all nodes vertically into a straight layout"
+              >
+                <Move size={13} />
+                <span>Auto-align</span>
+              </button>
+
+              {/* Zoom Controls Pill */}
+              <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-xl bg-white border border-slate-200 text-slate-700 text-xs shadow-2xs">
+                <button
+                  type="button"
+                  onClick={() => setCanvasZoom(z => Math.max(0.4, Number((z - 0.1).toFixed(1))))}
+                  className="hover:text-slate-900 px-1 font-bold text-xs cursor-pointer"
+                  title="Zoom Out"
+                >
+                  -
+                </button>
+                <span className="font-mono font-semibold px-1 text-[11px]">{Math.round(canvasZoom * 100)}%</span>
+                <button
+                  type="button"
+                  onClick={() => setCanvasZoom(z => Math.min(2, Number((z + 0.1).toFixed(1))))}
+                  className="hover:text-slate-900 px-1 font-bold text-xs cursor-pointer"
+                  title="Zoom In"
+                >
+                  +
+                </button>
+              </div>
+
+              {/* Add Block button */}
               <button
                 type="button"
                 onClick={handleCreateNewFlowchart}
-                className="w-8 h-8 rounded-xl bg-[#0b1f28]/90 border border-[#163848] hover:border-cyan-400 text-cyan-300 hover:text-white flex items-center justify-center transition cursor-pointer backdrop-blur-md shadow-xs"
+                className="w-8 h-8 rounded-xl bg-white border border-slate-200 hover:border-[#F27421] text-slate-600 hover:text-[#F27421] flex items-center justify-center transition cursor-pointer shadow-2xs"
                 title="Add New Flowchart Block"
               >
                 <Plus size={15} />
               </button>
-              <button
-                type="button"
-                onClick={handleAutoAlignVertical}
-                className="w-8 h-8 rounded-xl bg-[#0b1f28]/90 border border-[#163848] hover:border-cyan-400 text-cyan-300 hover:text-white flex items-center justify-center transition cursor-pointer backdrop-blur-md shadow-xs"
-                title="Auto-align all nodes vertically into a straight layout"
-              >
-                <Move size={14} />
-              </button>
+
+              {/* Extend Canvas Height */}
               <button
                 type="button"
                 onClick={() => setExtraCanvasHeight(h => h + 600)}
-                className="w-8 h-8 rounded-xl bg-[#0b1f28]/90 border border-[#163848] hover:border-cyan-400 text-cyan-300 hover:text-white flex items-center justify-center transition cursor-pointer backdrop-blur-md shadow-xs"
+                className="w-8 h-8 rounded-xl bg-white border border-slate-200 hover:border-slate-300 text-slate-600 hover:text-slate-900 flex items-center justify-center transition cursor-pointer shadow-2xs"
                 title="Extend Canvas Height (+600px)"
               >
-                <Maximize2 size={14} />
+                <Maximize2 size={13} />
               </button>
+
+              {/* Left Panel Toggle */}
               <button
                 type="button"
                 onClick={() => setLeftPanelCollapsed(v => !v)}
-                className={`w-8 h-8 rounded-xl border flex items-center justify-center transition cursor-pointer backdrop-blur-md shadow-xs ${
+                className={`w-8 h-8 rounded-xl border flex items-center justify-center transition cursor-pointer shadow-2xs ${
                   leftPanelCollapsed 
-                    ? 'bg-[#0b1f28]/90 border-[#163848] text-slate-500 hover:text-cyan-300' 
-                    : 'bg-[#0c2e35] border-[#144f56] text-[#00e5b3]'
+                    ? 'bg-white border-slate-200 text-slate-400 hover:text-slate-700' 
+                    : 'bg-orange-50 border-orange-200 text-[#F27421]'
                 }`}
                 title={leftPanelCollapsed ? 'Show Flow Catalog' : 'Hide Flow Catalog'}
               >
-                <Eye size={14} />
+                <Eye size={13} />
               </button>
+
+              {/* Right Panel Toggle */}
               <button
                 type="button"
                 onClick={() => setRightPanelCollapsed(v => !v)}
-                className={`w-8 h-8 rounded-xl border flex items-center justify-center transition cursor-pointer backdrop-blur-md shadow-xs ${
+                className={`w-8 h-8 rounded-xl border flex items-center justify-center transition cursor-pointer shadow-2xs ${
                   rightPanelCollapsed 
-                    ? 'bg-[#0b1f28]/90 border-[#163848] text-slate-500 hover:text-cyan-300' 
-                    : 'bg-[#0c2e35] border-[#144f56] text-[#00e5b3]'
+                    ? 'bg-white border-slate-200 text-slate-400 hover:text-slate-700' 
+                    : 'bg-orange-50 border-orange-200 text-[#F27421]'
                 }`}
                 title={rightPanelCollapsed ? 'Show Inspector' : 'Hide Inspector'}
               >
-                <SlidersHorizontal size={14} />
+                <SlidersHorizontal size={13} />
               </button>
             </div>
           </div>
 
           {workflowViewMode === 'LIST' ? (
-            <div className="relative flex-1 bg-slate-900 select-none overflow-auto p-6">
+            <div className="relative flex-1 bg-slate-50 select-none overflow-auto p-6">
               <div className="max-w-5xl mx-auto space-y-4">
-                <div className="rounded-2xl border border-slate-800 bg-slate-950/80 shadow-xl">
-                  <div className="flex items-center justify-between px-4 py-3 border-b border-slate-800">
+                <div className="rounded-2xl border border-slate-200 bg-white shadow-sm">
+                  <div className="flex items-center justify-between px-4 py-3 border-b border-slate-200">
                     <div>
-                      <h3 className="text-sm font-semibold text-white">Workflow Overview</h3>
-                      <p className="text-[11px] text-slate-400">Operational sequence with pass / fail routing.</p>
+                      <h3 className="text-sm font-semibold text-slate-900">Workflow Overview</h3>
+                      <p className="text-[11px] text-slate-500">Operational sequence with pass / fail routing.</p>
                     </div>
-                    <span className="px-2 py-1 rounded-full border border-slate-700 bg-slate-900 text-[10px] font-mono text-slate-300">
+                    <span className="px-2.5 py-1 rounded-full border border-slate-200 bg-slate-50 text-[10px] font-mono font-medium text-slate-700">
                       {orderedNodes.length} Steps
                     </span>
                   </div>
 
-                  <div className="divide-y divide-slate-800">
+                  <div className="divide-y divide-slate-100">
                     {orderedNodes.length === 0 ? (
                       <div className="p-10 text-center text-slate-400 text-xs">
                         No workflow steps yet. Add a node from the left palette to start the pipeline.
@@ -1893,25 +1906,26 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
                             onClick={() => {
                               setSelectedNode(node);
                               setSelectedConnection(null);
+                              setRightPanelCollapsed(false);
                             }}
-                            className="w-full text-left px-4 py-3 transition hover:bg-slate-900/80"
+                            className="w-full text-left px-4 py-3 transition hover:bg-slate-50 cursor-pointer"
                           >
                             <div className="flex items-center gap-4">
-                              <div className="w-8 h-8 rounded-lg border border-slate-700 bg-slate-900 text-[10px] font-bold text-slate-300 flex items-center justify-center">{index + 1}</div>
+                              <div className="w-8 h-8 rounded-lg border border-slate-200 bg-slate-100 text-[10px] font-bold text-slate-700 flex items-center justify-center">{index + 1}</div>
                               <div className="min-w-0 flex-1">
                                 <div className="flex items-center gap-2 flex-wrap">
-                                  <span className="text-sm font-semibold text-white truncate">{node.name}</span>
-                                  <span className="px-2 py-0.5 rounded bg-slate-800 border border-slate-700 text-[10px] font-mono text-slate-300">{typeLabel}</span>
+                                  <span className="text-sm font-semibold text-slate-900 truncate">{node.name}</span>
+                                  <span className="px-2 py-0.5 rounded bg-slate-100 border border-slate-200 text-[10px] font-mono text-slate-600">{typeLabel}</span>
                                 </div>
-                                <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-slate-400">
-                                  {node.targetTable && <span className="font-mono text-emerald-300">{node.targetTable}</span>}
+                                <div className="mt-1 flex flex-wrap items-center gap-2 text-[11px] text-slate-500">
+                                  {node.targetTable && <span className="font-mono text-emerald-700 font-semibold">{node.targetTable}</span>}
                                   {(node.columnConfigurationIds?.length || node.columnConfigurations?.length) ? (
-                                    <span className="px-1.5 py-0.5 rounded border border-emerald-500/40 bg-emerald-950/60 text-emerald-300 text-[10px] font-mono">
+                                    <span className="px-1.5 py-0.5 rounded border border-emerald-200 bg-emerald-50 text-emerald-700 text-[10px] font-mono">
                                       {node.columnConfigurationIds?.length || node.columnConfigurations?.length} rules
                                     </span>
                                   ) : null}
                                   {node.reportColumnName && (
-                                    <span className="px-1.5 py-0.5 rounded border border-violet-500/40 bg-violet-950/60 text-violet-300 text-[10px] font-mono">
+                                    <span className="px-1.5 py-0.5 rounded border border-violet-200 bg-violet-50 text-violet-700 text-[10px] font-mono">
                                       Col: {node.reportColumnName}
                                     </span>
                                   )}
@@ -1919,7 +1933,7 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
                               </div>
                               <div className="text-right">
                                 <div className="text-[10px] font-mono text-slate-400">Output</div>
-                                <div className="mt-1 text-[10px] font-bold text-slate-200">{outputSummary}</div>
+                                <div className="mt-1 text-[10px] font-bold text-slate-700">{outputSummary}</div>
                               </div>
                             </div>
                           </button>
@@ -1935,38 +1949,9 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
               ref={canvasRef}
               onMouseMove={handleCanvasMouseMove}
               onMouseUp={handleCanvasMouseUp}
-              className={`relative flex-1 ${canvasGridClasses} [background-size:24px_24px] select-none overflow-auto p-6 bg-[#071318]`}
+              className="relative flex-1 bg-[#FCFCFD] bg-[radial-gradient(#e2e8f0_1.2px,transparent_1.2px)] [background-size:24px_24px] select-none overflow-auto p-6"
               style={{ minHeight: '600px' }}
             >
-              {/* Bottom-Left Floating Zoom Controls Pill */}
-              <div className="absolute bottom-5 left-5 z-30 flex items-center gap-2.5 px-3 py-1.5 rounded-xl bg-[#0b1f28]/90 border border-[#163848] text-cyan-300 text-xs backdrop-blur-md shadow-md">
-                <button
-                  type="button"
-                  onClick={() => setCanvasZoom(z => Math.max(0.4, Number((z - 0.1).toFixed(1))))}
-                  className="hover:text-white px-1 font-bold text-sm cursor-pointer"
-                  title="Zoom Out"
-                >
-                  -
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setCanvasZoom(z => Math.min(2, Number((z + 0.1).toFixed(1))))}
-                  className="hover:text-white px-1 font-bold text-sm cursor-pointer"
-                  title="Zoom In"
-                >
-                  +
-                </button>
-                <span className="font-mono font-semibold px-1">{Math.round(canvasZoom * 100)}%</span>
-                <button
-                  type="button"
-                  onClick={() => setCanvasZoom(1)}
-                  className="hover:text-white p-0.5 cursor-pointer"
-                  title="Reset Zoom"
-                >
-                  <Maximize2 size={12} />
-                </button>
-              </div>
-
               {/* Inner Sizing Wrapper: explicitly dictates scrollable width/height so scrolling is limitless */}
               <div
                 style={{
@@ -1981,20 +1966,17 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
                   style={{ width: `${canvasDimensions.width}px`, height: `${canvasDimensions.height}px` }}
                 >
                 <defs>
-                  <filter id="wire-glow" x="-20%" y="-20%" width="140%" height="140%">
-                    <feDropShadow dx="0" dy="0" stdDeviation="2" floodColor="#00e5b3" floodOpacity="0.5" />
-                  </filter>
+                  <marker id="arrow-navy" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+                    <path d="M 0 0 L 10 5 L 0 10 z" fill="#0F142A" />
+                  </marker>
                   <marker id="arrow-emerald" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
-                    <path d="M 0 0 L 10 5 L 0 10 z" fill="#00e5b3" />
+                    <path d="M 0 0 L 10 5 L 0 10 z" fill="#10b981" />
                   </marker>
                   <marker id="arrow-rose" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
-                    <path d="M 0 0 L 10 5 L 0 10 z" fill="#ef4444" />
+                    <path d="M 0 0 L 10 5 L 0 10 z" fill="#f43f5e" />
                   </marker>
                   <marker id="arrow-purple" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
                     <path d="M 0 0 L 10 5 L 0 10 z" fill="#a855f7" />
-                  </marker>
-                  <marker id="arrow-blue" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto">
-                    <path d="M 0 0 L 10 5 L 0 10 z" fill="#00e5b3" />
                   </marker>
                 </defs>
 
@@ -2010,10 +1992,12 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
                   const midX = (fromPoint.x + toPoint.x) / 2;
                   const midY = (fromPoint.y + toPoint.y) / 2;
 
+                  const isPass = conn.fromPort === 'pass';
+                  const isFail = conn.fromPort === 'fail' || conn.action === 'STOP';
                   const isReport = conn.action === 'REPORT';
-                  const isStop = conn.action === 'STOP';
-                  const strokeColor = isReport ? '#a855f7' : isStop ? '#ef4444' : '#00e5b3';
-                  const markerId = isReport ? 'url(#arrow-purple)' : isStop ? 'url(#arrow-rose)' : 'url(#arrow-emerald)';
+
+                  const strokeColor = isReport ? '#a855f7' : isFail ? '#f43f5e' : isPass ? '#10b981' : '#0F142A';
+                  const markerId = isReport ? 'url(#arrow-purple)' : isFail ? 'url(#arrow-rose)' : isPass ? 'url(#arrow-emerald)' : 'url(#arrow-navy)';
 
                   return (
                     <g key={conn.id} className="pointer-events-auto cursor-pointer group" onClick={() => {
@@ -2033,20 +2017,20 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
                         d={path}
                         fill="none"
                         stroke={strokeColor}
-                        strokeWidth={isReport ? '3' : '2.5'}
-                        strokeDasharray={isReport ? '5 3' : 'none'}
+                        strokeWidth="2.5"
+                        strokeDasharray={isFail ? '6 4' : 'none'}
                         markerEnd={markerId}
-                        filter="url(#wire-glow)"
-                        className="group-hover:stroke-white transition"
+                        className="group-hover:stroke-[#F27421] transition"
                       />
                       {/* Action badge on wire */}
-                      <foreignObject x={midX - 48} y={midY - 14} width="96" height="28">
-                        <div className={`px-2 py-0.5 rounded-lg text-[10px] font-bold font-mono text-center shadow-md border truncate ${
-                          isReport ? 'bg-purple-950 text-purple-200 border-purple-400' :
-                          isStop ? 'bg-[#271115] text-rose-300 border-rose-500' :
-                          'bg-[#072422] text-[#00e5b3] border border-[#00e5b3]/50'
+                      <foreignObject x={midX - 44} y={midY - 14} width="88" height="28">
+                        <div className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold font-sans text-center shadow-xs border truncate ${
+                          isReport ? 'bg-purple-50 text-purple-700 border-purple-200' :
+                          isFail ? 'bg-rose-50 text-rose-700 border-rose-300' :
+                          isPass ? 'bg-emerald-50 text-emerald-700 border-emerald-300' :
+                          'bg-slate-100 text-slate-700 border-slate-300'
                         }`}>
-                          {conn.label || conn.action}
+                          {conn.label || (isPass ? 'Pass' : isFail ? 'Fail' : conn.action)}
                         </div>
                       </foreignObject>
                     </g>
@@ -2058,28 +2042,28 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
                   <path
                     d={`M ${wireSource.startX} ${wireSource.startY} C ${wireSource.startX} ${wireSource.startY + 50}, ${mousePos.x} ${mousePos.y - 50}, ${mousePos.x} ${mousePos.y}`}
                     fill="none"
-                    stroke="#00e5b3"
+                    stroke={wireSource.port === 'pass' ? '#10b981' : wireSource.port === 'fail' ? '#f43f5e' : '#0F142A'}
                     strokeWidth="2.5"
-                    strokeDasharray="5 3"
-                    markerEnd="url(#arrow-emerald)"
+                    strokeDasharray={wireSource.port === 'fail' ? '6 4' : 'none'}
+                    markerEnd={wireSource.port === 'pass' ? 'url(#arrow-emerald)' : wireSource.port === 'fail' ? 'url(#arrow-rose)' : 'url(#arrow-navy)'}
                   />
                 )}
               </svg>
 
               {nodes.length === 0 && (
                 <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-auto">
-                  <div className="bg-[#0b1f28]/95 border border-[#163848] rounded-2xl p-8 max-w-md text-center shadow-2xl backdrop-blur-xs">
-                    <div className="w-12 h-12 rounded-xl bg-[#0c2e35] text-[#00e5b3] flex items-center justify-center mx-auto mb-3">
+                  <div className="bg-white border border-slate-200 rounded-2xl p-8 max-w-md text-center shadow-xl backdrop-blur-xs">
+                    <div className="w-12 h-12 rounded-xl bg-orange-50 text-[#F27421] border border-orange-200 flex items-center justify-center mx-auto mb-3 shadow-2xs">
                       <GitFork size={24} />
                     </div>
-                    <h3 className="text-sm font-bold text-white mb-1">No Flowchart Pipeline Configured</h3>
-                    <p className="text-xs text-slate-400 mb-5">
+                    <h3 className="text-sm font-bold text-slate-900 mb-1">No Flowchart Pipeline Configured</h3>
+                    <p className="text-xs text-slate-500 mb-5">
                       There are no active flowchart workflows. Create a new pipeline or drag blocks from the left catalog to begin.
                     </p>
                     <button
                       type="button"
                       onClick={handleCreateNewFlowchart}
-                      className="px-4 py-2 bg-[#092b34] hover:bg-[#0c3844] text-cyan-300 border border-cyan-500/60 hover:border-cyan-400 text-xs font-bold rounded-xl shadow-sm transition inline-flex items-center gap-2 cursor-pointer"
+                      className="px-4 py-2 bg-[#F27421] hover:bg-[#e06516] text-white text-xs font-bold rounded-xl shadow-sm transition inline-flex items-center gap-2 cursor-pointer"
                     >
                       <Plus size={14} />
                       <span>Create New Flowchart Pipeline</span>
@@ -2094,40 +2078,22 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
                 const isEnd = node.type === 'END';
                 const hasReportColumn = Boolean(node.reportColumnName);
 
-                // 1. TERMINAL NODES (START / END) - Flowchart Stadium Oval
-                if (isStart || isEnd) {
+                // 1. START TERMINAL NODE: Dark navy stadium pill with orange play icon
+                if (isStart) {
                   return (
                     <div
                       key={node.id}
                       style={{ transform: `translate(${node.x}px, ${node.y}px)` }}
                       onMouseDown={(e) => handleNodeMouseDown(e, node.id)}
-                      className="absolute w-[240px] h-[56px] rounded-full select-none z-10 transition-shadow shadow-xl flex items-center justify-between px-4 border-2 cursor-grab active:cursor-grabbing bg-[#0c242e] border-[#184556] hover:border-cyan-400 text-white"
+                      className="absolute w-[240px] h-[52px] rounded-full select-none z-10 transition-shadow shadow-lg flex items-center justify-between px-4 border border-slate-800 cursor-grab active:cursor-grabbing bg-[#0F142A] text-white"
                     >
-                      {/* Top Input Port (End only) */}
-                      {isEnd && (
-                        <div
-                          title="Input Port (Drop wire here)"
-                          onMouseUp={(e) => handleCompleteWire(e, node.id)}
-                          className="absolute -top-2.5 left-1/2 -translate-x-1/2 w-5 h-5 rounded-full bg-[#071318] border-2 border-cyan-400 hover:border-white hover:scale-125 flex items-center justify-center transition cursor-pointer z-20 shadow-md"
-                        >
-                          <div className="w-1.5 h-1.5 rounded-full bg-cyan-300"></div>
-                        </div>
-                      )}
-
                       <div className="flex items-center gap-2.5 min-w-0">
-                        {isStart ? (
-                          <div className="w-2.5 h-2.5 rounded-full bg-[#00e5b3] shadow-[0_0_8px_#00e5b3] shrink-0"></div>
-                        ) : (
-                          <div className="w-3.5 h-3.5 rounded bg-purple-500/30 border border-purple-400 flex items-center justify-center shrink-0">
-                            <div className="w-1.5 h-1.5 bg-purple-300 rounded-xs"></div>
-                          </div>
-                        )}
-                        <div className="min-w-0">
-                          <div className="text-[9px] font-mono font-bold uppercase tracking-wider text-slate-400">
-                            {isStart ? 'TERMINAL START' : 'TERMINAL END'}
-                          </div>
-                          <h4 className="font-bold text-xs truncate text-white">{node.name}</h4>
+                        <div className="w-6 h-6 rounded-full bg-[#F27421] text-white flex items-center justify-center shrink-0 shadow-xs">
+                          <Play size={12} className="fill-white ml-0.5" />
                         </div>
+                        <h4 className="font-bold text-xs tracking-wider uppercase text-white truncate">
+                          {node.name || 'START'}
+                        </h4>
                       </div>
 
                       <button
@@ -2136,59 +2102,115 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
                           e.stopPropagation();
                           handleDeleteNode(node.id);
                         }}
-                        className="p-1 hover:bg-rose-500/20 rounded-full text-slate-500 hover:text-rose-400 transition cursor-pointer"
-                        title="Remove Terminal"
+                        className="p-1 hover:bg-white/10 rounded-full text-slate-400 hover:text-rose-400 transition cursor-pointer"
+                        title="Remove Start"
                       >
-                        <Trash2 size={12} />
+                        <Trash2 size={13} />
                       </button>
 
-                      {/* Bottom Output Port (Start only) */}
-                      {isStart && (
-                        <div
-                          title="Drag downwards to connect start of pipeline"
-                          onMouseDown={(e) => handleStartWire(e, node.id, 'output')}
-                          className="absolute -bottom-2.5 left-1/2 -translate-x-1/2 w-5 h-5 rounded-full bg-[#071318] border-2 border-cyan-400 hover:border-[#00e5b3] hover:scale-125 flex items-center justify-center transition cursor-crosshair z-20 shadow-md"
-                        >
-                          <div className="w-1.5 h-1.5 rounded-full bg-cyan-400"></div>
-                        </div>
-                      )}
+                      {/* Bottom Output Port Pill */}
+                      <div
+                        title="Drag downwards to connect start of pipeline"
+                        onMouseDown={(e) => handleStartWire(e, node.id, 'output')}
+                        className="absolute -bottom-3 left-1/2 -translate-x-1/2 px-2 py-0.5 rounded-full bg-slate-900 border border-slate-700 text-slate-300 hover:text-white hover:border-[#F27421] text-[9px] font-mono font-semibold flex items-center gap-1 shadow-md cursor-crosshair transition z-20 group"
+                      >
+                        <div className="w-1.5 h-1.5 rounded-full bg-[#F27421]"></div>
+                        <span>Continue</span>
+                      </div>
                     </div>
                   );
                 }
 
-                // 2. PROCESS / CONDITION / RECONCILIATION / REPORT BOX (Structured Card from design)
+                // 2. END TERMINAL NODES: White stadium pill with green or red border
+                if (isEnd) {
+                  const isFailed = node.name.toLowerCase().includes('not') || 
+                                   node.name.toLowerCase().includes('fail') || 
+                                   node.name.toLowerCase().includes('stop') ||
+                                   node.name.toLowerCase().includes('reject');
+                  const isReconciled = !isFailed;
+                  return (
+                    <div
+                      key={node.id}
+                      style={{ transform: `translate(${node.x}px, ${node.y}px)` }}
+                      onMouseDown={(e) => handleNodeMouseDown(e, node.id)}
+                      className={`absolute w-[240px] h-[50px] rounded-full select-none z-10 transition-shadow shadow-md flex items-center justify-between px-4 border-2 cursor-grab active:cursor-grabbing bg-white ${
+                        isReconciled ? 'border-emerald-500 text-emerald-800' : 'border-rose-500 text-rose-800'
+                      }`}
+                    >
+                      {/* Top Input Port */}
+                      <div
+                        title="Input Port (Drop wire here)"
+                        onMouseUp={(e) => handleCompleteWire(e, node.id)}
+                        className="absolute -top-2.5 left-1/2 -translate-x-1/2 w-5 h-5 rounded-full bg-white border-2 border-slate-400 hover:border-[#F27421] hover:scale-125 flex items-center justify-center transition cursor-pointer z-20 shadow-xs"
+                      >
+                        <div className="w-1.5 h-1.5 rounded-full bg-slate-600"></div>
+                      </div>
+
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <div className={`w-5 h-5 rounded-full flex items-center justify-center font-bold text-xs shrink-0 ${
+                          isReconciled ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'
+                        }`}>
+                          {isReconciled ? '✓' : '✕'}
+                        </div>
+                        <h4 className="font-bold text-xs truncate">
+                          {node.name}
+                        </h4>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDeleteNode(node.id);
+                        }}
+                        className="p-1 hover:bg-slate-100 rounded-full text-slate-400 hover:text-rose-600 transition cursor-pointer"
+                        title="Remove Terminal"
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
+                  );
+                }
+
+                // 3. PROCESS / CONDITION / RECONCILIATION / REPORT BOX (Structured Card matching 03_workflow_studio.png)
+                const isSelected = selectedNode?.id === node.id;
                 const boxTypeLabel = node.boxType === 'INGESTION_SEARCH'
-                  ? 'SEARCH & INGEST'
+                  ? 'Search & Ingest'
                   : node.boxType === 'RECONCILIATION'
-                  ? 'RECONCILIATION'
+                  ? 'Reconciliation'
                   : node.boxType === 'REPORT'
-                  ? 'REPORT'
-                  : 'CONDITION CHECK';
+                  ? 'Report'
+                  : 'Condition check';
 
                 return (
                   <div
                     key={node.id}
                     style={{ transform: `translate(${node.x}px, ${node.y}px)` }}
                     onMouseDown={(e) => handleNodeMouseDown(e, node.id)}
-                    className="absolute w-[270px] rounded-xl select-none z-10 bg-[#0a1e27] border-2 border-[#184457] hover:border-cyan-400 shadow-2xl text-white flex flex-col justify-between transition cursor-grab active:cursor-grabbing group overflow-hidden"
+                    onClick={() => {
+                      setSelectedNode(node);
+                      setSelectedConnection(null);
+                      setRightPanelCollapsed(false);
+                    }}
+                    className={`absolute w-[280px] rounded-2xl select-none z-10 bg-white transition-all shadow-lg p-4 text-slate-800 flex flex-col justify-between cursor-grab active:cursor-grabbing group ${
+                      isSelected ? 'border-2 border-[#F27421] ring-2 ring-[#F27421]/20 shadow-xl' : 'border-2 border-[#F27421] hover:shadow-xl'
+                    }`}
                   >
                     {/* Top Input Port */}
                     <div
                       title="Input Port (Drop wire here)"
                       onMouseUp={(e) => handleCompleteWire(e, node.id)}
-                      className="absolute -top-2.5 left-1/2 -translate-x-1/2 w-5 h-5 rounded-full bg-[#071318] border-2 border-cyan-400 hover:border-white hover:scale-125 flex items-center justify-center transition cursor-pointer z-20 shadow-md"
+                      className="absolute -top-2.5 left-1/2 -translate-x-1/2 w-5 h-5 rounded-full bg-white border-2 border-slate-400 hover:border-[#F27421] hover:scale-125 flex items-center justify-center transition cursor-pointer z-20 shadow-xs"
                     >
-                      <div className="w-1.5 h-1.5 rounded-full bg-cyan-300"></div>
+                      <div className="w-1.5 h-1.5 rounded-full bg-slate-600"></div>
                     </div>
 
-                    {/* Header */}
-                    <div className="px-3.5 py-2 border-b border-[#143949] bg-[#091a22] flex items-center justify-between">
-                      <div className="flex items-center gap-1.5 truncate">
-                        <FileText size={13} className="text-cyan-400 shrink-0" />
-                        <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-cyan-300 truncate">
-                          {boxTypeLabel}
-                        </span>
-                      </div>
+                    {/* Header with pill and actions */}
+                    <div className="flex items-center justify-between">
+                      <span className="bg-orange-50 text-[#F27421] border border-orange-200 text-[10px] font-bold px-2 py-0.5 rounded-full inline-flex items-center gap-1 shadow-2xs">
+                        <span>@</span>
+                        <span>{boxTypeLabel}</span>
+                      </span>
                       <div className="flex items-center gap-1">
                         <button
                           type="button"
@@ -2198,10 +2220,10 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
                             setSelectedConnection(null);
                             setRightPanelCollapsed(false);
                           }}
-                          className="p-1 hover:bg-white/10 rounded text-slate-400 hover:text-white transition cursor-pointer"
+                          className="p-1 hover:bg-slate-100 rounded text-slate-400 hover:text-slate-800 transition cursor-pointer"
                           title="Configure Block"
                         >
-                          <Sliders size={12} />
+                          <Sliders size={13} />
                         </button>
                         <button
                           type="button"
@@ -2209,73 +2231,71 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
                             e.stopPropagation();
                             handleDeleteNode(node.id);
                           }}
-                          className="p-1 hover:bg-rose-500/20 rounded text-slate-400 hover:text-rose-400 transition cursor-pointer"
+                          className="p-1 hover:bg-rose-50 rounded text-slate-400 hover:text-rose-600 transition cursor-pointer"
                           title="Remove Block"
                         >
-                          <Trash2 size={12} />
+                          <Trash2 size={13} />
                         </button>
-                        <GripVertical size={13} className="text-slate-500 ml-0.5 cursor-grab" />
                       </div>
                     </div>
 
                     {/* Body */}
-                    <div className="p-3.5 space-y-1.5 text-xs">
-                      <h3 className="font-bold text-white text-xs tracking-tight line-clamp-1">
+                    <div className="mt-2.5 space-y-1.5">
+                      <h3 className="font-bold text-slate-900 text-sm tracking-tight truncate">
                         {node.name}
                       </h3>
-                      <p className="text-[11px] text-cyan-400/70 line-clamp-2 leading-relaxed">
-                        {node.description || (node.targetTable ? `Ingestion and mirror lookup (${node.targetTable})` : 'Ingestion and mirror lookup')}
+                      <p className="text-xs text-slate-500 line-clamp-2 leading-relaxed">
+                        {node.description || (node.targetTable ? `Validate records against ${node.targetTable}` : 'Condition verification step')}
                       </p>
 
-                      {node.targetTable && (
-                        <div className="flex items-center gap-1 text-[10px] text-cyan-300 font-mono">
-                          <span className="text-slate-500">Target:</span>
-                          <span className="bg-[#0c222b] px-1.5 py-0.2 rounded border border-[#184457] font-semibold truncate">
+                      {/* Tag badges row */}
+                      <div className="flex items-center gap-1.5 pt-1 flex-wrap">
+                        {node.targetTable && (
+                          <span className="bg-slate-100 text-slate-600 px-2 py-0.5 rounded-md text-[10px] font-mono font-medium border border-slate-200">
                             {node.targetTable}
                           </span>
-                        </div>
-                      )}
-
-                      {Boolean(node.attachedDbConfigIds?.length || node.columnConfigurationIds?.length || node.columnConfigurations?.length) && (
-                        <div className="flex items-center gap-1 text-[10px] text-[#00e5b3] font-mono">
-                          <span className="bg-[#072422] px-1.5 py-0.2 rounded border border-[#00e5b3]/40 font-semibold truncate flex items-center gap-1">
-                            <span className="w-1.5 h-1.5 rounded-full bg-[#00e5b3]"></span>
+                        )}
+                        <span className="bg-slate-100 text-slate-600 px-2 py-0.5 rounded-md text-[10px] font-mono font-medium border border-slate-200">
+                          {workflowCategory || 'Sett'}
+                        </span>
+                        {Boolean(node.attachedDbConfigIds?.length || node.columnConfigurationIds?.length || node.columnConfigurations?.length) && (
+                          <span className="bg-emerald-50 text-emerald-700 px-2 py-0.5 rounded-md text-[10px] font-mono font-medium border border-emerald-200">
                             {node.attachedDbConfigIds?.length || node.columnConfigurationIds?.length || node.columnConfigurations?.length} Table Rules
                           </span>
-                        </div>
-                      )}
+                        )}
+                      </div>
 
                       {hasReportColumn && (
-                        <div className="p-1 bg-purple-950/80 border border-purple-500/40 rounded flex items-center justify-between gap-1 text-[9px]">
-                          <span className="text-purple-300 font-bold truncate flex items-center gap-1 font-mono">
-                            <FileSpreadsheet size={10} className="text-purple-400" />
+                        <div className="p-1 bg-purple-50 border border-purple-200 rounded flex items-center justify-between gap-1 text-[9px]">
+                          <span className="text-purple-700 font-bold truncate flex items-center gap-1 font-mono">
+                            <FileSpreadsheet size={10} className="text-purple-600" />
                             <span>Col: "{node.reportColumnName}"</span>
                           </span>
-                          <span className="px-1 py-0.2 rounded bg-purple-700 text-white font-mono text-[8px] font-bold">
+                          <span className="px-1 py-0.2 rounded bg-purple-600 text-white font-mono text-[8px] font-bold">
                             GRID
                           </span>
                         </div>
                       )}
                     </div>
 
-                    {/* Bottom Egress Ports: PASS and FAIL */}
-                    <div className="px-3 pb-3 pt-1 border-t border-[#143949] bg-[#071720] flex items-center justify-between gap-3 text-[10px] font-mono">
+                    {/* Bottom Egress Ports: Pass and Fail */}
+                    <div className="mt-4 pt-2.5 border-t border-slate-100 flex items-center justify-between gap-3 text-[10px]">
                       {/* Left: PASS port pill */}
                       <div className="relative">
                         <button
                           type="button"
                           title="Drag downwards on PASS"
                           onMouseDown={(e) => handleStartWire(e, node.id, 'pass')}
-                          className="px-2.5 py-1 rounded-lg bg-[#072422] text-[#00e5b3] border border-[#00e5b3]/50 hover:border-[#00e5b3] hover:bg-[#093532] flex items-center gap-1.5 cursor-crosshair transition shadow-xs"
+                          className="px-2.5 py-1 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-300 hover:bg-emerald-100 flex items-center gap-1 font-bold cursor-crosshair transition shadow-2xs"
                         >
-                          <div className="w-1.5 h-1.5 rounded-full bg-[#00e5b3] shadow-[0_0_4px_#00e5b3]"></div>
-                          <span className="font-bold">PASS ➔</span>
+                          <span>✓</span>
+                          <span>Pass</span>
                         </button>
                         <div
                           onMouseDown={(e) => handleStartWire(e, node.id, 'pass')}
-                          className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 w-3.5 h-3.5 rounded-full bg-[#071318] border border-[#00e5b3] flex items-center justify-center cursor-crosshair hover:scale-125 transition"
+                          className="absolute -bottom-2 left-1/2 -translate-x-1/2 w-4 h-4 rounded-full bg-white border-2 border-emerald-500 flex items-center justify-center cursor-crosshair hover:scale-125 transition shadow-xs"
                         >
-                          <div className="w-1 h-1 rounded-full bg-[#00e5b3]"></div>
+                          <div className="w-1.5 h-1.5 rounded-full bg-emerald-600"></div>
                         </div>
                       </div>
 
@@ -2285,16 +2305,16 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
                           type="button"
                           title="Drag downwards on FAIL"
                           onMouseDown={(e) => handleStartWire(e, node.id, 'fail')}
-                          className="px-2.5 py-1 rounded-lg bg-[#271115] text-rose-400 border border-rose-500/50 hover:border-rose-400 hover:bg-[#38161c] flex items-center gap-1.5 cursor-crosshair transition shadow-xs"
+                          className="px-2.5 py-1 rounded-full bg-rose-50 text-rose-700 border border-rose-300 hover:bg-rose-100 flex items-center gap-1 font-bold cursor-crosshair transition shadow-2xs"
                         >
-                          <div className="w-1.5 h-1.5 rounded-full bg-rose-500"></div>
-                          <span className="font-bold">FAIL ✕</span>
+                          <span>✕</span>
+                          <span>Fail</span>
                         </button>
                         <div
                           onMouseDown={(e) => handleStartWire(e, node.id, 'fail')}
-                          className="absolute -bottom-1.5 left-1/2 -translate-x-1/2 w-3.5 h-3.5 rounded-full bg-[#071318] border border-rose-500 flex items-center justify-center cursor-crosshair hover:scale-125 transition"
+                          className="absolute -bottom-2 left-1/2 -translate-x-1/2 w-4 h-4 rounded-full bg-white border-2 border-rose-500 flex items-center justify-center cursor-crosshair hover:scale-125 transition shadow-xs"
                         >
-                          <div className="w-1 h-1 rounded-full bg-rose-500"></div>
+                          <div className="w-1.5 h-1.5 rounded-full bg-rose-600"></div>
                         </div>
                       </div>
                     </div>
@@ -2820,3 +2840,5 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
     </div>
   );
 };
+
+export default WorkflowStudioFlowchart;

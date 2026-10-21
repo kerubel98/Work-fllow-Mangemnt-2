@@ -1,17 +1,26 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { ChatMessage, User, Issue } from '../../types';
+import { ChatMessage, User, Issue, Team, HashtagPreset } from '../../types';
 import { MessageSquare, Send, Sparkles, UserCheck, ShieldCheck, User as UserIcon } from 'lucide-react';
+import UnifiedChatInput, { InChatDirectiveType } from '../chat/UnifiedChatInput';
 
 interface IssueChatPanelProps {
   issue: Issue;
   currentUser: User;
+  users?: User[];
+  teams?: Team[];
+  hashtags?: HashtagPreset[];
   onSendMessage: (issueId: string, text: string) => void;
+  onExecuteDirective?: (directive: InChatDirectiveType, context: string) => void;
 }
 
 export default function IssueChatPanel({
   issue,
   currentUser,
-  onSendMessage
+  users = [],
+  teams = [],
+  hashtags = [],
+  onSendMessage,
+  onExecuteDirective
 }: IssueChatPanelProps) {
   const [inputText, setInputText] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
@@ -134,23 +143,23 @@ export default function IssueChatPanel({
       </div>
 
       {/* Input Form */}
-      <form onSubmit={handleSend} className="p-3 bg-white border-t border-slate-200 flex items-center gap-2">
-        <input
-          type="text"
+      <div className="p-3 bg-white border-t border-slate-200">
+        <UnifiedChatInput
+          currentUser={currentUser}
+          users={users}
+          teams={teams}
+          hashtags={hashtags}
+          placeholder={`Add a note, @ to mention, @@ for team, / for directives...`}
           value={inputText}
-          onChange={(e) => setInputText(e.target.value)}
-          placeholder={`Add a note or reply as @${currentUser.username}...`}
-          className="flex-grow text-sm px-3 py-2 bg-slate-50 border border-slate-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:bg-white transition"
+          onChange={setInputText}
+          onSendMessage={(content) => {
+            onSendMessage(issue.id, content);
+            setInputText('');
+          }}
+          onExecuteDirective={onExecuteDirective}
+          inputId={`input-issue-${issue.id}-chat`}
         />
-        <button
-          type="submit"
-          disabled={!inputText.trim()}
-          className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-40 disabled:hover:bg-blue-600 text-white rounded-lg text-sm font-medium flex items-center gap-1.5 transition shadow-sm"
-        >
-          <Send className="w-4 h-4" />
-          <span>Send</span>
-        </button>
-      </form>
+      </div>
     </div>
   );
 }

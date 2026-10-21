@@ -59,31 +59,31 @@ export const WorkflowValidationSummary: React.FC<WorkflowValidationSummaryProps>
 
   if (issues.length === 0) {
     return (
-      <div className="flex items-center space-x-2 px-3 py-1.5 bg-emerald-950/40 border border-emerald-500/40 rounded-xl text-emerald-300 text-xs font-mono">
-        <CheckCircle2 size={14} className="text-emerald-400 shrink-0" />
-        <span>Pre-Flight Check: Pipeline topology valid &amp; fully connected ({nodes.length} nodes, {connections.length} wires)</span>
+      <div className="inline-flex items-center gap-2 px-3.5 py-1.5 bg-emerald-50 border border-emerald-200 rounded-full text-emerald-800 text-xs font-sans shadow-2xs">
+        <CheckCircle2 size={14} className="text-emerald-600 shrink-0" />
+        <span className="font-medium">Pre-flight passed · {nodes.length} nodes, {connections.length} wires</span>
       </div>
     );
   }
 
   return (
-    <div className={`flex items-start space-x-2.5 px-3 py-2 rounded-xl text-xs font-mono border transition-all ${
+    <div className={`flex items-start gap-2.5 px-3.5 py-2 rounded-xl text-xs font-sans border transition-all shadow-2xs ${
       hasErrors 
-        ? 'bg-rose-950/50 border-rose-600/60 text-rose-200' 
-        : 'bg-amber-950/40 border-amber-500/50 text-amber-200'
+        ? 'bg-rose-50 border-rose-200 text-rose-800' 
+        : 'bg-amber-50 border-amber-200 text-amber-800'
     }`}>
       {hasErrors ? (
-        <AlertCircle size={15} className="text-rose-400 shrink-0 mt-0.5" />
+        <AlertCircle size={15} className="text-rose-600 shrink-0 mt-0.5" />
       ) : (
-        <AlertTriangle size={15} className="text-amber-400 shrink-0 mt-0.5" />
+        <AlertTriangle size={15} className="text-amber-600 shrink-0 mt-0.5" />
       )}
-      <div className="space-y-1 flex-1">
-        <div className="font-bold uppercase text-[10px] tracking-wider">
+      <div className="space-y-0.5 flex-1">
+        <div className="font-bold uppercase text-[10px] tracking-wider text-slate-700">
           {hasErrors ? 'Pipeline Validation Warning' : 'Topology Notice'}
         </div>
         <ul className="space-y-0.5 list-disc list-inside text-[11px] leading-relaxed">
           {issues.map((iss, idx) => (
-            <li key={idx} className={iss.type === 'error' ? 'text-rose-300' : 'text-amber-300'}>
+            <li key={idx} className={iss.type === 'error' ? 'text-rose-700' : 'text-amber-700'}>
               {iss.message}
             </li>
           ))}

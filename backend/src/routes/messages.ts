@@ -8,6 +8,7 @@ import { getChannelAdapter } from '../services/messaging/channelAdapters.js';
 import { messageIntakeService } from '../services/messaging/messageIntakeService.js';
 import { outboundDispatchService } from '../services/messaging/outboundDispatchService.js';
 import { SupportedMessageChannel } from '../models/messageTypes.js';
+import { getPostgresPool } from '../config/postgres.js';
 
 export const messagesRouter = Router();
 
@@ -564,17 +565,23 @@ messagesRouter.get('/summary', async (req: Request, res: Response) => {
  * ========================================================
  */
 
-// GET /api/messages/mailbox - Consolidated thread-aware team mailbox
+// GET /api/messages/mailbox - Consolidated thread-aware team or personal mailbox
 messagesRouter.get('/mailbox', async (req: Request, res: Response) => {
   try {
     const teamId = req.query.teamId as string | undefined;
+    const userId = req.query.userId as string | undefined;
     const filter = (req.query.filter as any) || 'all';
     const search = req.query.search as string | undefined;
+
+    if (userId && !teamId) {
+      const threads = await messageIntakeService.getUserMailbox(userId, filter, search);
+      return res.json(threads);
+    }
 
     const threads = await messageIntakeService.getTeamMailbox(teamId || '', filter, search);
     return res.json(threads);
   } catch (err: any) {
-    console.error('[messagesRouter] Error fetching team mailbox:', err);
+    console.error('[messagesRouter] Error fetching mailbox:', err);
     return res.status(500).json({ error: err.message });
   }
 });
@@ -599,9 +606,19 @@ messagesRouter.put('/:messageId/link-issue', async (req: Request, res: Response)
 // POST /api/messages/reply - Reply directly within a mailbox thread
 messagesRouter.post('/reply', async (req: Request, res: Response) => {
   try {
-    const { teamId, channel, to, subject, textBody, htmlBody, conversationId, threadId, inReplyToMessageId } = req.body;
+    const { teamId, userId, channel, to, subject, textBody, htmlBody, conversationId, threadId, inReplyToMessageId, senderAddress } = req.body;
     if (!to || !textBody) {
       return res.status(400).json({ error: 'Recipient "to" and "textBody" are required.' });
+    }
+
+    let finalSenderAddress = senderAddress;
+    if (!finalSenderAddress && userId) {
+      const userRes = await getPostgresPool().query(
+        `SELECT email, message_provider_settings FROM users WHERE id = $1;`,
+        [userId]
+      );
+      const u = userRes.rows[0];
+      finalSenderAddress = u?.message_provider_settings?.userEmail || u?.email;
     }
 
     const result = await messageIntakeService.replyToMessage(teamId || '', {
@@ -612,7 +629,8 @@ messagesRouter.post('/reply', async (req: Request, res: Response) => {
       htmlBody,
       conversationId,
       threadId,
-      inReplyToMessageId
+      inReplyToMessageId,
+      senderAddress: finalSenderAddress
     });
 
     return res.status(201).json({ success: true, ...result });

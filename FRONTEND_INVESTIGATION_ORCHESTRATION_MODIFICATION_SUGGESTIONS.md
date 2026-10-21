@@ -20,6 +20,9 @@
 9. [Success Metrics](#9-success-metrics)
 10. [Document References](#10-document-references)
 11. [Mandatory Governance Enforcement & Compliance Guardrails](#11-mandatory-governance-enforcement--compliance-guardrails)
+12. [Task ISS-6362 Audit Verification & Per-Validation-Step Accordion Architecture](#12-task-iss-6362-audit-verification--per-validation-step-accordion-architecture)
+13. [Schema-Agnostic Deduplication, Null-Only Column Pruning & Interactive Filter-Highlight](#13-schema-agnostic-deduplication-null-only-column-pruning--interactive-filter-highlight-october-2026)
+14. [Investigation Workspace Streamlining, Single Workflow Selector, Validation Status Column Filter & Scoped Actions Architecture](#14-investigation-workspace-streamlining-single-workflow-selector-validation-status-column-filter--scoped-actions-architecture)
 
 ---
 
@@ -741,3 +744,299 @@ All architectural modifications, proposals, and engineering implementations with
 - **Zero Business Logic in Local Storage**: Browser `localStorage` or `sessionStorage` must NEVER be used as the primary storage or system of record for saved views, filter definitions, custom templates, or workflow rules.
 - **Mandatory PostgreSQL First**: Saved views and filter configurations must be persisted in PostgreSQL (`operational_workflow_db`) via dedicated relational endpoints (`/api/user-views`).
 - **Strictly Ephemeral UI Scoping**: `localStorage` is permitted solely for device-local, non-business ergonomic preferences (such as sidebar collapsed state and column resize widths).
+
+---
+
+## 12. Task ISS-6362 Audit Verification & Per-Validation-Step Accordion Architecture
+
+### 12.1 Real-World Task ISS-6362 Audit & Leg Count Rectification
+
+During real-data auditing of Task `ISS-6362` (`operational_workflow_db.task_dataset_transactions`), discrepancy analysis identified duplicate leg counting in the frontend investigation inspector modals (`inspectingRow` and `outcomeDrilldownRow`):
+
+| Transaction Reference (`fe_utrnno`) | Row Number | Defect (Pre-Fix Display) | Physical DB Ground Truth | Corrected Display | Resolution Status |
+|-------------------------------------|------------|-------------------------|--------------------------|-------------------|-------------------|
+| `2597220450` | Row 1 | 12 Legs | 6 Physical Records in `tran_log_tab` | 6 Legs | ✅ VERIFIED & FIXED |
+| `2689236323` | Rows 7, 8, 9 | 6 Legs | 3 Physical Records in `tran_log_tab` | 3 Legs | ✅ VERIFIED & FIXED |
+| Non-Matching Samples (e.g. `2597220480`) | Rows 22–39 | 0 Rows | 0 Records in `sett_tran_log_tab` | 0 Rows (Clean empty state) | ✅ VERIFIED & FIXED |
+
+#### Root Cause Analysis
+1. **Multi-Source Alias Envelope Duplication**: In PostgreSQL `task_dataset_transactions.returned_data`, external lookup results were stored under both `'default'` and the active workflow key (`wf-1790956098575`), targeting aliases `sett_tran_log_tab` and `tran_log_tab`.
+2. **Compound Table-Prefixed Deduplication Key**: The helper `extractRowLegs` constructed its deduplication key as `${tblName}_${hisId}`. Because the same physical transaction leg (`TR_HIS_ID`) was projected through both table alias envelopes, it received two separate keys (`sett_tran_log_tab_414164` and `tran_log_tab_414164`), doubling the leg count from 6 to 12 and 3 to 6.
+3. **Rectification**:
+   - Extraction is scoped strictly to `activeWorkflow.id` whenever workflow-specific response data is present.
+   - Deduplication keying is bound directly to the unique physical ledger history ID: `hisId ? `his_${hisId}` : ...`, preventing duplicate counting across table aliases.
+
+---
+
+### 12.2 Per-Validation-Step Accordion Architecture
+
+In adherence to the core objective—**giving investigators a transparent, purpose-driven view of what occurred throughout the workflow process**—the inspector interface was refactored from a monolithic flat table into dedicated per-step accordions.
+
+#### 1. Architectural Blueprint
+Instead of cramming multiple heterogeneous checks (ingestion lookups, multi-leg cardinality, table rules, and field comparisons) into a single flat table, each stage/step executes as an independent collapsible unit:
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│ [Accordion 1] Data Comparison: Input Data vs Returned DB Data (Unified) │
+└────────────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────┐
+│ [Accordion 2 Container] Workflow Process Stages & Validation Steps      │
+│  [Expand All Steps] [Collapse All Steps]                               │
+│                                                                        │
+│  ▼ STEP #1: Target Ingestion & Ledger Lookup          [PASS] ➔ CONTINUE │
+│    • Target DB: private_recon_db • Table: tran_log_tab                 │
+│    • Ingress Query Parameters: [fe_utrnno, amount, proc_name]          │
+│    • Query Ingress Match Result: 6 Legs Detected                       │
+│                                                                        │
+│  ▼ STEP #2: Multi-Leg Cardinality Evaluation          [PASS] ➔ CONTINUE │
+│    • Cardinality Policy: EXACT_ONE • Total Legs: 6                     │
+│    • Settlement Legs: 6 • Reversals (RVS): 0                           │
+│    • Leg Grid: Breakdown of each leg amount, proc, and BO type         │
+│                                                                        │
+│  ▼ STEP #3: Amount & Currency Validation Step         [PASS] ➔ CONTINUE │
+│    • Check Type: EQUALITY_MATCH                                        │
+│    • Parameter Comparison Table:                                       │
+│      ├── reqamt: 1,500.00 (Input) == 1,500.00 (DB)  [MATCH]            │
+│      └── curr:   USD      (Input) == USD      (DB)  [MATCH]            │
+│                                                                        │
+│  ▼ STEP #4: Step Payload & Diagnostics Disclosure                      │
+│    • Full JSONB envelope inspection with 1-click clipboard copy        │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+#### 2. Key UX Improvements
+- **Purpose-Driven Process Clarity**: The investigator immediately sees the chronological pipeline execution order (Ingestion Lookup $\rightarrow$ Cardinality Check $\rightarrow$ Field Validations $\rightarrow$ Table Rules).
+- **Direct Parameter Comparison**: Field-level validation steps feature a dedicated parameter comparison table highlighting exact input values against target database values with color-coded `[MATCH]` or `[MISMATCH]` badges.
+- **Independent State Control**: Operators can expand or collapse individual steps or toggle all steps simultaneously via `Expand All Steps` and `Collapse All Steps`.
+- **Fault Tolerance**: Wrapped in React `<ErrorBoundary>` with complete serialization of all JSONB payloads (`formatCellVal`, `formatValidationDetail`) to prevent render crashes.
+
+---
+
+### 13. Schema-Agnostic Deduplication, Null-Only Column Pruning & Interactive Filter-Highlight (October 2026)
+
+#### 1. Schema-Agnostic Leg Identification (Rule 4: External System Agnosticism)
+- **Eliminated Hardcoded Key Assumptions**: Removed all hardcoded assumptions on `TR_HIS_ID`, `FE_UTRNNO`, `ACCT_NUM1`, and `PROC_NAME`.
+- **Dynamic Technical ID & PK Resolution**: Inspects record properties dynamically for any key matching `id`, `*_id`, or `_mirror_id`.
+- **Canonical Content Signature Fallback**: When no primary key exists, constructs a deterministic content signature from non-metadata scalar values:
+  `Object.entries(p).filter(([k, v]) => !k.startsWith('_') && typeof v !== 'object').sort().map(([k, v]) => `${k.toLowerCase()}:${String(v).trim().toLowerCase()}`).join('|')`
+- **Dynamic Action / Status / Type Classification**: Automatically maps record classification from any present candidate key (`proc_name`, `bo_type`, `legtype`, `type`, `action`, `status`) without assuming schema naming.
+
+#### 2. Automatic Null-Only Column Pruning
+- **Zero-Value Clutter Elimination**: In both manual cross-check (`outcomeDrilldownRow`) and in-flight inspection (`inspectingRow`), columns where every record (Input Baseline, Target Record, and all returned DB records) has `null`, `undefined`, or empty string `""` are filtered out (`activeComparisonColumns` / `activeInspectComparisonColumns`).
+- **Removed Hardcoded Column Arrays**: Completely removed static column lists (`['transaction_id', 'retrieval_ref_num', ...]`), ensuring the table projects only actual parameters and real data columns.
+
+#### 3. Slim `w-16` Source Column & Viewport Optimization
+- **Replaced Bulky First Column**: The previous `Data Record Source` column (`min-w-[200px]`) consumed excessive horizontal width, forcing critical data columns off-screen.
+- **Ultra-Compact Sticky Badge**: Replaced with a slim 64px `w-16` sticky header (`Source`) with compact badges (`[INPUT]`, `[DB #1]`, `[DB #2]`), freeing up >136px of view space.
+
+#### 4. Interactive Filter View Toolbar & Row Highlighting
+- **Clickable Filter View Buttons**:
+  - `All Records`: Resets focus and displays all records with standard alternating styles.
+  - `Input Data (Task)`: Directly highlights the Input Baseline row with a prominent blue focus ring (`ring-2 ring-blue-500 bg-blue-100/90 font-bold`).
+  - `Returned DB Data`: Highlights all returned external DB records simultaneously (`ring-2 ring-indigo-500 bg-indigo-50/80 font-semibold`).
+  - `DB #N (Record Details)`: Highlights the specific external DB leg in the comparison grid.
+- **Focus Sub-Banner**: When any filter is activated, displays a high-contrast focus banner explaining the active highlight with a 1-click `Clear Focus` button.
+
+---
+
+## 14. Investigation Workspace Streamlining, Single Workflow Selector, Validation Status Column Filter & Scoped Actions Architecture
+
+### 14.1 Problem Statement & Architectural Defect Analysis
+
+As the investigation workspace grew in functional scope, the visual layout accumulated redundant controls, repetitive user interactions, and visual noise:
+
+1. **Toolbar Button Clutter & Triplicate Workflow Selectors**:
+   - The top toolbar contained **three separate workflow selectors**:
+     1. An in-flight evolution button (`Swap WF`),
+     2. A secondary popup button (`Select Workflow`), and
+     3. An inline `<select>` element (`Workflow Picker`).
+   - Having three different controls doing the exact same task crowded out screen real estate and confused operators.
+
+2. **Conflation of Column Header with Workflow Switcher**:
+   - The table header for `Validation Status` embedded a custom workflow switcher popover (`Conducted Workflows Filter Popover Menu`) and an inline `<select>` element, preventing operators from performing a normal column filter on validation statuses (`PASS`, `FAIL`, `RECONCILED`, `PENDING`).
+   - Simultaneously, a redundant standalone status button strip (`Status: ALL | INVESTIGATING | FLAGGED | RECONCILED | CLOSED`) was taking up space in the top toolbar.
+
+3. **Redundant Bottom Sheet Tabs**:
+   - The bottom Excel-style sheet tabs included dedicated tabs for `Anomalies` and `Clean`. Because these are simple filtered views of the main dataset, having separate tabs was unnecessary clutter when status filtering can be performed directly on the column.
+
+4. **Rigid Dataset-Wide Validation Trigger**:
+   - The `▶ Run Validation` button executed exclusively against the full dataset (`effectiveRows`), offering operators no way to re-validate only an active filtered subset of records (e.g., re-running only flagged transactions after staging a fix).
+
+5. **Popover Dismissal Frustration**:
+   - Column filter popovers lacked an outside-click listener, forcing users to click specific sub-buttons or leaving popovers floating over table data.
+
+6. **Action Column Overhead**:
+   - An `Actions` column existed on every row of the table, displaying multiple buttons (`Trace DB`, `Close Txn`, `Revert`, `Copy SQL`, `Hide`). This forced operators into tedious row-by-row interactions instead of allowing batch/scoped operations.
+
+---
+
+### 14.2 Core Architectural Principles & Specification
+
+#### 14.2.1 Header De-Cluttering & Consolidation to Exactly ONE Workflow Selector
+* **Single Source of Truth**: The top toolbar preserves **exactly ONE** workflow selector.
+* **Component Form**: A unified, styled `<select>` element (or dropdown menu) grouping:
+  - **Conducted Workflows (Task History)**: Shows workflows previously executed on this task, marked with `★ (Latest)` or `✓ (Conducted)` and execution timestamp/metrics.
+  - **Available Workflows**: Shows all other active workflows registered in PostgreSQL.
+* **Removed Buttons**: The redundant `Swap WF` button and `Select Workflow` dropdown button are completely removed.
+
+#### 14.2.2 Active Workflow Display Alongside "Reset Row Filter"
+* The name and version of the currently active workflow are cleanly rendered as an informational status pill in the Secondary Ribbon/Status Banner right alongside the `Reset Row Filter` control:
+  ```
+  [Active Workflow: Settlement Multi-Leg Recon v2]  [Reset Row Filter]  [Show All Columns]
+  ```
+
+#### 14.2.3 Native Column Filter for "Validation Status" & Removal of Header Status Bar
+* **Removal of Header Status Bar**: The top-level `Status: ALL | INVESTIGATING | FLAGGED | RECONCILED | CLOSED` button strip is removed from the header.
+* **Native Column Filter UX**: The `Validation Status` column header receives the standard, robust column filter popover:
+  - Text search for status values (`PASS`, `FAIL`, `PENDING`, `CRITICAL`, `WARNING`).
+  - `Select All` and `Clear` shortcuts.
+  - Interactive checkboxes for each distinct validation status present in the dataset.
+  - Active filter icon indicator when a status filter is engaged.
+
+#### 14.2.4 Streamlining Bottom Sheet Tabs
+* The **`Anomalies`** and **`Clean`** sheet tabs are removed from the bottom tab bar.
+* Retained tabs:
+  1. **Task Transactions (`dataset`)**: Primary spreadsheet grid containing all rows and validation verdicts.
+  2. **Central Repo Cross-Check (`sheet1_central`)**: Master reference comparison against PostgreSQL central repository.
+  3. **Attachments (`attachments`)**: Visible dynamically only when attached message/reconciliation files exist for the task.
+
+#### 14.2.5 Scoped Validation Execution Engine (Filtered Rows vs All Rows)
+* The `handleRunValidation` function is upgraded to accept an execution target scope:
+  ```typescript
+  handleRunValidation(forceRerun: boolean, scope: 'ALL' | 'FILTERED'): Promise<void>
+  ```
+* When active column filters, search terms, or duplicate filters are present:
+  - The `▶ Run Validation` button provides a clear scope toggle or dropdown option:
+    - `▶ Run on Filtered Rows ({count})` (Recommended when filters active)
+    - `▶ Run on All Rows ({total})`
+  - When no filters are active, it runs on all rows by default.
+
+#### 14.2.6 Click-Outside Popover Dismissal & Filter Invariance
+* All column filter popovers are wrapped with an outside-click handler (via `useRef` + document `mousedown` listener or invisible full-screen dismissal backdrop).
+* Clicking anywhere outside an open filter popover immediately and smoothly dismisses it without applying unintended side-effects.
+
+#### 14.2.7 Per-Row Action Column Removal & Unified Top-Level Scoped Action Engine
+* **Table Cleanup**: The `Actions` `<th>` and `<td>` are completely removed from the table grid.
+* **Unified Action Button in Toolbar**: A top-level **"⚡ Actions"** dropdown button is placed in the primary toolbar.
+* **Scope-Aware Execution**:
+  - **Clicked / Selected Row**: Operates on the currently highlighted or selected transaction row.
+  - **Filtered Rows**: Operates on all rows currently visible under the active column/search filters.
+  - **All Rows**: Operates across the entire task dataset.
+* **Available Action Operations**:
+  1. **Run #Hashtag**: Triggers the universal hashtag resolution engine (e.g. `#AIB_SETTLEMENT_2026`) on the scoped records, evaluating external database dry-runs or staging Maker proposals.
+  2. **Batch Investigation Status**: Change status to `CLOSED`, `RECONCILED`, or `INVESTIGATING` across scoped rows.
+  3. **Batch Revert**: Roll back staged changes across scoped rows to pre-change snapshot.
+  4. **Inspect in Modal**: Opens deep multi-leg comparison drilldown for the selected row.
+
+---
+
+### 14.3 Phased Engineering Implementation Plan
+
+| Phase | Target Component | Description & Scope |
+|-------|------------------|---------------------|
+| **Phase 1** | `ValidationOrchestratorWorkspace.tsx` (Toolbar) | Remove duplicate `Swap WF` and `Select Workflow` buttons. Consolidate to single `<select>` workflow picker. Display active workflow pill alongside `Reset Row Filter`. |
+| **Phase 2** | `ValidationOrchestratorWorkspace.tsx` (Table Headers) | Remove embedded workflow switcher from `Validation Status` column header. Implement native column filter popover for validation statuses (`PASS`, `FAIL`, etc.). Remove top-level header status button strip. |
+| **Phase 3** | `ValidationOrchestratorWorkspace.tsx` (Sheet Tabs) | Remove `anomalies` and `reconciled` sheet tabs from bottom tab bar. Align active tab state to `'dataset' \| 'sheet1_central' \| 'attachments'`. |
+| **Phase 4** | `ValidationOrchestratorWorkspace.tsx` (Engine) | Upgrade `handleRunValidation` to support executing against `filteredAndSortedRows` when scoped, sending targeted records to `api.executeUniversalWorkflow`. |
+| **Phase 5** | `ValidationOrchestratorWorkspace.tsx` (Actions) | Remove per-row `Actions` column from table. Implement top-level `Actions` dropdown with scope selection (`Selected Row`, `Filtered Rows`, `All Rows`) and operations (`Run #Hashtag`, `Batch Status`, `Batch Revert`). Add click-outside dismiss listeners to all filter popovers. |
+
+---
+
+### 14.4 Formal Acceptance Criteria & Verification Matrix
+
+#### Criterion 1: Single Toolbar Workflow Selector Invariance
+* **Given** an operator is viewing the Investigation Workspace on any task,
+* **When** inspecting the top toolbar,
+* **Then** there must be **exactly ONE** workflow selector component present, cleanly displaying conducted and available workflows without duplicate `Swap WF` or `Select Workflow` modal buttons.
+
+#### Criterion 2: Active Workflow Attribution Display
+* **Given** a workflow is selected or active,
+* **When** viewing the ribbon banner below the toolbar,
+* **Then** the active workflow name must be prominently displayed as an informational pill alongside the `Reset Row Filter` button.
+
+#### Criterion 3: Validation Status Column Filter Functionality
+* **Given** validation results are loaded for the dataset (`PASS`, `FAIL`, `PENDING`),
+* **When** the operator clicks the filter icon on the `Validation Status` column header,
+* **Then** a standard column filter popover opens listing the distinct validation statuses with checkboxes, allowing filtering by `PASS`, `FAIL`, etc., without showing any workflow selection dropdowns.
+
+#### Criterion 4: Click-Outside Popover Dismissal
+* **Given** any column filter popover is currently open,
+* **When** the operator clicks anywhere on the page outside the popover boundary,
+* **Then** the popover immediately closes cleanly without triggering table cell selections or side-effects.
+
+#### Criterion 5: Bottom Sheet Tab Streamlining
+* **Given** the bottom Excel-style sheet tab bar,
+* **When** inspecting available tabs,
+* **Then** only `Task Transactions`, `Central Repo Cross-Check`, and `Attachments` (if files exist) are present; `Anomalies` and `Clean` tabs are completely absent.
+
+#### Criterion 6: Filtered Rows Validation Execution
+* **Given** an active filter is applied showing a subset of 20 rows out of 500 total rows,
+* **When** the operator clicks `Run Validation`,
+* **Then** the validation engine executes strictly on the 20 filtered rows, updating backend verdicts and UI statuses for those records without requiring a full-dataset rerun.
+
+#### Criterion 7: Unified Scoped Action Engine & Row-Level Action Removal
+* **Given** the main dataset table,
+* **When** inspecting table headers and rows,
+* **Then** no per-row `Actions` column exists.
+* **When** the operator clicks the top-level `Actions` button in the toolbar,
+* **Then** a scoped action menu opens allowing execution of actions (including `#Hashtag` execution, Batch Status toggle, and Revert) across Selected, Filtered, or All rows.
+
+---
+
+### 14.5 Post-Implementation Rectification Log (2026-10-16)
+
+1. **Hoisting & Temporal Dead Zone (TDZ) Fix**:
+   - **Defect**: Vite minified `evaluateWorkflowOutcome` to `Ca`. In `ValidationOrchestratorWorkspace.tsx`, `evaluateWorkflowOutcome` was defined at line ~2752 using `const`, but was referenced during initial render at lines ~1981-2081 within `getUniqueColumnValues` and `filteredAndSortedRows`. This triggered a runtime `ReferenceError: Cannot access 'Ca' before initialization`.
+   - **Fix**: Relocated `OutcomeEvaluation` interface and `evaluateWorkflowOutcome` up before `batchExecutionPlans`, `getUniqueColumnValues`, and `filteredAndSortedRows`. Automated bundle AST verification confirmed 0 uses before definition.
+2. **Complete Row-Level Action Column Removal**:
+   - **Defect**: While the header `<th className="... Actions ...">` was removed, the corresponding row-level `<td className="py-1 px-2 ... Action Tools">` was still rendering in each row's `<tr>`, causing table column offset mismatch and visible per-row buttons.
+   - **Fix**: Surgically removed the row-level Action Tools `<td>` block from the main dataset table body. All row actions are now governed exclusively by the top-level `⚡ Actions` dropdown targeting Active Row, Filtered Rows, or All Rows.
+3. **Modal `isNotFoundInDb` Scope Resolution**:
+   - **Defect**: Inside `renderDatabaseInspectorModal`, `isNotFoundInDb` was referenced at line 7894 while the scoped variable was `inspectIsNotFoundInDb`, throwing a runtime `ReferenceError` when opening inspection modal.
+   - **Fix**: Replaced with `inspectIsNotFoundInDb`.
+4. **Column & Validation Status Filter Engine Hardening**:
+   - **Defect**: `state.selectedValues !== null` was evaluating to `true` when `selectedValues` was `undefined`, falsely marking columns as filtered and crashing set operations. In addition, `rowKeyCandidates` in `evaluateWorkflowOutcome` did not include raw row numbers (`'1'`, `'2'`, etc.), preventing matching against backend execution results and causing PASS records to misclassify as PENDING/FAIL.
+   - **Fix**: Replaced with loose null check `selectedValues != null`, expanded `rowKeyCandidates` with numerical string keys (`_rowNumber`, `row_number`, `rowId`), fixed Select All / Clear toggles, and added `activeWorkflow` to `filteredAndSortedRows` dependency array.
+### 14.6 Toolbar Stabilization, Permanent Force Re-run & Investigation Status Filter Architecture (2026-10-17)
+
+1. **Toolbar Layout Shifting Elimination & Stationary Status Telemetry**:
+   - **Root Cause**: The conditional execution summary badge (`Evaluated on Task: X PASS / Y FAIL | Force Re-run`) was conditionally mounted in the top-right toolbar on validation completion. Because its presence and text length fluctuated between un-evaluated and evaluated states, it dynamically pushed adjacent buttons, breaking visual stability.
+   - **Rectification**: Removed the conditional badge from the green header. Relocated the task evaluation telemetry (`Evaluated on Task: X PASS / Y FAIL` with execution duration) down into the stationary black status bar (`bg-slate-900 text-white`) alongside overall aggregate counts (`Total`, `Reconciled`, `Flagged`, `Closed`) and parent case status.
+
+2. **Permanent Force Re-run Button Beside Workflow Selector**:
+   - **Placement**: Permanently rendered in the top toolbar directly beside the interactive Workflow Selector trigger button.
+   - **State Handling**: Dynamically activated and styled in high-visibility amber/gold (`bg-amber-400 hover:bg-amber-300 text-slate-950`) when an active workflow is selected; cleanly dimmed and disabled (`cursor-not-allowed bg-black/20 text-white/40`) when no active workflow is selected or during active verification. Never mounts or unmounts, guaranteeing zero toolbar layout shifts.
+
+3. **Streamlined Top Toolbar (Removal of Flagged/Clean Pills & Batches Dropdown)**:
+   - **Removal of Redundant Quick Pills**: Removed `All / Flagged / Clean` quick filter pills from the top toolbar to eliminate clutter and duplication.
+   - **Relocation of Batches Dropdown**: Moved the `All Batches` selector (`availableBatches`) out of the top toolbar down into the black status bar, styling it with dark theme ergonomics (`bg-slate-800 border-slate-600 text-white focus:ring-emerald-500`).
+
+4. **Native Column Filter on Investigation Status**:
+   - **Table Header Integration**: Upgraded the `Investigation Status` column header (`<th>`) with a full native column filter button and popover matching the Excel spreadsheet experience:
+     - Ascending / Descending sorting (`Sort Status (A to Z)` / `Sort Status (Z to A)`).
+     - Live search filter input for instant status filtering.
+     - Select All / Clear toggles.
+     - Per-status checkboxes with colored lifecycle badges (`RECONCILED`, `FLAGGED`, `CLOSED`, `PENDING`) and live row counts.
+     - Full click-outside auto-dismissal.
+   - **Filter & Sort Engine Integration**: Extended `getUniqueColumnValues`, `filteredAndSortedRows`, and column sort comparator to natively recognize `'investigationStatus'` and `'investigation_status'`.
+
+### 14.7 Investigation Outcome Integrity & Filter Rectification (2026-10-17)
+
+1. **Clear Results Dummy Failed Status Elimination**:
+   - **Defect**: When clicking "Clear Results", the backend previously deleted records from `task_workflow_executions`, but left `canonical_data._validation_status = 'FAIL'` intact on `task_dataset_transactions` rows. Because the evaluation engine detected stale row validation flags while the target record was absent, `evaluateWorkflowOutcome` synthesized a dummy `FAIL` ("Record not found in target database") across all records.
+   - **Fix**:
+     - Upgraded `postgresRepo.clearTaskWorkflowExecutions` to strip all validation evaluation keys (`_validation_status`, `_validation_workflow_id`, `_validation_details`, `returned_data`, `_target_record`, `_workflow_runs`) from `task_dataset_transactions.canonical_data` and reset `issues.validation_status` to `'PENDING'`.
+     - In `handleClearResults`, purged local `taskDatasetRows` validation metadata and notified the parent issue to reset `validationStatus: 'PENDING'`.
+     - In `evaluateWorkflowOutcome`, enforced that un-conducted or cleared workflows unconditionally resolve to `status: 'PENDING'` (`Pending Verification`), never synthesizing dummy failed checks.
+
+2. **Conducted Workflow Persistence & Automatic Reversion Elimination**:
+   - **Defect**: When executing a newly selected workflow, `onUpdateIssue` updated parent issue state without passing `workflowId: activeWorkflow.id`. The task's `workflowId` remained pinned to the first or default workflow. When the parent component re-rendered, an unconstrained `useEffect` detected `selectedIssue.workflowId !== activeWorkflow.id` and forcibly reset `activeWorkflow` back to the first workflow.
+   - **Fix**:
+     - Instrumented `previousTaskIdRef` in `ValidationOrchestratorWorkspace` to guarantee that workflow auto-initialization executes strictly on initial task mount, never overriding `activeWorkflow` on intra-task state updates.
+     - Updated `handleRunValidation` to pass `workflowId: activeWorkflow.id` to `onUpdateIssue` and persist it to PostgreSQL via `api.updateIssue`, permanently binding the conducted workflow to the task.
+
+3. **Validation & Investigation Status Table View Filter Responsiveness**:
+   - **Defect**: Selecting status values in the `Validation Status` or `Investigation Status` column filter popovers failed to update the visible table view when `currentPage` remained out of bounds for the filtered row count, or when mismatching workflow contexts evaluated all rows as failed.
+   - **Fix**:
+     - Added an automatic page reset hook (`setCurrentPage(1)`) triggered whenever `columnFilters`, `duplicateFilter`, `debouncedSearchTerm`, or `activeWorkflow` changes.
+     - Standardized `columnFilters['workflow_outcome']` and `columnFilters['investigationStatus']` matching against evaluated cell outcomes, ensuring immediate table view re-rendering and precise row isolation upon checkbox selection.

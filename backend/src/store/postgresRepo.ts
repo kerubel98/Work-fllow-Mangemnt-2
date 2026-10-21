@@ -146,25 +146,20 @@ export const postgresRepo = {
   async getUsers(): Promise<User[]> {
     const pool = getPostgresPool();
     const { rows } = await pool.query('SELECT * FROM users ORDER BY created_at ASC;');
-    return rows.map(r => ({
-      id: r.id,
-      username: r.username,
-      email: r.email,
-      role: r.role,
-      isApproved: r.is_approved,
-      canExecuteSelect: r.can_execute_select,
-      canExecuteUpdate: r.can_execute_update,
-      allowedDbIds: parseJson(r.allowed_db_ids, []),
-      permanentTeamId: r.permanent_team_id || undefined,
-      shareWorkspaceWithTeam: r.share_workspace_with_team ?? true,
-      createdAt: r.created_at?.toISOString() || new Date().toISOString()
-    }));
+    return rows.map(r => this.mapUserRow(r));
   },
 
   mapUserRow(r: any): User {
     return {
       id: r.id,
       username: r.username,
+      name: r.display_name || r.name || r.username,
+      displayName: r.display_name || r.name || r.username,
+      avatarUrl: r.avatar_url || undefined,
+      phone: r.phone || undefined,
+      department: r.department || undefined,
+      title: r.title || undefined,
+      timezone: r.timezone || 'UTC',
       email: r.email,
       role: r.role,
       isApproved: r.is_approved,
@@ -173,6 +168,9 @@ export const postgresRepo = {
       allowedDbIds: parseJson(r.allowed_db_ids, []),
       permanentTeamId: r.permanent_team_id || undefined,
       shareWorkspaceWithTeam: r.share_workspace_with_team ?? true,
+      messageProviderSettings: parseJson(r.message_provider_settings, {}),
+      workspaceOAuthConfig: parseJson(r.workspace_oauth_config, {}),
+      preferences: parseJson(r.preferences, {}),
       createdAt: r.created_at?.toISOString() || new Date().toISOString()
     };
   },
@@ -194,8 +192,13 @@ export const postgresRepo = {
   async createUser(userData: User): Promise<User> {
     const pool = getPostgresPool();
     await pool.query(
-      `INSERT INTO users (id, username, email, role, is_approved, can_execute_select, can_execute_update, allowed_db_ids, permanent_team_id, share_workspace_with_team, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+      `INSERT INTO users (
+         id, username, email, role, is_approved, can_execute_select, can_execute_update, 
+         allowed_db_ids, permanent_team_id, share_workspace_with_team, created_at,
+         display_name, avatar_url, phone, department, title, timezone, 
+         message_provider_settings, preferences
+       )
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
        ON CONFLICT (id) DO UPDATE SET
          username = EXCLUDED.username,
          email = EXCLUDED.email,
@@ -205,7 +208,15 @@ export const postgresRepo = {
          can_execute_update = EXCLUDED.can_execute_update,
          allowed_db_ids = EXCLUDED.allowed_db_ids,
          permanent_team_id = EXCLUDED.permanent_team_id,
-         share_workspace_with_team = EXCLUDED.share_workspace_with_team;`,
+         share_workspace_with_team = EXCLUDED.share_workspace_with_team,
+         display_name = COALESCE(EXCLUDED.display_name, users.display_name),
+         avatar_url = COALESCE(EXCLUDED.avatar_url, users.avatar_url),
+         phone = COALESCE(EXCLUDED.phone, users.phone),
+         department = COALESCE(EXCLUDED.department, users.department),
+         title = COALESCE(EXCLUDED.title, users.title),
+         timezone = COALESCE(EXCLUDED.timezone, users.timezone),
+         message_provider_settings = COALESCE(EXCLUDED.message_provider_settings, users.message_provider_settings),
+         preferences = COALESCE(EXCLUDED.preferences, users.preferences);`,
       [
         userData.id,
         userData.username,
@@ -217,7 +228,15 @@ export const postgresRepo = {
         JSON.stringify(userData.allowedDbIds || []),
         userData.permanentTeamId || null,
         userData.shareWorkspaceWithTeam ?? true,
-        userData.createdAt || new Date()
+        userData.createdAt || new Date(),
+        userData.displayName || userData.name || null,
+        userData.avatarUrl || null,
+        userData.phone || null,
+        userData.department || null,
+        userData.title || null,
+        userData.timezone || 'UTC',
+        JSON.stringify(userData.messageProviderSettings || {}),
+        JSON.stringify(userData.preferences || {})
       ]
     );
     return userData;
@@ -238,7 +257,7 @@ export const postgresRepo = {
     if (!existing) return null;
     const merged = { ...existing, ...updates };
     await this.createUser(merged);
-    return merged;
+    return await this.getUserById(id);
   },
 
   async deleteUser(id: string): Promise<boolean> {
@@ -1386,7 +1405,8 @@ async updateDatabaseConnection(id: string, updates: Partial<DatabaseConnection>)
       messageAggregations: parseJson(r.message_aggregations, []),
       teamId: r.team_id,
       isPublic: r.is_public ?? true,
-      visibility: r.visibility || 'team'
+      visibility: r.visibility || 'team',
+      hashtags: parseJson(r.hashtags, [])
     }));
   },
 
@@ -1417,7 +1437,8 @@ async updateDatabaseConnection(id: string, updates: Partial<DatabaseConnection>)
       messageAggregations: parseJson(r.message_aggregations, []),
       teamId: r.team_id,
       isPublic: r.is_public ?? true,
-      visibility: r.visibility || 'team'
+      visibility: r.visibility || 'team',
+      hashtags: parseJson(r.hashtags, [])
     };
   },
 
@@ -1428,9 +1449,9 @@ async updateDatabaseConnection(id: string, updates: Partial<DatabaseConnection>)
         id, name, description, target_db_id, target_table, category, attached_db_config_ids, stages, steps, 
         nodes, connections,
         global_success_message, global_failure_message, created_by, created_at, updated_at, 
-        is_system_default, version, message_aggregations, team_id, is_public, visibility
+        is_system_default, version, message_aggregations, team_id, is_public, visibility, hashtags
       )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23)
        ON CONFLICT (id) DO UPDATE SET
          name = EXCLUDED.name,
          description = EXCLUDED.description,
@@ -1450,7 +1471,8 @@ async updateDatabaseConnection(id: string, updates: Partial<DatabaseConnection>)
          message_aggregations = EXCLUDED.message_aggregations,
          team_id = EXCLUDED.team_id,
          is_public = EXCLUDED.is_public,
-         visibility = EXCLUDED.visibility;`,
+         visibility = EXCLUDED.visibility,
+         hashtags = EXCLUDED.hashtags;`,
       [
         wf.id,
         wf.name,
@@ -1473,7 +1495,8 @@ async updateDatabaseConnection(id: string, updates: Partial<DatabaseConnection>)
         safeJsonStringify(wf.messageAggregations, '[]'),
         wf.teamId || null,
         wf.isPublic !== undefined ? wf.isPublic : true,
-        wf.visibility || 'team'
+        wf.visibility || 'team',
+        safeJsonStringify(wf.hashtags || [], '[]')
       ]
     );
     return wf;
@@ -2116,6 +2139,35 @@ async updateDatabaseConnection(id: string, updates: Partial<DatabaseConnection>)
     const pool = getPostgresPool();
     const res = await pool.query(
       'DELETE FROM task_workflow_executions WHERE task_id = $1;',
+      [taskId]
+    );
+    // Also clear validation evaluation metadata from task_dataset_transactions
+    await pool.query(
+      `UPDATE task_dataset_transactions
+       SET returned_data = NULL,
+           canonical_data = COALESCE(canonical_data, '{}'::jsonb)
+             - '_validation_status'
+             - '_validation_workflow_id'
+             - '_validation_workflow_name'
+             - '_validation_details'
+             - '_validation_action'
+             - '_validation_results'
+             - '_target_record'
+             - '_target_records'
+             - '_target_db'
+             - '_target_table'
+             - '_matched_leg_count'
+             - '_workflow_runs'
+             - '_audit_trail'
+             - '_stage_results'
+       WHERE task_id = $1;`,
+      [taskId]
+    );
+    // Reset issue validation status to PENDING
+    await pool.query(
+      `UPDATE issues
+       SET validation_status = 'PENDING'
+       WHERE id = $1;`,
       [taskId]
     );
     return res.rowCount ?? 0;

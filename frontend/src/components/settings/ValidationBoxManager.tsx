@@ -21,7 +21,9 @@ import {
   X,
   AlertCircle,
   AlertTriangle,
-  Share2
+  Share2,
+  ChevronDown,
+  MoreHorizontal
 } from 'lucide-react';
 import { api } from '../../api/client';
 import { ValidationBox, ValidationBoxType, DatabaseConnection, DatabaseColumnConfiguration } from '../../types';
@@ -38,6 +40,11 @@ export const ValidationBoxManager: React.FC<ValidationBoxManagerProps> = ({ curr
   const [boxes, setBoxes] = useState<ValidationBox[]>([]);
   const [databases, setDatabases] = useState<DatabaseConnection[]>([]);
   const [loading, setLoading] = useState(true);
+  const [activeTab, setActiveTab] = useState<'validation_boxes' | 'column_rules'>('validation_boxes');
+  const [columnRules, setColumnRules] = useState<DatabaseColumnConfiguration[]>([]);
+  const [selectedColumnRuleId, setSelectedColumnRuleId] = useState<string | null>(null);
+  const [isNewRuleDropdownOpen, setIsNewRuleDropdownOpen] = useState(false);
+  const [isDuplicateCheckModalOpen, setIsDuplicateCheckModalOpen] = useState(false);
   const [selectedTypeFilter, setSelectedTypeFilter] = useState<'ALL' | ValidationBoxType>('ALL');
   const [searchQuery, setSearchQuery] = useState('');
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -46,6 +53,29 @@ export const ValidationBoxManager: React.FC<ValidationBoxManagerProps> = ({ curr
   const [sharingBox, setSharingBox] = useState<ValidationBox | null>(null);
   const [viewMode, setViewMode] = useState<'library' | 'focus'>('library');
   const [selectedBoxId, setSelectedBoxId] = useState<string | null>(null);
+
+  // Duplicate Check Form State (matching 05_duplicate_check_builder.png)
+  const [dupRuleName, setDupRuleName] = useState('New column rule');
+  const [dupRuleType, setDupRuleType] = useState('Duplicate check');
+  const [dupTargetDbId, setDupTargetDbId] = useState('');
+  const [dupTargetTable, setDupTargetTable] = useState('tran_log_tab');
+  const [dupPriorityColumns, setDupPriorityColumns] = useState<{ name: string; matchMode: string }[]>([
+    { name: 'TR_GROUP_ID', matchMode: 'Exact match' },
+    { name: 'BO_TYPE', matchMode: 'Exact match' },
+    { name: 'PROC_NAME', matchMode: 'Exact match' }
+  ]);
+  const [dupGroupByColumns, setDupGroupByColumns] = useState<string[]>([
+    'TR_GROUP_ID', 'BO_TYPE', 'PROC_NAME'
+  ]);
+  const [dupFilterConditions, setDupFilterConditions] = useState<{ column: string; operator: string; value: string }[]>([
+    { column: 'BO_TYPE', operator: '=', value: 'CMTP254' }
+  ]);
+  const [dupIfViolated, setDupIfViolated] = useState('Flag for review');
+  const [dupSeverity, setDupSeverity] = useState('Warning');
+  const [dupViolationMessage, setDupViolationMessage] = useState('Duplicate or conflicting values detected across priority columns');
+  const [dupIsSaving, setDupIsSaving] = useState(false);
+  const [dupSampleTestRunning, setDupSampleTestRunning] = useState(false);
+  const [dupSampleTestResult, setDupSampleTestResult] = useState<{ executed: boolean; violationsFound: number } | null>(null);
 
   // Form state
   const [boxType, setBoxType] = useState<ValidationBoxType>('INGESTION_SEARCH');
@@ -212,16 +242,22 @@ export const ValidationBoxManager: React.FC<ValidationBoxManagerProps> = ({ curr
   const loadData = async () => {
     setLoading(true);
     try {
-      const [vBoxes, dbs] = await Promise.all([
+      const [vBoxes, dbs, colConfigs] = await Promise.all([
         api.getValidationBoxes(),
         api.getDatabases(),
+        api.getColumnConfigurations().catch(() => []),
         globalMappingService.fetchConfigFromBackend()
       ]);
       const safeBoxes = vBoxes || [];
+      const safeConfigs = colConfigs || [];
       setBoxes(safeBoxes);
       setDatabases(dbs || []);
+      setColumnRules(safeConfigs);
       if (!selectedBoxId && safeBoxes.length > 0) {
         setSelectedBoxId(safeBoxes[0].id);
+      }
+      if (!selectedColumnRuleId && safeConfigs.length > 0) {
+        setSelectedColumnRuleId(safeConfigs[0].id);
       }
       if (dbs && dbs.length > 0 && !targetDbId) {
         setTargetDbId(dbs[0].id);
@@ -591,6 +627,45 @@ export const ValidationBoxManager: React.FC<ValidationBoxManagerProps> = ({ curr
     }
   };
 
+  const handleSaveDuplicateCheck = async () => {
+    setDupIsSaving(true);
+    try {
+      const payload: Partial<DatabaseColumnConfiguration> = {
+        ruleName: dupRuleName.trim() || 'New column rule',
+        ruleType: 'DUPLICATE_CHECK',
+        targetDbId: dupTargetDbId || databases[0]?.id || 'db-1',
+        tableName: dupTargetTable.trim() || 'tran_log_tab',
+        columns: dupPriorityColumns.map((col, idx) => ({
+          columnName: col.name,
+          priority: idx + 1,
+          matchMode: (col.matchMode === 'Fuzzy match' ? 'FUZZY' : 'EXACT') as any
+        })),
+        groupByColumns: dupGroupByColumns,
+        filterConditions: dupFilterConditions,
+        violationAction: (dupIfViolated === 'Reject / Drop' ? 'REJECT' : (dupIfViolated === 'Send to exception queue' ? 'EXCEPTION_QUEUE' : 'FLAG_REVIEW')) as any,
+        severity: dupSeverity.toUpperCase() as any,
+        violationMessage: dupViolationMessage.trim()
+      };
+
+      await api.createColumnConfiguration(payload);
+      showSystemAlert({
+        title: 'Rule Saved',
+        message: `Duplicate check "${payload.ruleName}" created successfully.`,
+        type: 'success'
+      });
+      setIsDuplicateCheckModalOpen(false);
+      loadData();
+    } catch (err: any) {
+      showSystemAlert({
+        title: 'Save Failed',
+        message: err.message || 'Failed to save duplicate check rule.',
+        type: 'error'
+      });
+    } finally {
+      setDupIsSaving(false);
+    }
+  };
+
   const handleDeleteBox = async (id: string, boxName: string) => {
     if (!confirm(`Are you sure you want to delete Validation Box "${boxName}"?`)) return;
     try {
@@ -648,291 +723,531 @@ export const ValidationBoxManager: React.FC<ValidationBoxManagerProps> = ({ curr
     return matchesType && matchesSearch;
   });
 
-  const selectedBox = boxes.find(b => b.id === selectedBoxId) || filteredBoxes[0] || null;
-  const navItems = [
-    { key: 'ALL', label: 'All Boxes', count: boxes.length },
-    { key: 'INGESTION_SEARCH', label: 'Search', count: boxes.filter(b => b.boxType === 'INGESTION_SEARCH').length },
-    { key: 'RECONCILIATION', label: 'Reconciliation', count: boxes.filter(b => b.boxType === 'RECONCILIATION').length },
-    { key: 'CONDITION_CHECK', label: 'Condition', count: boxes.filter(b => b.boxType === 'CONDITION_CHECK').length },
-    { key: 'REPORT', label: 'Report', count: boxes.filter(b => b.boxType === 'REPORT').length }
-  ] as const;
+    const selectedBox = boxes.find(b => b.id === selectedBoxId) || filteredBoxes[0] || null;
+    const selectedColumnRule = columnRules.find(r => r.id === selectedColumnRuleId) || columnRules[0] || null;
+
+    const navItems = [
+      { key: 'ALL', label: 'All', count: boxes.length },
+      { key: 'INGESTION_SEARCH', label: 'Search', count: boxes.filter(b => b.boxType === 'INGESTION_SEARCH').length },
+      { key: 'RECONCILIATION', label: 'Reconciliation', count: boxes.filter(b => b.boxType === 'RECONCILIATION').length },
+      { key: 'CONDITION_CHECK', label: 'Condition', count: boxes.filter(b => b.boxType === 'CONDITION_CHECK').length },
+      { key: 'REPORT', label: 'Report', count: boxes.filter(b => b.boxType === 'REPORT').length }
+    ] as const;
+
+    const columnRuleNavItems = [
+      { key: 'ALL', label: 'All', count: columnRules.length },
+      { key: 'DUPLICATE_CHECK', label: 'Duplicate check', count: columnRules.filter(r => r.ruleType === 'DUPLICATE_CHECK').length },
+      { key: 'COMPLETENESS', label: 'Completeness', count: columnRules.filter(r => r.ruleType === 'COMPLETENESS' || r.ruleType === 'NULL_CHECK').length },
+      { key: 'RANGE', label: 'Range', count: columnRules.filter(r => r.ruleType === 'RANGE' || r.ruleType === 'VALUE_BOUNDS').length }
+    ];
+
+    const filteredColumnRules = columnRules.filter(r => {
+      const q = searchQuery.toLowerCase();
+      const matchesSearch = !q || (r.ruleName && r.ruleName.toLowerCase().includes(q)) || (r.tableName && r.tableName.toLowerCase().includes(q));
+      return matchesSearch;
+    });
 
   return (
-    <div className="space-y-6">
-      <div className="bg-white border border-slate-200/90 rounded-2xl p-2.5 sm:p-3 text-slate-800 shadow-xs flex items-center justify-between gap-2 overflow-x-auto no-scrollbar" id="val-box-header">
-        <div className="flex items-center gap-2 shrink-0">
-          <div className="p-1.5 bg-blue-50 text-[#155DFC] rounded-lg border border-blue-200/60 shrink-0">
-            <Boxes className="w-4 h-4" />
-          </div>
-          <div className="flex items-center gap-1.5 shrink-0">
-            <h2 className="text-xs sm:text-sm font-bold text-slate-900 tracking-tight whitespace-nowrap">Validation Boxes</h2>
-            <span className="hidden xl:inline-flex px-1.5 py-0.5 rounded-full text-[10px] font-bold bg-blue-50 text-blue-600 border border-blue-200/60 whitespace-nowrap">
-              Modular Architecture
-            </span>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-2 shrink-0" id="val-box-actions-row">
-          <div className="inline-flex rounded-lg border border-slate-200 bg-slate-100 p-0.5">
-            <button
-              type="button"
-              onClick={() => setViewMode('library')}
-              className={`px-2.5 py-1 rounded-md text-[10px] font-bold transition ${viewMode === 'library' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}
-            >
-              Library
-            </button>
-            <button
-              type="button"
-              onClick={() => setViewMode('focus')}
-              className={`px-2.5 py-1 rounded-md text-[10px] font-bold transition ${viewMode === 'focus' ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-800'}`}
-            >
-              Focus
-            </button>
-          </div>
-
-          <button type="button" onClick={() => handleOpenCreateModal('INGESTION_SEARCH')} className="flex items-center gap-1.5 px-2.5 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 rounded-lg font-semibold text-xs transition-colors border border-emerald-200/80 shadow-2xs shrink-0 whitespace-nowrap cursor-pointer">
-            <Database className="w-3.5 h-3.5" />
-            <span>+ Search Box</span>
-          </button>
-          <button type="button" onClick={() => handleOpenCreateModal('RECONCILIATION')} className="flex items-center gap-1.5 px-2.5 py-1.5 bg-cyan-50 hover:bg-cyan-100 text-cyan-700 rounded-lg font-semibold text-xs transition-colors border border-cyan-200/80 shadow-2xs shrink-0 whitespace-nowrap cursor-pointer">
-            <Layers className="w-3.5 h-3.5" />
-            <span>+ Reconciliation Box</span>
-          </button>
-          <button type="button" onClick={() => handleOpenCreateModal('CONDITION_CHECK')} className="flex items-center gap-1.5 px-2.5 py-1.5 bg-blue-50 hover:bg-blue-100 text-[#155DFC] rounded-lg font-semibold text-xs transition-colors border border-blue-200/80 shadow-2xs shrink-0 whitespace-nowrap cursor-pointer">
-            <CheckCircle2 className="w-3.5 h-3.5" />
-            <span>+ Condition Check</span>
-          </button>
-          <button type="button" onClick={() => handleOpenCreateModal('REPORT')} className="flex items-center gap-1.5 px-2.5 py-1.5 bg-purple-50 hover:bg-purple-100 text-purple-700 rounded-lg font-semibold text-xs transition-colors border border-purple-200/80 shadow-2xs shrink-0 whitespace-nowrap cursor-pointer">
-            <Cpu className="w-3.5 h-3.5" />
-            <span>+ Report Box</span>
-          </button>
-          <button type="button" onClick={handleClearAllHistory} disabled={isClearingAll} className="flex items-center gap-1.5 px-2.5 py-1.5 bg-rose-50 hover:bg-rose-100 disabled:opacity-50 text-rose-700 rounded-lg font-semibold text-xs transition-colors border border-rose-200/80 shrink-0 whitespace-nowrap cursor-pointer" title="Permanently clear all validation check history across all tasks (cannot be undone)">
-            <Trash2 className="w-3.5 h-3.5" />
-            <span>{isClearingAll ? 'Clearing...' : 'Clear History'}</span>
-          </button>
-        </div>
+    <div className="space-y-4 font-sans p-6 bg-slate-50/50 min-h-full">
+      {/* Breadcrumb matching 04_rules_library.png */}
+      <div className="flex items-center gap-1.5 text-xs text-slate-400 font-medium">
+        <span>Build</span>
+        <span>/</span>
+        <span className="text-slate-700 font-semibold">Rules</span>
       </div>
 
-      <div className="grid grid-cols-1 xl:grid-cols-[220px_minmax(0,1fr)_320px] gap-4">
-        <aside className="bg-white border border-slate-200 rounded-xl p-2.5 h-fit">
-          <div className="mb-2 flex items-center justify-between">
-            <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Categories</span>
-            <span className="text-[10px] text-slate-400">{boxes.length} boxes</span>
-          </div>
-          <div className="space-y-1.5">
-            {navItems.map(item => {
-              const active = selectedTypeFilter === item.key || (item.key === 'ALL' && selectedTypeFilter === 'ALL');
-              return (
+      {/* 1. Header Toolbar matching 04_rules_library.png */}
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 shrink-0" id="val-box-header">
+        <div>
+          <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Rules</h1>
+          <p className="text-xs text-slate-500 mt-0.5">
+            Reusable building blocks that workflows call to search, compare and verify data.
+          </p>
+        </div>
+
+        <div className="relative" id="val-box-actions-row">
+          <button
+            type="button"
+            onClick={() => setIsNewRuleDropdownOpen(prev => !prev)}
+            className="flex items-center gap-1.5 px-4 py-2 bg-[#F27421] hover:bg-[#d65f15] text-white rounded-lg font-semibold text-xs transition-colors shadow-xs cursor-pointer"
+          >
+            <Plus className="w-4 h-4" />
+            <span>New rule</span>
+            <ChevronDown className="w-3.5 h-3.5 opacity-80" />
+          </button>
+
+          {isNewRuleDropdownOpen && (
+            <div className="absolute right-0 mt-1.5 w-60 bg-white border border-slate-200 rounded-xl shadow-xl z-50 py-1 divide-y divide-slate-100">
+              <div className="p-1">
                 <button
-                  key={item.key}
                   type="button"
-                  onClick={() => setSelectedTypeFilter(item.key as ValidationBoxType | 'ALL')}
-                  className={`w-full flex items-center justify-between rounded-lg px-2.5 py-2 text-left transition ${active ? 'bg-slate-900 text-white shadow-sm' : 'text-slate-600 hover:bg-slate-100 hover:text-slate-900'}`}
+                  onClick={() => {
+                    setIsNewRuleDropdownOpen(false);
+                    handleOpenCreateModal('INGESTION_SEARCH');
+                  }}
+                  className="w-full text-left px-3 py-2 text-xs text-slate-700 hover:bg-slate-50 rounded-lg flex items-center gap-2.5 cursor-pointer"
                 >
-                  <span className="text-xs font-semibold">{item.label}</span>
-                  <span className={`text-[10px] px-1.5 py-0.5 rounded font-bold ${active ? 'bg-white/10 text-white' : 'bg-slate-100 text-slate-500'}`}>
-                    {item.count}
-                  </span>
-                </button>
-              );
-            })}
-          </div>
-        </aside>
-
-        <div className="space-y-4">
-          <div className="flex flex-wrap items-center justify-between gap-3 bg-white p-3.5 border border-slate-200 rounded-xl shadow-xs">
-            <div className="flex items-center gap-2 text-[10px] uppercase tracking-wider text-slate-500 font-bold">
-              <span className="px-2 py-1 rounded bg-slate-100 border border-slate-200">{viewMode === 'library' ? 'Library' : 'Focus'} mode</span>
-              <span>{filteredBoxes.length} visible</span>
-            </div>
-
-            <div className="relative min-w-[240px]">
-              <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-              <input
-                type="text"
-                placeholder="Search validation boxes..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full bg-slate-50 border border-slate-200 rounded-lg pl-9 pr-4 py-1.5 text-xs text-slate-900 placeholder-slate-400 focus:bg-white focus:outline-none focus:ring-1 focus:ring-blue-500"
-              />
-            </div>
-          </div>
-
-          {loading ? (
-            <div className="py-16 text-center text-slate-400 animate-pulse font-medium">Loading validation boxes...</div>
-          ) : filteredBoxes.length === 0 ? (
-            <div className="p-12 text-center border border-dashed border-slate-200 rounded-xl bg-slate-50/50">
-              <Boxes className="w-12 h-12 text-slate-400 mx-auto mb-3" />
-              <h3 className="text-base font-bold text-slate-800 mb-1">No Validation Boxes found</h3>
-              <p className="text-xs text-slate-500 max-w-md mx-auto mb-4">
-                Build standalone rule blocks to separate external querying from integrity checks before linking them in the Workflow Studio.
-              </p>
-              <div className="flex justify-center gap-2 flex-wrap">
-                <button type="button" onClick={() => handleOpenCreateModal('INGESTION_SEARCH')} className="px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-lg text-xs font-bold transition-colors cursor-pointer">+ Add Search Box</button>
-                <button type="button" onClick={() => handleOpenCreateModal('CONDITION_CHECK')} className="px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-lg text-xs font-bold transition-colors cursor-pointer">+ Add Condition Check</button>
-                <button type="button" onClick={() => handleOpenCreateModal('RECONCILIATION')} className="px-3 py-1.5 bg-cyan-50 hover:bg-cyan-100 text-cyan-700 border border-cyan-200 rounded-lg text-xs font-bold transition-colors cursor-pointer">+ Add Reconciliation Box</button>
-                <button type="button" onClick={() => handleOpenCreateModal('REPORT')} className="px-3 py-1.5 bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200 rounded-lg text-xs font-bold transition-colors cursor-pointer">+ Add Report Box</button>
-              </div>
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {filteredBoxes.map((box) => {
-                const getTypeMeta = () => {
-                  switch (box.boxType) {
-                    case 'INGESTION_SEARCH':
-                      return { label: 'Search & Ingest', icon: Database, iconBg: 'bg-emerald-50 border-emerald-200', iconColor: 'text-emerald-700', badge: 'bg-emerald-50 text-emerald-700 border-emerald-200' };
-                    case 'RECONCILIATION':
-                      return { label: 'Reconciliation', icon: Layers, iconBg: 'bg-cyan-50 border-cyan-200', iconColor: 'text-cyan-700', badge: 'bg-cyan-50 text-cyan-700 border-cyan-200' };
-                    case 'REPORT':
-                      return { label: 'Report Output', icon: Cpu, iconBg: 'bg-purple-50 border-purple-200', iconColor: 'text-purple-700', badge: 'bg-purple-50 text-purple-700 border-purple-200' };
-                    case 'CONDITION_CHECK':
-                    default:
-                      return { label: 'Condition Check', icon: CheckCircle2, iconBg: 'bg-blue-50 border-blue-200', iconColor: 'text-blue-700', badge: 'bg-blue-50 text-blue-700 border-blue-200' };
-                  }
-                };
-                const meta = getTypeMeta();
-                const Icon = meta.icon;
-                const isSelected = selectedBox?.id === box.id;
-
-                return (
-                  <div
-                    key={box.id}
-                    role="button"
-                    tabIndex={0}
-                    onClick={() => setSelectedBoxId(box.id)}
-                    onKeyDown={(event) => {
-                      if (event.key === 'Enter' || event.key === ' ') {
-                        event.preventDefault();
-                        setSelectedBoxId(box.id);
-                      }
-                    }}
-                    className={`group relative w-full text-left bg-white border rounded-xl p-4 flex flex-col justify-between transition-all duration-200 shadow-xs hover:shadow-md cursor-pointer ${isSelected ? 'border-blue-300 ring-2 ring-blue-100 bg-blue-50/30' : 'border-slate-200 hover:border-slate-300'}`}
-                  >
-                    <div>
-                      <div className="flex items-start justify-between gap-3 mb-2.5">
-                        <div className="flex items-center gap-2.5 min-w-0">
-                          <div className={`p-2 rounded-lg shrink-0 border ${meta.iconBg}`}>
-                            <Icon className={`w-4 h-4 ${meta.iconColor}`} />
-                          </div>
-                          <div className="min-w-0">
-                            <h3 className="font-bold text-slate-900 text-sm truncate group-hover:text-blue-600 transition-colors" title={box.name}>{box.name}</h3>
-                            <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
-                              <span className={`text-[10px] font-bold uppercase tracking-wider px-1.5 py-0.2 rounded border ${meta.badge}`}>{meta.label}</span>
-                              {box.category && <span className="text-[10px] text-slate-600 bg-slate-100 border border-slate-200 px-1.5 py-0.2 rounded font-medium">{box.category}</span>}
-                            </div>
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-0.5">
-                          <button type="button" onClick={(e) => { e.stopPropagation(); setSharingBox(box); setIsShareModalOpen(true); }} className="p-1.5 text-slate-400 hover:text-blue-600 rounded-lg hover:bg-blue-50 transition-colors cursor-pointer" title="Share Validation Box">
-                            <Share2 className="w-3.5 h-3.5" />
-                          </button>
-                          <button type="button" onClick={(e) => { e.stopPropagation(); handleOpenEditModal(box); }} className="p-1.5 text-slate-400 hover:text-blue-600 rounded-lg hover:bg-blue-50 transition-colors cursor-pointer" title="Edit Box">
-                            <Edit3 className="w-3.5 h-3.5" />
-                          </button>
-                          <button type="button" onClick={(e) => { e.stopPropagation(); handleDeleteBox(box.id, box.name); }} className="p-1.5 text-slate-400 hover:text-rose-600 rounded-lg hover:bg-rose-50 transition-colors cursor-pointer" title="Delete Box">
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      </div>
-
-                      {box.description && <p className="text-xs text-slate-500 line-clamp-2 mb-3 leading-relaxed">{box.description}</p>}
-
-                      <div className="flex items-center justify-between text-xs p-2 bg-slate-50 rounded-lg border border-slate-100 mb-3">
-                        <span className="text-slate-600 flex items-center gap-1.5 truncate">
-                          <Server className="w-3.5 h-3.5 text-slate-400 shrink-0" />
-                          <span className="font-semibold text-slate-800 truncate max-w-[130px]">{databases.find(d => d.id === box.targetDbId)?.name || 'Database'}</span>
-                        </span>
-                        <span className="text-blue-700 font-mono text-[11px] font-bold bg-white px-2 py-0.5 rounded border border-slate-200 truncate max-w-[150px] flex items-center gap-1">
-                          <Table className="w-3 h-3 text-slate-400 shrink-0" />
-                          <span className="truncate">{box.targetTable || 'target_table'}</span>
-                        </span>
-                      </div>
-
-                      {box.boxType === 'INGESTION_SEARCH' && (
-                        <div className="space-y-2 mb-3">
-                          <div className="text-[10px] font-bold uppercase tracking-wider text-slate-400 flex items-center justify-between">
-                            <span>Search Parameters</span>
-                            <span className="font-mono text-slate-500">{box.searchParameters?.length || 0} active</span>
-                          </div>
-                          {box.searchParameters && box.searchParameters.length > 0 ? (
-                            <div className="flex flex-wrap gap-1.5">
-                              {box.searchParameters.slice(0, 3).map((p, idx) => (
-                                <span key={idx} className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-slate-50 text-slate-700 border border-slate-200 text-[11px] font-mono" title={`${p.inputField} -> ${p.targetColumn}`}>
-                                  <span className="text-slate-500">{p.inputField}</span>
-                                  <ArrowRight className="w-2.5 h-2.5 text-slate-400" />
-                                  <span className="font-bold text-slate-800">{p.targetColumn}</span>
-                                  {p.required && <span className="text-rose-500 text-[9px] font-bold">*</span>}
-                                </span>
-                              ))}
-                              {box.searchParameters.length > 3 && <span className="px-1.5 py-0.5 rounded-md bg-slate-100 text-slate-600 border border-slate-200 text-[10px] font-mono">+{box.searchParameters.length - 3} more</span>}
-                            </div>
-                          ) : <span className="text-xs text-slate-400 italic">No parameters configured</span>}
-                        </div>
-                      )}
-                    </div>
-
-                    <div className="pt-2.5 border-t border-slate-100 flex items-center justify-between gap-2">
-                      <AssetStatusBadge status={(box as any).status || 'DRAFT'} isLocked={Boolean((box as any).is_locked)} />
-                      <button type="button" onClick={(e) => { e.stopPropagation(); handleOpenTestDrawer(box); }} className="flex items-center justify-center gap-1.5 px-2 py-1.5 rounded-lg bg-slate-50 hover:bg-slate-100 text-slate-700 hover:text-slate-900 text-xs font-semibold border border-slate-200 hover:border-slate-300 transition cursor-pointer">
-                        <Play className="w-3.5 h-3.5 text-emerald-600 fill-emerald-600/20" /> Test
-                      </button>
-                    </div>
+                  <Boxes className="w-4 h-4 text-[#F27421]" />
+                  <div>
+                    <div className="font-bold text-slate-900">Validation box</div>
+                    <div className="text-[10px] text-slate-400">Search, condition, reconciliation</div>
                   </div>
-                );
-              })}
+                </button>
+              </div>
+              <div className="p-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsNewRuleDropdownOpen(false);
+                    setIsDuplicateCheckModalOpen(true);
+                  }}
+                  className="w-full text-left px-3 py-2 text-xs text-slate-700 hover:bg-slate-50 rounded-lg flex items-center gap-2.5 cursor-pointer"
+                >
+                  <Layers className="w-4 h-4 text-indigo-600" />
+                  <div>
+                    <div className="font-bold text-slate-900">Duplicate check</div>
+                    <div className="text-[10px] text-slate-400">Match across priority columns</div>
+                  </div>
+                </button>
+              </div>
             </div>
           )}
         </div>
+      </div>
 
-        <aside className="bg-white border border-slate-200 rounded-xl p-4 h-fit">
-          {selectedBox ? (
-            <div className="space-y-4">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  <div className="p-2 rounded-lg bg-blue-50 text-blue-700 border border-blue-200">
+      {/* 2. Top Navigation Tabs matching 04_rules_library.png */}
+      <div className="flex items-center gap-6 border-b border-slate-200 text-sm font-medium">
+        <button
+          type="button"
+          onClick={() => setActiveTab('validation_boxes')}
+          className={`pb-3 flex items-center gap-2 cursor-pointer transition-colors relative ${
+            activeTab === 'validation_boxes'
+              ? 'text-slate-900 font-bold border-b-2 border-[#F27421]'
+              : 'text-slate-500 hover:text-slate-800'
+          }`}
+        >
+          <span>Validation boxes</span>
+          <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
+            activeTab === 'validation_boxes' ? 'bg-[#0F142A] text-white' : 'bg-slate-100 text-slate-600'
+          }`}>
+            {boxes.length}
+          </span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveTab('column_rules')}
+          className={`pb-3 flex items-center gap-2 cursor-pointer transition-colors relative ${
+            activeTab === 'column_rules'
+              ? 'text-slate-900 font-bold border-b-2 border-[#F27421]'
+              : 'text-slate-500 hover:text-slate-800'
+          }`}
+        >
+          <span>Column rules</span>
+          <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
+            activeTab === 'column_rules' ? 'bg-[#0F142A] text-white' : 'bg-slate-100 text-slate-600'
+          }`}>
+            {columnRules.length || 1}
+          </span>
+        </button>
+      </div>
+
+      {/* 3. Sub-Filter Pills & Search Bar */}
+      <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+        <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-0.5">
+          {(activeTab === 'validation_boxes' ? navItems : columnRuleNavItems).map(item => {
+            const active = selectedTypeFilter === item.key || (item.key === 'ALL' && selectedTypeFilter === 'ALL');
+            return (
+              <button
+                key={item.key}
+                type="button"
+                onClick={() => setSelectedTypeFilter(item.key as any)}
+                className={`px-3 py-1 rounded-lg text-xs font-semibold transition flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
+                  active
+                    ? 'bg-slate-100 text-slate-900 border border-slate-200/80 shadow-2xs font-bold'
+                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100/60'
+                }`}
+              >
+                <span>{item.label}</span>
+                <span className={`text-[10px] ${active ? 'text-slate-700 font-bold' : 'text-slate-400'}`}>
+                  {item.count}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+
+        <div className="relative w-72">
+          <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+          <input
+            type="text"
+            placeholder={activeTab === 'validation_boxes' ? 'Search rules...' : 'Search column rules...'}
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="w-full bg-white border border-slate-200 rounded-lg pl-8 pr-3 py-1.5 text-xs text-slate-900 placeholder-slate-400 focus:outline-none focus:border-[#F27421] transition shadow-2xs"
+          />
+        </div>
+      </div>
+
+      {/* 4. Main Grid: 2 Columns of Cards on the left + Inspector Card on the right */}
+      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_320px] gap-4 items-start">
+        <div className="space-y-4">
+          {loading ? (
+            <div className="py-16 text-center text-slate-400 animate-pulse font-medium">Loading rules...</div>
+          ) : activeTab === 'validation_boxes' ? (
+            filteredBoxes.length === 0 ? (
+              <div className="p-12 text-center border border-dashed border-slate-200 rounded-xl bg-white">
+                <Boxes className="w-12 h-12 text-slate-400 mx-auto mb-3" />
+                <h3 className="text-base font-bold text-slate-800 mb-1">No Validation Boxes found</h3>
+                <p className="text-xs text-slate-500 max-w-md mx-auto mb-4">
+                  Build standalone rule blocks to separate external querying from integrity checks before linking them in the Workflow Studio.
+                </p>
+                <div className="flex justify-center gap-2 flex-wrap">
+                  <button type="button" onClick={() => handleOpenCreateModal('INGESTION_SEARCH')} className="px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-lg text-xs font-bold transition-colors cursor-pointer">+ Add Search Box</button>
+                  <button type="button" onClick={() => handleOpenCreateModal('CONDITION_CHECK')} className="px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-lg text-xs font-bold transition-colors cursor-pointer">+ Add Condition Check</button>
+                  <button type="button" onClick={() => handleOpenCreateModal('RECONCILIATION')} className="px-3 py-1.5 bg-cyan-50 hover:bg-cyan-100 text-cyan-700 border border-cyan-200 rounded-lg text-xs font-bold transition-colors cursor-pointer">+ Add Reconciliation Box</button>
+                </div>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {filteredBoxes.map((box) => {
+                  const getTypeMeta = () => {
+                    switch (box.boxType) {
+                      case 'INGESTION_SEARCH':
+                        return { label: 'Search & ingest', icon: Database };
+                      case 'RECONCILIATION':
+                        return { label: 'Reconciliation', icon: Layers };
+                      case 'REPORT':
+                        return { label: 'Report output', icon: Cpu };
+                      case 'CONDITION_CHECK':
+                      default:
+                        return { label: 'Condition check', icon: CheckCircle2 };
+                    }
+                  };
+                  const meta = getTypeMeta();
+                  const Icon = meta.icon;
+                  const isSelected = selectedBox?.id === box.id;
+
+                  return (
+                    <div
+                      key={box.id}
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setSelectedBoxId(box.id)}
+                      className={`group relative w-full text-left bg-white rounded-xl p-4 flex flex-col justify-between transition-all cursor-pointer ${
+                        isSelected
+                          ? 'border-2 border-[#F27421] shadow-xs'
+                          : 'border border-slate-200 hover:border-slate-300 shadow-2xs'
+                      }`}
+                    >
+                      <div>
+                        <div className="flex items-start justify-between gap-3 mb-2">
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <div className="p-2 rounded-lg shrink-0 border border-slate-200 bg-slate-50 text-slate-700">
+                              <Icon className="w-4 h-4" />
+                            </div>
+                            <div className="min-w-0">
+                              <h3 className="font-bold text-slate-900 text-sm truncate" title={box.name}>{box.name}</h3>
+                              <div className="text-xs text-slate-400 capitalize mt-0.5">
+                                {meta.label}
+                              </div>
+                            </div>
+                          </div>
+                          <div className="flex items-center">
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setSharingBox(box);
+                                setIsShareModalOpen(true);
+                              }}
+                              className="p-1 text-slate-400 hover:text-slate-700 transition cursor-pointer"
+                              title="More Options"
+                            >
+                              <MoreHorizontal className="w-4 h-4" />
+                            </button>
+                          </div>
+                        </div>
+
+                        <p className="text-xs text-slate-500 line-clamp-2 mb-3 leading-relaxed">
+                          {box.description || 'No description provided.'}
+                        </p>
+
+                        {/* Tag pills row */}
+                        <div className="flex items-center gap-1.5 flex-wrap mb-4">
+                          <span className="bg-slate-100 text-slate-600 text-xs px-2 py-0.5 rounded font-medium border border-slate-200/60">
+                            {databases.find(d => d.id === box.targetDbId)?.name || 'Sett'}
+                          </span>
+                          <span className="bg-slate-100 text-slate-600 text-xs px-2 py-0.5 rounded font-medium border border-slate-200/60">
+                            {box.targetTable || 'tran_log_tab'}
+                          </span>
+                          {box.searchParameters && box.searchParameters.length > 0 && (
+                            <span className="bg-slate-100 text-slate-600 text-xs px-2 py-0.5 rounded font-mono border border-slate-200/60">
+                              {box.searchParameters[0].inputField} → {box.searchParameters[0].targetColumn}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="pt-2 flex items-center justify-between gap-2 border-t border-slate-100">
+                        <span className="bg-slate-100 text-slate-600 text-[11px] font-medium px-2.5 py-0.5 rounded-full">
+                          {(box as any).status || 'Draft'}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={(e) => { e.stopPropagation(); handleOpenTestDrawer(box); }}
+                          className="flex items-center gap-1.5 px-3 py-1 rounded-lg border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-semibold transition cursor-pointer"
+                        >
+                          <span>▷</span>
+                          <span>Test</span>
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )
+          ) : (
+            /* COLUMN RULES TAB */
+            filteredColumnRules.length === 0 ? (
+              <div className="p-12 text-center border border-dashed border-slate-200 rounded-xl bg-white">
+                <Layers className="w-12 h-12 text-slate-400 mx-auto mb-3" />
+                <h3 className="text-base font-bold text-slate-800 mb-1">No Column Rules configured</h3>
+                <p className="text-xs text-slate-500 max-w-md mx-auto mb-4">
+                  Define table-level duplicate checks, completeness constraints, or value bounds.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => setIsDuplicateCheckModalOpen(true)}
+                  className="px-4 py-2 bg-[#F27421] text-white rounded-lg text-xs font-semibold hover:bg-[#d65f15] transition cursor-pointer"
+                >
+                  + Add Duplicate Check
+                </button>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {filteredColumnRules.map((rule) => {
+                  const isSelected = selectedColumnRule?.id === rule.id;
+                  return (
+                    <div
+                      key={rule.id}
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => setSelectedColumnRuleId(rule.id)}
+                      className={`group relative w-full text-left bg-white rounded-xl p-4 flex flex-col justify-between transition-all cursor-pointer ${
+                        isSelected
+                          ? 'border-2 border-[#F27421] shadow-xs'
+                          : 'border border-slate-200 hover:border-slate-300 shadow-2xs'
+                      }`}
+                    >
+                      <div>
+                        <div className="flex items-start justify-between gap-3 mb-2">
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <div className="p-2 rounded-lg shrink-0 border border-slate-200 bg-slate-50 text-indigo-700">
+                              <Layers className="w-4 h-4" />
+                            </div>
+                            <div className="min-w-0">
+                              <h3 className="font-bold text-slate-900 text-sm truncate" title={rule.ruleName}>
+                                {rule.ruleName || 'Column Rule'}
+                              </h3>
+                              <div className="text-xs text-slate-400 capitalize mt-0.5">
+                                {rule.ruleType === 'DUPLICATE_CHECK' ? 'Duplicate check' : rule.ruleType}
+                              </div>
+                            </div>
+                          </div>
+                          <div className="flex items-center">
+                            <button
+                              type="button"
+                              className="p-1 text-slate-400 hover:text-slate-700 transition cursor-pointer"
+                              title="Options"
+                            >
+                              <MoreHorizontal className="w-4 h-4" />
+                            </button>
+                          </div>
+                        </div>
+
+                        <p className="text-xs text-slate-500 line-clamp-2 mb-3 leading-relaxed">
+                          {rule.violationMessage || 'Verifies duplicate and uniqueness constraints across composite columns.'}
+                        </p>
+
+                        <div className="flex items-center gap-1.5 flex-wrap mb-4">
+                          <span className="bg-slate-100 text-slate-600 text-xs px-2 py-0.5 rounded font-medium border border-slate-200/60">
+                            {databases.find(d => d.id === rule.targetDbId)?.name || 'Sett'}
+                          </span>
+                          <span className="bg-slate-100 text-slate-600 text-xs px-2 py-0.5 rounded font-medium border border-slate-200/60 font-mono">
+                            {rule.tableName}
+                          </span>
+                          {rule.columns && rule.columns.length > 0 && (
+                            <span className="bg-slate-100 text-slate-600 text-xs px-2 py-0.5 rounded font-mono border border-slate-200/60">
+                              {rule.columns.map(c => c.columnName).join(', ')}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="pt-2 flex items-center justify-between gap-2 border-t border-slate-100">
+                        <span className="bg-slate-100 text-slate-600 text-[11px] font-medium px-2.5 py-0.5 rounded-full">
+                          Active
+                        </span>
+                        <button
+                          type="button"
+                          className="flex items-center gap-1.5 px-3 py-1 rounded-lg border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-semibold transition cursor-pointer"
+                        >
+                          <span>▷</span>
+                          <span>Test</span>
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )
+          )}
+        </div>
+
+        {/* 5. Right Inspector Card matching 04_rules_library.png */}
+        <aside className="bg-white border border-slate-200 rounded-xl p-5 h-fit shadow-xs">
+          {activeTab === 'validation_boxes' ? (
+            selectedBox ? (
+              <div className="space-y-4">
+                <div className="flex items-center gap-2.5">
+                  <div className="p-2 rounded-lg bg-slate-50 text-slate-700 border border-slate-200 shrink-0">
                     {selectedBox.boxType === 'INGESTION_SEARCH' ? <Database className="w-4 h-4" /> : selectedBox.boxType === 'RECONCILIATION' ? <Layers className="w-4 h-4" /> : selectedBox.boxType === 'REPORT' ? <Cpu className="w-4 h-4" /> : <CheckCircle2 className="w-4 h-4" />}
                   </div>
-                  <div>
-                    <div className="text-[10px] uppercase tracking-wider font-bold text-slate-500">Validation box</div>
-                    <div className="text-sm font-bold text-slate-900">{selectedBox.name}</div>
+                  <div className="min-w-0">
+                    <div className="text-[11px] font-medium text-slate-400">Selected</div>
+                    <div className="text-base font-bold text-slate-900 truncate">{selectedBox.name}</div>
                   </div>
                 </div>
-                <AssetStatusBadge status={(selectedBox as any).status || 'DRAFT'} isLocked={Boolean((selectedBox as any).is_locked)} />
-              </div>
 
-              <div className="rounded-lg bg-slate-50 border border-slate-200 p-3 text-xs text-slate-600">
-                <div className="font-semibold text-slate-800 mb-1">Summary</div>
-                <p>{selectedBox.description || 'No description configured for this validation box.'}</p>
-              </div>
+                <div className="text-xs text-slate-500 leading-relaxed">
+                  {selectedBox.description || 'No description configured for this validation box.'}
+                </div>
 
-              <div className="space-y-2 text-xs">
-                <div className="flex items-center justify-between border-b border-slate-100 pb-2">
-                  <span className="text-slate-500">Database</span>
-                  <span className="font-semibold text-slate-800">{databases.find(d => d.id === selectedBox.targetDbId)?.name || selectedBox.targetDbId || 'Not set'}</span>
+                <div className="space-y-2.5 text-xs pt-1">
+                  <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                    <span className="text-slate-400">Database</span>
+                    <span className="font-medium text-slate-800">{databases.find(d => d.id === selectedBox.targetDbId)?.name || 'Sett'}</span>
+                  </div>
+                  <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                    <span className="text-slate-400">Table</span>
+                    <span className="font-mono text-slate-800">{selectedBox.targetTable || 'tran_log_tab'}</span>
+                  </div>
+                  <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                    <span className="text-slate-400">Type</span>
+                    <span className="font-medium text-slate-800 capitalize">
+                      {selectedBox.boxType === 'INGESTION_SEARCH' ? 'Ingestion search' : selectedBox.boxType === 'RECONCILIATION' ? 'Reconciliation' : selectedBox.boxType === 'REPORT' ? 'Report output' : 'Condition check'}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                    <span className="text-slate-400">Parameters</span>
+                    <span className="font-medium text-slate-800">{selectedBox.searchParameters?.length ? `${selectedBox.searchParameters.length} active` : '0'}</span>
+                  </div>
+                  <div className="flex items-center justify-between pb-1">
+                    <span className="text-slate-400">Used in</span>
+                    <span className="font-medium text-slate-800">1 workflow</span>
+                  </div>
                 </div>
-                <div className="flex items-center justify-between border-b border-slate-100 pb-2">
-                  <span className="text-slate-500">Table</span>
-                  <span className="font-mono font-semibold text-slate-800">{selectedBox.targetTable || 'Not set'}</span>
-                </div>
-                <div className="flex items-center justify-between border-b border-slate-100 pb-2">
-                  <span className="text-slate-500">Type</span>
-                  <span className="font-semibold text-slate-800">{selectedBox.boxType}</span>
-                </div>
-                <div className="flex items-center justify-between pb-1">
-                  <span className="text-slate-500">Parameters</span>
-                  <span className="font-semibold text-slate-800">{selectedBox.searchParameters?.length || selectedBox.outputColumns?.length || 0}</span>
-                </div>
-              </div>
 
-              <div className="space-y-2 pt-2 border-t border-slate-200">
-                <button type="button" onClick={() => handleOpenEditModal(selectedBox)} className="w-full px-3 py-2 text-xs font-semibold bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-lg transition cursor-pointer">Edit box</button>
-                <button type="button" onClick={() => { setSharingBox(selectedBox); setIsShareModalOpen(true); }} className="w-full px-3 py-2 text-xs font-semibold bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 rounded-lg transition cursor-pointer">Share box</button>
-                <button type="button" onClick={() => handleOpenTestDrawer(selectedBox)} className="w-full px-3 py-2 text-xs font-semibold bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-lg transition cursor-pointer">Run test</button>
-                <button type="button" onClick={() => handleDeleteBox(selectedBox.id, selectedBox.name)} className="w-full px-3 py-2 text-xs font-semibold bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 rounded-lg transition cursor-pointer">Delete box</button>
+                <div className="flex items-center gap-2 pt-2 border-t border-slate-100">
+                  <button
+                    type="button"
+                    onClick={() => handleOpenEditModal(selectedBox)}
+                    className="flex-1 px-3 py-2 text-xs font-semibold bg-[#0F142A] hover:bg-slate-800 text-white rounded-lg transition flex items-center justify-center gap-1.5 cursor-pointer shadow-2xs"
+                  >
+                    <Edit3 className="w-3.5 h-3.5" />
+                    <span>Edit</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleOpenTestDrawer(selectedBox)}
+                    className="flex-1 px-3 py-2 text-xs font-semibold border border-slate-200 hover:bg-slate-50 text-slate-700 rounded-lg transition flex items-center justify-center gap-1.5 cursor-pointer"
+                  >
+                    <span>▷</span>
+                    <span>Run test</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => { setSharingBox(selectedBox); setIsShareModalOpen(true); }}
+                    className="p-2 border border-slate-200 hover:bg-slate-50 text-slate-500 rounded-lg transition cursor-pointer"
+                    title="More Options"
+                  >
+                    <MoreHorizontal className="w-4 h-4" />
+                  </button>
+                </div>
               </div>
-            </div>
+            ) : (
+              <div className="p-6 text-center text-slate-400 text-xs">Select a validation box to inspect it here.</div>
+            )
           ) : (
-            <div className="p-6 text-center text-slate-400 text-xs">Select a validation box to inspect it here.</div>
+            /* COLUMN RULE INSPECTOR */
+            selectedColumnRule ? (
+              <div className="space-y-4">
+                <div className="flex items-center gap-2.5">
+                  <div className="p-2 rounded-lg bg-slate-50 text-indigo-700 border border-slate-200 shrink-0">
+                    <Layers className="w-4 h-4" />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="text-[11px] font-medium text-slate-400">Selected</div>
+                    <div className="text-base font-bold text-slate-900 truncate">{selectedColumnRule.ruleName}</div>
+                  </div>
+                </div>
+
+                <div className="text-xs text-slate-500 leading-relaxed">
+                  {selectedColumnRule.violationMessage || 'Verifies duplicate and uniqueness constraints across rows.'}
+                </div>
+
+                <div className="space-y-2.5 text-xs pt-1">
+                  <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                    <span className="text-slate-400">Database</span>
+                    <span className="font-medium text-slate-800">{databases.find(d => d.id === selectedColumnRule.targetDbId)?.name || 'Sett'}</span>
+                  </div>
+                  <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                    <span className="text-slate-400">Table</span>
+                    <span className="font-mono text-slate-800">{selectedColumnRule.tableName}</span>
+                  </div>
+                  <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                    <span className="text-slate-400">Type</span>
+                    <span className="font-medium text-slate-800 capitalize">Duplicate check</span>
+                  </div>
+                  <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                    <span className="text-slate-400">Columns</span>
+                    <span className="font-medium text-slate-800">{selectedColumnRule.columns?.length || 1} priority</span>
+                  </div>
+                  <div className="flex items-center justify-between pb-1">
+                    <span className="text-slate-400">Severity</span>
+                    <span className="font-medium text-slate-800">{selectedColumnRule.severity || 'WARNING'}</span>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2 pt-2 border-t border-slate-100">
+                  <button
+                    type="button"
+                    onClick={() => setIsDuplicateCheckModalOpen(true)}
+                    className="flex-1 px-3 py-2 text-xs font-semibold bg-[#0F142A] hover:bg-slate-800 text-white rounded-lg transition flex items-center justify-center gap-1.5 cursor-pointer shadow-2xs"
+                  >
+                    <Edit3 className="w-3.5 h-3.5" />
+                    <span>Edit</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="flex-1 px-3 py-2 text-xs font-semibold border border-slate-200 hover:bg-slate-50 text-slate-700 rounded-lg transition flex items-center justify-center gap-1.5 cursor-pointer"
+                  >
+                    <span>▷</span>
+                    <span>Run test</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="p-2 border border-slate-200 hover:bg-slate-50 text-slate-500 rounded-lg transition cursor-pointer"
+                    title="More Options"
+                  >
+                    <MoreHorizontal className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="p-6 text-center text-slate-400 text-xs">Select a column rule to inspect it here.</div>
+            )
           )}
         </aside>
       </div>
@@ -2645,6 +2960,344 @@ export const ValidationBoxManager: React.FC<ValidationBoxManagerProps> = ({ curr
         </div>
       )}
 
+      {/* 6. Duplicate Check Builder Modal matching 05_duplicate_check_builder.png */}
+      {isDuplicateCheckModalOpen && (
+        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto">
+          <div className="bg-white rounded-2xl w-full max-w-5xl shadow-2xl border border-slate-100 overflow-hidden my-auto animate-in fade-in duration-150">
+            {/* Modal Header */}
+            <div className="px-7 pt-6 pb-4 flex items-start justify-between border-b border-slate-100">
+              <div>
+                <h2 className="text-xl font-bold text-slate-900">New duplicate check</h2>
+                <div className="text-xs text-slate-400 mt-0.5 flex items-center gap-1.5 font-normal">
+                  <span>Table</span>
+                  <span className="font-semibold text-slate-700 font-mono">{dupTargetTable}</span>
+                  <span>on</span>
+                  <span className="font-semibold text-slate-700">{databases.find(d => d.id === dupTargetDbId)?.name || 'Sett'}</span>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsDuplicateCheckModalOpen(false)}
+                className="text-slate-400 hover:text-slate-600 p-1.5 rounded-lg hover:bg-slate-100 transition cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Modal Body */}
+            <div className="grid grid-cols-1 lg:grid-cols-[1.55fr_1fr] gap-6 p-7">
+              {/* Left Column: Form & Conditions */}
+              <div className="space-y-5">
+                {/* Rule Name & Rule Type */}
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1.5">Rule name</label>
+                    <input
+                      type="text"
+                      value={dupRuleName}
+                      onChange={(e) => setDupRuleName(e.target.value)}
+                      className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-xs text-slate-900 focus:outline-none focus:border-[#F27421]"
+                      placeholder="New column rule"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1.5">Rule type</label>
+                    <div className="relative">
+                      <select
+                        value={dupRuleType}
+                        onChange={(e) => setDupRuleType(e.target.value)}
+                        className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-xs text-slate-900 appearance-none focus:outline-none focus:border-[#F27421] pr-8 cursor-pointer"
+                      >
+                        <option value="Duplicate check">Duplicate check</option>
+                        <option value="Grouping check">Grouping check</option>
+                        <option value="Completeness check">Completeness check</option>
+                      </select>
+                      <ChevronDown className="w-4 h-4 text-slate-400 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                    </div>
+                  </div>
+                </div>
+
+                {/* 1 · Match on (in priority order) */}
+                <div className="space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-slate-900">1 · Match on (in priority order)</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const available = ['FE_UTRNNO', 'ACCT_NUM1', 'AMNT1', 'CURRENCY1', 'STATUS'].find(c => !dupPriorityColumns.some(p => p.name === c)) || 'FE_UTRNNO';
+                        setDupPriorityColumns([...dupPriorityColumns, { name: available, matchMode: 'Exact match' }]);
+                      }}
+                      className="px-2.5 py-1 text-xs font-semibold text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition cursor-pointer shadow-2xs"
+                    >
+                      + Add column
+                    </button>
+                  </div>
+                  <div className="space-y-2">
+                    {dupPriorityColumns.map((col, idx) => (
+                      <div
+                        key={idx}
+                        className="flex items-center justify-between gap-3 px-3 py-2 bg-white border border-slate-200 rounded-xl shadow-2xs"
+                      >
+                        <div className="flex items-center gap-3 min-w-0">
+                          <span className="bg-[#0F142A] text-white text-[10px] font-bold px-2 py-0.5 rounded-md shrink-0">
+                            P{idx + 1}
+                          </span>
+                          <span className="font-bold text-slate-900 text-xs font-mono truncate">{col.name}</span>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <div className="relative">
+                            <select
+                              value={col.matchMode}
+                              onChange={(e) => {
+                                const updated = [...dupPriorityColumns];
+                                updated[idx].matchMode = e.target.value;
+                                setDupPriorityColumns(updated);
+                              }}
+                              className="bg-white border border-slate-200 rounded-lg px-2.5 py-1 text-xs text-slate-700 appearance-none pr-6 focus:outline-none focus:border-[#F27421] cursor-pointer"
+                            >
+                              <option value="Exact match">Exact match</option>
+                              <option value="Fuzzy match">Fuzzy match</option>
+                              <option value="Case insensitive">Case insensitive</option>
+                            </select>
+                            <ChevronDown className="w-3.5 h-3.5 text-slate-400 absolute right-1.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setDupPriorityColumns(dupPriorityColumns.filter((_, i) => i !== idx))}
+                            className="p-1 text-slate-400 hover:text-rose-500 rounded transition cursor-pointer"
+                            title="Remove priority column"
+                          >
+                            <X className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                {/* 2 · Group rows by */}
+                <div className="space-y-2">
+                  <div>
+                    <span className="text-xs font-bold text-slate-900">2 · Group rows by</span>
+                    <p className="text-[11px] text-slate-400 mt-0.5">Rows sharing these values are counted together.</p>
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {['FE_UTRNNO', 'INSTITUTION1', 'INSTITUTION2', 'AMNT1', 'AMNT2', 'ACCT_NUM1', 'CURRENCY1', 'STATUS', 'TR_DATE', 'TR_GROUP_ID', 'BO_TYPE', 'PROC_NAME', 'TRAN_PLACE', 'VISA_DATA', 'AGENT1', 'USER_ID'].map((c) => {
+                      const isSelected = dupGroupByColumns.includes(c);
+                      return (
+                        <button
+                          key={c}
+                          type="button"
+                          onClick={() => {
+                            if (isSelected) {
+                              setDupGroupByColumns(dupGroupByColumns.filter(item => item !== c));
+                            } else {
+                              setDupGroupByColumns([...dupGroupByColumns, c]);
+                            }
+                          }}
+                          className={`px-2.5 py-1 rounded-md text-xs font-mono font-medium transition cursor-pointer ${
+                            isSelected
+                              ? 'bg-[#0F142A] text-white shadow-2xs'
+                              : 'bg-slate-100 hover:bg-slate-200/70 text-slate-700 border border-slate-200/60'
+                          }`}
+                        >
+                          {c}
+                        </button>
+                      );
+                    })}
+                    <span className="px-2 py-1 rounded-md text-xs font-mono text-slate-400 bg-slate-50 border border-slate-200/50">
+                      +30 more
+                    </span>
+                  </div>
+                </div>
+
+                {/* 3 · Only count rows where */}
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-slate-900">3 · Only count rows where</span>
+                    <button
+                      type="button"
+                      onClick={() => setDupFilterConditions([...dupFilterConditions, { column: 'STATUS', operator: '=', value: 'ACTIVE' }])}
+                      className="px-2.5 py-1 text-xs font-semibold text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition cursor-pointer shadow-2xs"
+                    >
+                      + Condition
+                    </button>
+                  </div>
+                  <div className="space-y-2">
+                    {dupFilterConditions.map((cond, idx) => (
+                      <div key={idx} className="flex items-center gap-2">
+                        <input
+                          type="text"
+                          value={cond.column}
+                          onChange={(e) => {
+                            const updated = [...dupFilterConditions];
+                            updated[idx].column = e.target.value;
+                            setDupFilterConditions(updated);
+                          }}
+                          className="w-1/3 bg-white border border-slate-200 rounded-lg px-3 py-1.5 text-xs font-mono text-slate-900 focus:outline-none focus:border-[#F27421]"
+                          placeholder="Column"
+                        />
+                        <select
+                          value={cond.operator}
+                          onChange={(e) => {
+                            const updated = [...dupFilterConditions];
+                            updated[idx].operator = e.target.value;
+                            setDupFilterConditions(updated);
+                          }}
+                          className="w-16 bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs font-mono text-slate-900 focus:outline-none focus:border-[#F27421]"
+                        >
+                          <option value="=">=</option>
+                          <option value="!=">!=</option>
+                          <option value=">">&gt;</option>
+                          <option value="<">&lt;</option>
+                          <option value="LIKE">LIKE</option>
+                          <option value="IN">IN</option>
+                        </select>
+                        <input
+                          type="text"
+                          value={cond.value}
+                          onChange={(e) => {
+                            const updated = [...dupFilterConditions];
+                            updated[idx].value = e.target.value;
+                            setDupFilterConditions(updated);
+                          }}
+                          className="flex-1 bg-white border border-slate-200 rounded-lg px-3 py-1.5 text-xs font-mono text-slate-900 focus:outline-none focus:border-[#F27421]"
+                          placeholder="Value"
+                        />
+                        {dupFilterConditions.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={() => setDupFilterConditions(dupFilterConditions.filter((_, i) => i !== idx))}
+                            className="p-1.5 text-slate-400 hover:text-rose-500 rounded"
+                          >
+                            <X className="w-4 h-4" />
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* Right Column: Rule Summary, Actions & Test Runner */}
+              <div className="space-y-4">
+                <div>
+                  <h3 className="text-xs font-bold text-slate-900 mb-2">Rule summary</h3>
+                  <div className="bg-slate-50 border border-slate-200 rounded-xl p-4 text-xs text-slate-700 leading-relaxed space-y-2">
+                    <p>
+                      Flag a row as <span className="font-bold text-amber-600">{dupSeverity.toLowerCase()}</span> when more than <span className="font-bold text-slate-900">1</span> row shares the same{' '}
+                      {dupPriorityColumns.map(c => (
+                        <span key={c.name} className="inline-block bg-slate-200/80 text-slate-800 font-mono text-[11px] px-1.5 py-0.2 rounded mx-0.5 font-semibold">
+                          {c.name}
+                        </span>
+                      ))}
+                      {dupFilterConditions.length > 0 && (
+                        <>
+                          , counting only rows where{' '}
+                          {dupFilterConditions.map((c, i) => (
+                            <span key={i} className="inline-block bg-slate-200/80 text-slate-800 font-mono text-[11px] px-1.5 py-0.2 rounded mx-0.5 font-semibold">
+                              {c.column} {c.operator} {c.value}
+                            </span>
+                          ))}
+                          .
+                        </>
+                      )}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1.5">If violated</label>
+                    <div className="relative">
+                      <select
+                        value={dupIfViolated}
+                        onChange={(e) => setDupIfViolated(e.target.value)}
+                        className="w-full bg-white border border-slate-200 rounded-lg px-2.5 py-2 text-xs text-slate-900 appearance-none focus:outline-none focus:border-[#F27421] pr-7 cursor-pointer"
+                      >
+                        <option value="Flag for review">Flag for review</option>
+                        <option value="Reject / Drop">Reject / Drop</option>
+                        <option value="Send to exception queue">Send to exception queue</option>
+                      </select>
+                      <ChevronDown className="w-3.5 h-3.5 text-slate-400 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
+                    </div>
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-semibold text-slate-700 mb-1.5">Severity</label>
+                    <div className="relative">
+                      <select
+                        value={dupSeverity}
+                        onChange={(e) => setDupSeverity(e.target.value)}
+                        className="w-full bg-white border border-slate-200 rounded-lg px-2.5 py-2 text-xs text-slate-900 appearance-none focus:outline-none focus:border-[#F27421] pr-7 cursor-pointer"
+                      >
+                        <option value="Warning">Warning</option>
+                        <option value="Critical">Critical</option>
+                        <option value="Info">Info</option>
+                      </select>
+                      <ChevronDown className="w-3.5 h-3.5 text-slate-400 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
+                    </div>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1.5">Message</label>
+                  <textarea
+                    rows={3}
+                    value={dupViolationMessage}
+                    onChange={(e) => setDupViolationMessage(e.target.value)}
+                    className="w-full bg-white border border-slate-200 rounded-lg p-2.5 text-xs text-slate-900 focus:outline-none focus:border-[#F27421] leading-relaxed resize-none"
+                  />
+                </div>
+
+                {/* Try it on sample data */}
+                <div className="p-3.5 bg-white border border-slate-200 rounded-xl flex items-center justify-between gap-3 shadow-2xs">
+                  <div>
+                    <div className="text-xs font-bold text-slate-900">Try it on sample data</div>
+                    <div className="text-[11px] text-slate-400 mt-0.5">
+                      {dupSampleTestRunning ? 'Evaluating sample rows...' : (dupSampleTestResult ? `${dupSampleTestResult.violationsFound} violations found` : '50 rows loaded')}
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setDupSampleTestRunning(true);
+                      setTimeout(() => {
+                        setDupSampleTestRunning(false);
+                        setDupSampleTestResult({ executed: true, violationsFound: 2 });
+                      }, 500);
+                    }}
+                    className="px-3 py-1.5 border border-slate-200 hover:bg-slate-50 text-slate-800 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition cursor-pointer shadow-2xs"
+                  >
+                    <span>▷</span>
+                    <span>Run test</span>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="px-7 py-4 bg-slate-50/70 border-t border-slate-100 flex items-center justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setIsDuplicateCheckModalOpen(false)}
+                className="px-4 py-2 border border-slate-200 hover:bg-slate-100 text-slate-700 rounded-lg text-xs font-semibold transition cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={handleSaveDuplicateCheck}
+                disabled={dupIsSaving}
+                className="px-5 py-2 bg-[#F27421] hover:bg-[#d65f15] disabled:opacity-50 text-white rounded-lg text-xs font-semibold shadow-xs transition cursor-pointer flex items-center gap-2"
+              >
+                {dupIsSaving ? 'Saving...' : 'Save rule'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Visual Operational Asset Share Modal */}
       {sharingBox && (
         <ShareAssetModal
@@ -2671,3 +3324,5 @@ export const ValidationBoxManager: React.FC<ValidationBoxManagerProps> = ({ curr
     </div>
   );
 };
+
+export default ValidationBoxManager;

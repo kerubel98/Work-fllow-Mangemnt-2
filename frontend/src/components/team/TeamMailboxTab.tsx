@@ -14,7 +14,7 @@ import {
   Search, RefreshCw, PlusCircle, Reply, AlertCircle, ExternalLink, 
   FileSpreadsheet, FileText, Download, ChevronRight, User as UserIcon,
   ShieldCheck, ArrowUpRight, ArrowDownLeft, Filter, Tag, Check, Key,
-  Image as ImageIcon, Maximize2
+  Image as ImageIcon, Maximize2, Link, ArrowRight, Plus
 } from 'lucide-react';
 
 interface TeamMailboxTabProps {
@@ -245,27 +245,19 @@ export const TeamMailboxTab: React.FC<TeamMailboxTabProps> = ({
          ======================================================== */}
       <div className="w-full md:w-96 flex flex-col h-full min-h-0 border-b md:border-b-0 md:border-r border-slate-200 bg-white shrink-0 overflow-hidden">
         {/* Header & Search */}
-        <div className="p-3.5 border-b border-slate-100 space-y-3 bg-slate-50/70 shrink-0">
+        <div className="p-3.5 border-b border-slate-100 space-y-3 bg-white shrink-0">
           <div className="flex items-center justify-between">
-            <div className="flex items-center space-x-2">
-              <div className="w-7 h-7 rounded-lg bg-blue-100 text-blue-700 flex items-center justify-center">
-                <Mail size={15} />
-              </div>
-              <div>
-                <h3 className="text-xs font-bold font-mono text-slate-800 tracking-tight">TEAM MAILBOX</h3>
-                <p className="text-[10px] text-slate-500 font-mono">Consolidated Inbound & Outbound</p>
-              </div>
-            </div>
+            <h3 className="text-sm font-bold text-slate-900 font-sans">Team inbox</h3>
             <div className="flex items-center gap-1.5">
               {onOpenChannelsTab && (
                 <button
                   type="button"
                   onClick={onOpenChannelsTab}
-                  className="px-2.5 py-1 bg-blue-50 hover:bg-blue-100 text-blue-700 rounded-lg text-[11px] font-bold transition-colors cursor-pointer flex items-center gap-1 border border-blue-200/80"
+                  className="px-2.5 py-1 bg-white hover:bg-slate-50 text-slate-700 rounded-lg text-xs font-medium transition-colors cursor-pointer flex items-center gap-1.5 border border-slate-200 shadow-2xs"
                   title="Connect Email Provider & Authenticate Mailbox"
                 >
-                  <Key size={12} />
-                  <span>Connect Email</span>
+                  <Link size={12} className="text-slate-500" />
+                  <span>Connect email</span>
                 </button>
               )}
               <button
@@ -277,42 +269,42 @@ export const TeamMailboxTab: React.FC<TeamMailboxTabProps> = ({
                   }
                   await loadMailbox(true);
                 }}
-                className="p-1.5 hover:bg-slate-200 rounded-lg text-slate-500 hover:text-slate-800 transition-colors cursor-pointer"
+                className="p-1 hover:bg-slate-100 rounded-lg text-slate-400 hover:text-slate-700 transition-colors cursor-pointer"
                 title="Fetch & Refresh Mailbox"
               >
-                <RefreshCw size={13} className={isRefreshing ? 'animate-spin text-blue-600' : ''} />
+                <RefreshCw size={13} className={isRefreshing ? 'animate-spin text-[#F27421]' : ''} />
               </button>
             </div>
           </div>
 
           {/* Search bar */}
           <div className="relative">
-            <Search size={13} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400" />
+            <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
             <input
               type="text"
-              placeholder="Search sender, subject, keywords..."
+              placeholder="Search sender, subject..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-8 pr-3 py-1.5 bg-white border border-slate-200 rounded-xl text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-500 font-sans"
+              className="w-full pl-8 pr-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:border-[#F27421] font-sans shadow-2xs"
             />
           </div>
 
-          {/* Filter Pills */}
+          {/* Filter Pills matching 09_team_mailbox.png */}
           <div className="flex items-center space-x-1 overflow-x-auto no-scrollbar pt-0.5">
             {[
               { id: 'all', label: 'All' },
               { id: 'inbound', label: 'Inbound' },
               { id: 'outbound', label: 'Outbound' },
-              { id: 'unassigned', label: 'Needs Task' }
+              { id: 'unassigned', label: 'Needs task' }
             ].map(f => (
               <button
                 key={f.id}
                 type="button"
                 onClick={() => setFilter(f.id as any)}
-                className={`px-2.5 py-1 rounded-lg text-[11px] font-mono font-medium transition-all cursor-pointer whitespace-nowrap ${
+                className={`px-3 py-1 rounded-lg text-xs font-medium transition-all cursor-pointer whitespace-nowrap ${
                   filter === f.id
-                    ? 'bg-slate-900 text-white font-bold shadow-2xs'
-                    : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-100 hover:text-slate-900'
+                    ? 'bg-slate-100 text-slate-900 font-semibold'
+                    : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900'
                 }`}
               >
                 {f.label}
@@ -363,72 +355,65 @@ export const TeamMailboxTab: React.FC<TeamMailboxTabProps> = ({
           ) : (
             filteredThreads.map(thread => {
               const isSelected = thread.threadId === selectedThreadId;
-              const badge = getChannelBadge(thread.channel);
-              const ChannelIcon = badge.icon;
               const firstSender = thread.participants[0]?.name || thread.participants[0]?.address || 'External';
 
               return (
                 <div
                   key={thread.threadId}
                   onClick={() => setSelectedThreadId(thread.threadId)}
-                  className={`p-3 text-left transition-all cursor-pointer relative group ${
+                  className={`p-3.5 text-left transition-all cursor-pointer relative ${
                     isSelected 
-                      ? 'bg-blue-50/80 border-l-4 border-l-blue-600' 
-                      : 'hover:bg-slate-50/90 border-l-4 border-l-transparent'
+                      ? 'bg-slate-50/90 border-l-2 border-l-[#F27421]' 
+                      : 'hover:bg-slate-50/50 border-l-2 border-l-transparent'
                   }`}
                 >
                   {/* Top line: Sender + Timestamp */}
-                  <div className="flex items-center justify-between text-[11px] mb-1">
-                    <div className="flex items-center space-x-1.5 min-w-0 pr-1">
-                      <span className={`px-1.5 py-0.5 rounded text-[10px] font-mono border flex items-center space-x-1 ${badge.bg}`}>
-                        <ChannelIcon size={10} />
-                        <span className="capitalize">{badge.label}</span>
-                      </span>
-                      <span className={`truncate font-semibold text-slate-900 ${thread.unread ? 'font-bold' : ''}`}>
-                        {firstSender}
-                      </span>
-                    </div>
-                    <span className="text-[10px] font-mono text-slate-400 whitespace-nowrap shrink-0">
+                  <div className="flex items-center justify-between text-xs mb-1">
+                    <span className="truncate font-bold text-slate-900">
+                      {firstSender}
+                    </span>
+                    <span className="text-xs text-slate-400 whitespace-nowrap shrink-0 ml-2 font-sans">
                       {formatTimeAgo(thread.latestMessageAt)}
                     </span>
                   </div>
 
                   {/* Subject */}
-                  <h4 className={`text-xs text-slate-800 truncate mb-1 ${thread.unread ? 'font-bold text-slate-900' : 'font-medium'}`}>
+                  <h4 className="text-xs text-slate-900 font-semibold truncate mb-1">
                     {thread.subject}
                   </h4>
 
                   {/* Snippet */}
-                  <p className="text-[11px] text-slate-500 line-clamp-1 mb-2 font-normal leading-relaxed">
+                  <p className="text-xs text-slate-500 line-clamp-1 mb-2 font-normal leading-relaxed">
                     {thread.snippet || 'No message content preview.'}
                   </p>
 
                   {/* Footer status chips */}
-                  <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
-                    {/* Anti-Duplication: Task Created Status Badge */}
-                    {thread.taskCreated || thread.linkedIssueId ? (
-                      <span className="inline-flex items-center space-x-1 px-1.5 py-0.5 rounded-md bg-emerald-50 text-emerald-700 border border-emerald-200 text-[10px] font-mono font-bold">
-                        <CheckCircle2 size={11} className="text-emerald-600" />
-                        <span>✓ Task #{thread.linkedIssueId || 'CREATED'}</span>
-                      </span>
-                    ) : (
-                      <span className="inline-flex items-center space-x-1 px-1.5 py-0.5 rounded-md bg-amber-50 text-amber-700 border border-amber-200 text-[10px] font-mono">
-                        <Clock size={10} />
-                        <span>Needs Task</span>
-                      </span>
-                    )}
+                  <div className="flex items-center justify-between gap-1.5 pt-0.5">
+                    <div className="flex items-center gap-1.5">
+                      {/* Needs Task / Task Created Status Badge */}
+                      {thread.taskCreated || thread.linkedIssueId ? (
+                        <span className="inline-flex items-center space-x-1 px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200/60 text-[10px] font-medium">
+                          <CheckCircle2 size={10} className="text-emerald-600" />
+                          <span>Task #{thread.linkedIssueId || 'CREATED'}</span>
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center space-x-1 px-2 py-0.5 rounded bg-amber-50 text-amber-700 border border-amber-200/60 text-[10px] font-medium">
+                          <span>Needs task</span>
+                        </span>
+                      )}
 
-                    {/* Attachments Indicator */}
-                    {thread.hasAttachments && (
-                      <span className="inline-flex items-center space-x-1 px-1.5 py-0.5 rounded-md bg-slate-100 text-slate-700 text-[10px] font-mono">
-                        <Paperclip size={10} />
-                        <span>{thread.attachments.length}</span>
-                      </span>
-                    )}
+                      {/* Attachments Indicator */}
+                      {thread.hasAttachments && (
+                        <span className="inline-flex items-center space-x-1 px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 text-[10px]">
+                          <Paperclip size={10} />
+                          <span>{thread.attachments.length}</span>
+                        </span>
+                      )}
+                    </div>
 
                     {/* Messages in thread counter */}
                     {thread.messages.length > 1 && (
-                      <span className="px-1.5 py-0.2 rounded-full bg-slate-200/70 text-slate-600 text-[9px] font-mono ml-auto">
+                      <span className="text-xs text-slate-400 font-sans">
                         {thread.messages.length} msgs
                       </span>
                     )}
@@ -457,81 +442,50 @@ export const TeamMailboxTab: React.FC<TeamMailboxTabProps> = ({
             {/* Thread Header Bar */}
             <div className="p-4 border-b border-slate-200 bg-white flex flex-col sm:flex-row sm:items-center justify-between gap-3 shrink-0">
               <div className="min-w-0">
-                <div className="flex items-center space-x-2 mb-1">
-                  <span className={`px-2 py-0.5 rounded text-[10px] font-mono border capitalize flex items-center space-x-1 ${getChannelBadge(selectedThread.channel).bg}`}>
-                    {React.createElement(getChannelBadge(selectedThread.channel).icon, { size: 11 })}
-                    <span>{selectedThread.channel}</span>
-                  </span>
-                  <span className="text-xs font-mono text-slate-400">
-                    Thread ID: {selectedThread.threadId.substring(0, 16)}
-                  </span>
-                </div>
-                <h2 className="text-sm sm:text-base font-bold text-slate-900 font-mono truncate" title={selectedThread.subject}>
+                <h2 className="text-lg font-bold text-slate-900 font-heading truncate" title={selectedThread.subject}>
                   {selectedThread.subject}
                 </h2>
-                <div className="flex flex-wrap items-center gap-1.5 mt-1.5">
-                  <span className="text-[11px] text-slate-500 font-medium">Participants:</span>
-                  {selectedThread.participants.map((p, idx) => (
-                    <span 
-                      key={idx} 
-                      className={`px-1.5 py-0.5 rounded text-[10px] font-mono border ${
-                        p.direction === 'inbound' 
-                          ? 'bg-blue-50 text-blue-700 border-blue-200' 
-                          : 'bg-purple-50 text-purple-700 border-purple-200'
-                      }`}
-                    >
-                      {p.name || p.address} {p.direction === 'outbound' && '(Team Out)'}
-                    </span>
-                  ))}
+                <div className="text-xs text-slate-500 font-sans mt-0.5">
+                  {selectedThread.participants[0]?.name || selectedThread.participants[0]?.address || 'kirubeltadesse98@gmail.com'} · Thread {selectedThread.threadId}
                 </div>
               </div>
 
-              {/* Action Buttons: Add to Task / View Task / Respond */}
+              {/* Action Buttons: Respond / Add to task */}
               <div className="flex items-center space-x-2 shrink-0 self-start sm:self-center">
-                {/* Anti-Duplication Status Button */}
+                {/* Reply / Respond Button */}
+                <button
+                  type="button"
+                  onClick={() => setShowReplyComposer(!showReplyComposer)}
+                  className="px-3.5 py-1.5 rounded-lg text-xs font-medium font-sans flex items-center space-x-1.5 transition-all cursor-pointer border border-slate-200 bg-white hover:bg-slate-50 text-slate-700 shadow-2xs"
+                >
+                  <ArrowRight size={13} />
+                  <span>Respond</span>
+                </button>
+
+                {/* Add to Task Button */}
                 {selectedThread.taskCreated || selectedThread.linkedIssueId ? (
                   <button
                     type="button"
                     onClick={() => {
                       if (selectedThread.linkedIssueId && onOpenIssueInWorkspace) {
                         onOpenIssueInWorkspace(selectedThread.linkedIssueId);
-                      } else {
-                        alert(`Task #${selectedThread.linkedIssueId || 'CREATED'} is already active for this conversation.`);
                       }
                     }}
-                    className="px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-mono font-bold flex items-center space-x-1.5 transition-all shadow-xs cursor-pointer"
-                    title="A task has already been created from this conversation thread"
+                    className="px-3.5 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-xs font-semibold flex items-center space-x-1.5 transition-all shadow-xs cursor-pointer"
                   >
                     <CheckCircle2 size={13} />
-                    <span>✓ Task #{selectedThread.linkedIssueId || 'Active'}</span>
-                    <ExternalLink size={12} className="opacity-80" />
+                    <span>Task #{selectedThread.linkedIssueId || 'Active'}</span>
                   </button>
                 ) : (
                   <button
                     type="button"
                     onClick={() => handleAddToTask(selectedThread)}
-                    className="px-3 py-1.5 bg-[#155DFC] hover:bg-blue-700 text-white rounded-xl text-xs font-mono font-bold flex items-center space-x-1.5 transition-all shadow-xs cursor-pointer group"
-                    title="Convert incoming message and attachments into a Team Public task"
+                    className="px-3.5 py-1.5 bg-[#F27421] hover:bg-[#e06516] text-white rounded-lg text-xs font-semibold flex items-center space-x-1.5 transition-all shadow-xs cursor-pointer"
                   >
-                    <PlusCircle size={13} />
-                    <span>Add to Task</span>
-                    <span className="hidden lg:inline text-[10px] bg-blue-800/60 px-1 py-0.2 rounded font-sans font-normal">Team Public</span>
+                    <Plus size={13} />
+                    <span>Add to task</span>
                   </button>
                 )}
-
-                {/* Reply Button */}
-                <button
-                  type="button"
-                  onClick={() => setShowReplyComposer(!showReplyComposer)}
-                  className={`px-3 py-1.5 rounded-xl text-xs font-mono font-semibold flex items-center space-x-1.5 transition-all cursor-pointer border ${
-                    showReplyComposer 
-                      ? 'bg-slate-800 text-white border-slate-800' 
-                      : 'bg-white hover:bg-slate-50 text-slate-700 border-slate-200'
-                  }`}
-                >
-                  <Reply size={13} />
-                  <span>Respond</span>
-                </button>
               </div>
             </div>
 
@@ -573,46 +527,35 @@ export const TeamMailboxTab: React.FC<TeamMailboxTabProps> = ({
                 return (
                   <div 
                     key={msg.id || index}
-                    className={`rounded-2xl border p-4 shadow-2xs transition-all ${
-                      isInbound 
-                        ? 'bg-white border-slate-200' 
-                        : 'bg-blue-50/40 border-blue-100'
-                    }`}
+                    className="rounded-xl border border-slate-200 bg-white p-4 space-y-2 shadow-2xs font-sans"
                   >
                     {/* Message Header */}
-                    <div className="flex items-start justify-between gap-3 border-b border-slate-100 pb-2.5 mb-3">
+                    <div className="flex items-center justify-between gap-3">
                       <div className="flex items-center space-x-2.5">
-                        <div className={`w-8 h-8 rounded-full flex items-center justify-center font-bold text-xs shrink-0 ${
-                          isInbound ? 'bg-slate-100 text-slate-700' : 'bg-blue-600 text-white'
-                        }`}>
-                          {isInbound ? <UserIcon size={14} /> : <Send size={13} />}
+                        <div className="w-7 h-7 rounded-full bg-slate-100 flex items-center justify-center text-slate-500 shrink-0">
+                          {isInbound ? <UserIcon size={13} /> : <Send size={12} className="rotate-45" />}
                         </div>
-                        <div>
-                          <div className="flex items-center space-x-2">
-                            <span className="text-xs font-bold text-slate-900 font-mono">
-                              {isInbound ? (msg.sender_name || msg.sender_address || 'Sender') : 'Team Outbound Reply'}
-                            </span>
-                            <span className={`text-[10px] px-1.5 py-0.2 rounded font-mono ${
-                              isInbound ? 'bg-slate-100 text-slate-600' : 'bg-blue-100 text-blue-700 font-bold'
-                            }`}>
-                              {isInbound ? 'INBOUND' : 'OUTBOUND'}
-                            </span>
-                          </div>
-                          <p className="text-[11px] text-slate-500 font-mono">
-                            {isInbound ? msg.sender_address : `To: ${msg.recipient_address || selectedThread.participants[0]?.address}`}
-                          </p>
+                        <div className="flex items-center space-x-2">
+                          <span className="text-xs font-semibold text-slate-900">
+                            {isInbound ? (msg.sender_name || msg.sender_address || 'Sender') : 'Team reply'}
+                          </span>
+                          <span className="text-[10px] px-2 py-0.5 rounded bg-slate-100 text-slate-600 font-medium">
+                            {isInbound ? 'Inbound' : 'Outbound'}
+                          </span>
                         </div>
                       </div>
 
-                      <div className="text-right">
-                        <span className="text-[10px] font-mono text-slate-400">
-                          {new Date(msg.created_at).toLocaleString()}
-                        </span>
-                      </div>
+                      <span className="text-xs text-slate-400 font-sans">
+                        {new Date(msg.created_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}, {new Date(msg.created_at).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })}
+                      </span>
+                    </div>
+
+                    <div className="text-xs text-slate-500 font-sans">
+                      {isInbound ? `From: ${msg.sender_address}` : `To ${msg.recipient_address || selectedThread.participants[0]?.address}`}
                     </div>
 
                     {/* Message Body Content */}
-                    <div className="text-xs text-slate-800 whitespace-pre-wrap leading-relaxed font-sans mb-3">
+                    <div className="text-xs text-slate-800 leading-relaxed font-sans pt-1">
                       {msg.text_body || 'No text content available in payload.'}
                     </div>
 
@@ -767,50 +710,34 @@ export const TeamMailboxTab: React.FC<TeamMailboxTabProps> = ({
             )}
 
             {/* Quick Reply Bar (Always available at bottom of conversation) */}
-            <div className="p-3 border-t border-slate-200 bg-white shrink-0">
+            <div className="p-3.5 border-t border-slate-200 bg-white shrink-0">
               {replyError && !showReplyComposer && (
-                <div className="mb-2 p-2 rounded-lg bg-red-50 border border-red-200 text-xs text-red-700 font-mono flex items-center justify-between">
+                <div className="mb-2 p-2 rounded-lg bg-red-50 border border-red-200 text-xs text-red-700 font-sans flex items-center justify-between">
                   <span>{replyError}</span>
                   <button type="button" onClick={() => setReplyError(null)} className="text-red-500 hover:text-red-700 cursor-pointer">✕</button>
                 </div>
               )}
               <div className="flex items-center gap-2">
-                <div className="relative flex-1">
-                  <input
-                    type="text"
-                    value={quickReplyText}
-                    onChange={(e) => setQuickReplyText(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' && !e.shiftKey) {
-                        e.preventDefault();
-                        handleSendQuickReply();
-                      }
-                    }}
-                    placeholder={`Quick reply to ${selectedThread.participants[0]?.name || selectedThread.participants[0]?.address || 'sender'}... (Press Enter to send)`}
-                    className="w-full pl-3.5 pr-9 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:border-blue-500 focus:bg-white font-sans transition-all"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowReplyComposer(!showReplyComposer)}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-700 rounded transition-colors cursor-pointer"
-                    title={showReplyComposer ? "Hide full reply drawer" : "Expand full composer & templates"}
-                  >
-                    <Maximize2 size={13} />
-                  </button>
-                </div>
+                <input
+                  type="text"
+                  value={quickReplyText}
+                  onChange={(e) => setQuickReplyText(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' && !e.shiftKey) {
+                      e.preventDefault();
+                      handleSendQuickReply();
+                    }
+                  }}
+                  placeholder={`Quick reply to ${selectedThread.participants[0]?.address || selectedThread.participants[0]?.name || 'sender'}...`}
+                  className="flex-1 px-3.5 py-2 bg-white border border-slate-200 rounded-lg text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:border-[#F27421] font-sans shadow-2xs"
+                />
                 <button
                   type="button"
                   disabled={isSendingReply || !quickReplyText.trim()}
                   onClick={handleSendQuickReply}
-                  className="px-3.5 py-2 bg-[#155DFC] hover:bg-blue-700 disabled:opacity-50 text-white rounded-xl text-xs font-mono font-bold flex items-center space-x-1.5 transition-all shadow-xs cursor-pointer shrink-0"
-                  title="Send quick reply"
+                  className="px-4 py-2 bg-[#0F142A] hover:bg-slate-800 disabled:opacity-50 text-white rounded-lg text-xs font-semibold font-sans transition-all shadow-xs cursor-pointer shrink-0"
                 >
-                  {isSendingReply ? (
-                    <RefreshCw size={13} className="animate-spin" />
-                  ) : (
-                    <Send size={13} />
-                  )}
-                  <span className="hidden sm:inline">Reply</span>
+                  {isSendingReply ? 'Sending...' : 'Send'}
                 </button>
               </div>
             </div>

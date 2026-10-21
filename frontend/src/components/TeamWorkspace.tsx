@@ -15,7 +15,7 @@ import { api } from '../api/client';
 import { 
   Users, MessageSquare, CheckSquare, Lightbulb, Plus, Send, 
   ShieldCheck, UserCheck, Briefcase, Tag, Trash2, Clock, 
-  CheckCircle2, AlertCircle, Sparkles, Filter, ChevronRight, UserPlus, X, Check,
+  CheckCircle2, AlertCircle, Sparkles, Filter, ChevronRight, ChevronLeft, UserPlus, X, Check,
   ArrowLeft, Crown, Calendar, TrendingUp, BarChart2, Target, Flag,
   Network, GitFork, ArrowUpRight, ArrowDownLeft, Share2, Layers,
   Globe, Lock, FileCode, RefreshCw, GitPullRequest, ExternalLink, Sliders,
@@ -150,7 +150,7 @@ export default function TeamWorkspace({
   );
 
   const [teamSettingsSubTab, setTeamSettingsSubTab] = useState<TeamSettingsSubTab>(
-    isInitialSettingsSubTab ? (initialActiveTab as TeamSettingsSubTab) : 'bundles'
+    isInitialSettingsSubTab ? (initialActiveTab as TeamSettingsSubTab) : 'db-access'
   );
 
   const isGlobalAdmin = 
@@ -700,11 +700,17 @@ export default function TeamWorkspace({
     }
   };
 
+  const isGovernanceActive = activeTab === 'team_settings' || ['approvals', 'grants', 'ai-strategy', 'relationships', 'db-access', 'delegated-admin'].includes(activeTab);
+
   React.useEffect(() => {
     if (onActiveTeamChange) {
-      onActiveTeamChange(currentTeam ? currentTeam.name : null);
+      if (isGovernanceActive) {
+        onActiveTeamChange('Team settings');
+      } else {
+        onActiveTeamChange(currentTeam ? currentTeam.name : null);
+      }
     }
-  }, [currentTeam, onActiveTeamChange]);
+  }, [currentTeam, isGovernanceActive, onActiveTeamChange]);
 
   const currentTeamId = currentTeam ? currentTeam.id : '';
   const teamTasks = React.useMemo(() => {
@@ -1380,13 +1386,12 @@ export default function TeamWorkspace({
     return combined;
   }, [databases, currentTeam?.allowedDbIds, teamSpecificDbs]);
 
-  const isGovernanceActive = activeTab === 'team_settings' || ['approvals', 'grants', 'ai-strategy', 'relationships', 'db-access', 'delegated-admin'].includes(activeTab);
   const pendingApprovalsCount = pendingResolutions.length + settingProposals.filter(p => p.status === 'PENDING_TEAM_APPROVAL' || p.status === 'ESCALATED_TO_TARGET_TEAM').length;
 
   return (
     <div className="flex flex-col gap-2.5 h-full flex-1 min-h-0 overflow-hidden" id="team-workspace-container">
-      {/* 1. TOP HEADER: Single Switcher, Status Badges, 3 High-Value Actions */}
-      {currentTeam && (
+      {/* 1. TOP HEADER: Single Switcher, Status Badges, 3 High-Value Actions (Shown in normal team tabs) */}
+      {currentTeam && !isGovernanceActive && (
         <TeamHeader
           currentTeam={currentTeam}
           visibleTeams={visibleTeams}
@@ -1395,9 +1400,9 @@ export default function TeamWorkspace({
           onCreateTeamClick={() => setShowCreateTeamModal(true)}
           onAddMemberClick={() => setShowAddMemberModal(true)}
           onNewTaskClick={() => setShowAddTaskModal(true)}
-          onOpenSettingsClick={() => setActiveTab(isGovernanceActive ? 'overview' : 'team_settings')}
+          onOpenSettingsClick={() => setActiveTab('team_settings')}
           pendingApprovalsCount={pendingApprovalsCount}
-          isSettingsOpen={isGovernanceActive}
+          isSettingsOpen={false}
         />
       )}
 
@@ -1424,45 +1429,44 @@ export default function TeamWorkspace({
         ) : (
           <div className="flex-1 flex flex-col min-w-0 min-h-0 space-y-2.5 overflow-hidden">
             {/* Primary 5-Zone Tab Bar (Only displayed for operational team workspace) */}
+            {/* Primary Team Tab Bar matching 08_team_tasks.png & 09_team_mailbox.png */}
             {!isGovernanceActive && (
-              <div className="h-10 min-h-[40px] px-2.5 bg-white border border-slate-200/90 rounded-xl flex items-center justify-between text-xs font-mono shadow-xs shrink-0 gap-2">
-                <div className="flex items-center gap-1 overflow-x-auto no-scrollbar py-0.5 flex-1">
-                  {[
-                    { id: 'overview', label: 'Overview', icon: BarChart2 },
-                    { id: 'members', label: 'Members', icon: Users, count: currentTeamUsers.length },
-                    { id: 'tasks', label: 'Tasks', icon: CheckSquare, count: teamTasks.filter(t => t.status !== 'Done').length },
-                    { id: 'mailbox', label: 'Mailbox', icon: Mail },
-                    { id: 'discussion', label: 'Discussion', icon: MessageSquare, count: teamMessages.length },
-                    { id: 'resources', label: 'Resources', icon: Layers, count: allTeamDbs.length },
-                    { id: 'reports', label: 'Reports', icon: Tag }
-                  ].map(tab => {
-                    const isActive = activeTab === tab.id;
-                    const IconComp = tab.icon;
-                    return (
-                      <button
-                        key={tab.id}
-                        id={`team-tab-${tab.id}`}
-                        type="button"
-                        onClick={() => setActiveTab(tab.id as any)}
-                        className={`px-3 py-1.5 rounded-lg text-xs flex items-center space-x-1.5 transition-all cursor-pointer whitespace-nowrap shrink-0 ${
-                          isActive
-                            ? 'bg-[#155DFC] text-white font-bold shadow-2xs'
-                            : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100/90'
-                        }`}
-                      >
-                        <IconComp size={13} />
-                        <span>{tab.label}</span>
-                        {tab.count !== undefined && tab.count > 0 && (
-                          <span className={`ml-0.5 text-[10px] px-1.5 py-0.2 rounded-full font-mono ${
-                            isActive ? 'bg-blue-800 text-white' : 'bg-slate-100 text-slate-600'
-                          }`}>
-                            {tab.count}
-                          </span>
-                        )}
-                      </button>
-                    );
-                  })}
-                </div>
+              <div className="flex items-center gap-6 border-b border-slate-200 px-1 shrink-0 font-sans">
+                {[
+                  { id: 'overview', label: 'Overview' },
+                  { id: 'tasks', label: 'Tasks', count: teamTasks.filter(t => t.status !== 'Done').length },
+                  { id: 'members', label: 'Members', count: currentTeamUsers.length },
+                  { id: 'mailbox', label: 'Mailbox' },
+                  { id: 'discussion', label: 'Discussion', count: teamMessages.length },
+                  { id: 'resources', label: 'Resources' },
+                  { id: 'reports', label: 'Reports' }
+                ].map(tab => {
+                  const isActive = activeTab === tab.id;
+                  return (
+                    <button
+                      key={tab.id}
+                      id={`team-tab-${tab.id}`}
+                      type="button"
+                      onClick={() => setActiveTab(tab.id as any)}
+                      className={`pb-2.5 text-xs flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap relative ${
+                        isActive
+                          ? 'text-slate-900 font-semibold border-b-2 border-slate-900 -mb-[1px]'
+                          : 'text-slate-500 hover:text-slate-800 font-medium'
+                      }`}
+                    >
+                      <span>{tab.label}</span>
+                      {tab.count !== undefined && tab.count > 0 && (
+                        <span className={`text-[11px] px-1.5 py-0.2 rounded-full font-medium ${
+                          isActive 
+                            ? 'bg-[#0F142A] text-white' 
+                            : 'text-slate-400'
+                        }`}>
+                          {tab.count}
+                        </span>
+                      )}
+                    </button>
+                  );
+                })}
               </div>
             )}
 
@@ -1526,6 +1530,7 @@ export default function TeamWorkspace({
                     currentUser={currentUser}
                     onSendMessage={onSendMessage}
                     availableTeams={visibleTeams}
+                    users={users}
                   />
                 )}
 
@@ -1552,118 +1557,107 @@ export default function TeamWorkspace({
               </div>
             )}
 
-      {/* CONSOLIDATED TAB: TEAM SETTINGS (Approvals, Cross-Team, AI Strategy, Org Structure, DB Access, Delegated Admin) */}
+      {/* CONSOLIDATED TAB: TEAM SETTINGS (Matching 20_team_settings.png) */}
       {(activeTab === 'team_settings' || ['approvals', 'grants', 'ai-strategy', 'relationships', 'db-access', 'delegated-admin'].includes(activeTab)) && (
-        <div className="space-y-4 flex-1 overflow-y-auto min-h-0" id="team-settings-container">
-          {/* Team Settings Header with Back Button */}
-          <div className="bg-white border border-slate-200/90 rounded-2xl p-4 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 font-mono text-xs" id="team-settings-header">
+        <div className="flex flex-col flex-1 min-h-0 overflow-hidden space-y-4 pt-1" id="team-settings-container">
+          {/* Team Settings Top Header */}
+          <div className="flex items-center justify-between pb-1 shrink-0" id="team-settings-header">
             <div className="flex items-center space-x-3">
-              <div className="p-2.5 bg-blue-50 text-[#155DFC] border border-blue-200 rounded-xl">
-                <Settings size={20} />
-              </div>
+              <button
+                type="button"
+                id="btn-back-to-workspace"
+                onClick={() => setActiveTab('overview')}
+                className="w-8 h-8 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 flex items-center justify-center text-slate-600 transition cursor-pointer shadow-2xs"
+                title="Back to workspace"
+              >
+                <ChevronLeft size={18} />
+              </button>
               <div>
-                <div className="flex items-center space-x-2">
-                  <h3 className="text-sm font-bold tracking-tight text-slate-900 uppercase">
-                    Team Settings &amp; Governance
-                  </h3>
-                  <span className="text-[10px] bg-slate-100 text-slate-700 border border-slate-200 px-2 py-0.5 rounded-full font-bold">
-                    {currentTeam?.name || 'Active Team'}
-                  </span>
+                <div className="text-xs font-normal text-slate-400">
+                  {currentTeam?.name || 'Core Operations & Settlement Division'}
                 </div>
-                <p className="text-[11px] text-slate-500 font-sans mt-0.5">
-                  Manage approvals, cross-team access grants, AI strategy objectives, organizational hierarchy, and external database permissions.
-                </p>
+                <h2 className="text-2xl font-bold tracking-tight text-slate-900 leading-tight">
+                  Team settings
+                </h2>
               </div>
             </div>
 
-            <button
-              type="button"
-              id="btn-back-to-workspace"
-              onClick={() => setActiveTab('overview')}
-              className="px-3.5 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-mono font-bold rounded-xl flex items-center space-x-1.5 transition-colors cursor-pointer shrink-0"
-            >
-              <span>&larr; Back to Workspace</span>
-            </button>
+            <div className="flex items-center space-x-3">
+              {(dbAccessSuccessMsg || adminPrivilegesSuccessMsg) && (
+                <span className="text-xs font-medium text-emerald-600 flex items-center gap-1.5 animate-in fade-in">
+                  <CheckCircle2 size={15} />
+                  <span>{dbAccessSuccessMsg || adminPrivilegesSuccessMsg}</span>
+                </span>
+              )}
+              {(dbAccessErrMsg || adminPrivilegesErrMsg) && (
+                <span className="text-xs font-medium text-rose-600 flex items-center gap-1.5 animate-in fade-in">
+                  <AlertCircle size={15} />
+                  <span>{dbAccessErrMsg || adminPrivilegesErrMsg}</span>
+                </span>
+              )}
+              <button
+                type="button"
+                id="btn-save-team-settings"
+                onClick={async () => {
+                  await handleSaveDbAccess();
+                  await handleSaveDelegatedAdminPrivileges();
+                }}
+                disabled={isSavingDbAccess || isSavingAdminPrivileges}
+                className="px-5 py-2.5 bg-[#F27421] hover:bg-[#e06516] disabled:opacity-50 text-white font-semibold text-sm rounded-xl shadow-xs transition cursor-pointer flex items-center space-x-2"
+              >
+                {(isSavingDbAccess || isSavingAdminPrivileges) ? (
+                  <>
+                    <RefreshCw size={14} className="animate-spin" />
+                    <span>Saving...</span>
+                  </>
+                ) : (
+                  <span>Save changes</span>
+                )}
+              </button>
+            </div>
           </div>
 
-          {/* Segmented Sub-navigation Bar */}
-          <div className="flex items-center gap-1 p-1 bg-slate-100/90 border border-slate-200 rounded-2xl overflow-x-auto no-scrollbar shadow-2xs" id="team-settings-subnav">
-            {[
-              {
-                id: 'bundles' as TeamSettingsSubTab,
-                label: 'Staged Assets & Verification',
-                icon: Boxes,
-                count: teamBundles.length
-              },
-              {
-                id: 'grants' as TeamSettingsSubTab,
-                label: 'Cross Team',
-                icon: Users,
-                count: visibilityGrants.length
-              },
-              {
-                id: 'ai-strategy' as TeamSettingsSubTab,
-                label: 'AI Strategy',
-                icon: Sparkles,
-                count: aiObjectives.length
-              },
-              {
-                id: 'relationships' as TeamSettingsSubTab,
-                label: 'Org Structure',
-                icon: Network,
-                count: teamRelationships.length
-              },
-              {
-                id: 'db-access' as TeamSettingsSubTab,
-                label: 'Database Access',
-                icon: Database,
-                count: currentTeam?.allowedDbIds?.length || 0
-              },
-              {
-                id: 'channels' as TeamSettingsSubTab,
-                label: 'Channels & Webhooks',
-                icon: MessageSquare,
-                count: 0
-              },
-              ...(isGlobalAdmin ? [{
-                id: 'delegated-admin' as TeamSettingsSubTab,
-                label: 'Admin Privileges',
-                icon: Shield,
-                count: (currentTeam?.adminPrivileges?.canManageConnections ? 1 : 0) + (currentTeam?.adminPrivileges?.canManageColumnMapping ? 1 : 0)
-              }] : [])
-            ].map(subTab => {
-              const currentActiveSubTab = (activeTab === 'team_settings' ? teamSettingsSubTab : (['bundles', 'approvals', 'grants', 'ai-strategy', 'relationships', 'db-access', 'delegated-admin', 'channels'].includes(activeTab) ? (activeTab === 'approvals' ? 'bundles' : activeTab) : 'bundles'));
+          {/* 2-Column Layout matching 20_team_settings.png */}
+          <div className="flex items-start gap-6 flex-1 min-h-0 overflow-y-auto">
+            {/* Left Navigation Card */}
+            <div className="w-60 shrink-0 bg-white border border-slate-200/90 rounded-2xl p-2 shadow-2xs space-y-1" id="team-settings-subnav">
+              {[
+                { id: 'db-access' as TeamSettingsSubTab, label: 'Access & permissions' },
+                { id: 'bundles' as TeamSettingsSubTab, label: 'Staged assets' },
+                { id: 'grants' as TeamSettingsSubTab, label: 'Cross-team sharing' },
+                { id: 'relationships' as TeamSettingsSubTab, label: 'Org structure' },
+                { id: 'channels' as TeamSettingsSubTab, label: 'Channels & webhooks' },
+                { id: 'delegated-admin' as TeamSettingsSubTab, label: 'Delegated admin' },
+              ].map(item => {
+                const currentActiveSubTab = activeTab === 'team_settings' 
+                  ? teamSettingsSubTab 
+                  : (['bundles', 'approvals', 'grants', 'ai-strategy', 'relationships', 'db-access', 'delegated-admin', 'channels'].includes(activeTab) 
+                      ? (activeTab === 'approvals' ? 'bundles' : activeTab) 
+                      : 'db-access');
+                const isSubActive = currentActiveSubTab === item.id;
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    id={`team-subtab-${item.id}`}
+                    onClick={() => {
+                      setActiveTab('team_settings');
+                      setTeamSettingsSubTab(item.id);
+                    }}
+                    className={`w-full text-left px-3.5 py-2.5 rounded-xl text-sm transition cursor-pointer ${
+                      isSubActive
+                        ? 'bg-slate-100 text-slate-900 font-semibold'
+                        : 'text-slate-600 hover:text-slate-900 hover:bg-slate-50 font-medium'
+                    }`}
+                  >
+                    {item.label}
+                  </button>
+                );
+              })}
+            </div>
 
-              const isSubActive = currentActiveSubTab === subTab.id;
-              const SubIcon = subTab.icon;
-              return (
-                <button
-                  key={subTab.id}
-                  type="button"
-                  id={`team-subtab-${subTab.id}`}
-                  onClick={() => {
-                    setActiveTab('team_settings');
-                    setTeamSettingsSubTab(subTab.id);
-                  }}
-                  className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-semibold transition whitespace-nowrap cursor-pointer shrink-0 ${
-                    isSubActive
-                      ? 'bg-[#155DFC] text-white shadow-xs font-bold'
-                      : 'text-slate-600 hover:text-slate-900 hover:bg-white'
-                  }`}
-                >
-                  <SubIcon className={`w-3.5 h-3.5 ${isSubActive ? 'text-white' : 'text-slate-500'}`} />
-                  <span>{subTab.label}</span>
-                  {typeof subTab.count === 'number' && subTab.count > 0 && (
-                    <span className={`px-1.5 py-0.2 text-[10px] rounded-full font-mono font-bold ${
-                      isSubActive ? 'bg-blue-800 text-white' : 'bg-slate-200 text-slate-700'
-                    }`}>
-                      {subTab.count}
-                    </span>
-                  )}
-                </button>
-              );
-            })}
-          </div>
+            {/* Right Pane */}
+            <div className="flex-1 min-w-0 space-y-5 pb-8">
 
           {/* SUBTAB 1: WORKFLOW BUNDLES & COMPOSITE ASSETS (Layer 2 Governance) */}
           {((activeTab === 'team_settings' ? teamSettingsSubTab : activeTab) === 'bundles' || (activeTab === 'team_settings' ? teamSettingsSubTab : activeTab) === 'approvals') && (
@@ -2196,112 +2190,34 @@ export default function TeamWorkspace({
         </div>
       )}
 
-          {/* SUBTAB 5: DATABASE & EXTERNAL SYSTEM ACCESS */}
+          {/* SUBTAB 5: ACCESS & PERMISSIONS (Matching 20_team_settings.png) */}
           {((activeTab === 'team_settings' ? teamSettingsSubTab : activeTab) === 'db-access') && (
-            <div className="space-y-5 font-mono text-xs" id="team-settings-db-access-panel">
-              {/* Header Banner */}
-              <div className="bg-blue-50/70 border border-blue-200/80 rounded-2xl p-5 text-slate-800 space-y-2 shadow-xs">
-                <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
-                  <div className="flex items-center space-x-3">
-                    <div className="p-2.5 bg-blue-100 text-blue-700 border border-blue-200 rounded-xl">
-                      <Database size={22} />
-                    </div>
-                    <div>
-                      <div className="flex items-center space-x-2">
-                        <h3 className="text-sm font-bold text-slate-900">External Database &amp; Query Governance</h3>
-                        {(currentTeam?.teamType || 'working') === 'permanent' ? (
-                          <span className="px-2 py-0.5 rounded-full text-[10px] bg-purple-100 text-purple-800 border border-purple-200 font-bold flex items-center gap-1">
-                            <ShieldCheck size={11} />
-                            Permanent Team Policy
-                          </span>
-                        ) : (
-                          <span className="px-2 py-0.5 rounded-full text-[10px] bg-emerald-100 text-emerald-800 border border-emerald-200 font-bold flex items-center gap-1">
-                            <Briefcase size={11} />
-                            Working Squad
-                          </span>
-                        )}
-                      </div>
-                      <p className="text-xs text-slate-600 font-sans mt-0.5">
-                        Configure which external back-office databases and SQL query execution types are authorized for members of <strong>{currentTeam?.name}</strong>.
-                      </p>
-                    </div>
-                  </div>
-
-                  <button
-                    type="button"
-                    id="btn-save-team-db-access"
-                    disabled={isSavingDbAccess}
-                    onClick={handleSaveDbAccess}
-                    className="px-4 py-2 bg-[#155DFC] hover:bg-blue-600 disabled:opacity-50 text-white font-bold rounded-xl flex items-center gap-2 shadow-xs transition-all cursor-pointer shrink-0 self-start md:self-auto"
-                  >
-                    {isSavingDbAccess ? (
-                      <>
-                        <RefreshCw size={13} className="animate-spin" />
-                        <span>Saving...</span>
-                      </>
-                    ) : (
-                      <>
-                        <Check size={14} />
-                        <span>Save Access Policy</span>
-                      </>
-                    )}
-                  </button>
-                </div>
-
-                {/* Notifications */}
-                {dbAccessSuccessMsg && (
-                  <div className="mt-2 p-2.5 bg-emerald-100/80 border border-emerald-300 rounded-xl text-emerald-900 text-xs flex items-center gap-2 font-sans font-medium">
-                    <CheckCircle2 size={15} className="text-emerald-700 shrink-0" />
-                    <span>{dbAccessSuccessMsg}</span>
-                  </div>
-                )}
-                {dbAccessErrMsg && (
-                  <div className="mt-2 p-2.5 bg-rose-100/80 border border-rose-300 rounded-xl text-rose-900 text-xs flex items-center gap-2 font-sans font-medium">
-                    <AlertCircle size={15} className="text-rose-700 shrink-0" />
-                    <span>{dbAccessErrMsg}</span>
-                  </div>
-                )}
-
-                {/* Explanatory Callout */}
-                <div className="mt-3 p-3 bg-white/90 border border-blue-200/60 rounded-xl text-xs text-slate-700 font-sans space-y-1">
-                  {(currentTeam?.teamType || 'working') === 'permanent' ? (
-                    <p>
-                      <strong>Governance Authority:</strong> Because this is a <strong>Permanent Team</strong>, its members' Query Sandbox privileges directly derive from this policy. Disallowed databases and forbidden statement types (e.g. UPDATE, DROP) are automatically blocked both client-side in the sandbox interface and server-side in the execution API.
-                    </p>
-                  ) : (
-                    <p>
-                      <strong>Working Squad Notice:</strong> Working squad members derive their primary Query Sandbox permissions from their assigned <strong>Permanent Team</strong>. Team-specific policies are applied when executing squad-scoped queries.
-                    </p>
-                  )}
-                </div>
-              </div>
-
-              {/* SECTION 1: ALLOWED EXTERNAL DATABASES */}
-              <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-xs space-y-4">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-3">
+            <div className="space-y-5" id="team-settings-db-access-panel">
+              {/* CARD 1: DATABASES MEMBERS CAN QUERY */}
+              <div className="bg-white border border-slate-200/90 rounded-2xl p-5 shadow-2xs space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                   <div>
-                    <h4 className="text-sm font-bold text-slate-900 flex items-center gap-2">
-                      <Server size={16} className="text-[#155DFC]" />
-                      <span>Authorized External Databases ({selectedDbIds.length} of {databases.length} enabled)</span>
-                    </h4>
-                    <p className="text-xs text-slate-500 font-sans mt-0.5">
-                      Select which registered back-office connections members of this team are permitted to query.
+                    <h3 className="text-base font-bold text-slate-900">
+                      Databases members can query
+                    </h3>
+                    <p className="text-xs text-slate-500 mt-0.5 font-sans">
+                      {selectedDbIds.length} of {databases.length} enabled. Permanent-team policy applies to all members.
                     </p>
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center space-x-2 shrink-0">
                     <button
                       type="button"
                       onClick={() => setSelectedDbIds(databases.map(d => d.id))}
-                      className="px-2.5 py-1 text-[11px] font-semibold text-[#155DFC] bg-blue-50 hover:bg-blue-100 rounded-lg transition-colors cursor-pointer"
+                      className="px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition cursor-pointer"
                     >
-                      Select All
+                      Select all
                     </button>
                     <button
                       type="button"
                       onClick={() => setSelectedDbIds([])}
-                      className="px-2.5 py-1 text-[11px] font-semibold text-slate-600 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors cursor-pointer"
+                      className="px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition cursor-pointer"
                     >
-                      Clear All
+                      Clear
                     </button>
                   </div>
                 </div>
@@ -2311,47 +2227,38 @@ export default function TeamWorkspace({
                     No external databases registered in the system yet. Add databases via Database Management.
                   </div>
                 ) : (
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-1">
                     {databases.map(db => {
                       const isChecked = selectedDbIds.includes(db.id);
                       return (
                         <div
                           key={db.id}
                           onClick={() => handleToggleDbId(db.id)}
-                          className={`p-3.5 rounded-xl border transition-all cursor-pointer flex flex-col justify-between gap-2 ${
+                          className={`p-3.5 rounded-xl transition-all cursor-pointer flex items-center justify-between gap-3 ${
                             isChecked
-                              ? 'bg-blue-50/50 border-[#155DFC] shadow-xs ring-1 ring-[#155DFC]/20'
-                              : 'bg-white border-slate-200 hover:border-slate-300'
+                              ? 'border-2 border-[#F27421] bg-white'
+                              : 'border border-slate-200 bg-white hover:border-slate-300'
                           }`}
                         >
-                          <div className="flex items-start justify-between gap-2">
-                            <div className="flex items-center space-x-2">
-                              <div className={`p-1.5 rounded-lg ${isChecked ? 'bg-blue-100 text-[#155DFC]' : 'bg-slate-100 text-slate-500'}`}>
-                                <Database size={15} />
-                              </div>
-                              <div>
-                                <span className="font-bold text-slate-900 text-xs block truncate max-w-[170px]">{db.name}</span>
-                                <span className="text-[10px] text-slate-500 font-mono">{db.type || 'PostgreSQL'}</span>
-                              </div>
+                          <div className="flex items-center space-x-3 min-w-0">
+                            <div className={`w-4 h-4 rounded flex items-center justify-center shrink-0 transition-colors ${
+                              isChecked ? 'bg-[#F27421] text-white' : 'border border-slate-300 bg-white'
+                            }`}>
+                              {isChecked && <Check size={12} strokeWidth={3} />}
                             </div>
-                            <input
-                              type="checkbox"
-                              checked={isChecked}
-                              onChange={() => {}}
-                              className="rounded text-[#155DFC] focus:ring-[#155DFC] cursor-pointer mt-1"
-                            />
+                            <div className="min-w-0">
+                              <div className="font-bold text-slate-900 text-sm truncate">{db.name}</div>
+                              <div className="text-xs text-slate-400 font-mono">{db.type || 'PostgreSQL'}</div>
+                            </div>
                           </div>
 
-                          <div className="pt-2 border-t border-slate-100/80 flex items-center justify-between text-[10px] text-slate-500 font-mono">
-                            <span className="truncate max-w-[130px]" title={db.host || 'localhost'}>
-                              {db.host || 'localhost'}
-                            </span>
-                            <span className={`px-1.5 py-0.5 rounded font-bold ${
-                              db.status === 'online' ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-600'
-                            }`}>
-                              {db.status === 'online' ? 'Online' : 'Offline'}
-                            </span>
-                          </div>
+                          <span className={`text-xs px-2.5 py-0.5 rounded-md font-medium shrink-0 border ${
+                            db.status === 'offline'
+                              ? 'bg-rose-50 text-rose-700 border-rose-200/60'
+                              : 'bg-emerald-50 text-emerald-700 border-emerald-200/60'
+                          }`}>
+                            {db.status === 'offline' ? 'Offline' : 'Online'}
+                          </span>
                         </div>
                       );
                     })}
@@ -2359,86 +2266,166 @@ export default function TeamWorkspace({
                 )}
               </div>
 
-              {/* SECTION 2: ALLOWED QUERY STATEMENT TYPES */}
-              <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-xs space-y-4">
-                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-3">
+              {/* CARD 2: ALLOWED STATEMENT TYPES */}
+              <div className="bg-white border border-slate-200/90 rounded-2xl p-5 shadow-2xs space-y-4">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                   <div>
-                    <h4 className="text-sm font-bold text-slate-900 flex items-center gap-2">
-                      <Key size={16} className="text-[#155DFC]" />
-                      <span>Authorized Query Statement Types</span>
-                    </h4>
-                    <p className="text-xs text-slate-500 font-sans mt-0.5">
-                      Determine which SQL operations team members can execute in the Query Sandbox.
+                    <h3 className="text-base font-bold text-slate-900">
+                      Allowed statement types
+                    </h3>
+                    <p className="text-xs text-slate-500 mt-0.5 font-sans">
+                      Blocked types are rejected in the sandbox and on the server.
                     </p>
                   </div>
 
-                  {/* Quick Presets */}
-                  <div className="flex items-center gap-1.5 flex-wrap">
+                  {/* Preset Segmented Control */}
+                  <div className="inline-flex p-1 bg-slate-100 rounded-xl text-xs font-medium text-slate-600 shrink-0">
                     <button
                       type="button"
                       onClick={() => setSelectedQueryTypes(['SELECT'])}
-                      className="px-2.5 py-1 text-[11px] font-semibold text-emerald-700 bg-emerald-50 hover:bg-emerald-100 rounded-lg transition-colors cursor-pointer"
+                      className={`px-3 py-1 rounded-lg transition cursor-pointer ${
+                        selectedQueryTypes.length === 1 && selectedQueryTypes.includes('SELECT')
+                          ? 'bg-white shadow-xs text-slate-900 font-semibold'
+                          : 'hover:text-slate-900'
+                      }`}
                     >
-                      Safe Read-Only
+                      Read-only
                     </button>
                     <button
                       type="button"
                       onClick={() => setSelectedQueryTypes(['SELECT', 'INSERT', 'UPDATE'])}
-                      className="px-2.5 py-1 text-[11px] font-semibold text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-lg transition-colors cursor-pointer"
+                      className={`px-3 py-1 rounded-lg transition cursor-pointer ${
+                        selectedQueryTypes.includes('INSERT') && selectedQueryTypes.includes('UPDATE') && !selectedQueryTypes.includes('DELETE')
+                          ? 'bg-white shadow-xs text-slate-900 font-semibold'
+                          : 'hover:text-slate-900'
+                      }`}
                     >
                       Standard DML
                     </button>
                     <button
                       type="button"
                       onClick={() => setSelectedQueryTypes(['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'CREATE', 'ALTER', 'DROP'])}
-                      className="px-2.5 py-1 text-[11px] font-semibold text-purple-700 bg-purple-50 hover:bg-purple-100 rounded-lg transition-colors cursor-pointer"
+                      className={`px-3 py-1 rounded-lg transition cursor-pointer ${
+                        selectedQueryTypes.includes('DELETE')
+                          ? 'bg-white shadow-xs text-slate-900 font-semibold'
+                          : 'hover:text-slate-900'
+                      }`}
                     >
-                      Full Admin
+                      Full admin
                     </button>
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-1">
                   {[
-                    { type: 'SELECT' as AllowedQueryType, name: 'SELECT', desc: 'Read-only data queries and row retrieval.', badge: 'bg-emerald-100 text-emerald-800 border-emerald-200', tag: 'Safe / Default' },
-                    { type: 'INSERT' as AllowedQueryType, name: 'INSERT', desc: 'Insert new records into tables.', badge: 'bg-blue-100 text-blue-800 border-blue-200', tag: 'Data Ingestion' },
-                    { type: 'UPDATE' as AllowedQueryType, name: 'UPDATE', desc: 'Modify existing values in table rows.', badge: 'bg-amber-100 text-amber-800 border-amber-200', tag: 'Data Mutation' },
-                    { type: 'DELETE' as AllowedQueryType, name: 'DELETE', desc: 'Remove records and rows from tables.', badge: 'bg-rose-100 text-rose-800 border-rose-200', tag: 'Destructive' },
-                    { type: 'CREATE' as AllowedQueryType, name: 'CREATE', desc: 'Create tables, indexes, or schemas.', badge: 'bg-orange-100 text-orange-800 border-orange-200', tag: 'DDL Schema' },
-                    { type: 'ALTER' as AllowedQueryType, name: 'ALTER', desc: 'Alter table columns and constraints.', badge: 'bg-purple-100 text-purple-800 border-purple-200', tag: 'DDL Schema' },
-                    { type: 'DROP' as AllowedQueryType, name: 'DROP', desc: 'Drop tables, schemas, or partitions.', badge: 'bg-red-100 text-red-800 border-red-200', tag: 'High Risk' }
+                    { type: 'SELECT' as AllowedQueryType, name: 'SELECT', tag: 'Read-only', badge: 'bg-emerald-50 text-emerald-700 border-emerald-200/60' },
+                    { type: 'INSERT' as AllowedQueryType, name: 'INSERT', tag: 'Data ingestion', badge: 'bg-slate-100 text-slate-600 border-slate-200' },
+                    { type: 'UPDATE' as AllowedQueryType, name: 'UPDATE', tag: 'Data mutation', badge: 'bg-amber-50 text-amber-700 border-amber-200/60' },
+                    { type: 'DELETE' as AllowedQueryType, name: 'DELETE', tag: 'Destructive', badge: 'bg-rose-50 text-rose-700 border-rose-200/60' }
                   ].map(item => {
                     const isChecked = selectedQueryTypes.includes(item.type);
                     return (
                       <div
                         key={item.type}
                         onClick={() => handleToggleQueryType(item.type)}
-                        className={`p-3.5 rounded-xl border transition-all cursor-pointer flex flex-col justify-between gap-2 ${
+                        className={`p-3.5 rounded-xl transition-all cursor-pointer flex items-center justify-between gap-2 ${
                           isChecked
-                            ? 'bg-blue-50/50 border-[#155DFC] shadow-xs ring-1 ring-[#155DFC]/20'
-                            : 'bg-white border-slate-200 hover:border-slate-300'
+                            ? 'border-2 border-[#F27421] bg-white'
+                            : 'border border-slate-200 bg-white hover:border-slate-300'
                         }`}
                       >
-                        <div className="flex items-start justify-between">
-                          <div className="flex items-center space-x-2">
-                            <input
-                              type="checkbox"
-                              checked={isChecked}
-                              onChange={() => {}}
-                              className="rounded text-[#155DFC] focus:ring-[#155DFC] cursor-pointer"
-                            />
-                            <span className="font-bold text-slate-900 text-xs font-mono">{item.name}</span>
+                        <div className="flex items-center space-x-2.5">
+                          <div className={`w-4 h-4 rounded flex items-center justify-center shrink-0 transition-colors ${
+                            isChecked ? 'bg-[#F27421] text-white' : 'border border-slate-300 bg-white'
+                          }`}>
+                            {isChecked && <Check size={12} strokeWidth={3} />}
                           </div>
-                          <span className={`text-[9px] px-1.5 py-0.5 rounded font-bold font-mono border ${item.badge}`}>
-                            {item.tag}
-                          </span>
+                          <span className="font-bold text-slate-900 text-sm font-mono">{item.name}</span>
                         </div>
-                        <p className="text-[11px] text-slate-600 font-sans leading-relaxed">
-                          {item.desc}
-                        </p>
+                        <span className={`text-[11px] px-2 py-0.5 rounded-md font-medium border ${item.badge}`}>
+                          {item.tag}
+                        </span>
                       </div>
                     );
                   })}
+                </div>
+              </div>
+
+              {/* CARD 3: DELEGATED ADMIN */}
+              <div className="bg-white border border-slate-200/90 rounded-2xl p-5 shadow-2xs space-y-4">
+                <h3 className="text-base font-bold text-slate-900">
+                  Delegated admin
+                </h3>
+
+                <div className="divide-y divide-slate-100 font-sans">
+                  {/* Switch 1: Manage database connections */}
+                  <div className="py-3.5 flex items-center justify-between gap-4">
+                    <div>
+                      <div className="text-sm font-semibold text-slate-900">
+                        Manage database connections
+                      </div>
+                      <p className="text-xs text-slate-500 mt-0.5">
+                        Register databases, test pings, allocate connections to teams
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setTeamAdminPrivileges(prev => ({ ...prev, canManageConnections: !prev.canManageConnections }))}
+                      className={`w-11 h-6 flex items-center rounded-full p-1 transition-colors duration-200 ease-in-out cursor-pointer shrink-0 ${
+                        teamAdminPrivileges.canManageConnections ? 'bg-[#F27421]' : 'bg-slate-200'
+                      }`}
+                    >
+                      <div className={`bg-white w-4 h-4 rounded-full shadow-md transform transition-transform duration-200 ease-in-out ${
+                        teamAdminPrivileges.canManageConnections ? 'translate-x-5' : 'translate-x-0'
+                      }`} />
+                    </button>
+                  </div>
+
+                  {/* Switch 2: Approve access & query requests */}
+                  <div className="py-3.5 flex items-center justify-between gap-4">
+                    <div>
+                      <div className="text-sm font-semibold text-slate-900">
+                        Approve access &amp; query requests
+                      </div>
+                      <p className="text-xs text-slate-500 mt-0.5">
+                        Review pending DbAccessRequest and DML approvals
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setTeamAdminPrivileges(prev => ({ ...prev, canManageAccessRequests: !prev.canManageAccessRequests }))}
+                      className={`w-11 h-6 flex items-center rounded-full p-1 transition-colors duration-200 ease-in-out cursor-pointer shrink-0 ${
+                        teamAdminPrivileges.canManageAccessRequests ? 'bg-[#F27421]' : 'bg-slate-200'
+                      }`}
+                    >
+                      <div className={`bg-white w-4 h-4 rounded-full shadow-md transform transition-transform duration-200 ease-in-out ${
+                        teamAdminPrivileges.canManageAccessRequests ? 'translate-x-5' : 'translate-x-0'
+                      }`} />
+                    </button>
+                  </div>
+
+                  {/* Switch 3: Column mapping & rule builder */}
+                  <div className="py-3.5 flex items-center justify-between gap-4">
+                    <div>
+                      <div className="text-sm font-semibold text-slate-900">
+                        Column mapping &amp; rule builder
+                      </div>
+                      <p className="text-xs text-slate-500 mt-0.5">
+                        Configure table validation rules and type groups
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setTeamAdminPrivileges(prev => ({ ...prev, canManageColumnMapping: !prev.canManageColumnMapping }))}
+                      className={`w-11 h-6 flex items-center rounded-full p-1 transition-colors duration-200 ease-in-out cursor-pointer shrink-0 ${
+                        teamAdminPrivileges.canManageColumnMapping ? 'bg-[#F27421]' : 'bg-slate-200'
+                      }`}
+                    >
+                      <div className={`bg-white w-4 h-4 rounded-full shadow-md transform transition-transform duration-200 ease-in-out ${
+                        teamAdminPrivileges.canManageColumnMapping ? 'translate-x-5' : 'translate-x-0'
+                      }`} />
+                    </button>
+                  </div>
                 </div>
               </div>
 
@@ -2892,6 +2879,8 @@ export default function TeamWorkspace({
             <TeamChannelsTab currentTeam={currentTeam} currentUser={currentUser} />
           )}
 
+            </div>
+          </div>
         </div>
       )}
 

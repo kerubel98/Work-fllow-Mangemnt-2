@@ -669,3 +669,96 @@ Instead, add a channel-agnostic governance-based message platform with these lay
 This fits naturally with the repository’s current architecture and allows the app to process requests and trigger tasks from email, Teams, WhatsApp, and Telegram in a consistent operational model.
 
 This is the right integration model for a workflow-driven operational platform because it preserves control, safety, and traceability while still making communication channels feel native to the users working in them.
+
+---
+
+## 18. Personal User OAuth 2.0 Mailbox & Personal Chat Workspace Integration (October 18, 2026)
+
+### 18.1 Architectural Scope & Personal User Segregation
+Per **Rule 14** (Centralized Enterprise OAuth 2.0 & Team Credential Segregation), enterprise app registrations and sensitive Client Secrets are centrally maintained at the Admin level (`provider_connections` where `team_id IS NULL`). Individual users must never configure or manage raw IMAP/SMTP passwords or Client Secrets.
+
+The User Profile messaging configuration is strictly scoped for the **personal user**:
+1. **Configured Providers**: Users select an authorized enterprise OAuth 2.0 provider (Microsoft Graph / Office 365, Google Workspace / Gmail, or Admin Managed OAuth).
+2. **Explicit Mailbox Permission Scopes**: Users consent to operational collaboration scopes:
+   - `Mailbox (Inbox & Outbox)`: Ingest and sync personal incoming messages and sent items.
+   - `File Attachments`: Inspect, stream, and download discrepancy logs, spreadsheets, and PDFs.
+   - `Send Emails & Replies`: Dispatch outbound email responses and resolution proposals directly from the application.
+   - `Continuous Auto-Sync`: Refresh tokens in the background to keep the personal workspace live.
+
+### 18.2 Relational Persistence (Rule 23)
+- Migration `032_user_profile_and_settings.sql` added `message_provider_settings` (JSONB) to `users` with validation constraints.
+- Extended `postgresRepo.ts` with atomic JSONB updates preserving existing tokens on metadata saves.
+- Profile route `POST /api/auth/profile` updates user details, avatar, and personal OAuth 2.0 mailbox settings.
+
+### 18.3 Personal Mailbox Ingestion & Collation
+- Service: `backend/src/services/messaging/messageIntakeService.ts` -> `getUserMailbox(userId, filter, search)`:
+  - Groups raw messages (`staged_incoming_messages`) into unified thread conversations.
+  - Normalizes external participants (`direction: 'inbound' | 'outbound'`).
+  - Collate file attachments (`staged_message_attachments_raw_data`) with preview and download links.
+  - Auto-seeds an operational welcome thread for new OAuth 2.0 accounts.
+- Routing: `GET /api/messages/mailbox?userId=...` and `POST /api/messages/reply` in `backend/src/routes/messages.ts`.
+
+### 18.4 Frontend Dual-Mode Workspace (`PersonalChat.tsx`)
+- **Direct Messages Mode**: 1-on-1 team direct chat with colleagues, colleague search, role filters, circular avatars, and Maker proposal promotion.
+- **Personal Mailbox Mode**: Synchronized view of the user's OAuth 2.0 mailbox:
+  - Filter tabs: `All`, `Inbox`, `Sent`, `Unlinked`.
+  - Rich message viewer with HTML/text body formatting.
+  - Attachment cards with format icons and download triggers.
+  - In-thread email reply composer bound to the user's authenticated address.
+  - `Create Task` escalation button to convert emails directly into operational issues.
+- **Design System & Layout (Rule 16)**:
+  - Circular avatar geometry (`rounded-full`) across SideNav, User Profile modal, contact directory, conversation header, and individual message bubbles (sender on left, self on right).
+  - Enforced viewport scroll containment (`h-[calc(100vh-2.25rem)] overflow-hidden flex flex-col min-h-0`) in `App.tsx` ensuring headers remain stationary.
+
+---
+
+## 19. Universal In-Chat Directives (`/`), User Mentions (`@`), and Team Mentions (`@@`) Architecture
+
+### 19.1 Architectural Purpose & Single Component Mandate
+To eliminate fragmented, one-off chat input implementations across the platform, all operational collaboration interfaces must utilize a single unified input engine: **`UnifiedChatInput.tsx`** (`frontend/src/components/chat/UnifiedChatInput.tsx`).
+
+This component standardizes rich typing triggers across:
+1. **Personal Direct Chat** (`PersonalChat.tsx`)
+2. **Personal Mailbox In-Thread Replies** (`PersonalChat.tsx`)
+3. **Team Workspace Discussions & Incident Channels** (`TeamDiscussionTab.tsx`)
+4. **Issue & Task Investigation Discussions** (`IssueChatPanel.tsx`)
+5. **Team Mailbox Outbound Responses** (`TeamMailboxTab.tsx`)
+6. **Investigation Panel Collaborative Consensus & Solution Chat Drawer** (`ValidationOrchestratorWorkspace.tsx`)
+7. **Incident Escalation War Room Modal** (`EscalationRoomModal.tsx`)
+
+### 19.2 Trigger Token Specifications
+
+| Trigger Syntax | Mode | Source Data Entity | Action on Selection |
+|---|---|---|---|
+| **`/`** | **Command Directive** | Static Catalog & Registered Operational Handlers | Triggers interactive modal launch (Task Creator, Escalation Room, Hashtag Picker, Maker Proposal) or inserts command syntax |
+| **`@`** | **User Mention** | `User[]` (`/api/users`) | Inserts `@username ` at caret position with circular avatar preview |
+| **`@@`** | **Team Mention** | `Team[]` (`/api/teams`) | Inserts `@@team_name ` at caret position with department badge |
+| **`#`** | **Hashtag Mention** | `HashtagPreset[]` (`/api/hashtags`) | Inserts `#HASHTAG_KEY ` binding discussion directly to operational hashtag rules |
+
+### 19.3 Standard Directives Catalog
+
+1. **`/create-task`**:
+   - Description: *Create a new operational investigation task from this discussion thread*.
+   - Action: Launches `WorkspaceTaskCreator` pre-populated with discussion notes, sender context, and current issue links.
+2. **`/create-escalate`**:
+   - Description: *Escalate current case or discussion to an Incident Escalation Room*.
+   - Action: Launches `EscalationRoomModal` for cross-team command resolution.
+3. **`/create-hashtag`**:
+   - Description: *Define a new universal hashtag automation preset in PostgreSQL*.
+   - Action: Launches the Hashtag Preset Creation Drawer/Modal.
+4. **`/call-hashtag`**:
+   - Description: *Search and execute an existing registered operational #hashtag rule*.
+   - Action: Opens the Hashtag selection palette to attach or execute hashtag validation workflows.
+5. **`/request-approval`**:
+   - Description: *Stage a Maker-Checker discrepancy resolution proposal*.
+   - Action: Launches the Maker Proposal staging modal (`POST /api/resolutions/propose`) under Rule 7 anti-self-approval governance.
+
+### 19.4 Floating Popover & Caret Interaction Model
+- **Trigger Parsing**: As user types, the word immediately preceding the caret is evaluated against the trigger regex (`/(?:^|\s)(@@|@|\/|#)([a-zA-Z0-9_-]*)$/`).
+- **Real-Time Filtering**: The matched query filters options in real-time.
+- **Keyboard Navigation**:
+  - `ArrowUp` / `ArrowDown`: Highlight item in list with wraparound.
+  - `Enter` / `Tab`: Select item, replace active trigger token, and advance cursor with trailing space.
+  - `Escape`: Dismiss popover.
+- **Click Selection**: Mouse click triggers identical selection behavior.
+- **Form Submission Isolation**: Pressing `Enter` while the popover is visible executes the selection without submitting the parent chat form. Standard form submission fires only when no popover is active.

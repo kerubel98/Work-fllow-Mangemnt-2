@@ -940,6 +940,29 @@ The current application context report has been generated and saved to `CURRENT_
   - Toolbar UX includes an active **"Recipe Rules"** badge button and collapsible drawer displaying all active recipe steps, plus a recipe summary breakdown in the Save Template modal.
   - Verified with 100% test pass rate in `fileIngestionMappingTemplates.test.ts` (6/6 passing).
 
+- **Personal User OAuth 2.0 Mailbox, Circular Avatars & In-Chat Email Threads (October 18, 2026)**:
+  - **Personal User Scope & Rule 14 Enforcement**:
+    - Scoped User Profile mailbox authentication strictly for personal user use (`userMessageProviderSettings`).
+    - Standardized all email connections to enterprise OAuth 2.0 without raw passwords.
+    - Centralized app registrations remain governed at Admin level; individual users select configured providers (Microsoft Graph / Office 365, Google Workspace / Gmail, Admin Managed OAuth) and consent to operational scopes (*Inbox/Outbox, Attachments, Send/Reply, Auto-Sync*).
+  - **PostgreSQL Persistence (Rule 23)**:
+    - Added Migration `032_user_profile_and_settings.sql` adding `message_provider_settings`, `avatar_url`, `phone_number`, `job_title`, `department`, `timezone`, and UI preferences to `users`.
+    - Extended `postgresRepo.ts` with atomic JSONB updates preserving existing token credentials on profile edits.
+  - **Backend Personal Mailbox Ingestion**:
+    - Added `getUserMailbox(userId, filter, search)` in `backend/src/services/messaging/messageIntakeService.ts`.
+    - Normalizes messages from `staged_incoming_messages` into threads with participant directions, unread tallies, and staged attachment records (`staged_message_attachments_raw_data`).
+    - Extended `GET /api/messages/mailbox?userId=...` and user-scoped `POST /api/messages/reply`.
+  - **Personal Chat Workspace (`PersonalChat.tsx`)**:
+    - Introduced top mode switcher tabs: **Direct Chat** (colleague 1-on-1 messaging) and **Personal Mailbox** (personal OAuth 2.0 email intake).
+    - Email message viewer with rich HTML/text formatting, attachment download cards, in-thread OAuth 2.0 replies, and 1-click **Create Task** issue escalation.
+  - **Design System & Visual Consistency**:
+    - Enforced circular geometry (`rounded-full`) across SideNav collapsed buttons, SideNav profile cards, UserProfileModal presets/uploads, Personal Chat directory, conversation headers, and chat message bubbles (self right, sender left).
+    - Removed `IMAGE URL (OPTIONAL)` text field and raw URLs in favor of direct file upload and preset personas.
+    - Updated User Profile modal styling to clean white (`bg-white`) matching the application design system.
+  - **Rule 16 Scroll & Viewport Containment**:
+    - Bound `activeNavigation === 'direct_chat'` in `App.tsx` with `overflow-hidden flex flex-col h-[calc(100vh-2.25rem)] min-h-0` to guarantee stationary headers and eliminate outer scroll leaks.
+    - Validated with clean TypeScript compilation across backend and frontend workspaces, and 100% successful Vite production build.
+
 
 
 

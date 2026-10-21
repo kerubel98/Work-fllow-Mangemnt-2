@@ -13,6 +13,7 @@ import { User, Team, Issue } from '../../types';
 import { api } from '../../api/client';
 import { useGovernance } from '../../context/GovernanceContext';
 import { EscalationWorkflowAutonomyBar } from './EscalationWorkflowAutonomyBar';
+import UnifiedChatInput, { InChatDirectiveType } from '../chat/UnifiedChatInput';
 
 export interface EscalationMessage {
   id: string;
@@ -170,9 +171,11 @@ export const EscalationRoomModal: React.FC<EscalationRoomModalProps> = ({
     };
   };
 
-  const handleSendMessage = async (e?: React.FormEvent) => {
-    if (e) e.preventDefault();
-    const content = inputText.trim();
+  const handleSendMessage = async (eOrText?: React.FormEvent | string) => {
+    if (eOrText && typeof eOrText !== 'string' && 'preventDefault' in eOrText) {
+      eOrText.preventDefault();
+    }
+    const content = (typeof eOrText === 'string' ? eOrText : inputText).trim();
     if (!content || isProcessingCommand) return;
 
     setInputText('');
@@ -579,30 +582,28 @@ export const EscalationRoomModal: React.FC<EscalationRoomModalProps> = ({
         </div>
 
         {/* Input box */}
-        <form onSubmit={handleSendMessage} className="p-4 border-t border-slate-200 bg-white flex items-center space-x-2">
-          <input
-            type="text"
-            placeholder="Type a message or command (@escalate_issue, @run_sandbox, @request_approval)..."
+        <div className="p-4 border-t border-slate-200 bg-white">
+          <UnifiedChatInput
+            currentUser={currentUser}
+            teams={availableTeams}
+            placeholder="Type a message or command (@escalate_issue, @run_sandbox, @request_approval, / directives)..."
             value={inputText}
-            onChange={(e) => setInputText(e.target.value)}
+            onChange={setInputText}
             disabled={isProcessingCommand}
-            className="flex-1 bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-xs font-mono focus:outline-none focus:border-blue-500 text-slate-800 disabled:opacity-60"
-            id="input-escalation-chat"
+            onSendMessage={(content) => {
+              handleSendMessage(content);
+            }}
+            onExecuteDirective={(directive) => {
+              if (directive === 'create-escalate') {
+                setInputText('@escalate_issue to="Core Operations" reason="Urgent escalation"');
+              } else if (directive === 'request-approval') {
+                setInputText('@request_approval solution="Manual settlement override"');
+              }
+            }}
+            inputId="input-escalation-chat"
+            buttonLabel={isProcessingCommand ? 'Processing...' : 'Send'}
           />
-          <button
-            type="submit"
-            disabled={!inputText.trim() || isProcessingCommand}
-            className="px-5 py-2.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white font-mono font-bold text-xs rounded-xl flex items-center space-x-1.5 transition-colors cursor-pointer shrink-0"
-            id="btn-send-escalation"
-          >
-            {isProcessingCommand ? (
-              <RefreshCw size={14} className="animate-spin" />
-            ) : (
-              <Send size={14} />
-            )}
-            <span>{isProcessingCommand ? 'Processing...' : 'Send'}</span>
-          </button>
-        </form>
+        </div>
       </div>
     </div>
   );

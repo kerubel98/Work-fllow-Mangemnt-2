@@ -219,7 +219,8 @@ workflowsRouter.post('/', async (req: Request, res: Response) => {
       version: data.version || '2.0.0',
       teamId: data.teamId || undefined,
       isPublic: data.isPublic !== undefined ? data.isPublic : true,
-      visibility: data.visibility || 'team'
+      visibility: data.visibility || 'team',
+      hashtags: Array.isArray(data.hashtags) ? data.hashtags : []
     };
 
     const saved = await repo.createWorkflow(newWorkflow);

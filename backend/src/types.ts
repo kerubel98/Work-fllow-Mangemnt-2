@@ -7,11 +7,21 @@ export interface User {
   role: UserRole;
   isApproved: boolean;
   createdAt: string;
+  name?: string;
+  displayName?: string;
+  avatarUrl?: string;
+  phone?: string;
+  department?: string;
+  title?: string;
+  timezone?: string;
   canExecuteSelect?: boolean;
   canExecuteUpdate?: boolean;
   allowedDbIds?: string[];
   permanentTeamId?: string;
   shareWorkspaceWithTeam?: boolean;
+  messageProviderSettings?: any;
+  workspaceOAuthConfig?: any;
+  preferences?: any;
 }
 
 export type NotificationType = 'chat' | 'task_assigned' | 'team_added' | 'issue_assigned' | 'system';
@@ -1260,6 +1270,7 @@ export interface DatabaseValidationWorkflow {
   teamId?: string;
   isPublic?: boolean;
   visibility?: 'team' | 'public' | 'private';
+  hashtags?: string[];
 }
 
 export interface RuleExecutionAuditEntry {

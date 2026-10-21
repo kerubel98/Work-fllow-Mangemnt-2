@@ -16,11 +16,50 @@ export type UserRole =
   | 'team_admin'
   | 'manager';
 
+export interface UserMessageProviderSettings {
+  providerType?: 'oauth2' | 'smtp_imap' | 'exchange' | 'webhook' | 'custom' | 'none';
+  adminOAuth2ConnectionId?: string;
+  providerName?: string;
+  userEmail?: string;
+  permissions?: {
+    mailboxAccess?: boolean; // inbox and outbox
+    attachmentsAccess?: boolean; // attachments inspection & download
+    sendMessages?: boolean; // send operational messages & replies
+    offlineAccess?: boolean; // auto refresh token
+  };
+  incomingHost?: string;
+  incomingPort?: number;
+  outgoingHost?: string;
+  outgoingPort?: number;
+  useSsl?: boolean;
+  webhookUrl?: string;
+  autoSyncIntervalMinutes?: number;
+  notifyOnDiscrepancy?: boolean;
+  notifyOnTaskAssigned?: boolean;
+  emailSignature?: string;
+  status?: 'ACTIVE' | 'PAUSED' | 'NOT_CONFIGURED';
+  authorizedAt?: string;
+}
+
+export interface UserPreferences {
+  theme?: 'dark' | 'light' | 'system';
+  desktopNotifications?: boolean;
+  soundAlerts?: boolean;
+  compactSideNav?: boolean;
+  autoRefreshIntervalSeconds?: number;
+}
+
 export interface User {
   id: string;
   username: string;
   name?: string;
+  displayName?: string;
+  avatarUrl?: string;
   email: string;
+  phone?: string;
+  department?: string;
+  title?: string;
+  timezone?: string;
   role: UserRole;
   teamId?: string;
   isApproved: boolean;
@@ -30,6 +69,9 @@ export interface User {
   allowedDbIds?: string[];
   permanentTeamId?: string;
   shareWorkspaceWithTeam?: boolean;
+  workspaceOAuthConfig?: any;
+  messageProviderSettings?: UserMessageProviderSettings;
+  preferences?: UserPreferences;
 }
 
 export type NotificationType = 'chat' | 'task_assigned' | 'team_added' | 'issue_assigned' | 'system';
@@ -1430,6 +1472,8 @@ export interface DatabaseValidationWorkflow {
   targetTable: string;
   category?: 'Settlement' | 'Fulfillment' | 'Compliance' | 'Reconciliation' | 'Custom';
   attachedDbConfigIds?: string[];
+  cardinalityPolicy?: MultiRowCardinalityPolicy;
+  multiRowPolicy?: MultiRowCardinalityPolicy;
   stages: ProcessingStage[];
   steps: ValidationCheckStep[];
   nodes?: FlowchartNode[];
@@ -1445,6 +1489,7 @@ export interface DatabaseValidationWorkflow {
   teamId?: string;
   isPublic?: boolean;
   visibility?: 'team' | 'public' | 'private';
+  hashtags?: string[];
 }
 
 export interface RuleExecutionAuditEntry {

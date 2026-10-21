@@ -183,6 +183,48 @@ authRouter.put('/users/:id/role', async (req: Request, res: Response) => {
 });
 
 /**
+ * PUT /api/auth/users/:id/profile
+ * Updates user profile, display name, avatar, contact information, and message provider preferences.
+ */
+authRouter.put('/users/:id/profile', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const {
+      name,
+      displayName,
+      avatarUrl,
+      phone,
+      department,
+      title,
+      timezone,
+      messageProviderSettings,
+      preferences,
+      email
+    } = req.body;
+
+    const updates: Partial<User> = {};
+    if (displayName !== undefined || name !== undefined) {
+      updates.displayName = displayName || name;
+      updates.name = displayName || name;
+    }
+    if (avatarUrl !== undefined) updates.avatarUrl = avatarUrl;
+    if (phone !== undefined) updates.phone = phone;
+    if (department !== undefined) updates.department = department;
+    if (title !== undefined) updates.title = title;
+    if (timezone !== undefined) updates.timezone = timezone;
+    if (email !== undefined) updates.email = email;
+    if (messageProviderSettings !== undefined) updates.messageProviderSettings = messageProviderSettings;
+    if (preferences !== undefined) updates.preferences = preferences;
+
+    const updated = await repo.updateUser(id, updates);
+    if (!updated) return res.status(404).json({ error: 'User not found.' });
+    return res.json({ message: 'Profile updated successfully.', user: updated });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+/**
  * PUT /api/auth/users/:id/workspace-sharing
  * Toggles whether the user shares their workspace with their permanent team.
  */

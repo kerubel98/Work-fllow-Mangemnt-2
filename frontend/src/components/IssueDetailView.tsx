@@ -2191,85 +2191,87 @@ export default function IssueDetailView({
   return (
     <div className="space-y-3" id="issue-tracking-system">
       
-      {/* Top Mode Toggle Navigation Bar */}
-      <div className="bg-[#0F172B] border border-slate-800 rounded-xl p-1.5 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-        <div className="flex flex-wrap items-center space-x-1 bg-slate-900/90 p-0.5 rounded-lg w-full sm:w-auto">
-          <button
-            onClick={() => {
-              setCurrentMode('my_tasks');
-              if (onChangeTab) onChangeTab('my_tasks');
-            }}
-            className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all flex items-center space-x-1.5 cursor-pointer ${
-              currentMode === 'my_tasks'
-                ? 'bg-[#155DFC] text-white shadow-xs'
-                : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
-            }`}
-          >
-            <ListTodo size={14} />
-            <span>My Tasks</span>
-            <span className={`ml-1 font-mono text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
-              currentMode === 'my_tasks' ? 'bg-[#0F172B]/60 text-white' : 'bg-slate-800 text-slate-300'
-            }`}>
-              {issues.length}
-            </span>
-          </button>
+      {/* Top Mode Toggle Navigation Bar (Shown on secondary task views, hidden on clean Cases Workspace) */}
+      {currentMode !== 'workspace' && (
+        <div className="bg-[#0F172B] border border-slate-800 rounded-xl p-1.5 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+          <div className="flex flex-wrap items-center space-x-1 bg-slate-900/90 p-0.5 rounded-lg w-full sm:w-auto">
+            <button
+              onClick={() => {
+                setCurrentMode('my_tasks');
+                if (onChangeTab) onChangeTab('my_tasks');
+              }}
+              className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all flex items-center space-x-1.5 cursor-pointer ${
+                currentMode === 'my_tasks'
+                  ? 'bg-[#155DFC] text-white shadow-xs'
+                  : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
+              }`}
+            >
+              <ListTodo size={14} />
+              <span>My Tasks</span>
+              <span className={`ml-1 font-mono text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
+                currentMode === 'my_tasks' ? 'bg-[#0F172B]/60 text-white' : 'bg-slate-800 text-slate-300'
+              }`}>
+                {issues.length}
+              </span>
+            </button>
 
-          <button
-            onClick={() => {
-              setCurrentMode('workspace');
-              if (onChangeTab) onChangeTab('workspace');
-            }}
-            className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all flex items-center space-x-1.5 cursor-pointer ${
-              currentMode === 'workspace'
-                ? 'bg-[#155DFC] text-white shadow-xs'
-                : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
-            }`}
-          >
-            <DatabaseZap size={14} />
-            <span>Workspace</span>
-          </button>
+            <button
+              onClick={() => {
+                setCurrentMode('workspace');
+                if (onChangeTab) onChangeTab('workspace');
+              }}
+              className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all flex items-center space-x-1.5 cursor-pointer ${
+                currentMode === 'workspace'
+                  ? 'bg-[#155DFC] text-white shadow-xs'
+                  : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
+              }`}
+            >
+              <DatabaseZap size={14} />
+              <span>Workspace</span>
+            </button>
 
-          <button
-            onClick={() => {
-              setCurrentMode('hashtags');
-              if (onChangeTab) onChangeTab('hashtags');
-            }}
-            className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all flex items-center space-x-1.5 cursor-pointer ${
-              currentMode === 'hashtags'
-                ? 'bg-[#155DFC] text-white shadow-xs'
-                : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
-            }`}
-          >
-            <Tag size={14} />
-            <span>Hashtags</span>
-            <span className={`ml-1 font-mono text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
-              currentMode === 'hashtags' ? 'bg-[#0F172B]/60 text-white' : 'bg-slate-800 text-slate-300'
-            }`}>
-              {hashtags.length}
-            </span>
-          </button>
+            <button
+              onClick={() => {
+                setCurrentMode('hashtags');
+                if (onChangeTab) onChangeTab('hashtags');
+              }}
+              className={`px-3 py-1.5 rounded-md text-xs font-bold transition-all flex items-center space-x-1.5 cursor-pointer ${
+                currentMode === 'hashtags'
+                  ? 'bg-[#155DFC] text-white shadow-xs'
+                  : 'text-slate-300 hover:text-white hover:bg-slate-800/80'
+              }`}
+            >
+              <Tag size={14} />
+              <span>Hashtags</span>
+              <span className={`ml-1 font-mono text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
+                currentMode === 'hashtags' ? 'bg-[#0F172B]/60 text-white' : 'bg-slate-800 text-slate-300'
+              }`}>
+                {hashtags.length}
+              </span>
+            </button>
+          </div>
+
+          {/* Right side workspace settings button */}
+          <div className="flex items-center space-x-2">
+            <button
+              onClick={() => {
+                setCurrentMode('setting');
+                if (onChangeTab) onChangeTab('workspace_settings');
+              }}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center space-x-1.5 cursor-pointer border ${
+                currentMode === 'setting'
+                  ? 'bg-[#155DFC] text-white border-[#155DFC] shadow-xs font-bold'
+                  : 'bg-slate-800/80 text-slate-300 border-slate-700 hover:bg-slate-700 hover:text-white'
+              }`}
+              id="workspace-setting-tab"
+              title="Workspace Preferences & Operating Rules"
+            >
+              <Settings size={14} />
+              <span>Workspace Settings</span>
+            </button>
+          </div>
         </div>
-
-        {/* Right side workspace settings button */}
-        <div className="flex items-center space-x-2">
-          <button
-            onClick={() => {
-              setCurrentMode('setting');
-              if (onChangeTab) onChangeTab('workspace_settings');
-            }}
-            className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center space-x-1.5 cursor-pointer border ${
-              currentMode === 'setting'
-                ? 'bg-[#155DFC] text-white border-[#155DFC] shadow-xs font-bold'
-                : 'bg-slate-800/80 text-slate-300 border-slate-700 hover:bg-slate-700 hover:text-white'
-            }`}
-            id="workspace-setting-tab"
-            title="Workspace Preferences & Operating Rules"
-          >
-            <Settings size={14} />
-            <span>Workspace Settings</span>
-          </button>
-        </div>
-      </div>
+      )}
 
       {/* DYNAMIC MODE ROUTER */}
       {currentMode === 'my_tasks' && (
@@ -2676,226 +2678,228 @@ export default function IssueDetailView({
       )}
 
       {currentMode === 'workspace' && (
-        <div className="space-y-3.5">
-          {/* Simplified Workspace Header & Navigation Toolbar (Uniform White Theme, Single Row) */}
-          <div className="bg-white border border-slate-200/90 rounded-2xl px-3 py-1.5 text-slate-800 shadow-xs flex items-center justify-between gap-2 overflow-x-auto no-scrollbar">
-            {/* Left: Compact Title & Active Context + DB & Table Selectors along the title */}
-            <div className="flex items-center gap-2 min-w-0">
-              <span className="p-1.5 bg-blue-50 rounded-xl text-[#155DFC] border border-blue-100 shrink-0">
-                {workspaceSubView === 'sandbox' ? (
-                  <Terminal size={15} />
-                ) : workspaceSubView === 'open_case' ? (
-                  <Plus size={15} />
-                ) : (
-                  <DatabaseZap size={15} />
-                )}
-              </span>
-              {workspaceSubView !== 'sandbox' && (
-                <div className="flex items-center gap-2 shrink-0">
-                  <h2 className="text-sm font-bold text-slate-900 tracking-tight">
-                    {workspaceSubView === 'open_case'
-                      ? 'New Case Intake'
-                      : 'Investigation Workspace'}
-                  </h2>
-                  {selectedIssue && workspaceSubView === 'investigation' && (
-                    <span className="px-2 py-0.5 rounded-lg bg-blue-50 text-blue-700 font-mono text-[11px] font-semibold border border-blue-200">
-                      Case #{selectedIssue.id}
-                    </span>
-                  )}
-                </div>
-              )}
-
-              {/* DB/BO and Table Selectors (when in SQL Sandbox - Compact Single Row Widths) */}
-              {workspaceSubView === 'sandbox' && (
-                <div className="flex items-center gap-1.5 min-w-0" id="sandbox-header-selectors">
-                  {/* Target Database / BO Selector */}
-                  <div className="flex items-center gap-1 bg-slate-50 hover:bg-white px-2 py-1 rounded-xl border border-slate-200 shadow-2xs transition-colors shrink-0" title="Target Back Office / Database Connection">
-                    <Database size={12} className="text-[#155DFC] shrink-0" />
-                    <span className="text-[10px] font-bold text-[#155DFC] font-mono uppercase tracking-wider shrink-0">BO:</span>
-                    <select
-                      value={sandboxSelectedDbId}
-                      onChange={(e) => {
-                        setSandboxSelectedDbId(e.target.value);
-                        executeSandboxQuery(undefined, undefined, e.target.value);
-                      }}
-                      className="bg-transparent text-slate-800 font-semibold text-xs focus:outline-none cursor-pointer max-w-[110px] sm:max-w-[130px] md:max-w-[150px] truncate"
-                      id="header-select-sandbox-db"
-                    >
-                      {availableDatabasesForUser && availableDatabasesForUser.length > 0 ? (
-                        availableDatabasesForUser.map(db => (
-                          <option key={db.id} value={db.id} className="bg-white text-slate-800">
-                            {db.name} ({db.type})
-                          </option>
-                        ))
-                      ) : (
-                        <option value="" className="bg-white text-slate-400">No DB</option>
-                      )}
-                    </select>
-                  </div>
-
-                  {/* Target Environment Toggle (Prod / UAT) */}
-                  <div className="flex items-center bg-slate-100 p-0.5 rounded-xl border border-slate-200 text-[10px] font-semibold shadow-2xs shrink-0">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setSandboxEnv('production');
-                        executeSandboxQuery(undefined, undefined, undefined, 'production');
-                      }}
-                      className={`px-1.5 py-0.5 rounded-lg transition cursor-pointer text-[10px] ${
-                        sandboxEnv === 'production'
-                          ? 'bg-white text-slate-900 shadow-xs font-bold border border-slate-200/60'
-                          : 'text-slate-600 hover:text-slate-900'
-                      }`}
-                    >
-                      Prod
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setSandboxEnv('testing');
-                        executeSandboxQuery(undefined, undefined, undefined, 'testing');
-                      }}
-                      className={`px-1.5 py-0.5 rounded-lg transition cursor-pointer text-[10px] ${
-                        sandboxEnv === 'testing'
-                          ? 'bg-[#155DFC] text-white shadow-xs font-bold'
-                          : 'text-slate-600 hover:text-slate-900'
-                      }`}
-                    >
-                      UAT
-                    </button>
-                  </div>
-
-                  {/* Table View Selector */}
-                  <div className="flex items-center gap-1 bg-slate-50 hover:bg-white px-2 py-1 rounded-xl border border-slate-200 shadow-2xs transition-colors shrink-0" title="Target Table">
-                    <Table size={12} className="text-slate-500 shrink-0" />
-                    <span className="text-[10px] font-bold text-slate-500 font-mono uppercase tracking-wider shrink-0">Table:</span>
-                    <select
-                      value={sandboxTable}
-                      onChange={(e) => {
-                        setSandboxTable(e.target.value);
-                        executeSandboxQuery(undefined, e.target.value);
-                      }}
-                      className="bg-transparent font-mono text-xs text-slate-800 font-medium focus:outline-none cursor-pointer max-w-[95px] sm:max-w-[115px] md:max-w-[130px] truncate"
-                      id="header-select-sandbox-table"
-                    >
-                      {sandboxAvailableTables.length === 0 ? (
-                        <option value="" className="bg-white text-slate-400">No tables</option>
-                      ) : (
-                        sandboxAvailableTables.map(t => (
-                          <option key={t} value={t} className="bg-white text-slate-800">
-                            {t}
-                          </option>
-                        ))
-                      )}
-                    </select>
-                  </div>
-
-                  {/* Query Preset Templates */}
-                  <div className="hidden md:flex items-center gap-1 bg-blue-50/80 hover:bg-blue-50 px-2 py-1 rounded-xl border border-blue-200 shadow-2xs transition-colors shrink-0" title="SQL Template Presets">
-                    <Sparkles size={12} className="text-[#155DFC] shrink-0" />
-                    <span className="text-[10px] font-bold text-blue-700 font-mono uppercase tracking-wider shrink-0">Preset:</span>
-                    <select
-                      value={sandboxSelectedTemplate}
-                      onChange={(e) => handleSelectSandboxTemplate(e.target.value)}
-                      className="bg-transparent text-blue-900 font-semibold text-xs focus:outline-none cursor-pointer max-w-[85px] sm:max-w-[105px] truncate"
-                      id="header-select-sandbox-template"
-                    >
-                      {sandboxTemplates.map(t => (
-                        <option key={t.id} value={t.id} className="bg-white text-slate-800">
-                          {t.name}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-
-                  {/* Permanent Team Policy Chip */}
-                  {userPermTeam ? (
-                    <div 
-                      id="sandbox-perm-team-policy-chip" 
-                      className="hidden xl:flex items-center gap-1.5 px-2 py-1 rounded-xl bg-purple-50/90 border border-purple-200 text-purple-900 text-[10px] font-mono shrink-0 shadow-2xs"
-                      title={`Governing Permanent Team: ${userPermTeam.name} • Permitted Query Types: ${(userPermTeam.allowedQueryTypes || ['SELECT']).join(', ')}`}
-                    >
-                      <ShieldCheck size={12} className="text-purple-600 shrink-0" />
-                      <span className="font-bold text-purple-950 truncate max-w-[110px]">{userPermTeam.name}</span>
-                      <span className="text-purple-400 font-bold">•</span>
-                      <span className="font-semibold text-purple-800 tracking-wider">
-                        {(userPermTeam.allowedQueryTypes || ['SELECT']).join(', ')}
-                      </span>
-                    </div>
+        <div className={workspaceSubView === 'investigation' ? "h-full flex flex-col min-h-0" : "space-y-3.5"}>
+          {/* Simplified Workspace Header & Navigation Toolbar (Uniform White Theme, Single Row - shown for sandbox & case creation) */}
+          {workspaceSubView !== 'investigation' && (
+            <div className="bg-white border border-slate-200/90 rounded-2xl px-3 py-1.5 text-slate-800 shadow-xs flex items-center justify-between gap-2 overflow-x-auto no-scrollbar">
+              {/* Left: Compact Title & Active Context + DB & Table Selectors along the title */}
+              <div className="flex items-center gap-2 min-w-0">
+                <span className="p-1.5 bg-blue-50 rounded-xl text-[#155DFC] border border-blue-100 shrink-0">
+                  {workspaceSubView === 'sandbox' ? (
+                    <Terminal size={15} />
+                  ) : workspaceSubView === 'open_case' ? (
+                    <Plus size={15} />
                   ) : (
-                    <div 
-                      id="sandbox-no-perm-team-chip" 
-                      className="hidden xl:flex items-center gap-1 px-2 py-1 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-[10px] font-mono shrink-0 shadow-2xs"
-                      title="No Permanent Team assigned to user. Safe read-only policy active."
-                    >
-                      <AlertCircle size={12} className="text-amber-600 shrink-0" />
-                      <span className="font-semibold">No Perm Team</span>
-                    </div>
+                    <DatabaseZap size={15} />
                   )}
-                </div>
-              )}
-            </div>
-
-            {/* Right: Modern Segmented Navigation Buttons */}
-            <div className="flex items-center gap-1 bg-slate-100 p-0.5 sm:p-1 rounded-xl border border-slate-200 shrink-0">
-              {/* Query Sandbox Button */}
-              <button
-                type="button"
-                id="btn-workspace-sandbox-nav"
-                onClick={() => setWorkspaceSubView('sandbox')}
-                className={`px-2.5 py-1 text-xs font-semibold rounded-lg flex items-center gap-1 transition-all cursor-pointer ${
-                  workspaceSubView === 'sandbox'
-                    ? 'bg-[#155DFC] text-white shadow-xs font-bold'
-                    : 'text-slate-600 hover:text-slate-900 hover:bg-white'
-                }`}
-                title="SQL Query Sandbox"
-              >
-                <Terminal size={13} />
-                <span>Sandbox</span>
-              </button>
-
-              {/* Investigation Window Button */}
-              <button
-                type="button"
-                id="btn-workspace-investigation-nav"
-                onClick={() => setWorkspaceSubView('investigation')}
-                className={`px-2.5 py-1 text-xs font-semibold rounded-lg flex items-center gap-1 transition-all cursor-pointer ${
-                  workspaceSubView === 'investigation'
-                    ? 'bg-[#155DFC] text-white shadow-xs font-bold'
-                    : 'text-slate-600 hover:text-slate-900 hover:bg-white'
-                }`}
-                title="Investigation Workspace"
-              >
-                <DatabaseZap size={13} />
-                <span>Investigation</span>
-              </button>
-
-              {/* Open Case Button */}
-              <button
-                type="button"
-                id="btn-workspace-open-case-nav"
-                onClick={() => setWorkspaceSubView(workspaceSubView === 'open_case' ? 'investigation' : 'open_case')}
-                className={`px-2.5 py-1 text-xs font-semibold rounded-lg flex items-center gap-1 transition-all cursor-pointer ${
-                  workspaceSubView === 'open_case'
-                    ? 'bg-emerald-600 text-white shadow-xs font-bold'
-                    : 'text-slate-600 hover:text-slate-900 hover:bg-white'
-                }`}
-                title={workspaceSubView === 'open_case' ? 'Back to Investigation' : 'Open New Case'}
-              >
-                {workspaceSubView === 'open_case' ? (
-                  <>
-                    <ArrowLeft size={13} />
-                    <span>Back</span>
-                  </>
-                ) : (
-                  <>
-                    <Plus size={13} />
-                    <span>Open Case</span>
-                  </>
+                </span>
+                {workspaceSubView !== 'sandbox' && (
+                  <div className="flex items-center gap-2 shrink-0">
+                    <h2 className="text-sm font-bold text-slate-900 tracking-tight">
+                      {workspaceSubView === 'open_case'
+                        ? 'New Case Intake'
+                        : 'Investigation Workspace'}
+                    </h2>
+                    {selectedIssue && workspaceSubView === 'investigation' && (
+                      <span className="px-2 py-0.5 rounded-lg bg-blue-50 text-blue-700 font-mono text-[11px] font-semibold border border-blue-200">
+                        Case #{selectedIssue.id}
+                      </span>
+                    )}
+                  </div>
                 )}
-              </button>
+
+                {/* DB/BO and Table Selectors (when in SQL Sandbox - Compact Single Row Widths) */}
+                {workspaceSubView === 'sandbox' && (
+                  <div className="flex items-center gap-1.5 min-w-0" id="sandbox-header-selectors">
+                    {/* Target Database / BO Selector */}
+                    <div className="flex items-center gap-1 bg-slate-50 hover:bg-white px-2 py-1 rounded-xl border border-slate-200 shadow-2xs transition-colors shrink-0" title="Target Back Office / Database Connection">
+                      <Database size={12} className="text-[#155DFC] shrink-0" />
+                      <span className="text-[10px] font-bold text-[#155DFC] font-mono uppercase tracking-wider shrink-0">BO:</span>
+                      <select
+                        value={sandboxSelectedDbId}
+                        onChange={(e) => {
+                          setSandboxSelectedDbId(e.target.value);
+                          executeSandboxQuery(undefined, undefined, e.target.value);
+                        }}
+                        className="bg-transparent text-slate-800 font-semibold text-xs focus:outline-none cursor-pointer max-w-[110px] sm:max-w-[130px] md:max-w-[150px] truncate"
+                        id="header-select-sandbox-db"
+                      >
+                        {availableDatabasesForUser && availableDatabasesForUser.length > 0 ? (
+                          availableDatabasesForUser.map(db => (
+                            <option key={db.id} value={db.id} className="bg-white text-slate-800">
+                              {db.name} ({db.type})
+                            </option>
+                          ))
+                        ) : (
+                          <option value="" className="bg-white text-slate-400">No DB</option>
+                        )}
+                      </select>
+                    </div>
+
+                    {/* Target Environment Toggle (Prod / UAT) */}
+                    <div className="flex items-center bg-slate-100 p-0.5 rounded-xl border border-slate-200 text-[10px] font-semibold shadow-2xs shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSandboxEnv('production');
+                          executeSandboxQuery(undefined, undefined, undefined, 'production');
+                        }}
+                        className={`px-1.5 py-0.5 rounded-lg transition cursor-pointer text-[10px] ${
+                          sandboxEnv === 'production'
+                            ? 'bg-white text-slate-900 shadow-xs font-bold border border-slate-200/60'
+                            : 'text-slate-600 hover:text-slate-900'
+                        }`}
+                      >
+                        Prod
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSandboxEnv('testing');
+                          executeSandboxQuery(undefined, undefined, undefined, 'testing');
+                        }}
+                        className={`px-1.5 py-0.5 rounded-lg transition cursor-pointer text-[10px] ${
+                          sandboxEnv === 'testing'
+                            ? 'bg-[#155DFC] text-white shadow-xs font-bold'
+                            : 'text-slate-600 hover:text-slate-900'
+                        }`}
+                      >
+                        UAT
+                      </button>
+                    </div>
+
+                    {/* Table View Selector */}
+                    <div className="flex items-center gap-1 bg-slate-50 hover:bg-white px-2 py-1 rounded-xl border border-slate-200 shadow-2xs transition-colors shrink-0" title="Target Table">
+                      <Table size={12} className="text-slate-500 shrink-0" />
+                      <span className="text-[10px] font-bold text-slate-500 font-mono uppercase tracking-wider shrink-0">Table:</span>
+                      <select
+                        value={sandboxTable}
+                        onChange={(e) => {
+                          setSandboxTable(e.target.value);
+                          executeSandboxQuery(undefined, e.target.value);
+                        }}
+                        className="bg-transparent font-mono text-xs text-slate-800 font-medium focus:outline-none cursor-pointer max-w-[95px] sm:max-w-[115px] md:max-w-[130px] truncate"
+                        id="header-select-sandbox-table"
+                      >
+                        {sandboxAvailableTables.length === 0 ? (
+                          <option value="" className="bg-white text-slate-400">No tables</option>
+                        ) : (
+                          sandboxAvailableTables.map(t => (
+                            <option key={t} value={t} className="bg-white text-slate-800">
+                              {t}
+                            </option>
+                          ))
+                        )}
+                      </select>
+                    </div>
+
+                    {/* Query Preset Templates */}
+                    <div className="hidden md:flex items-center gap-1 bg-blue-50/80 hover:bg-blue-50 px-2 py-1 rounded-xl border border-blue-200 shadow-2xs transition-colors shrink-0" title="SQL Template Presets">
+                      <Sparkles size={12} className="text-[#155DFC] shrink-0" />
+                      <span className="text-[10px] font-bold text-blue-700 font-mono uppercase tracking-wider shrink-0">Preset:</span>
+                      <select
+                        value={sandboxSelectedTemplate}
+                        onChange={(e) => handleSelectSandboxTemplate(e.target.value)}
+                        className="bg-transparent text-blue-900 font-semibold text-xs focus:outline-none cursor-pointer max-w-[85px] sm:max-w-[105px] truncate"
+                        id="header-select-sandbox-template"
+                      >
+                        {sandboxTemplates.map(t => (
+                          <option key={t.id} value={t.id} className="bg-white text-slate-800">
+                            {t.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {/* Permanent Team Policy Chip */}
+                    {userPermTeam ? (
+                      <div 
+                        id="sandbox-perm-team-policy-chip" 
+                        className="hidden xl:flex items-center gap-1.5 px-2 py-1 rounded-xl bg-purple-50/90 border border-purple-200 text-purple-900 text-[10px] font-mono shrink-0 shadow-2xs"
+                        title={`Governing Permanent Team: ${userPermTeam.name} • Permitted Query Types: ${(userPermTeam.allowedQueryTypes || ['SELECT']).join(', ')}`}
+                      >
+                        <ShieldCheck size={12} className="text-purple-600 shrink-0" />
+                        <span className="font-bold text-purple-950 truncate max-w-[110px]">{userPermTeam.name}</span>
+                        <span className="text-purple-400 font-bold">•</span>
+                        <span className="font-semibold text-purple-800 tracking-wider">
+                          {(userPermTeam.allowedQueryTypes || ['SELECT']).join(', ')}
+                        </span>
+                      </div>
+                    ) : (
+                      <div 
+                        id="sandbox-no-perm-team-chip" 
+                        className="hidden xl:flex items-center gap-1 px-2 py-1 rounded-xl bg-amber-50 border border-amber-200 text-amber-900 text-[10px] font-mono shrink-0 shadow-2xs"
+                        title="No Permanent Team assigned to user. Safe read-only policy active."
+                      >
+                        <AlertCircle size={12} className="text-amber-600 shrink-0" />
+                        <span className="font-semibold">No Perm Team</span>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+
+              {/* Right: Modern Segmented Navigation Buttons */}
+              <div className="flex items-center gap-1 bg-slate-100 p-0.5 sm:p-1 rounded-xl border border-slate-200 shrink-0">
+                {/* Query Sandbox Button */}
+                <button
+                  type="button"
+                  id="btn-workspace-sandbox-nav"
+                  onClick={() => setWorkspaceSubView('sandbox')}
+                  className={`px-2.5 py-1 text-xs font-semibold rounded-lg flex items-center gap-1 transition-all cursor-pointer ${
+                    workspaceSubView === 'sandbox'
+                      ? 'bg-[#155DFC] text-white shadow-xs font-bold'
+                      : 'text-slate-600 hover:text-slate-900 hover:bg-white'
+                  }`}
+                  title="SQL Query Sandbox"
+                >
+                  <Terminal size={13} />
+                  <span>Sandbox</span>
+                </button>
+
+                {/* Investigation Window Button */}
+                <button
+                  type="button"
+                  id="btn-workspace-investigation-nav"
+                  onClick={() => setWorkspaceSubView('investigation')}
+                  className={`px-2.5 py-1 text-xs font-semibold rounded-lg flex items-center gap-1 transition-all cursor-pointer ${
+                    workspaceSubView === 'investigation'
+                      ? 'bg-[#155DFC] text-white shadow-xs font-bold'
+                      : 'text-slate-600 hover:text-slate-900 hover:bg-white'
+                  }`}
+                  title="Investigation Workspace"
+                >
+                  <DatabaseZap size={13} />
+                  <span>Investigation</span>
+                </button>
+
+                {/* Open Case Button */}
+                <button
+                  type="button"
+                  id="btn-workspace-open-case-nav"
+                  onClick={() => setWorkspaceSubView(workspaceSubView === 'open_case' ? 'investigation' : 'open_case')}
+                  className={`px-2.5 py-1 text-xs font-semibold rounded-lg flex items-center gap-1 transition-all cursor-pointer ${
+                    workspaceSubView === 'open_case'
+                      ? 'bg-emerald-600 text-white shadow-xs font-bold'
+                      : 'text-slate-600 hover:text-slate-900 hover:bg-white'
+                  }`}
+                  title={workspaceSubView === 'open_case' ? 'Back to Investigation' : 'Open New Case'}
+                >
+                  {workspaceSubView === 'open_case' ? (
+                    <>
+                      <ArrowLeft size={13} />
+                      <span>Back</span>
+                    </>
+                  ) : (
+                    <>
+                      <Plus size={13} />
+                      <span>Open Case</span>
+                    </>
+                  )}
+                </button>
+              </div>
             </div>
-          </div>
+          )}
 
           {/* Success Alert Banner */}
           {caseSuccessAlert && (

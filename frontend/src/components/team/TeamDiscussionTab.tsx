@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Team, TeamDiscussionMessage, User, Issue } from '../../types';
+import { Team, TeamDiscussionMessage, User, Issue, HashtagPreset } from '../../types';
 import { 
   MessageSquare, Send, Pin, Tag, Sparkles, 
   CornerDownRight, CheckCheck, Smile, ShieldAlert, ChevronDown
@@ -7,6 +7,7 @@ import {
 import { NoDiscussionEmptyState } from './TeamEmptyStates';
 import { EscalationRoomModal } from './EscalationRoomModal';
 import { api } from '../../api/client';
+import UnifiedChatInput, { InChatDirectiveType } from '../chat/UnifiedChatInput';
 
 interface TeamDiscussionTabProps {
   currentTeam: Team;
@@ -14,6 +15,8 @@ interface TeamDiscussionTabProps {
   currentUser: User;
   onSendMessage: (msg: Omit<TeamDiscussionMessage, 'id' | 'timestamp'>) => void;
   availableTeams?: Team[];
+  users?: User[];
+  hashtags?: HashtagPreset[];
 }
 
 export const TeamDiscussionTab: React.FC<TeamDiscussionTabProps> = ({
@@ -21,7 +24,9 @@ export const TeamDiscussionTab: React.FC<TeamDiscussionTabProps> = ({
   messages = [],
   currentUser,
   onSendMessage,
-  availableTeams = []
+  availableTeams = [],
+  users = [],
+  hashtags = []
 }) => {
   const safeMessages = Array.isArray(messages) ? messages : [];
   const [inputText, setInputText] = useState('');
@@ -167,26 +172,41 @@ export const TeamDiscussionTab: React.FC<TeamDiscussionTabProps> = ({
       </div>
 
       {/* Message Input Box */}
-      <form onSubmit={handleSend} className="p-3 border-t border-slate-200/80 bg-white rounded-b-2xl flex items-center gap-2">
-        <input
-          type="text"
-          placeholder="Type a message, mention with @, or tag with #..."
+      <div className="p-3 border-t border-slate-200/80 bg-white rounded-b-2xl">
+        <UnifiedChatInput
+          currentUser={currentUser}
+          users={users}
+          teams={availableTeams}
+          hashtags={hashtags}
+          placeholder="Type a message, @ to mention, @@ for team, / for directives..."
           value={inputText}
-          onChange={(e) => setInputText(e.target.value)}
-          onKeyDown={handleKeyDown}
-          className="flex-1 bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2 text-xs font-mono focus:outline-none focus:border-blue-500 text-slate-800"
-          id="input-team-discussion"
+          onChange={setInputText}
+          onSendMessage={(content) => {
+            onSendMessage({
+              teamId: currentTeam.id,
+              senderId: currentUser.id,
+              senderName: currentUser.username,
+              content
+            });
+            setInputText('');
+          }}
+          onExecuteDirective={(directive, context) => {
+            if (directive === 'create-escalate') {
+              if (issuesList.length > 0) {
+                if (!selectedIssue) setSelectedIssue(issuesList[0]);
+                setShowEscalationModal(true);
+              } else {
+                alert('No active operational issues found to escalate. Create or assign an issue first.');
+              }
+            } else if (directive === 'create-task') {
+              alert(`Task Action: Created task context from discussion: "${context || 'Team Discussion'}"`);
+            } else if (directive === 'request-approval') {
+              alert('Maker-Checker: Staging proposal for team review.');
+            }
+          }}
+          inputId="input-team-discussion"
         />
-        <button
-          type="submit"
-          disabled={!inputText.trim()}
-          className="px-4 py-2 bg-[#155DFC] hover:bg-blue-700 disabled:opacity-50 disabled:pointer-events-none text-white font-mono font-bold text-xs rounded-xl flex items-center space-x-1.5 transition-all shadow-xs cursor-pointer shrink-0"
-          id="btn-send-discussion"
-        >
-          <Send size={13} />
-          <span>Send</span>
-        </button>
-      </form>
+      </div>
 
       {/* Incident Escalation Room Modal */}
       {showEscalationModal && selectedIssue && (
