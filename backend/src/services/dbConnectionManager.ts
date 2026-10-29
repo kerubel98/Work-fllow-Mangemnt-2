@@ -457,14 +457,18 @@ export async function executeLiveQueryOnDb(
   const targetTable = tableMatch ? (tableMatch[1].split('.').pop() || tableMatch[1]) : trimmed;
 
   if (targetTable.startsWith('mirror_')) {
-    const { queryPg } = await import('../config/postgres.js');
-    const cleanQuery = trimmed.toUpperCase().startsWith('SELECT')
-      ? trimmed
-      : `SELECT * FROM "${targetTable}" LIMIT 50`;
+    // Security check: validate table name format and forbid non-SELECT statements
+    if (!/^[a-zA-Z0-9_]+$/.test(targetTable)) {
+      throw new Error(`Security Exception: Invalid mirror table identifier "${targetTable}".`);
+    }
+    if (!/^\s*SELECT\b/i.test(trimmed)) {
+      throw new Error(`Security Exception: Mutating operations against PostgreSQL pool are restricted via this route.`);
+    }
 
+    const { queryPg } = await import('../config/postgres.js');
     const res = params && params.length > 0
-      ? await queryPg(cleanQuery, params)
-      : await queryPg(cleanQuery);
+      ? await queryPg(trimmed, params)
+      : await queryPg(trimmed);
 
     const executionTimeMs = Date.now() - started;
     const columns = res.fields?.map(f => f.name) || (res.rows.length > 0 ? Object.keys(res.rows[0]) : []);

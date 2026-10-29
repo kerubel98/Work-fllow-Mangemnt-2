@@ -53,20 +53,20 @@ export const STANDARD_DIRECTIVES: InChatDirectiveItem[] = [
     description: 'Create an operational investigation task from this thread',
     category: 'Task',
     icon: <CheckSquare size={14} className="text-blue-500" />,
-    badge: 'Task Action'
+    badge: 'Task action'
   },
   {
     id: 'create-escalate',
     label: '/create-escalate',
-    description: 'Escalate discussion to an Incident Escalation Room',
+    description: 'Hand this case to another team under a signed agreement',
     category: 'Incident',
-    icon: <ShieldAlert size={14} className="text-rose-500" />,
-    badge: 'Critical Escalation'
+    icon: <ShieldAlert size={14} className="text-[#F27421]" />,
+    badge: 'Escalate to team'
   },
   {
     id: 'create-hashtag',
     label: '/create-hashtag',
-    description: 'Define a new universal hashtag automation preset in PostgreSQL',
+    description: 'Define a new universal hashtag automation preset',
     category: 'Hashtag',
     icon: <Tag size={14} className="text-emerald-500" />,
     badge: 'Automation'

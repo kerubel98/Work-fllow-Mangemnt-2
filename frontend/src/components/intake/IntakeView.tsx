@@ -3,26 +3,29 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
-import { 
-  Inbox, RefreshCw, Search, Mail, FileText, ChevronRight, X, 
+import React, { useState, useEffect, useMemo } from 'react';
+import {
+  Inbox, RefreshCw, Search, Mail, FileText, ChevronRight, X,
   CheckCircle2, AlertTriangle, Terminal, Server, Shield, Eye,
   Play, Check, Plus, ExternalLink, ArrowUpRight, Clock, UserCheck
 } from 'lucide-react';
 import { Team, User } from '../../types';
 import { api } from '../../api/client';
 import { ErrorBoundary } from '../ErrorBoundary';
+import { DataTablePagination } from '../common/DataTablePagination';
 
 interface IntakeViewProps {
   currentTeam?: Team | null;
   currentUser?: User | null;
   onNavigateToCase?: (caseId: string) => void;
+  onNavigateToCreateTask?: (prefill?: any) => void;
 }
 
 export const IntakeView: React.FC<IntakeViewProps> = ({ 
   currentTeam = null, 
   currentUser = null,
-  onNavigateToCase
+  onNavigateToCase,
+  onNavigateToCreateTask
 }) => {
   return (
     <ErrorBoundary fallbackTitle="Intake Cockpit Error">
@@ -30,6 +33,7 @@ export const IntakeView: React.FC<IntakeViewProps> = ({
         currentTeam={currentTeam} 
         currentUser={currentUser} 
         onNavigateToCase={onNavigateToCase} 
+        onNavigateToCreateTask={onNavigateToCreateTask}
       />
     </ErrorBoundary>
   );
@@ -166,9 +170,15 @@ const DEFAULT_INTAKE_ITEMS = [
 const IntakeViewContent: React.FC<IntakeViewProps> = ({ 
   currentTeam, 
   currentUser,
-  onNavigateToCase
+  onNavigateToCase,
+  onNavigateToCreateTask
 }) => {
   const [activeSubTab, setActiveSubTab] = useState<'requests' | 'providers' | 'webhooks' | 'simulator'>('requests');
+  const [quickTaskModalOpen, setQuickTaskModalOpen] = useState(false);
+  const [quickTaskTitle, setQuickTaskTitle] = useState('');
+  const [quickTaskDesc, setQuickTaskDesc] = useState('');
+  const [quickTaskPriority, setQuickTaskPriority] = useState<'Low' | 'Medium' | 'High' | 'Critical'>('Medium');
+  const [isSubmittingQuickTask, setIsSubmittingQuickTask] = useState(false);
   
   // Data State
   const [summary, setSummary] = useState<any>({
@@ -190,6 +200,10 @@ const IntakeViewContent: React.FC<IntakeViewProps> = ({
   const [statusFilter, setStatusFilter] = useState<string>('ALL');
   const [urgencyFilter, setUrgencyFilter] = useState<string>('ALL');
   const [searchQuery, setSearchQuery] = useState('');
+
+  // Pagination State for Requests Table
+  const [requestPage, setRequestPage] = useState(1);
+  const [requestPageSize, setRequestPageSize] = useState(10);
 
   // Selected item for review drawer
   const [selectedStaged, setSelectedStaged] = useState<any | null>(null);
@@ -249,6 +263,17 @@ const IntakeViewContent: React.FC<IntakeViewProps> = ({
     return true;
   });
 
+  // Pagination for Requests Table
+  const paginatedMessages = useMemo(() => {
+    const start = (requestPage - 1) * requestPageSize;
+    return filteredMessages.slice(start, start + requestPageSize);
+  }, [filteredMessages, requestPage, requestPageSize]);
+
+  // Reset to page 1 when filters change
+  useEffect(() => {
+    setRequestPage(1);
+  }, [statusFilter, urgencyFilter, searchQuery]);
+
   const handleOpenReview = (msg: any) => {
     setSelectedStaged(msg);
     setActionNotes('');
@@ -298,7 +323,7 @@ const IntakeViewContent: React.FC<IntakeViewProps> = ({
   };
 
   return (
-    <div className="h-full flex flex-col min-h-0 overflow-y-auto p-6 space-y-6 font-sans bg-[#F8FAFC]" id="intake-cockpit">
+    <div className="h-full flex flex-col min-h-0 p-6 space-y-4 font-sans bg-[#F8FAFC]" id="intake-cockpit">
       {/* 1. Header matching 19_intake.png */}
       <div className="flex items-center justify-between">
         <div>
@@ -308,15 +333,36 @@ const IntakeViewContent: React.FC<IntakeViewProps> = ({
           </p>
         </div>
 
-        <button
-          onClick={loadAllData}
-          disabled={isLoading}
-          className="flex items-center gap-1.5 px-3.5 py-1.5 bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 rounded-lg text-xs font-medium font-sans transition-colors shadow-2xs cursor-pointer"
-          title="Sync live intake telemetry"
-        >
-          <RefreshCw size={13} className={isLoading ? 'animate-spin text-[#F27421]' : 'text-slate-500'} />
-          <span>Sync</span>
-        </button>
+        <div className="flex items-center gap-2.5">
+          <button
+            onClick={loadAllData}
+            disabled={isLoading}
+            className="flex items-center gap-1.5 px-3.5 py-2 bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 rounded-xl text-xs font-medium font-sans transition-colors shadow-2xs cursor-pointer"
+            title="Sync live intake telemetry"
+          >
+            <RefreshCw size={13} className={isLoading ? 'animate-spin text-[#F27421]' : 'text-slate-500'} />
+            <span>Sync</span>
+          </button>
+
+          <button
+            type="button"
+            id="btn-intake-create-task"
+            onClick={() => {
+              if (onNavigateToCreateTask) {
+                onNavigateToCreateTask();
+              } else {
+                setQuickTaskTitle('');
+                setQuickTaskDesc('');
+                setQuickTaskPriority('Medium');
+                setQuickTaskModalOpen(true);
+              }
+            }}
+            className="flex items-center gap-1.5 px-4 py-2 bg-[#F27421] hover:bg-[#e06516] text-white rounded-xl text-xs font-semibold font-sans transition-colors shadow-xs cursor-pointer"
+          >
+            <Plus size={14} />
+            <span>Create task</span>
+          </button>
+        </div>
       </div>
 
       {/* 2. 6-Card KPI Summary Metrics Grid matching 19_intake.png */}
@@ -461,7 +507,7 @@ const IntakeViewContent: React.FC<IntakeViewProps> = ({
       {/* 4. TAB 1: REQUESTS QUEUE & TABLE                          */}
       {/* ========================================================= */}
       {activeSubTab === 'requests' && (
-        <div className="space-y-4">
+        <div className="flex-1 min-h-0 space-y-4">
           {/* Filter Bar */}
           <div className="flex flex-wrap items-center gap-3">
             <div className="relative">
@@ -502,11 +548,11 @@ const IntakeViewContent: React.FC<IntakeViewProps> = ({
           </div>
 
           {/* Table Container */}
-          <div className="bg-white border border-slate-200/80 rounded-xl shadow-xs overflow-hidden">
-            <div className="overflow-x-auto">
+          <div className="bg-white border border-slate-200/80 rounded-xl shadow-xs overflow-hidden flex-1 min-h-0 flex flex-col">
+            <div className="flex-1 min-h-0 overflow-auto">
               <table className="w-full text-left border-collapse">
                 <thead>
-                  <tr className="bg-white border-b border-slate-100 text-slate-400 font-sans text-xs">
+                  <tr className="sticky top-0 z-10 bg-white border-b border-slate-100 text-slate-400 font-sans text-xs">
                     <th className="py-3 px-4 font-normal">Request</th>
                     <th className="py-3 px-4 font-normal">Category</th>
                     <th className="py-3 px-4 font-normal">Urgency</th>
@@ -517,7 +563,7 @@ const IntakeViewContent: React.FC<IntakeViewProps> = ({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 text-xs">
-                  {filteredMessages.map(msg => {
+                  {paginatedMessages.map(msg => {
                     const atts = msg.attachments || [];
                     const confidencePercent = Math.round((msg.confidence_score ?? 0.5) * 100);
 
@@ -623,6 +669,20 @@ const IntakeViewContent: React.FC<IntakeViewProps> = ({
               </table>
             </div>
           </div>
+
+          {/* Requests Table Pagination */}
+          <DataTablePagination
+            currentPage={requestPage}
+            totalItems={filteredMessages.length}
+            pageSize={requestPageSize}
+            pageSizeOptions={[10, 25, 50, 100]}
+            onPageChange={setRequestPage}
+            onPageSizeChange={(newSize) => {
+              setRequestPageSize(newSize);
+              setRequestPage(1);
+            }}
+          />
+
         </div>
       )}
 
@@ -860,23 +920,158 @@ const IntakeViewContent: React.FC<IntakeViewProps> = ({
             <div className="p-4 border-t border-slate-100 bg-white flex items-center justify-between gap-2">
               <button
                 type="button"
-                onClick={() => setReviewDrawerOpen(false)}
-                className="px-3 py-2 border border-slate-200 text-slate-700 hover:bg-slate-50 text-xs font-medium rounded-lg transition-colors cursor-pointer"
-              >
-                Close
-              </button>
-              <button
-                type="button"
                 onClick={() => {
                   setReviewDrawerOpen(false);
-                  setSuccessMsg(`Task proposal drafted for ${selectedStaged.subject}`);
+                  if (onNavigateToCreateTask) {
+                    onNavigateToCreateTask({
+                      title: selectedStaged.subject,
+                      description: `Ingested from ${selectedStaged.channel || 'Intake'} (${selectedStaged.sender_address || ''})\nCategory: ${selectedStaged.category || 'Reconciliation'}\nNotes: ${actionNotes}`,
+                      priority: selectedStaged.parsed_fields?.priority || (selectedStaged.urgency === 'high' ? 'High' : 'Medium'),
+                      sourceMessageId: selectedStaged.id
+                    });
+                  } else {
+                    setQuickTaskTitle(selectedStaged.subject || '');
+                    setQuickTaskDesc(`Ingested from ${selectedStaged.channel || 'Intake'} (${selectedStaged.sender_address || ''})\nCategory: ${selectedStaged.category || 'Reconciliation'}\nNotes: ${actionNotes}`);
+                    setQuickTaskPriority(selectedStaged.parsed_fields?.priority || 'Medium');
+                    setQuickTaskModalOpen(true);
+                  }
                 }}
-                className="px-4 py-2 bg-[#F27421] hover:bg-[#e06516] text-white text-xs font-semibold rounded-lg shadow-xs transition-colors cursor-pointer"
+                className="px-4 py-2 bg-[#F27421] hover:bg-[#e06516] text-white text-xs font-semibold rounded-lg shadow-xs transition-colors cursor-pointer flex items-center gap-1.5"
               >
-                Propose Task
+                <Plus size={13} />
+                <span>Create Task</span>
               </button>
             </div>
           </aside>
+        </div>
+      )}
+
+      {/* Quick Task Creation Modal */}
+      {quickTaskModalOpen && (
+        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl w-full max-w-lg shadow-2xl border border-slate-200 overflow-hidden animate-in fade-in duration-150">
+            <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between">
+              <div className="flex items-center space-x-2">
+                <div className="p-1.5 rounded-lg bg-[#F27421]/10 text-[#F27421]">
+                  <Plus size={16} />
+                </div>
+                <h3 className="text-base font-bold text-slate-900">Create New Task</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setQuickTaskModalOpen(false)}
+                className="text-slate-400 hover:text-slate-600 p-1.5 rounded-lg hover:bg-slate-100 transition"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <form
+              onSubmit={async (e) => {
+                e.preventDefault();
+                if (!quickTaskTitle.trim()) return;
+                setIsSubmittingQuickTask(true);
+                try {
+                  const newIssue = await api.createIssue({
+                    title: quickTaskTitle.trim(),
+                    description: quickTaskDesc.trim(),
+                    priority: quickTaskPriority,
+                    teamId: teamId || undefined,
+                    creatorId: currentUser?.id,
+                    creatorName: currentUser?.username || 'Operator',
+                    status: 'Open'
+                  });
+                  setSuccessMsg(`Task ${newIssue.id || 'created'} successfully!`);
+                  setQuickTaskModalOpen(false);
+                  if (onNavigateToCase && newIssue.id) {
+                    onNavigateToCase(newIssue.id);
+                  }
+                } catch (err: any) {
+                  setErrorMsg(err.message || 'Failed to create task');
+                } finally {
+                  setIsSubmittingQuickTask(false);
+                }
+              }}
+              className="p-6 space-y-4"
+            >
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Task Title <span className="text-rose-500">*</span>
+                </label>
+                <input
+                  type="text"
+                  required
+                  placeholder="e.g. Reconcile Sinqee Bank T+1 Settlement Exception"
+                  value={quickTaskTitle}
+                  onChange={e => setQuickTaskTitle(e.target.value)}
+                  className="w-full bg-white border border-slate-200 rounded-xl px-3.5 py-2 text-xs text-slate-900 focus:outline-none focus:border-[#F27421]"
+                  autoFocus
+                />
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Priority
+                </label>
+                <div className="grid grid-cols-4 gap-2">
+                  {(['Low', 'Medium', 'High', 'Critical'] as const).map(p => (
+                    <button
+                      key={p}
+                      type="button"
+                      onClick={() => setQuickTaskPriority(p)}
+                      className={`py-1.5 px-2 rounded-lg text-xs font-semibold transition cursor-pointer border ${
+                        quickTaskPriority === p
+                          ? 'bg-[#F27421] text-white border-[#F27421]'
+                          : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+                      }`}
+                    >
+                      {p}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-700 mb-1">
+                  Description / Operational Notes
+                </label>
+                <textarea
+                  rows={4}
+                  placeholder="Add background details, exception amounts, or instructions..."
+                  value={quickTaskDesc}
+                  onChange={e => setQuickTaskDesc(e.target.value)}
+                  className="w-full bg-white border border-slate-200 rounded-xl p-3 text-xs text-slate-900 focus:outline-none focus:border-[#F27421] resize-none"
+                />
+              </div>
+
+              <div className="pt-2 flex items-center justify-end space-x-2.5">
+                <button
+                  type="button"
+                  onClick={() => setQuickTaskModalOpen(false)}
+                  className="px-4 py-2 border border-slate-200 text-slate-700 hover:bg-slate-50 text-xs font-semibold rounded-xl transition cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isSubmittingQuickTask || !quickTaskTitle.trim()}
+                  className="px-5 py-2 bg-[#F27421] hover:bg-[#e06516] disabled:opacity-50 text-white text-xs font-semibold rounded-xl shadow-xs transition cursor-pointer flex items-center space-x-1.5"
+                >
+                  {isSubmittingQuickTask ? (
+                    <>
+                      <RefreshCw size={12} className="animate-spin" />
+                      <span>Creating...</span>
+                    </>
+                  ) : (
+                    <>
+                      <Plus size={13} />
+                      <span>Create Task</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
         </div>
       )}
     </div>

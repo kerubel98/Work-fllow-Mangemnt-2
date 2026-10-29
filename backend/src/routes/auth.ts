@@ -35,8 +35,19 @@ authRouter.post('/login', async (req: Request, res: Response) => {
       return res.status(403).json({ error: 'Account registration is pending administrator approval.' });
     }
 
-    const expectedPass = PRESET_PASSWORDS[user.username] || 'password123';
-    const isValid = verifyPassword(password, expectedPass) || password === 'admin123';
+    // Password verification: Production mode strictly enforces database password_hash.
+    // Development mode allows preset passwords and dev backdoor per architectural policy.
+    const isDev = process.env.NODE_ENV !== 'production';
+    const expectedPass = isDev ? (PRESET_PASSWORDS[user.username] || 'password123') : null;
+    const isDevBackdoor = isDev && (password === 'admin123');
+
+    let isValid = false;
+    if (user.password_hash) {
+      isValid = verifyPassword(password, user.password_hash);
+    }
+    if (!isValid && isDev) {
+      isValid = (expectedPass ? verifyPassword(password, expectedPass) : false) || isDevBackdoor;
+    }
 
     if (!isValid) {
       return res.status(401).json({ error: 'Invalid password.' });
@@ -151,7 +162,7 @@ authRouter.get('/users', async (_req: Request, res: Response) => {
 /**
  * PUT /api/auth/users/:id/approve (Admin only)
  */
-authRouter.put('/users/:id/approve', async (req: Request, res: Response) => {
+authRouter.put('/users/:id/approve', requireRole('admin'), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { id } = req.params;
     const updated = await repo.updateUser(id, { isApproved: true });
@@ -165,7 +176,7 @@ authRouter.put('/users/:id/approve', async (req: Request, res: Response) => {
 /**
  * PUT /api/auth/users/:id/role (Admin only)
  */
-authRouter.put('/users/:id/role', async (req: Request, res: Response) => {
+authRouter.put('/users/:id/role', requireRole('admin'), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { id } = req.params;
     const { role, canExecuteSelect, canExecuteUpdate } = req.body;
@@ -246,7 +257,7 @@ authRouter.put('/users/:id/workspace-sharing', async (req: Request, res: Respons
 /**
  * DELETE /api/auth/users/:id (Admin only)
  */
-authRouter.delete('/users/:id', async (req: Request, res: Response) => {
+authRouter.delete('/users/:id', requireRole('admin'), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const success = await repo.deleteUser(req.params.id);
     return res.json({ success });

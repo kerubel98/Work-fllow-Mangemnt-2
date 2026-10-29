@@ -26,6 +26,8 @@ import {
 import { ErrorBoundary } from '../ErrorBoundary';
 import UnifiedChatInput, { InChatDirectiveType } from '../chat/UnifiedChatInput';
 import CasesWorkspaceView from './CasesWorkspaceView';
+import { CaseDiscussionDrawer } from './CaseDiscussionDrawer';
+import { EscalateToTeamModal } from '../team/EscalateToTeamModal';
 
 export interface StepExecutionResult {
   stepId: string;
@@ -1457,6 +1459,8 @@ export default function ValidationOrchestratorWorkspace({
 
   // Collaborative Chat Consensus & Solution Adoption
   const [showChatDrawer, setShowChatDrawer] = useState(false);
+  const [showEscalateModal, setShowEscalateModal] = useState(false);
+  const [activeEscalationAgreement, setActiveEscalationAgreement] = useState<any>(null);
   const [chatInputText, setChatInputText] = useState('');
   const [isSendingChat, setIsSendingChat] = useState(false);
   const [chatMentions, setChatMentions] = useState<{ type: 'user' | 'team'; id: string; name: string }[]>([]);
@@ -3578,17 +3582,65 @@ export default function ValidationOrchestratorWorkspace({
     return (
       <div className="h-full flex flex-col min-h-0 overflow-hidden bg-[#F8FAFC]">
         <CasesWorkspaceView
+          issue={selectedIssue}
           issues={issues}
           selectedIssueId={selectedIssue?.id}
           onSelectIssueId={onSelectIssueId}
+          currentUser={currentUser}
+          taskDatasetRows={taskDatasetRows}
+          sourceRecords={orchestratedRows}
+          centralMasterRows={centralMasterRows}
+          attachments={selectedIssue?.attachments}
+          workflow={activeWorkflow}
+          workflows={availableWorkflows}
+          onSelectWorkflow={(wf) => setActiveWorkflow(wf)}
           onRunValidation={() => handleRunValidation(true)}
+          isValidating={isVerifying}
           onRevertCase={handleRevertEntireTask}
           onUpdateIssue={onUpdateIssue}
           onOpenNewCase={onOpenNewCase}
-          workflow={activeWorkflow}
-          sourceRecords={orchestratedRows}
+          onExport={handleExportExcel}
+          onChangeWorkflow={() => {
+            setViewMode('advanced_grid');
+          }}
+          onOpenDiscussion={() => {
+            setShowChatDrawer(true);
+          }}
           onSwitchToAdvancedGrid={() => setViewMode('advanced_grid')}
+          hashtags={hashtags}
         />
+        {/* Screen 27: Case Discussion Drawer in Modern Cases */}
+        {showChatDrawer && selectedIssue && (
+          <CaseDiscussionDrawer
+            isOpen={showChatDrawer}
+            onClose={() => setShowChatDrawer(false)}
+            issue={selectedIssue}
+            currentUser={currentUser}
+            activeAgreement={activeEscalationAgreement}
+            onOpenEscalateModal={() => setShowEscalateModal(true)}
+          />
+        )}
+        {showEscalateModal && selectedIssue && (
+          <EscalateToTeamModal
+            isOpen={showEscalateModal}
+            onClose={() => setShowEscalateModal(false)}
+            currentUser={currentUser}
+            activeIssue={selectedIssue}
+            availableTeams={teams}
+            onAgreementCreated={(newAgreement) => {
+              setShowEscalateModal(false);
+              setActiveEscalationAgreement(newAgreement);
+              if (onUpdateIssue) {
+                onUpdateIssue(selectedIssue.id, {
+                  status: 'ESCALATED',
+                  escalatedToTeamId: newAgreement.receivingTeamId,
+                  escalationReason: newAgreement.escalationReason,
+                  escalatedAt: newAgreement.createdAt
+                });
+              }
+            }}
+          />
+        )}
       </div>
     );
   }
@@ -8382,9 +8434,41 @@ export default function ValidationOrchestratorWorkspace({
           </div>
         </div>
       )}
+      {/* Screen 27: Case Discussion Drawer */}
+      {showChatDrawer && selectedIssue && (
+        <CaseDiscussionDrawer
+          isOpen={showChatDrawer}
+          onClose={() => setShowChatDrawer(false)}
+          issue={selectedIssue}
+          currentUser={currentUser}
+          onOpenEscalateModal={() => setShowEscalateModal(true)}
+        />
+      )}
+
+      {/* Screen 29: Escalate to Team Modal */}
+      {showEscalateModal && selectedIssue && (
+        <EscalateToTeamModal
+          isOpen={showEscalateModal}
+          onClose={() => setShowEscalateModal(false)}
+          currentUser={currentUser}
+          activeIssue={selectedIssue}
+          availableTeams={teams}
+          onAgreementCreated={(newAgreement) => {
+            setShowEscalateModal(false);
+            if (onUpdateIssue) {
+              onUpdateIssue(selectedIssue.id, {
+                status: 'ESCALATED',
+                escalatedToTeamId: newAgreement.receivingTeamId,
+                escalationReason: newAgreement.escalationReason,
+                escalatedAt: newAgreement.createdAt
+              });
+            }
+          }}
+        />
+      )}
 
       {/* COLLABORATIVE CHAT & SOLUTION SCRIPT CONSENSUS DRAWER */}
-      {showChatDrawer && (
+      {false && showChatDrawer && (
         <div className="fixed inset-y-0 right-0 z-50 w-full sm:w-[480px] bg-white border-l border-slate-300 shadow-2xl flex flex-col animate-in slide-in-from-right duration-200">
           {/* Drawer Header */}
           <div className="p-4 bg-slate-900 text-white flex items-center justify-between border-b border-slate-800">

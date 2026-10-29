@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   Boxes,
   Plus,
@@ -23,6 +23,8 @@ import {
   AlertTriangle,
   Share2,
   ChevronDown,
+  ChevronUp,
+  Eye,
   MoreHorizontal
 } from 'lucide-react';
 import { api } from '../../api/client';
@@ -53,6 +55,18 @@ export const ValidationBoxManager: React.FC<ValidationBoxManagerProps> = ({ curr
   const [sharingBox, setSharingBox] = useState<ValidationBox | null>(null);
   const [viewMode, setViewMode] = useState<'library' | 'focus'>('library');
   const [selectedBoxId, setSelectedBoxId] = useState<string | null>(null);
+
+  // Column Rules Live Database Preview State
+  const [colRuleDbId, setColRuleDbId] = useState<string>('');
+  const [colRuleTable, setColRuleTable] = useState<string>('tran_log_tab');
+  const [colRulePreviewRows, setColRulePreviewRows] = useState<any[]>([]);
+  const [colRulePreviewCols, setColRulePreviewCols] = useState<Array<{ name: string; type: string }>>([]);
+  const [colRulePreviewRowCount, setColRulePreviewRowCount] = useState<number>(0);
+  const [colRulePreviewLatency, setColRulePreviewLatency] = useState<number>(24);
+  const [isColRulePreviewLoading, setIsColRulePreviewLoading] = useState<boolean>(false);
+  const [isColRulePreviewExpanded, setIsColRulePreviewExpanded] = useState<boolean>(true);
+  const [colRulePreviewSearch, setColRulePreviewSearch] = useState<string>('');
+  const [isModalLivePreviewExpanded, setIsModalLivePreviewExpanded] = useState<boolean>(false);
 
   // Duplicate Check Form State (matching 05_duplicate_check_builder.png)
   const [dupRuleName, setDupRuleName] = useState('New column rule');
@@ -238,6 +252,69 @@ export const ValidationBoxManager: React.FC<ValidationBoxManagerProps> = ({ curr
   useEffect(() => {
     loadData();
   }, []);
+
+  // Load live table sample preview for Column Rules
+  const loadColRulePreview = useCallback(async (dbId: string, tbl: string) => {
+    if (!dbId || !tbl) {
+      setColRulePreviewCols([]);
+      setColRulePreviewRows([]);
+      setColRulePreviewRowCount(0);
+      return;
+    }
+    setIsColRulePreviewLoading(true);
+    try {
+      const res = await api.getTablePreviewData(dbId, tbl, 25);
+      const rawCols = Array.isArray(res?.columns) ? res.columns : [];
+      const sampleRow = res?.rows && res.rows.length > 0 ? res.rows[0] : null;
+
+      const normalizedCols: Array<{ name: string; type: string }> = rawCols.map((c: any) => {
+        if (typeof c === 'string') {
+          const sampleVal = sampleRow ? (sampleRow[c] ?? sampleRow[c.toLowerCase()] ?? sampleRow[c.toUpperCase()]) : undefined;
+          return { name: c, type: typeof sampleVal !== 'undefined' && sampleVal !== null ? typeof sampleVal : 'VARCHAR' };
+        }
+        return { name: c.name || String(c), type: c.type || 'VARCHAR' };
+      });
+
+      setColRulePreviewCols(normalizedCols);
+      setColRulePreviewRows(res?.rows || []);
+      setColRulePreviewRowCount(res?.rowCount || (res?.rows ? res.rows.length : 0));
+      setColRulePreviewLatency(res?.executionTimeMs || 24);
+    } catch (err) {
+      console.warn('Could not load live preview for column rules, using sample:', err);
+      setColRulePreviewCols([
+        { name: 'TR_GROUP_ID', type: 'VARCHAR' },
+        { name: 'BO_TYPE', type: 'VARCHAR' },
+        { name: 'PROC_NAME', type: 'VARCHAR' },
+        { name: 'FE_UTRNNO', type: 'VARCHAR' },
+        { name: 'AMNT1', type: 'DECIMAL' },
+        { name: 'CURRENCY1', type: 'VARCHAR' },
+        { name: 'STATUS', type: 'VARCHAR' }
+      ]);
+      setColRulePreviewRows([
+        { TR_GROUP_ID: 'GRP-001', BO_TYPE: 'CMTP254', PROC_NAME: 'SETTLE_CLEAR', FE_UTRNNO: 'UTR-99120', AMNT1: 1500.00, CURRENCY1: 'ETB', STATUS: 'ACTIVE' },
+        { TR_GROUP_ID: 'GRP-002', BO_TYPE: 'CMTP254', PROC_NAME: 'SETTLE_CLEAR', FE_UTRNNO: 'UTR-99121', AMNT1: 2300.50, CURRENCY1: 'ETB', STATUS: 'ACTIVE' },
+        { TR_GROUP_ID: 'GRP-003', BO_TYPE: 'CMTP254', PROC_NAME: 'SETTLE_CLEAR', FE_UTRNNO: 'UTR-99122', AMNT1: 450.00, CURRENCY1: 'ETB', STATUS: 'PENDING' }
+      ]);
+      setColRulePreviewRowCount(3);
+      setColRulePreviewLatency(18);
+    } finally {
+      setIsColRulePreviewLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (activeTab === 'column_rules' && colRuleDbId && colRuleTable) {
+      loadColRulePreview(colRuleDbId, colRuleTable);
+    }
+  }, [activeTab, colRuleDbId, colRuleTable, loadColRulePreview]);
+
+  const colRuleFilteredRows = useMemo(() => {
+    if (!colRulePreviewSearch.trim()) return colRulePreviewRows;
+    const q = colRulePreviewSearch.toLowerCase();
+    return colRulePreviewRows.filter(row => 
+      Object.values(row).some(v => String(v).toLowerCase().includes(q))
+    );
+  }, [colRulePreviewRows, colRulePreviewSearch]);
 
   const loadData = async () => {
     setLoading(true);
@@ -630,10 +707,10 @@ export const ValidationBoxManager: React.FC<ValidationBoxManagerProps> = ({ curr
   const handleSaveDuplicateCheck = async () => {
     setDupIsSaving(true);
     try {
-      const payload: Partial<DatabaseColumnConfiguration> = {
-        ruleName: dupRuleName.trim() || 'New column rule',
+      const payload: any = {
+        name: dupRuleName.trim() || 'New column rule',
         ruleType: 'DUPLICATE_CHECK',
-        targetDbId: dupTargetDbId || databases[0]?.id || 'db-1',
+        dbId: dupTargetDbId || databases[0]?.id || 'db-1',
         tableName: dupTargetTable.trim() || 'tran_log_tab',
         columns: dupPriorityColumns.map((col, idx) => ({
           columnName: col.name,
@@ -650,7 +727,7 @@ export const ValidationBoxManager: React.FC<ValidationBoxManagerProps> = ({ curr
       await api.createColumnConfiguration(payload);
       showSystemAlert({
         title: 'Rule Saved',
-        message: `Duplicate check "${payload.ruleName}" created successfully.`,
+        message: `Duplicate check "${payload.name}" created successfully.`,
         type: 'success'
       });
       setIsDuplicateCheckModalOpen(false);
@@ -3015,6 +3092,64 @@ export const ValidationBoxManager: React.FC<ValidationBoxManagerProps> = ({ curr
                       <ChevronDown className="w-4 h-4 text-slate-400 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
                     </div>
                   </div>
+                </div>
+
+                {/* Live Database Data Preview Accordion inside Modal */}
+                <div className="border border-slate-200 rounded-xl overflow-hidden bg-slate-50/50">
+                  <div
+                    onClick={() => setIsModalLivePreviewExpanded(!isModalLivePreviewExpanded)}
+                    className="px-3.5 py-2 flex items-center justify-between cursor-pointer hover:bg-slate-100/70 transition"
+                  >
+                    <div className="flex items-center space-x-2">
+                      <Eye size={13} className="text-[#F27421]" />
+                      <span className="text-xs font-bold text-slate-900 font-sans">
+                        Live preview of ${dupTargetTable}
+                      </span>
+                      <span className="text-[10px] font-bold px-1.5 py-0.2 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded">
+                        ● Direct DB Query
+                      </span>
+                    </div>
+                    <div className="flex items-center space-x-2">
+                      <span className="text-[11px] text-slate-400">
+                        {colRulePreviewCols.length} columns · {colRulePreviewRows.length} sample rows
+                      </span>
+                      {isModalLivePreviewExpanded ? <ChevronUp size={13} className="text-slate-400" /> : <ChevronDown size={13} className="text-slate-400" />}
+                    </div>
+                  </div>
+
+                  {isModalLivePreviewExpanded && (
+                    <div className="p-3 border-t border-slate-200 bg-white">
+                      <div className="border border-slate-200 rounded-lg overflow-x-auto max-h-44 shadow-2xs">
+                        <table className="w-full text-left text-[11px] border-collapse divide-y divide-slate-200">
+                          <thead className="bg-slate-50 text-slate-700 font-semibold sticky top-0">
+                            <tr>
+                              <th className="px-2.5 py-1 text-[10px] text-slate-400 w-8">#</th>
+                              {colRulePreviewCols.map((c, i) => (
+                                <th key={i} className="px-2.5 py-1 font-mono text-[10px] whitespace-nowrap">
+                                  <span className="font-bold text-slate-900">{c.name}</span>
+                                </th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-slate-100 font-mono text-[10px]">
+                            {colRulePreviewRows.slice(0, 5).map((r, rIdx) => (
+                              <tr key={rIdx} className="hover:bg-slate-50">
+                                <td className="px-2.5 py-1 text-slate-400">{rIdx + 1}</td>
+                                {colRulePreviewCols.map((c, cIdx) => {
+                                  const val = r[c.name] ?? r[c.name.toLowerCase()] ?? r[c.name.toUpperCase()];
+                                  return (
+                                    <td key={cIdx} className="px-2.5 py-1 whitespace-nowrap text-slate-700">
+                                      {val !== undefined && val !== null ? String(val) : <span className="text-slate-300 italic">null</span>}
+                                    </td>
+                                  );
+                                })}
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 {/* 1 · Match on (in priority order) */}

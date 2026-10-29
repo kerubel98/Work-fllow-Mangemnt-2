@@ -9,6 +9,7 @@ import AdminUserManagement from './admin/AdminUserManagement';
 import AdminQueryApprovals from './admin/AdminQueryApprovals';
 import AdminSystemSettings from './admin/AdminSystemSettings';
 import AdminOAuth2Connections from './admin/AdminOAuth2Connections';
+import ConnectionsView from './admin/ConnectionsView';
 import { getUserAdminCapabilities } from '../utils/adminCapabilities';
 
 interface AdminPanelProps {
@@ -197,7 +198,15 @@ export default function AdminPanel({
       )}
 
       {currentTab === 'connection_settings' && (
-        <AdminOAuth2Connections />
+        <ConnectionsView
+          currentUser={currentUser || { id: 'admin', username: 'admin', email: 'admin@paymentops.com', role: 'admin', isApproved: true, createdAt: new Date().toISOString() }}
+          databases={databases}
+          teams={teams}
+          onAddDatabase={onAddDatabase}
+          onUpdateDb={(updatedDb) => onUpdateDb?.(updatedDb.id, updatedDb)}
+          onDeleteDb={onDeleteDb}
+          onToggleDbStatus={onToggleDbStatus}
+        />
       )}
 
       {currentTab === 'user_admin' && caps.canManageUsers && (

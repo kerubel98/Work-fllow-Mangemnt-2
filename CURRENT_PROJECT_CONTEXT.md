@@ -651,7 +651,18 @@ backend/src/
 * `GET /:id/dashboard`: Fetch Inflow/Outflow KPIs, 4-Eyes clearance rate, and SLA compliance metrics.
 * `POST /:id/visibility-grants`: Grant cross-team dashboard visibility (`FULL` vs `PARTIAL_KPI`).
 * `GET /:id/visibility-grants`: List active visibility grants.
-* `GET /strategic-objectives`: List organizational strategic goals and linked `#hashtags`.
+### Notifications & Preferences (`/api/notifications`)
+* `GET /`: Retrieve active notifications stream (supporting user-specific and broadcast alerts).
+* `GET /preferences`: Fetch user notification channel matrix, quiet hours, and digest preferences.
+* `PUT /preferences`: Persist notification channel matrix (enforcing SLA & System alerts locked ON).
+* `POST /test`: Dispatch a test preview notification.
+* `PUT /read-all`: Mark all unread notifications as read.
+* `DELETE /clear-all`: Clear/dismiss active notifications.
+* `PUT /:id/read`: Mark an individual notification as read.
+* `POST /:id/snooze`: Snooze notification until a specified ISO timestamp.
+* `POST /:id/archive`: Move notification to archived status.
+* `POST /:id/action`: Execute primary action and mark notification as done.
+* `DELETE /:id`: Permanently delete a notification.
 
 ---
 
@@ -962,9 +973,25 @@ The current application context report has been generated and saved to `CURRENT_
   - **Rule 16 Scroll & Viewport Containment**:
     - Bound `activeNavigation === 'direct_chat'` in `App.tsx` with `overflow-hidden flex flex-col h-[calc(100vh-2.25rem)] min-h-0` to guarantee stationary headers and eliminate outer scroll leaks.
     - Validated with clean TypeScript compilation across backend and frontend workspaces, and 100% successful Vite production build.
+  - **Zoho Enterprise OAuth 2.0 Consent Routing & Provider Sizing Refinement (2026-10-22)**:
+    - **Genuine Zoho OAuth 2.0 Redirect**: Implemented `GET /api/messages/oauth2/authorize` and `GET /api/messages/oauth2/callback` in `backend/src/routes/messages.ts`. Clicking "Proceed to Zoho Consent Page ↗" automatically routes the operator's browser to the official `https://accounts.zoho.com/oauth/v2/auth` consent URL with real Admin-configured Client ID (`1000.UYVBUR0W5ZYW0PH2WHT1LZR0WJVZ8T`), `ZohoMail.messages.ALL,ZohoMail.accounts.ALL` scopes, `offline` access, and state verification.
+    - **Self-Client Grant Code Support**: Added `POST /api/messages/oauth2/manual-grant` and frontend modal tab for instantaneous server-side token exchange using Zoho Developer Console Self-Client grant codes.
+    - **Purged Mock Database Messages**: Deleted simulated welcome messages and removed auto-mock insertion code from `messages.ts` so unauthenticated channels never display fake threads.
+    - **Strict Icon Dimension Bounding**: Applied inline CSS pixel constraints (`12px` to `40px` with `max-width`, `max-height`, `min-width`, `min-height`, `flexShrink: 0`) in `ProviderLogo.tsx` and explicit numeric sizes across `PersonalChat.tsx`, preventing oversized SVG rendering.
+    - **Unauthenticated Zoho Visual State**: Added amber indicator, clear empty-state card in the conversation feed and right pane, and an OAuth return banner to display live success/error notifications upon redirect from Zoho.
+    - **Cross-Layer Validation**: Verified 100% clean builds across backend (`tsc`) and frontend (`vite build`).
 
-
-
-
-
+- **Sidebar Ratio Calibration, Zero Horizontal Padding on Teams & Dashboard, and Universal Table Pagination (October 23, 2026)**:
+  - **Sidebar Proportion Alignment (~13%)**:
+    - Calibrated `SideNav.tsx` from fixed `w-56` (224px, which expanded to 15.6%–16.4% on standard 1440px/1366px laptop screens) to proportional: `isCollapsed ? 'w-14' : 'w-[13vw] min-w-[200px] max-w-[248px]'`.
+    - Exactly achieves 248px on 1920px width ($248 / 1920 = 12.92\% \approx 13\%$), conforming to all 21 master designs in `redesigned_ui/`.
+  - **Zero Horizontal Padding on Teams and Dashboard (`px-0`)**:
+    - **Dashboard (`ManagerialDashboard.tsx`)**: Refactored root container to `h-full flex-1 min-h-0 overflow-y-auto px-0 py-4 space-y-4 font-sans` with edge-to-edge flush canvas, eliminating outer margins.
+    - **Teams Workspace (`TeamWorkspace.tsx` & `TeamTasksTab.tsx`)**: Enforced `px-0` on `#team-workspace-container`, `#team-workspace-main`, the tab bar, and `#team-tasks-tab`.
+    - Applied column scroll containment on Kanban boards (`min-h-[360px] max-h-[calc(100vh-250px)] overflow-hidden` with `overflow-y-auto no-scrollbar` on column card feeds) in compliance with Rule 16.
+  - **Universal Active Table Pagination (`DataTablePagination.tsx`)**:
+    - Built and exported `<DataTablePagination>` supporting interactive `currentPage`, `pageSize` selection (10, 25, 50, 100), First/Prev/Next/Last controls, item range indicators, and status badges.
+    - Integrated active row pagination into `CasesWorkspaceView.tsx`, replacing static mock text `Page 1 of 1 · 50 per page` and compacting vertical rhythm from `p-6 space-y-6` to `p-4 space-y-3.5` to reclaim ~50px of vertical space.
+    - Integrated interactive pagination into `ManagerialDashboard.tsx` "My tasks" ledger with options for 5, 10, 25, 50 items per page, replacing hardcoded `.slice(0, 5)`.
+  - **Physical Build Verification**: Validated 100% clean compilation via Vite production build (`npm run build`, 2,342 modules transformed with 0 errors).
 

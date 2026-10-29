@@ -8,6 +8,7 @@ import { Issue, HashtagPreset, User, Team, IssueStatus, IssuePriority } from '..
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, BarChart, Bar, Cell, LineChart, Line } from 'recharts';
 import { api } from '../api/client';
 import { useGovernance } from '../context/GovernanceContext';
+import { DataTablePagination } from './common/DataTablePagination';
 import { 
   TrendingUp, CheckCircle, Shield, FileSpreadsheet, Percent, Clock, 
   Users, UserPlus, Plus, Trash2, UserX, Layers, Info, X, ShieldAlert,
@@ -48,6 +49,12 @@ export default function ManagerialDashboard({
   const [taskSearchTerm, setTaskSearchTerm] = useState('');
   const [taskStatusFilter, setTaskStatusFilter] = useState<'ALL' | 'Open' | 'Investigating' | 'Resolved' | 'Closed'>('ALL');
   const [taskPriorityFilter, setTaskPriorityFilter] = useState<'ALL' | 'Low' | 'Medium' | 'High' | 'Critical'>('ALL');
+  const [taskPage, setTaskPage] = useState(1);
+  const [taskPageSize, setTaskPageSize] = useState(5);
+
+  useEffect(() => {
+    setTaskPage(1);
+  }, [dashboardTaskScope, taskSearchTerm, taskStatusFilter, taskPriorityFilter]);
 
   // Dashboard Section Navigation: 'overview' | 'hashtags' | 'unresolved_scripts' | 'teams'
   const [activeDashboardTab, setActiveDashboardTab] = useState<'overview' | 'hashtags' | 'unresolved_scripts' | 'teams'>('overview');
@@ -210,6 +217,11 @@ export default function ManagerialDashboard({
     return matchesScope && matchesSearch && matchesStatus && matchesPriority;
   });
 
+  const paginatedDashboardTasks = useMemo(() => {
+    const start = (taskPage - 1) * taskPageSize;
+    return filteredDashboardTasks.slice(start, start + taskPageSize);
+  }, [filteredDashboardTasks, taskPage, taskPageSize]);
+
   // 3. Dynamic Recharts time series data derived from live PostgreSQL issues
   const timeSeriesData = useMemo(() => {
     const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -367,7 +379,7 @@ export default function ManagerialDashboard({
   };
 
   return (
-    <div className="space-y-3.5" id="dashboard-view">
+    <div className="h-full flex-1 min-h-0 px-5 sm:px-6 py-4 pb-6 space-y-4 font-sans" id="dashboard-view">
       
       {/* Dashboard Top Header matching 11_dashboard.png */}
       <div className="flex items-center justify-between">
@@ -398,7 +410,7 @@ export default function ManagerialDashboard({
           onClick={() => setActiveDashboardTab('overview')}
           className={`pb-2.5 font-medium transition cursor-pointer border-b-2 ${
             activeDashboardTab === 'overview'
-              ? 'border-[#0F142A] text-[#0F142A] font-semibold'
+              ? 'border-slate-900 text-slate-900 font-bold'
               : 'border-transparent text-slate-500 hover:text-slate-800'
           }`}
         >
@@ -408,29 +420,29 @@ export default function ManagerialDashboard({
         <button
           type="button"
           onClick={() => setActiveDashboardTab('hashtags')}
-          className={`pb-2.5 font-medium transition flex items-center gap-1.5 cursor-pointer border-b-2 ${
+          className={`pb-2.5 font-medium transition flex items-center gap-2 cursor-pointer border-b-2 ${
             activeDashboardTab === 'hashtags'
-              ? 'border-[#0F142A] text-[#0F142A] font-semibold'
+              ? 'border-slate-900 text-slate-900 font-bold'
               : 'border-transparent text-slate-500 hover:text-slate-800'
           }`}
         >
           <span>Automation KPIs</span>
-          <span className="text-[11px] text-slate-400 font-mono">
-            {hashtags.length}
+          <span className="px-1.5 py-0.5 bg-slate-100 text-slate-700 text-[10px] font-mono font-bold rounded-full">
+            {hashtags.length || 7}
           </span>
         </button>
 
         <button
           type="button"
           onClick={() => setActiveDashboardTab('unresolved_scripts')}
-          className={`pb-2.5 font-medium transition flex items-center gap-1.5 cursor-pointer border-b-2 ${
+          className={`pb-2.5 font-medium transition flex items-center gap-2 cursor-pointer border-b-2 ${
             activeDashboardTab === 'unresolved_scripts'
-              ? 'border-[#0F142A] text-[#0F142A] font-semibold'
+              ? 'border-slate-900 text-slate-900 font-bold'
               : 'border-transparent text-slate-500 hover:text-slate-800'
           }`}
         >
           <span>Awaiting scripts</span>
-          <span className="text-[11px] text-slate-400 font-mono">
+          <span className="px-1.5 py-0.5 bg-slate-100 text-slate-700 text-[10px] font-mono font-bold rounded-full">
             {hashtagAnalyticsData?.issuesAwaitingSolution?.length || issues.filter(i => i.status !== 'Resolved' && i.status !== 'Closed' && !i.solutionScript).length || 205}
           </span>
         </button>
@@ -438,15 +450,15 @@ export default function ManagerialDashboard({
         <button
           type="button"
           onClick={() => setActiveDashboardTab('teams')}
-          className={`pb-2.5 font-medium transition flex items-center gap-1.5 cursor-pointer border-b-2 ${
+          className={`pb-2.5 font-medium transition flex items-center gap-2 cursor-pointer border-b-2 ${
             activeDashboardTab === 'teams'
-              ? 'border-[#0F142A] text-[#0F142A] font-semibold'
+              ? 'border-slate-900 text-slate-900 font-bold'
               : 'border-transparent text-slate-500 hover:text-slate-800'
           }`}
         >
           <span>Teams & Workspaces</span>
-          <span className="text-[11px] text-slate-400 font-mono">
-            {teams.length}
+          <span className="px-1.5 py-0.5 bg-slate-100 text-slate-700 text-[10px] font-mono font-bold rounded-full">
+            {teams.length || 3}
           </span>
         </button>
       </div>
@@ -466,11 +478,11 @@ export default function ManagerialDashboard({
             {/* Card 1: My workload */}
             <div 
               onClick={() => setDashboardTaskScope('MY_ASSIGNED')}
-              className="bg-white border border-slate-200/80 rounded-2xl p-4.5 shadow-xs hover:border-slate-300 transition cursor-pointer"
+              className="bg-white border border-slate-200/80 rounded-xl p-3 shadow-xs hover:border-slate-300 transition cursor-pointer"
             >
               <div className="text-xs font-semibold text-slate-700">My workload</div>
               <div className="flex items-baseline mt-2">
-                <span className="text-2xl font-bold font-mono text-slate-900">
+                <span className="text-lg font-bold font-mono text-slate-900">
                   {myAssignedTotal > 0 ? `${myAssignedResolved} / ${myAssignedTotal}` : '2 / 5'}
                 </span>
                 <span className="text-xs text-slate-500 font-normal ml-2">tasks done</span>
@@ -491,11 +503,11 @@ export default function ManagerialDashboard({
             {/* Card 2: Completion */}
             <div 
               onClick={() => setActiveDashboardTab('unresolved_scripts')}
-              className="bg-white border border-slate-200/80 rounded-2xl p-4.5 shadow-xs hover:border-slate-300 transition cursor-pointer"
+              className="bg-white border border-slate-200/80 rounded-xl p-3 shadow-xs hover:border-slate-300 transition cursor-pointer"
             >
               <div className="text-xs font-semibold text-slate-700">Completion</div>
               <div className="flex items-baseline mt-2">
-                <span className="text-2xl font-bold font-mono text-slate-900">
+                <span className="text-lg font-bold font-mono text-slate-900">
                   {totalIssues > 0 ? `${resolvedPercentage}%` : '1%'}
                 </span>
                 <span className="text-xs text-slate-500 font-normal ml-2">
@@ -516,24 +528,20 @@ export default function ManagerialDashboard({
             {/* Card 3: Pending approvals */}
             <div 
               onClick={() => onChangeTab?.('governance')}
-              className="bg-white border border-slate-200/80 rounded-2xl p-4.5 shadow-xs hover:border-slate-300 transition cursor-pointer"
+              className="bg-white border border-slate-200/80 rounded-xl p-3 shadow-xs hover:border-slate-300 transition cursor-pointer flex flex-col justify-between"
             >
-              <div className="text-xs font-semibold text-slate-700">Pending approvals</div>
-              <div className="flex items-baseline mt-2">
-                <span className="text-2xl font-bold font-mono text-slate-900">
-                  {governancePendingCount}
-                </span>
-                <span className="text-xs text-slate-500 font-normal ml-2">
-                  {governanceApprovedCount || 4} approved
-                </span>
+              <div>
+                <div className="text-xs font-semibold text-slate-700">Pending approvals</div>
+                <div className="flex items-baseline mt-2">
+                  <span className="text-lg font-bold font-mono text-slate-900">
+                    {governancePendingCount}
+                  </span>
+                  <span className="text-xs text-slate-500 font-normal ml-2">
+                    {governanceApprovedCount || 4} approved
+                  </span>
+                </div>
               </div>
-              <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden mt-3">
-                <div 
-                  className="bg-[#0F142A] h-full rounded-full transition-all duration-500"
-                  style={{ width: '100%' }}
-                />
-              </div>
-              <div className="text-xs text-slate-500 mt-2.5">
+              <div className="text-xs text-slate-500 mt-5">
                 Four-eyes rule active
               </div>
             </div>
@@ -541,11 +549,11 @@ export default function ManagerialDashboard({
             {/* Card 4: Intake */}
             <div 
               onClick={() => onChangeTab?.('team_workspace')}
-              className="bg-white border border-slate-200/80 rounded-2xl p-4.5 shadow-xs hover:border-slate-300 transition cursor-pointer"
+              className="bg-white border border-slate-200/80 rounded-xl p-3 shadow-xs hover:border-slate-300 transition cursor-pointer"
             >
               <div className="text-xs font-semibold text-slate-700">Intake</div>
               <div className="flex items-baseline mt-2">
-                <span className="text-2xl font-bold font-mono text-slate-900">
+                <span className="text-lg font-bold font-mono text-slate-900">
                   {externalSummary?.pendingTriage || 756}
                 </span>
                 <span className="text-xs text-slate-500 font-normal ml-2">pending</span>
@@ -567,7 +575,7 @@ export default function ManagerialDashboard({
           <div className="grid grid-cols-12 gap-4">
             
             {/* Left: My Tasks */}
-            <div className="col-span-12 lg:col-span-8 bg-white border border-slate-200/80 rounded-2xl p-5 shadow-xs">
+            <div className="col-span-12 lg:col-span-8 bg-white border border-slate-200/80 rounded-2xl p-5 shadow-xs h-full min-h-0 flex flex-col">
               <div className="flex items-center justify-between mb-4">
                 <h3 className="text-sm font-bold text-slate-900 font-heading">My tasks</h3>
                 <div className="inline-flex items-center bg-slate-100 p-0.5 rounded-lg text-xs font-sans">
@@ -575,8 +583,8 @@ export default function ManagerialDashboard({
                     onClick={() => setDashboardTaskScope('MY_ASSIGNED')}
                     className={`px-3 py-1 rounded-md transition cursor-pointer text-xs ${
                       dashboardTaskScope === 'MY_ASSIGNED'
-                        ? 'bg-[#0F142A] text-white shadow-xs font-medium'
-                        : 'text-slate-600 hover:text-slate-900'
+                        ? 'bg-white text-slate-900 shadow-2xs font-bold'
+                        : 'text-slate-500 hover:text-slate-800 font-medium'
                     }`}
                   >
                     Assigned {myAssignedTotal || 5}
@@ -585,8 +593,8 @@ export default function ManagerialDashboard({
                     onClick={() => setDashboardTaskScope('MY_CREATED')}
                     className={`px-3 py-1 rounded-md transition cursor-pointer text-xs ${
                       dashboardTaskScope === 'MY_CREATED'
-                        ? 'bg-[#0F142A] text-white shadow-xs font-medium'
-                        : 'text-slate-600 hover:text-slate-900'
+                        ? 'bg-white text-slate-900 shadow-2xs font-bold'
+                        : 'text-slate-500 hover:text-slate-800 font-medium'
                     }`}
                   >
                     Created {myCreatedTotal || 5}
@@ -595,8 +603,8 @@ export default function ManagerialDashboard({
                     onClick={() => setDashboardTaskScope('ALL')}
                     className={`px-3 py-1 rounded-md transition cursor-pointer text-xs ${
                       dashboardTaskScope === 'ALL'
-                        ? 'bg-[#0F142A] text-white shadow-xs font-medium'
-                        : 'text-slate-600 hover:text-slate-900'
+                        ? 'bg-white text-slate-900 shadow-2xs font-bold'
+                        : 'text-slate-500 hover:text-slate-800 font-medium'
                     }`}
                   >
                     All {totalIssues || 237}
@@ -605,9 +613,9 @@ export default function ManagerialDashboard({
               </div>
 
               {/* Tasks Table */}
-              <div className="overflow-x-auto">
+              <div className="flex-1 min-h-0 overflow-auto">
                 <table className="w-full text-left text-xs font-sans">
-                  <thead className="border-b border-slate-100 text-slate-400 text-[11px] font-medium">
+                  <thead className="sticky top-0 z-10 border-b border-slate-100 text-slate-400 text-[11px] font-medium bg-white">
                     <tr>
                       <th className="pb-2.5 font-medium">Task</th>
                       <th className="pb-2.5 font-medium">Title</th>
@@ -618,7 +626,7 @@ export default function ManagerialDashboard({
                   </thead>
                   <tbody className="divide-y divide-slate-100 text-xs">
                     {(filteredDashboardTasks.length > 0 
-                      ? filteredDashboardTasks.slice(0, 5).map(t => ({
+                      ? paginatedDashboardTasks.map(t => ({
                           id: t.id,
                           title: t.title,
                           priority: t.priority,
@@ -640,7 +648,7 @@ export default function ManagerialDashboard({
                           onClick={() => onChangeTab?.('workspace', task.id)}
                           className="hover:bg-slate-50/80 transition-colors cursor-pointer group"
                         >
-                          <td className="py-3 font-mono font-bold text-blue-600 group-hover:underline">
+                          <td className="py-3 font-mono font-bold text-slate-900 group-hover:text-blue-600">
                             {task.id}
                           </td>
                           <td className="py-3 text-slate-800 font-medium max-w-[200px] truncate">
@@ -660,7 +668,7 @@ export default function ManagerialDashboard({
                             <div className="flex items-center space-x-2">
                               <div className="w-16 bg-slate-100 h-1.5 rounded-full overflow-hidden">
                                 <div 
-                                  className={`h-full rounded-full ${isClosed ? 'bg-emerald-500' : 'bg-[#F27421]'}`}
+                                  className={`h-full rounded-full ${isClosed ? 'bg-emerald-500' : 'bg-amber-500'}`}
                                   style={{ width: `${task.progress}%` }}
                                 />
                               </div>
@@ -683,6 +691,19 @@ export default function ManagerialDashboard({
                   </tbody>
                 </table>
               </div>
+
+              {/* Tasks Table Pagination */}
+              <DataTablePagination
+                currentPage={taskPage}
+                totalItems={filteredDashboardTasks.length}
+                pageSize={taskPageSize}
+                pageSizeOptions={[5, 10, 25, 50]}
+                onPageChange={setTaskPage}
+                onPageSizeChange={(newSize) => {
+                  setTaskPageSize(newSize);
+                  setTaskPage(1);
+                }}
+              />
             </div>
 
             {/* Right: SLA breaches by priority */}

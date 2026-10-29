@@ -114,7 +114,9 @@ export function verifyToken<T = JwtUserPayload>(token: string): T | null {
       .replace(/\+/g, '-')
       .replace(/\//g, '_');
 
-    if (signature !== expectedSignature) {
+    const sigBuf = Buffer.from(signature);
+    const expBuf = Buffer.from(expectedSignature);
+    if (sigBuf.length !== expBuf.length || !crypto.timingSafeEqual(sigBuf, expBuf)) {
       return null;
     }
 
@@ -129,4 +131,41 @@ export function verifyToken<T = JwtUserPayload>(token: string): T | null {
   } catch (err) {
     return null;
   }
+}
+
+/**
+ * Express middleware to authenticate JWT token from Authorization header.
+ */
+export function requireAuth(req: any, res: any, next: any) {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+
+  if (!token) {
+    return res.status(401).json({ error: 'Authentication required: missing or invalid Bearer token.' });
+  }
+
+  const payload = verifyToken(token);
+  if (!payload) {
+    return res.status(401).json({ error: 'Invalid or expired authentication token.' });
+  }
+
+  req.user = payload;
+  next();
+}
+
+/**
+ * Express middleware to enforce specific role permissions.
+ */
+export function requireRole(allowedRoles: string | string[]) {
+  const roles = Array.isArray(allowedRoles) ? allowedRoles : [allowedRoles];
+  return (req: any, res: any, next: any) => {
+    requireAuth(req, res, () => {
+      if (!req.user || !roles.includes(req.user.role)) {
+        return res.status(403).json({
+          error: `Forbidden: Requires one of [${roles.join(', ')}] role privileges.`
+        });
+      }
+      next();
+    });
+  };
 }

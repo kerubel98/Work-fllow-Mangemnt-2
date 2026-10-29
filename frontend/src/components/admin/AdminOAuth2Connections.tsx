@@ -91,15 +91,15 @@ export default function AdminOAuth2Connections() {
       setTokenUrl('');
     } else if (preset === 'GOOGLE_WORKSPACE') {
       setScope('https://mail.google.com/');
-      setGrantType('refresh_token');
+      setGrantType('authorization_code');
       setTokenUrl('https://oauth2.googleapis.com/token');
     } else if (preset === 'ZOHO') {
       setScope('ZohoMail.messages.ALL,ZohoMail.accounts.ALL');
-      setGrantType('refresh_token');
+      setGrantType('authorization_code');
       setTokenUrl('');
     } else {
       setScope('');
-      setGrantType('client_credentials');
+      setGrantType('authorization_code');
       setTokenUrl('');
     }
   };

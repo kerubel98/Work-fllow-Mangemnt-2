@@ -1,10 +1,13 @@
 import React, { useState, useEffect } from 'react';
 import { 
   Plus, Search, Clock, RefreshCw, Zap, Play, CheckCircle2, AlertCircle, 
-  Trash2, Edit3, X, ArrowRight, ShieldCheck, Database, Calendar, Settings
+  Trash2, Edit3, X, ArrowRight, ShieldCheck, Database, Calendar, Settings, Tag, Layers
 } from 'lucide-react';
 import { api } from '../../api/client';
 import { DatabaseValidationWorkflow } from '../../types';
+import { HashtagOwnerDetailView } from './HashtagOwnerDetailView';
+import { EndToEndFlowDiagram } from './EndToEndFlowDiagram';
+
 
 interface AutomationItem {
   id: string;
@@ -37,6 +40,9 @@ export default function AutomationsView() {
   const [formSchedule, setFormSchedule] = useState('0 2 * * *');
   const [formWorkflowId, setFormWorkflowId] = useState('');
   const [formPreset, setFormPreset] = useState('daily');
+  const [activeMainTab, setActiveMainTab] = useState<'AUTOMATIONS' | 'HASHTAG_OWNER' | 'FLOW_DIAGRAM'>('AUTOMATIONS');
+  const [selectedHashtagTag, setSelectedHashtagTag] = useState<string>('#AIB_SETTLEMENT_2026');
+
 
   const loadData = async () => {
     setLoading(true);
@@ -187,6 +193,22 @@ export default function AutomationsView() {
   const [selectedId, setSelectedId] = useState<string>('auto-cbe-nightly');
   const selectedAuto = automations.find(a => a.id === selectedId) || automations[0] || null;
 
+  if (activeMainTab === 'HASHTAG_OWNER') {
+    return (
+      <HashtagOwnerDetailView
+        hashtagTag={selectedHashtagTag}
+        onBack={() => setActiveMainTab('AUTOMATIONS')}
+        onOpenFlowDiagram={() => setActiveMainTab('FLOW_DIAGRAM')}
+      />
+    );
+  }
+
+  if (activeMainTab === 'FLOW_DIAGRAM') {
+    return (
+      <EndToEndFlowDiagram onBack={() => setActiveMainTab('AUTOMATIONS')} />
+    );
+  }
+
   return (
     <div className="h-full flex flex-col min-h-0 overflow-y-auto p-6 space-y-6 font-sans bg-[#F8FAFC]">
       {/* 1. Header matching 06_automations.png */}
@@ -198,16 +220,59 @@ export default function AutomationsView() {
           </p>
         </div>
 
-        <button
-          id="btn-new-automation"
-          type="button"
-          onClick={() => setIsModalOpen(true)}
-          className="flex items-center gap-1.5 px-4 py-2 bg-[#F27421] hover:bg-[#E06310] text-white rounded-lg font-semibold text-xs transition-colors shadow-xs cursor-pointer"
-        >
-          <Plus className="w-4 h-4" />
-          <span>+ New automation</span>
-        </button>
+        <div className="flex items-center space-x-2">
+          <div className="flex items-center space-x-1 bg-white p-1 rounded-xl border border-slate-200 shadow-2xs">
+            <button
+              type="button"
+              onClick={() => setActiveMainTab('AUTOMATIONS')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer ${
+                activeMainTab === 'AUTOMATIONS'
+                  ? 'bg-[#0F172B] text-white shadow-2xs'
+                  : 'text-slate-600 hover:bg-slate-100'
+              }`}
+            >
+              Crons & Triggers
+            </button>
+            <button
+              type="button"
+              id="tab-hashtag-owner-view"
+              onClick={() => setActiveMainTab('HASHTAG_OWNER')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer flex items-center space-x-1 ${
+                activeMainTab === 'HASHTAG_OWNER'
+                  ? 'bg-blue-600 text-white shadow-2xs'
+                  : 'text-slate-600 hover:bg-slate-100'
+              }`}
+            >
+              <Tag size={12} />
+              <span>Hashtag Owner View</span>
+            </button>
+            <button
+              type="button"
+              id="tab-e2e-flow-diagram"
+              onClick={() => setActiveMainTab('FLOW_DIAGRAM')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition cursor-pointer flex items-center space-x-1 ${
+                activeMainTab === 'FLOW_DIAGRAM'
+                  ? 'bg-purple-600 text-white shadow-2xs'
+                  : 'text-slate-600 hover:bg-slate-100'
+              }`}
+            >
+              <Layers size={12} />
+              <span>E2E Architecture</span>
+            </button>
+          </div>
+
+          <button
+            id="btn-new-automation"
+            type="button"
+            onClick={() => setIsModalOpen(true)}
+            className="flex items-center gap-1.5 px-4 py-2 bg-[#F27421] hover:bg-[#E06310] text-white rounded-lg font-semibold text-xs transition-colors shadow-xs cursor-pointer"
+          >
+            <Plus className="w-4 h-4" />
+            <span>+ New automation</span>
+          </button>
+        </div>
       </div>
+
 
       {/* 2. Filter Pills & Search */}
       <div className="flex items-center justify-between gap-4">

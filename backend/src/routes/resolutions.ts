@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import { makerCheckerService } from '../services/makerCheckerService.js';
+import { optionalAuth, AuthenticatedRequest } from '../middleware/auth.js';
 
 const router = Router();
 
@@ -7,9 +8,14 @@ const router = Router();
  * POST /api/resolutions/propose
  * Maker submits a resolution proposal.
  */
-router.post('/propose', async (req, res) => {
+router.post('/propose', optionalAuth, async (req: AuthenticatedRequest, res) => {
   try {
-    const proposal = await makerCheckerService.submitResolutionProposal(req.body);
+    const proposalData = {
+      ...req.body,
+      makerId: req.user?.id || req.body.makerId,
+      makerName: req.user?.username || req.body.makerName
+    };
+    const proposal = await makerCheckerService.submitResolutionProposal(proposalData);
     res.status(201).json(proposal);
   } catch (err: any) {
     res.status(400).json({ error: err.message || 'Failed to submit resolution proposal.' });
@@ -20,12 +26,19 @@ router.post('/propose', async (req, res) => {
  * POST /api/resolutions/review
  * Checker approves or rejects a pending proposal (anti-self-approval enforced).
  */
-router.post('/review', async (req, res) => {
+router.post('/review', optionalAuth, async (req: AuthenticatedRequest, res) => {
   try {
-    const result = await makerCheckerService.reviewResolutionProposal(req.body);
+    const effectiveCheckerId = req.user?.id || req.body.checkerId;
+    const effectiveCheckerName = req.user?.username || req.body.checkerName;
+    const reviewData = {
+      ...req.body,
+      checkerId: effectiveCheckerId,
+      checkerName: effectiveCheckerName
+    };
+    const result = await makerCheckerService.reviewResolutionProposal(reviewData);
     res.status(200).json(result);
   } catch (err: any) {
-    const isForbidden = err.message.includes('Anti-Self-Approval');
+    const isForbidden = err.message.includes('Anti-Self-Approval') || err.message.includes('Authorization Failure');
     res.status(isForbidden ? 403 : 400).json({ error: err.message || 'Failed to review resolution proposal.' });
   }
 });

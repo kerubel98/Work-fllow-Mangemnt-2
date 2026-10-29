@@ -391,7 +391,7 @@ export class GlobalSchemaDiscoveryService {
           required: col.nullable === false,
           isStandard: true,
           exampleValue: '',
-          category: autoCategory !== 'General' ? autoCategory : tableName,
+          category: autoCategory,
           notes: sourceNote,
           user_id: userId,
           created_at: now,

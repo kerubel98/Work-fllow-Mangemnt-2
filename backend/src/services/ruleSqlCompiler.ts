@@ -6,6 +6,24 @@
 
 import { ValidationCheckStep } from '../types.js';
 
+/**
+ * Sanitizes a table name to prevent SQL injection.
+ * Only allows alphanumeric characters, underscores, and dots (for schema.table).
+ * Throws if the name contains dangerous characters.
+ */
+export function sanitizeTableName(tableName: string): string {
+  if (!tableName || !tableName.trim()) {
+    throw new Error('Table name cannot be empty');
+  }
+  const trimmed = tableName.trim();
+  // Allow only alphanumeric, underscore, and dot (for schema.table)
+  // Also allow double quotes for already quoted identifiers
+  if (!/^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)?$/.test(trimmed)) {
+    throw new Error(`Invalid table name: ${trimmed}. Table names must contain only alphanumeric characters, underscores, and optional schema prefix.`);
+  }
+  return trimmed;
+}
+
 export interface CompiledBlockSql {
   statusCaseSql: string;
   actionCaseSql: string;
@@ -75,6 +93,13 @@ export function resolveOperandSqlExpr(
   inputColPrefix = 't',
   validColumns?: string[]
 ): string {
+  // Sanitize mirrorColPrefix to prevent SQL injection (it's used as table alias prefix)
+  if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(mirrorColPrefix)) {
+    throw new Error(`Invalid mirror column prefix: ${mirrorColPrefix}`);
+  }
+  if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(inputColPrefix)) {
+    throw new Error(`Invalid input column prefix: ${inputColPrefix}`);
+  }
   const col = sanitizeCol(operand.field);
   if (operand.origin === 'INPUT') {
     return `COALESCE((${inputColPrefix}.canonical_data->>'${col}'), (${inputColPrefix}.raw_data->>'${col}'), (${mirrorColPrefix}.payload->>'${col}'))`;
@@ -300,6 +325,8 @@ export const ruleSqlCompiler = {
           }
         } else if ((cfg.ruleType === 'DUPLICATE_CHECK' || cfg.ruleType === 'UNIQUE_CONSTRAINT') && Array.isArray(cfg.columns)) {
           if (mirrorTableName) {
+            // Sanitize mirrorTableName to prevent SQL injection
+            const safeMirrorTableName = sanitizeTableName(mirrorTableName);
             // Build filter condition clauses for both outer row and subquery
             const outerFilters: string[] = [];
             const innerFilters: string[] = [];
@@ -363,7 +390,7 @@ export const ruleSqlCompiler = {
               ...innerFilters
             ];
 
-            const subquery = `(SELECT COUNT(*) FROM ${mirrorTableName} _dup WHERE ${whereClauses.join(' AND ')})`;
+            const subquery = `(SELECT COUNT(*) FROM ${safeMirrorTableName} _dup WHERE ${whereClauses.join(' AND ')})`;
             if (outerFilters.length > 0) {
               colConfigConditions.push(`CASE WHEN (${outerFilters.join(' AND ')}) THEN (${subquery} <= ${threshold}) ELSE TRUE END`);
             } else {
@@ -425,6 +452,9 @@ export const ruleSqlCompiler = {
       orderByColumn?: string;
     }
   ): CompiledBlockSql {
+    // Sanitize mirrorTableName to prevent SQL injection
+    const safeMirrorTableName = sanitizeTableName(mirrorTableName);
+
     // Build WHEN branches for failure checks
     const statusWhenBranches: string[] = [];
     const actionWhenBranches: string[] = [];
@@ -432,7 +462,7 @@ export const ruleSqlCompiler = {
 
     // Phase 8: Set-Based Cardinality Breach Check
     if (options?.cardinalityPolicy === 'STRICT_SINGLE') {
-      const countSubquery = `(SELECT COUNT(*) FROM ${mirrorTableName} _cnt WHERE _cnt._batch_id = m._batch_id AND _cnt._task_id = m._task_id AND _cnt._row_number = m._row_number)`;
+      const countSubquery = `(SELECT COUNT(*) FROM ${safeMirrorTableName} _cnt WHERE _cnt._batch_id = m._batch_id AND _cnt._task_id = m._task_id AND _cnt._row_number = m._row_number)`;
       statusWhenBranches.push(`WHEN ${countSubquery} > 1 THEN 'FAIL'`);
       actionWhenBranches.push(`WHEN ${countSubquery} > 1 THEN '${rules[0]?.onFailAction || 'STOP'}'`);
       detailFields.push(`'cardinality', jsonb_build_object('status', CASE WHEN ${countSubquery} > 1 THEN 'CARDINALITY_BREACH' ELSE 'EXACT_MATCH' END, 'breach', (${countSubquery} > 1), 'policy', 'STRICT_SINGLE')`);
@@ -472,8 +502,8 @@ export const ruleSqlCompiler = {
     // $1 = batchId, $2 = ruleBlockId
     const fullUpdateSql = needsInputJoin
       ? `
-      UPDATE ${mirrorTableName} m
-      SET 
+      UPDATE ${safeMirrorTableName} m
+      SET
         _validation_status = ${statusCaseSql},
         _validation_action = ${actionCaseSql},
         _validation_details = ${detailsJsonSql},
@@ -485,8 +515,8 @@ export const ruleSqlCompiler = {
         AND m._row_number = t.row_number;
     `
       : `
-      UPDATE ${mirrorTableName} m
-      SET 
+      UPDATE ${safeMirrorTableName} m
+      SET
         _validation_status = ${statusCaseSql},
         _validation_action = ${actionCaseSql},
         _validation_details = ${detailsJsonSql},

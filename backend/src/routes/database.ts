@@ -4,7 +4,7 @@ import { isMongoConnected, getMongoStatus, connectDB, disconnectDB, mongoose } f
 import { queryPg } from '../config/postgres.js';
 import { store } from '../store/dataStore.js';
 import { repo } from '../store/repository.js';
-import { DatabaseConnection, ConnectionUsageLog, QueryApprovalRequest, DbAccessRequest, DatabaseColumnConfiguration, RuleColumnPriority, RuleAggregation, SemanticRowRoleConfig, SemanticCrossRowRule, TransactionTypeGroupConfig, TypeColumnCondition, ColumnValueLabelMapping, AllowedQueryType, Team } from '../types.js';
+import { DatabaseConnection, ConnectionUsageLog, QueryApprovalRequest, DbAccessRequest, DatabaseColumnConfiguration, RuleColumnPriority, RuleAggregation, SemanticRowRoleConfig, SemanticCrossRowRule, TransactionTypeGroupConfig, TypeColumnCondition, ColumnValueLabelMapping, AllowedQueryType, Team, SavedQuery } from '../types.js';
 import { discoverTablesForDb, getTableColumnsForDb, executeLiveQueryOnDb, testExternalDbConnection, evictExternalDbPool } from '../services/dbConnectionManager.js';
 import { mirrorTableManager } from '../services/mirrorTableManager.js';
 import { ftpFileStagingService } from '../services/ftpFileStagingService.js';
@@ -601,7 +601,7 @@ databaseRouter.post('/team-databases/:id/review-promotion', async (req: Request,
 // GET /api/db/admin/team-resources - Dedicated monitoring endpoint for Workspace Admins
 databaseRouter.get('/admin/team-resources', async (_req: Request, res: Response) => {
   try {
-    const teamResources = await repo.getAdminTeamResources();
+    const teamResources = await repo.getAdminTeamResources(true);
     const teams = await repo.getTeams();
     const teamMap = new Map<string, Team>(teams.map(t => [t.id, t]));
 
@@ -733,6 +733,15 @@ databaseRouter.get('/databases/:id/tables', async (req: Request, res: Response) 
   try {
     const db = await repo.getDatabaseById(req.params.id);
     if (!db) return res.status(404).json({ error: 'Database connection not found' });
+
+    // Team scoping verification (Governance Principle 19)
+    const callerTeamId = (req.query.teamId as string) || (req.headers['x-team-id'] as string);
+    const callerRole = (req.headers['x-user-role'] as string);
+    if (db.scope === 'team' && db.teamId && callerRole !== 'admin') {
+      if (callerTeamId && callerTeamId !== db.teamId) {
+        return res.status(403).json({ error: `Access Denied: Database "${db.name}" is private to its designated team.` });
+      }
+    }
     
     let discovered: string[] = [];
     if (db.type !== 'FTP' && db.type !== 'SFTP') {
@@ -927,7 +936,20 @@ databaseRouter.get('/databases/:id/tables/:tableName/preview', async (req: Reque
   try {
     const db = await repo.getDatabaseById(req.params.id);
     if (!db) return res.status(404).json({ error: 'Database connection not found' });
+
+    // Team scoping verification (Governance Principle 19)
+    const callerTeamId = (req.query.teamId as string) || (req.headers['x-team-id'] as string);
+    const callerRole = (req.headers['x-user-role'] as string);
+    if (db.scope === 'team' && db.teamId && callerRole !== 'admin') {
+      if (callerTeamId && callerTeamId !== db.teamId) {
+        return res.status(403).json({ error: `Access Denied: Database "${db.name}" is private to its designated team.` });
+      }
+    }
+
     const tableName = req.params.tableName;
+    if (!/^[a-zA-Z0-9_.-]+$/.test(tableName)) {
+      return res.status(400).json({ error: 'Invalid table identifier' });
+    }
     const limit = Math.min(Math.max(Number(req.query.limit) || 25, 1), 100);
     const sysCols = new Set(['_staging_id', '_staged_at', '_raw_row_index', 'raw_payload', '_mirror_id', '_batch_id', '_rule_block_id', '_validation_status', '_fetched_at']);
 
@@ -2581,6 +2603,11 @@ databaseRouter.post('/query/execute', async (req: Request, res: Response) => {
     };
 
     store.connectionLogs.unshift(log);
+    try {
+      await repo.createConnectionLog(log);
+    } catch (logErr: any) {
+      console.warn('[QuerySandbox] Failed to persist connection log to postgres:', logErr.message);
+    }
 
     return res.json({
       columns: result.columns,
@@ -2622,6 +2649,16 @@ databaseRouter.get('/query/approvals', async (_req: Request, res: Response) => {
 databaseRouter.post('/query/approvals', async (req: Request, res: Response) => {
   try {
     const reqData: Partial<QueryApprovalRequest> = req.body;
+    let expiresAt = reqData.expiresAt;
+    if (reqData.duration && reqData.duration !== 'PERMANENT' && !expiresAt) {
+      const now = Date.now();
+      if (reqData.duration === '1_HOUR') expiresAt = new Date(now + 3600 * 1000).toISOString();
+      else if (reqData.duration === '4_HOURS') expiresAt = new Date(now + 4 * 3600 * 1000).toISOString();
+      else if (reqData.duration === '24_HOURS') expiresAt = new Date(now + 24 * 3600 * 1000).toISOString();
+      else if (reqData.duration === '7_DAYS') expiresAt = new Date(now + 7 * 24 * 3600 * 1000).toISOString();
+      else if (reqData.duration === '30_DAYS') expiresAt = new Date(now + 30 * 24 * 3600 * 1000).toISOString();
+    }
+
     const newRequest: QueryApprovalRequest = {
       id: reqData.id || `req-${Date.now()}`,
       systemId: reqData.systemId || 'sys-1',
@@ -2635,11 +2672,78 @@ databaseRouter.post('/query/approvals', async (req: Request, res: Response) => {
       status: 'pending',
       requestDate: new Date().toISOString(),
       issueId: reqData.issueId,
-      issueTitle: reqData.issueTitle
+      issueTitle: reqData.issueTitle,
+      approvalType: reqData.approvalType || 'PERMANENT',
+      duration: reqData.duration || 'PERMANENT',
+      reason: reqData.reason || '',
+      expiresAt: expiresAt || undefined
     };
 
     const saved = await repo.createQueryApproval(newRequest);
     return res.status(201).json(saved);
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ================= SAVED QUERIES (FREQUENTLY USED QUERIES) =================
+databaseRouter.get('/saved-queries', async (req: Request, res: Response) => {
+  try {
+    const { userId, dbId } = req.query;
+    const queries = await repo.getSavedQueries(
+      userId as string | undefined,
+      dbId as string | undefined
+    );
+    return res.json(queries);
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+databaseRouter.post('/saved-queries', async (req: Request, res: Response) => {
+  try {
+    const data = req.body;
+    if (!data.query || !data.title || !data.dbId) {
+      return res.status(400).json({ error: 'Title, dbId, and query are required.' });
+    }
+    const newSaved: SavedQuery = {
+      id: data.id || `sq-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+      userId: data.userId || 'usr-admin',
+      username: data.username || 'admin',
+      title: data.title.trim(),
+      description: data.description?.trim(),
+      dbId: data.dbId,
+      dbName: data.dbName || data.dbId,
+      tableName: data.tableName,
+      query: data.query.trim(),
+      tags: Array.isArray(data.tags) ? data.tags : [],
+      isFavorite: !!data.isFavorite,
+      isShared: data.isShared !== undefined ? !!data.isShared : true,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    const created = await repo.createSavedQuery(newSaved);
+    return res.status(201).json(created);
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+databaseRouter.put('/saved-queries/:id', async (req: Request, res: Response) => {
+  try {
+    const updated = await repo.updateSavedQuery(req.params.id, req.body);
+    if (!updated) return res.status(404).json({ error: 'Saved query not found.' });
+    return res.json(updated);
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+databaseRouter.delete('/saved-queries/:id', async (req: Request, res: Response) => {
+  try {
+    const success = await repo.deleteSavedQuery(req.params.id);
+    if (!success) return res.status(404).json({ error: 'Saved query not found.' });
+    return res.json({ success: true, id: req.params.id });
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
   }

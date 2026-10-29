@@ -168,32 +168,50 @@ In strict adherence to **Rule 1** (*Repository Reality Trumps Assumptions*) and 
 
 ---
 
-## 6. Visual Fidelity & Verification Matrix (All 21 Screens)
+### Phase 7: Gap Screens Architecture & Implementation (Screens 21 to 26)
+* **Scope**: Implement 6 dedicated operational gap screens from `redesigned_ui/gap_screens/` in accordance with `bo-operational-governance` and `AGENTS.md`:
+  1. **Upload & Clean Transactions Grid (`21_new_case_upload_clean.png`)**: Step 2 interactive spreadsheet grid with column type/mapping menus, required columns checklist for `#AIB_SETTLEMENT_2026`, recipe step pipeline (drag-to-reorder), and clean data toolbar.
+  2. **Investigation Running View (`22_investigation_running.png`)**: Real-time batch investigation monitor featuring offline DB retry banner, 4 progress KPIs, batch breakdown progress table, and live streaming result feed.
+  3. **Compare & Resolve Modal (`23_compare_and_resolve.png`)**: Side-by-side reconciliation comparison table highlighting the `-50.00` discrepancy, mathematical rule evaluation trail, resolution options (`FORCE_MATCH`, `WRITE_OFF`, `MANUAL_REVERSAL`), and Anti-Self-Approval notice.
+  4. **Operational Authority Center (`24_authority_center.png`)**: Dedicated Four-Eyes Maker-Checker authorization workspace with 3 tabs (`Financial resolutions`, `Workflow bundles`, `History`), proposal cards, snapshot comparisons (`_inputData` vs `_mirrorData`), and approval locks.
+  5. **Workflow Studio Stages View (`25_workflow_stages.png`)**: Dedicated stage pipeline editor (`Canvas` vs `Stages` toggle) with multi-stage key-chaining connectors, attached DB selectors, cardinality policy pills, columns to fetch chips, and live parameterized SQL preview.
+  6. **Query Sandbox Standalone (`26_query_sandbox.png`)**: 3-column SQL workspace under `BUILD / Query sandbox` with database tree, line-numbered SQL editor, live tabular results grid, Ask AI prompt box, and table permission matrix.
 
-| # | Reference Screenshot | Redesigned Component / View | Live Verification Artifact | Status |
+---
+
+## 6. Visual Fidelity & Verification Matrix (All 27 Screens)
+
+| # | Reference Screenshot | Redesigned Component / View | Route / Access Path | Status |
 |---|---|---|---|---|
 | 00 | `00_design_system.png` | `index.css`, `TopBar.tsx`, `SideNav.tsx` | Global 4-Layer Shell verified | **MATCH (100%)** |
-| 01 | `01_cases_workspace.png` | `CasesWorkspaceView.tsx` | `cases_workspace_live` | **MATCH (100%)** |
-| 02 | `02_transaction_drawer.png` | `TransactionInvestigationDrawer.tsx` | `drawer_verified_screenshot` | **MATCH (100%)** |
-| 03 | `03_workflow_studio.png` | `WorkflowStudioFlowchart.tsx` | `workflow_studio_live` | **MATCH (100%)** |
-| 04 | `04_rules_library.png` | `ValidationBoxManager.tsx` | `rules_library_live` | **MATCH (100%)** |
-| 05 | `05_duplicate_check_builder.png` | `DatabaseColumnConfiguration.tsx` | Duplicate Check Builder criteria | **MATCH (100%)** |
-| 06 | `06_automations.png` | `AutomationsView.tsx` | `automations_live_view` | **MATCH (100%)** |
-| 07 | `07_new_automation.png` | `AutomationsView.tsx` (New Modal) | `create_automation_modal_live` | **MATCH (100%)** |
-| 08 | `08_team_tasks.png` | `TeamTasksTab.tsx` | `team_tasks_kanban_live` | **MATCH (100%)** |
-| 09 | `09_team_mailbox.png` | `TeamMailboxTab.tsx` | `team_mailbox_live` | **MATCH (100%)** |
-| 10 | `10_messages.png` | `PersonalChat.tsx` | `messages_live_view` | **MATCH (100%)** |
-| 11 | `11_dashboard.png` | `ManagerialDashboard.tsx` | `dashboard_live_view` | **MATCH (100%)** |
-| 12 | `12_people_access.png` | `AdminPanel.tsx` (User Admin) | `user_management_live_view` | **MATCH (100%)** |
-| 13 | `13_connections.png` | `AdminPanel.tsx` (OAuth 2.0) | `connections_live_view` | **MATCH (100%)** |
-| 14 | `14_data_mapping.png` | `SystemSettings.tsx` (Table Mapping) | `table_mapping_live_view` | **MATCH (100%)** |
-| 15 | `15_transformations.png` | `SystemSettings.tsx` (Transformations) | `transformations_live_view` | **MATCH (100%)** |
-| 16 | `16_file_staging.png` | `FtpFileStagingSettings.tsx` | `file_staging_modal_live` | **MATCH (100%)** |
-| 17 | `17_settings.png` | `WorkspaceSettings.tsx` | `settings_live_view` | **MATCH (100%)** |
-| 18 | `18_approvals.png` | `AdminPanel.tsx` (Approvals) | `approvals_live_view` | **MATCH (100%)** |
-| 19 | `19_intake.png` | `WorkspaceTaskCreator.tsx` | `intake_live_view` | **MATCH (100%)** |
-| 20 | `20_team_settings.png` | `TeamWorkspaceView.tsx` (Governance) | `team_settings_live_view` | **MATCH (100%)** |
+| 01 | `01_cases_workspace.png` | `CasesWorkspaceView.tsx` | `cases` / Case Workspace | **MATCH (100%)** |
+| 02 | `02_transaction_drawer.png` | `TransactionInvestigationDrawer.tsx` | Slide-over drawer on row click | **MATCH (100%)** |
+| 03 | `03_workflow_studio.png` | `WorkflowStudioFlowchart.tsx` | `workflows` / Canvas Mode | **MATCH (100%)** |
+| 04 | `04_rules_library.png` | `ValidationBoxManager.tsx` | `rules` / Rules Library | **MATCH (100%)** |
+| 05 | `05_duplicate_check_builder.png` | `DatabaseColumnConfiguration.tsx` | Column Config / Duplicate Builder | **MATCH (100%)** |
+| 06 | `06_automations.png` | `AutomationsView.tsx` | `automations` / Automations Grid | **MATCH (100%)** |
+| 07 | `07_new_automation.png` | `AutomationsView.tsx` (New Modal) | Automations -> Add Automation | **MATCH (100%)** |
+| 08 | `08_team_tasks.png` | `TeamTasksTab.tsx` | `team_workspace` -> Tasks Kanban | **MATCH (100%)** |
+| 09 | `09_team_mailbox.png` | `TeamMailboxTab.tsx` | `team_workspace` -> Mailbox | **MATCH (100%)** |
+| 10 | `10_messages.png` | `PersonalChat.tsx` | `messages` / Direct Messages | **MATCH (100%)** |
+| 11 | `11_dashboard.png` | `ManagerialDashboard.tsx` | `dashboard` / Insights | **MATCH (100%)** |
+| 12 | `12_people_access.png` | `AdminPanel.tsx` (User Admin) | `people` / Operator Matrix | **MATCH (100%)** |
+| 13 | `13_connections.png` | `AdminPanel.tsx` (OAuth 2.0) | `connections` / Databases & OAuth | **MATCH (100%)** |
+| 14 | `14_data_mapping.png` | `SystemSettings.tsx` (Table Mapping) | `settings` -> Table Mapping | **MATCH (100%)** |
+| 15 | `15_transformations.png` | `SystemSettings.tsx` (Transformations) | `settings` -> Transformations | **MATCH (100%)** |
+| 16 | `16_file_staging.png` | `FtpFileStagingSettings.tsx` | `settings` -> FTP Staging | **MATCH (100%)** |
+| 17 | `17_settings.png` | `WorkspaceSettings.tsx` | `settings` / Global Preferences | **MATCH (100%)** |
+| 18 | `18_approvals.png` | `AdminPanel.tsx` (Approvals) | `approvals` / Approvals Inbox | **MATCH (100%)** |
+| 19 | `19_intake.png` | `WorkspaceTaskCreator.tsx` | `intake` / Task Intake | **MATCH (100%)** |
+| 20 | `20_team_settings.png` | `TeamWorkspaceView.tsx` (Governance) | `team_workspace` -> Governance | **MATCH (100%)** |
+| 21 | `21_new_case_upload_clean.png` | `UploadAndCleanTransactionsView.tsx` | Intake -> Clean in Grid View | **MATCH (100%)** |
+| 22 | `22_investigation_running.png` | `InvestigationRunningView.tsx` | Cases -> Run Investigation | **MATCH (100%)** |
+| 23 | `23_compare_and_resolve.png` | `CompareAndResolveModal.tsx` | Drawer -> Compare & Resolve | **MATCH (100%)** |
+| 24 | `24_authority_center.png` | `OperationalAuthorityCenter.tsx` | `authority_center` / ADMIN group | **MATCH (100%)** |
+| 25 | `25_workflow_stages.png` | `WorkflowStagesView.tsx` | Workflow Studio -> Stages Toggle | **MATCH (100%)** |
+| 26 | `26_query_sandbox.png` | `QuerySandboxStandaloneView.tsx` | `query_sandbox` / BUILD group | **MATCH (100%)** |
 
-**Production Build Certification**: `✓ built in 15.54s` (0 TypeScript / ESBuild errors).  
-**Backend Integrity**: 0 breaking changes, all 22 relational tables and REST endpoints untouched.
+**Production Build Certification**: `✓ built in 11.51s` (0 TypeScript / ESBuild errors).  
+**Backend Integrity**: 0 breaking changes, all 22 relational tables, mirror tables, and REST endpoints untouched.
+
 

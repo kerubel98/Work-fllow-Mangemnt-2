@@ -110,6 +110,77 @@ collaborationRouter.post('/notifications', async (req: Request, res: Response) =
   }
 });
 
+collaborationRouter.get('/notifications/preferences', async (req: Request, res: Response) => {
+  try {
+    const userId = (req.query.userId as string) || 'admin';
+    const prefs = await repo.getUserNotificationPreferences(userId);
+    return res.json(prefs);
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+collaborationRouter.put('/notifications/preferences', async (req: Request, res: Response) => {
+  try {
+    const data = req.body;
+    if (!data.userId) {
+      return res.status(400).json({ error: 'userId is required' });
+    }
+    const saved = await repo.saveUserNotificationPreferences(data);
+    eventService.broadcastEvent('notification_preferences:updated', saved, saved.userId);
+    return res.json(saved);
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+collaborationRouter.post('/notifications/test', async (req: Request, res: Response) => {
+  try {
+    const userId = (req.body?.userId || req.query.userId || 'admin') as string;
+    const testNotif: AppNotification = {
+      id: `notif-test-${Date.now()}`,
+      userId,
+      type: 'system',
+      title: 'Test Notification Delivered',
+      message: 'Your notification channels and preferences are working properly.',
+      timestamp: new Date().toISOString(),
+      isRead: false,
+      status: 'unread',
+      priority: 'normal',
+      category: 'system',
+      actionLabel: 'View settings',
+      actionType: 'open_preferences'
+    };
+    const saved = await repo.createNotification(testNotif);
+    eventService.broadcastEvent('notification:new', saved, saved.userId);
+    return res.status(201).json(saved);
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+collaborationRouter.put('/notifications/read-all', async (req: Request, res: Response) => {
+  try {
+    const userId = (req.body?.userId || req.query.userId) as string | undefined;
+    await repo.markAllNotificationsRead(userId);
+    eventService.broadcastEvent('notification:read_all', { userId });
+    return res.json({ success: true });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+collaborationRouter.delete('/notifications/clear-all', async (req: Request, res: Response) => {
+  try {
+    const userId = (req.body?.userId || req.query.userId) as string | undefined;
+    await repo.clearNotifications(userId);
+    eventService.broadcastEvent('notification:cleared_all', { userId });
+    return res.json({ success: true });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 collaborationRouter.put('/notifications/:id/read', async (req: Request, res: Response) => {
   try {
     const success = await repo.markNotificationRead(req.params.id);
@@ -119,3 +190,48 @@ collaborationRouter.put('/notifications/:id/read', async (req: Request, res: Res
     return res.status(500).json({ error: err.message });
   }
 });
+
+collaborationRouter.post('/notifications/:id/snooze', async (req: Request, res: Response) => {
+  try {
+    const { snoozeUntil } = req.body;
+    if (!snoozeUntil) {
+      return res.status(400).json({ error: 'snoozeUntil ISO timestamp is required' });
+    }
+    const success = await repo.snoozeNotification(req.params.id, snoozeUntil);
+    eventService.broadcastEvent('notification:snoozed', { id: req.params.id, snoozeUntil });
+    return res.json({ success, snoozeUntil });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+collaborationRouter.post('/notifications/:id/archive', async (req: Request, res: Response) => {
+  try {
+    const success = await repo.archiveNotification(req.params.id);
+    eventService.broadcastEvent('notification:archived', { id: req.params.id });
+    return res.json({ success });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+collaborationRouter.post('/notifications/:id/action', async (req: Request, res: Response) => {
+  try {
+    const success = await repo.updateNotificationStatus(req.params.id, 'done');
+    eventService.broadcastEvent('notification:action_taken', { id: req.params.id });
+    return res.json({ success, status: 'done' });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+collaborationRouter.delete('/notifications/:id', async (req: Request, res: Response) => {
+  try {
+    const success = await repo.deleteNotification(req.params.id);
+    eventService.broadcastEvent('notification:deleted', { id: req.params.id });
+    return res.json({ success });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+

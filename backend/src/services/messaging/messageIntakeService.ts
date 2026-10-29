@@ -4,12 +4,12 @@
  */
 
 import { getPostgresPool } from '../../config/postgres.js';
-import { 
-  MessageEnvelope, 
-  MessageIntent, 
-  SupportedMessageChannel, 
-  TeamChannelConfiguration, 
-  PersonalChannelConfiguration 
+import {
+  MessageEnvelope,
+  MessageIntent,
+  SupportedMessageChannel,
+  TeamChannelConfiguration,
+  PersonalChannelConfiguration
 } from '../../models/messageTypes.js';
 import { repo } from '../../store/repository.js';
 import { postgresRepo } from '../../store/postgresRepo.js';
@@ -19,6 +19,7 @@ import { outboundDispatchService } from './outboundDispatchService.js';
 import { stagingService } from './stagingService.js';
 import { eventService } from '../events.js';
 import { Issue, ChatMessage } from '../../types.js';
+import { randomUUID } from 'crypto';
 
 export interface ProcessMessageResult {
   messageId: string;
@@ -528,7 +529,7 @@ export class MessageIntakeService {
       }
 
       const newIssue: Issue = {
-        id: `ISS-${Date.now().toString().slice(-6)}`,
+        id: `ISS-${randomUUID()}`,
         title: issueTitle,
         description: `Ingested via ${envelope.sourceChannel.toUpperCase()} from ${envelope.senderName || envelope.senderAddress}.\n\nContent:\n${envelope.textBody}`,
         status: 'Open',
@@ -1164,7 +1165,8 @@ export class MessageIntakeService {
   async getUserMailbox(
     userId: string,
     filter: 'all' | 'inbound' | 'outbound' | 'unassigned' = 'all',
-    search?: string
+    search?: string,
+    forceSync: boolean = false
   ): Promise<{
     threads: any[];
     totalThreads: number;
@@ -1179,8 +1181,48 @@ export class MessageIntakeService {
       [userId]
     );
     const user = userRes.rows[0];
-    const userEmail = (user?.message_provider_settings?.userEmail || user?.email || '').toLowerCase();
-    const searchPattern = `%${userEmail}%`;
+
+    // Collect all email addresses / handles associated with this user
+    const userEmails = new Set<string>();
+    if (user?.email) userEmails.add(user.email.toLowerCase().trim());
+    if (user?.message_provider_settings?.userEmail) {
+      userEmails.add(user.message_provider_settings.userEmail.toLowerCase().trim());
+    }
+
+    // Look up all connected user providers in provider_connections
+    const provRes = await pool.query(
+      `SELECT id, channel, display_name, status, config, last_fetch_at FROM provider_connections WHERE user_id = $1;`,
+      [userId]
+    );
+    for (const p of provRes.rows) {
+      const pEmail = p.config?.userEmail || p.config?.email || p.config?.address;
+      if (pEmail && typeof pEmail === 'string' && pEmail.includes('@')) {
+        userEmails.add(pEmail.toLowerCase().trim());
+      }
+    }
+
+    const emailList = Array.from(userEmails);
+    const activeProviders = provRes.rows.filter(p => p.status === 'ACTIVE');
+
+    // Auto-fetch if requested or if active providers have never been synchronized yet
+    const needsInitialFetch = activeProviders.some(p => !p.last_fetch_at);
+    if ((forceSync || needsInitialFetch) && activeProviders.length > 0) {
+      try {
+        const { stagingService } = await import('./stagingService.js');
+        for (const p of activeProviders) {
+          // Personal user providers require explicit user OAuth redirection (refreshToken)
+          // Never fall back to global admin client_credentials for a personal user mailbox
+          if (p.channel === 'email' && !p.config?.refreshToken && !p.config?.code) {
+            continue;
+          }
+          if (forceSync || !p.last_fetch_at) {
+            await stagingService.fetchProviderMessages(p.id);
+          }
+        }
+      } catch (syncErr: any) {
+        console.warn('[messageIntakeService] Error auto-syncing user providers in getUserMailbox:', syncErr.message);
+      }
+    }
 
     // 2. Fetch incoming messages for this personal user
     const inRes = await pool.query(
@@ -1192,16 +1234,21 @@ export class MessageIntakeService {
         'inbound' AS direction
        FROM incoming_messages
        WHERE resolved_user_id = $1 
-          OR LOWER(sender_address) = $2
-          OR (raw_payload->>'recipient')::text ILIKE $3
-          OR (raw_payload->>'to')::text ILIKE $3
+          OR LOWER(sender_address) = ANY($2::text[])
+          OR EXISTS (
+            SELECT 1 FROM unnest($2::text[]) AS uemail
+            WHERE (raw_payload->>'recipient')::text ILIKE '%' || uemail || '%'
+               OR (raw_payload->>'to')::text ILIKE '%' || uemail || '%'
+               OR (raw_payload->>'toAddress')::text ILIKE '%' || uemail || '%'
+               OR (raw_payload->'rawPayload'->>'toAddress')::text ILIKE '%' || uemail || '%'
+          )
        ORDER BY created_at ASC;`,
-      [userId, userEmail, searchPattern]
+      [userId, emailList]
     );
 
     let incomingMessages = inRes.rows;
 
-    // 3. Fetch staged messages assigned to this personal user
+    // 3. Fetch staged messages assigned to this personal user or targeting user's email
     const stagedRes = await pool.query(
       `SELECT 
         id, channel, source_message_id, conversation_id, thread_id,
@@ -1220,9 +1267,19 @@ export class MessageIntakeService {
         created_at,
         'inbound' AS direction
        FROM staged_messages
-       WHERE assigned_user_id = $1 OR LOWER(sender_address) = $2
+       WHERE assigned_user_id = $1 
+          OR LOWER(sender_address) = ANY($2::text[])
+          OR EXISTS (
+            SELECT 1 FROM unnest($2::text[]) AS uemail
+            WHERE (raw_payload->>'to')::text ILIKE '%' || uemail || '%'
+               OR (raw_payload->>'toAddress')::text ILIKE '%' || uemail || '%'
+               OR (raw_payload->>'recipient')::text ILIKE '%' || uemail || '%'
+               OR (raw_payload->>'ccAddress')::text ILIKE '%' || uemail || '%'
+               OR (raw_payload->'rawPayload'->>'toAddress')::text ILIKE '%' || uemail || '%'
+               OR (raw_payload->'rawPayload'->>'ccAddress')::text ILIKE '%' || uemail || '%'
+          )
        ORDER BY created_at ASC;`,
-      [userId, userEmail]
+      [userId, emailList]
     );
     const stagedMessages = stagedRes.rows;
 
@@ -1234,48 +1291,134 @@ export class MessageIntakeService {
         sent_at, created_at, team_id, conversation_id, sender_address,
         'outbound' AS direction
        FROM outgoing_messages
-       WHERE LOWER(sender_address) = $1 OR LOWER(recipient_address) = $1
+       WHERE LOWER(sender_address) = ANY($1::text[]) OR LOWER(recipient_address) = ANY($1::text[])
        ORDER BY created_at ASC;`,
-      [userEmail]
+      [emailList]
     );
     const outgoingMessages = outRes.rows.map(m => ({ ...m, attachments: [] }));
 
-    // If user has zero incoming messages, seed an operational OAuth 2.0 welcome email
-    if (incomingMessages.length === 0 && stagedMessages.length === 0 && outgoingMessages.length === 0) {
-      const welcomeId = `msg-welcome-${userId.slice(0, 8)}`;
-      const welcomeMsg = {
-        id: welcomeId,
-        channel: 'email',
-        source_message_id: `welcome-${userId}`,
-        conversation_id: `conv-welcome-${userId}`,
-        thread_id: `thread-welcome-${userId}`,
-        sender_address: 'settlement-support@corporatebank.com',
-        sender_name: 'Operations Mailbox Gateway',
-        sender_type: 'system',
-        resolved_user_id: userId,
-        resolved_team_id: null,
-        intent: 'INFORMATION',
-        priority: 'NORMAL',
-        subject: 'Welcome to your Personal OAuth 2.0 Mailbox',
-        text_body: `Hello ${user?.display_name || user?.username || 'User'},\n\nYour personal OAuth 2.0 mailbox connection is now active. All incoming and outgoing emails, attachments, and customer discrepancy requests for ${userEmail || 'your account'} are synchronized here.\n\nYou can view full email bodies, review spreadsheets/attachments, and dispatch direct replies from Personal Chat.`,
-        html_body: `<p>Hello <strong>${user?.display_name || user?.username || 'User'}</strong>,</p><p>Your personal OAuth 2.0 mailbox connection is now active. All incoming and outgoing emails, attachments, and customer discrepancy requests for <em>${userEmail || 'your account'}</em> are synchronized here.</p><p>You can view full email bodies, review spreadsheets/attachments, and dispatch direct replies from Personal Chat.</p>`,
-        raw_payload: { subject: 'Welcome to your Personal OAuth 2.0 Mailbox' },
-        status: 'RECEIVED',
-        linked_issue_id: null,
-        created_at: new Date().toISOString(),
-        direction: 'inbound',
-        attachments: [
-          {
-            id: `att-welcome-${userId.slice(0, 8)}`,
-            messageId: welcomeId,
-            filename: 'settlement_mailbox_guide.pdf',
-            mimeType: 'application/pdf',
-            sizeBytes: 24580,
-            storagePath: '/attachments/settlement_mailbox_guide.pdf',
-            createdAt: new Date().toISOString()
-          }
-        ]
-      };
+    // If user has zero incoming messages AND no active external providers, seed an operational OAuth 2.0 welcome email
+    // Check if welcome message already exists in database to avoid duplicates
+    if (incomingMessages.length === 0 && stagedMessages.length === 0 && outgoingMessages.length === 0 && activeProviders.length === 0) {
+      // Check if welcome message already exists for this user
+      const welcomeCheckRes = await pool.query(
+        `SELECT id FROM incoming_messages
+         WHERE resolved_user_id = $1
+         AND source_message_id = $2
+         AND sender_address = $3
+         LIMIT 1`,
+        [userId, `welcome-${userId}`, 'settlement-support@corporatebank.com']
+      );
+
+      let welcomeMsg;
+      if (welcomeCheckRes.rows.length > 0) {
+        // Welcome message already exists in database, fetch it
+        const welcomeId = welcomeCheckRes.rows[0].id;
+        const welcomeRes = await pool.query(
+          `SELECT
+            id, channel, source_message_id, conversation_id, thread_id,
+            sender_address, sender_name, sender_type, resolved_user_id,
+            resolved_team_id, intent, priority, text_body, html_body,
+            raw_payload, status, dedupe_key, linked_issue_id, created_at,
+            'inbound' AS direction
+           FROM incoming_messages
+           WHERE id = $1`,
+          [welcomeId]
+        );
+        welcomeMsg = welcomeRes.rows[0];
+        if (welcomeMsg) {
+          // Fetch attachments for the welcome message
+          const attRes = await pool.query(
+            `SELECT id, message_id, filename, mime_type, size_bytes,
+                    storage_path, checksum, content_type, ingestion_status,
+                    parsed_data, raw_base64, created_at
+             FROM message_attachments
+             WHERE message_id = $1`,
+            [welcomeId]
+          );
+          welcomeMsg.attachments = attRes.rows.map(a => ({
+            id: a.id,
+            messageId: a.message_id,
+            filename: a.filename,
+            mimeType: a.mime_type,
+            sizeBytes: Number(a.size_bytes) || 0,
+            storagePath: a.storage_path,
+            checksum: a.checksum,
+            contentType: a.content_type,
+            ingestionStatus: a.ingestion_status,
+            parsedData: a.parsed_data,
+            rawBase64: a.raw_base64,
+            createdAt: a.created_at
+          }));
+        }
+      } else {
+        // Create and persist new welcome message
+        const welcomeId = `msg-welcome-${userId.slice(0, 8)}`;
+        const welcomeEmail = emailList[0] || user?.email || 'your account';
+        const now = new Date().toISOString();
+
+        await pool.query(
+          `INSERT INTO incoming_messages (
+            id, channel, source_message_id, conversation_id, thread_id,
+            sender_address, sender_name, sender_type, resolved_user_id,
+            resolved_team_id, intent, priority, subject, text_body, html_body,
+            raw_payload, status, dedupe_key, linked_issue_id, created_at
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)`,
+          [
+            welcomeId, 'email', `welcome-${userId}`, `conv-welcome-${userId}`, `thread-welcome-${userId}`,
+            'settlement-support@corporatebank.com', 'Operations Mailbox Gateway', 'system', userId,
+            null, 'INFORMATION', 'NORMAL', 'Welcome to your Personal OAuth 2.0 Mailbox',
+            `Hello ${user?.display_name || user?.username || 'User'},\n\nYour personal OAuth 2.0 mailbox connection is now active. All incoming and outgoing emails, attachments, and customer discrepancy requests for ${welcomeEmail} are synchronized here.\n\nYou can view full email bodies, review spreadsheets/attachments, and dispatch direct replies from Personal Chat.`,
+            `<p>Hello <strong>${user?.display_name || user?.username || 'User'}</strong>,</p><p>Your personal OAuth 2.0 mailbox connection is now active. All incoming and outgoing emails, attachments, and customer discrepancy requests for <em>${welcomeEmail}</em> are synchronized here.</p><p>You can view full email bodies, review spreadsheets/attachments, and dispatch direct replies from Personal Chat.</p>`,
+            JSON.stringify({ subject: 'Welcome to your Personal OAuth 2.0 Mailbox' }),
+            'RECEIVED', `welcome-${userId}`, null, now
+          ]
+        );
+
+        // Insert welcome attachment
+        const attId = `att-welcome-${userId.slice(0, 8)}`;
+        await pool.query(
+          `INSERT INTO message_attachments (
+            id, message_id, filename, mime_type, size_bytes,
+            storage_path, created_at
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+          [attId, welcomeId, 'settlement_mailbox_guide.pdf', 'application/pdf', 24580, '/attachments/settlement_mailbox_guide.pdf', now]
+        );
+
+        welcomeMsg = {
+          id: welcomeId,
+          channel: 'email',
+          source_message_id: `welcome-${userId}`,
+          conversation_id: `conv-welcome-${userId}`,
+          thread_id: `thread-welcome-${userId}`,
+          sender_address: 'settlement-support@corporatebank.com',
+          sender_name: 'Operations Mailbox Gateway',
+          sender_type: 'system',
+          resolved_user_id: userId,
+          resolved_team_id: null,
+          intent: 'INFORMATION',
+          priority: 'NORMAL',
+          subject: 'Welcome to your Personal OAuth 2.0 Mailbox',
+          text_body: `Hello ${user?.display_name || user?.username || 'User'},\n\nYour personal OAuth 2.0 mailbox connection is now active. All incoming and outgoing emails, attachments, and customer discrepancy requests for ${welcomeEmail} are synchronized here.\n\nYou can view full email bodies, review spreadsheets/attachments, and dispatch direct replies from Personal Chat.`,
+          html_body: `<p>Hello <strong>${user?.display_name || user?.username || 'User'}</strong>,</p><p>Your personal OAuth 2.0 mailbox connection is now active. All incoming and outgoing emails, attachments, and customer discrepancy requests for <em>${welcomeEmail}</em> are synchronized here.</p><p>You can view full email bodies, review spreadsheets/attachments, and dispatch direct replies from Personal Chat.</p>`,
+          raw_payload: { subject: 'Welcome to your Personal OAuth 2.0 Mailbox' },
+          status: 'RECEIVED',
+          linked_issue_id: null,
+          created_at: now,
+          direction: 'inbound',
+          attachments: [
+            {
+              id: attId,
+              messageId: welcomeId,
+              filename: 'settlement_mailbox_guide.pdf',
+              mimeType: 'application/pdf',
+              sizeBytes: 24580,
+              storagePath: '/attachments/settlement_mailbox_guide.pdf',
+              createdAt: now
+            }
+          ]
+        };
+      }
       incomingMessages = [welcomeMsg];
     }
 
@@ -1307,6 +1450,34 @@ export class MessageIntakeService {
           checksum: a.checksum,
           contentType: a.content_type,
           ingestionStatus: a.ingestion_status,
+          parsedData: a.parsed_data,
+          rawBase64: a.raw_base64,
+          createdAt: a.created_at
+        });
+      }
+    }
+
+    if (stagedIds.length > 0) {
+      const stagedAttRes = await pool.query(
+        `SELECT 
+          id, staged_message_id, filename, mime_type, size_bytes,
+          content_type, storage_path, parsed_data, raw_base64, created_at
+         FROM staged_message_attachments
+         WHERE staged_message_id = ANY($1::text[])
+         ORDER BY created_at ASC;`,
+        [stagedIds]
+      );
+      for (const a of stagedAttRes.rows) {
+        const msgId = a.staged_message_id;
+        if (!attachmentsMap[msgId]) attachmentsMap[msgId] = [];
+        attachmentsMap[msgId].push({
+          id: a.id,
+          messageId: msgId,
+          filename: a.filename,
+          mimeType: a.mime_type,
+          sizeBytes: Number(a.size_bytes) || 0,
+          storagePath: a.storage_path,
+          contentType: a.content_type,
           parsedData: a.parsed_data,
           rawBase64: a.raw_base64,
           createdAt: a.created_at

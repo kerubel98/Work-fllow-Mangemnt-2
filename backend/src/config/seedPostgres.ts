@@ -9,6 +9,7 @@ import {
   INITIAL_TEAM_RELATIONSHIPS,
   INITIAL_ISSUES,
   INITIAL_ORGANIZATIONS,
+  INITIAL_GLOBAL_STANDARD_DIRECTORY_RECORDS,
   store
 } from '../store/dataStore.js';
 
@@ -243,6 +244,27 @@ export async function seedPostgres() {
           JSON.stringify(tag.criteriaRules || [])
         ]
       );
+    }
+
+    // 6.5 Global Standard Directory
+    const { rows: dirCountRows } = await pool.query('SELECT COUNT(*)::int as count FROM global_standard_directory;');
+    if (dirCountRows[0].count === 0 && INITIAL_GLOBAL_STANDARD_DIRECTORY_RECORDS.length > 0) {
+      console.log('🌱 Seeding Global Standard Directory in PostgreSQL...');
+      for (const rec of INITIAL_GLOBAL_STANDARD_DIRECTORY_RECORDS) {
+        await pool.query(
+          `INSERT INTO global_standard_directory (
+            id, field_name, display_name, data_type, description, is_required,
+            default_mapping, category, example_value, notes, user_id, is_standard,
+            created_at, updated_at
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+          ON CONFLICT (id) DO NOTHING;`,
+          [
+            rec.id, rec.key, rec.label, rec.dataType, rec.description, rec.required,
+            rec.key, rec.category, rec.exampleValue || '', rec.notes || '', rec.user_id || 'system',
+            rec.isStandard, rec.created_at || new Date(), rec.updated_at || new Date()
+          ]
+        );
+      }
     }
 
     // 7. Plugins

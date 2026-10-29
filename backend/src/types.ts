@@ -22,9 +22,14 @@ export interface User {
   messageProviderSettings?: any;
   workspaceOAuthConfig?: any;
   preferences?: any;
+  password_hash?: string;
+  password?: string;
 }
 
 export type NotificationType = 'chat' | 'task_assigned' | 'team_added' | 'issue_assigned' | 'system';
+export type NotificationStatus = 'unread' | 'read' | 'needs_action' | 'done' | 'snoozed' | 'archived';
+export type NotificationPriority = 'normal' | 'needs_action' | 'critical';
+export type NotificationCategory = 'escalation' | 'mention' | 'approval' | 'sla' | 'investigation' | 'hashtag' | 'system';
 
 export interface AppNotification {
   id: string;
@@ -34,6 +39,14 @@ export interface AppNotification {
   message: string;
   timestamp: string;
   isRead: boolean;
+  status?: NotificationStatus;
+  priority?: NotificationPriority;
+  category?: NotificationCategory;
+  actionLabel?: string;
+  actionType?: string;
+  secondaryActionLabel?: string;
+  snoozeUntil?: string;
+  metadata?: Record<string, any>;
   linkTab?: string;
   targetTeamId?: string;
   targetTaskId?: string;
@@ -41,6 +54,40 @@ export interface AppNotification {
   targetDirectUserId?: string;
   targetSubTab?: string;
   actorName?: string;
+}
+
+export interface ChannelNotificationSettings {
+  inApp: boolean;
+  desktopPush: boolean;
+  email: boolean;
+  sound: boolean;
+}
+
+export interface UserNotificationPreferences {
+  userId: string;
+  escalationsAndAssignments: ChannelNotificationSettings;
+  mentions: ChannelNotificationSettings;
+  approvalsAndReviews: ChannelNotificationSettings;
+  investigationRuns: ChannelNotificationSettings;
+  hashtagReports: ChannelNotificationSettings;
+  slaWarnings: ChannelNotificationSettings;
+  systemAndConnections: ChannelNotificationSettings;
+  quietHours: {
+    enabled: boolean;
+    start: string;
+    end: string;
+  };
+  emailDigest: {
+    frequency: 'off' | 'daily' | 'weekly';
+    day: string;
+    time: string;
+  };
+  behavior: {
+    floatingToasts: boolean;
+    audioCueOnUrgent: boolean;
+    markAsReadOnOpen: boolean;
+  };
+  updatedAt?: string;
 }
 
 export interface DirectMessage {
@@ -77,6 +124,8 @@ export interface Team {
   name: string;
   description?: string;
   teamType?: 'permanent' | 'working';
+  type?: 'permanent' | 'working' | string;
+  leadName?: string;
   managerId: string;
   managerName: string;
   memberIds: string[];
@@ -197,7 +246,84 @@ export interface ChatMessage {
   solutionProposal?: ChatSolutionProposal;
 }
 
-export type IssueStatus = 'Open' | 'Investigating' | 'Resolved' | 'Closed';
+export type EscalationAgreementStatus = 
+  | 'AWAITING_ESCALATING_SIGNATURE' 
+  | 'AWAITING_RECEIVING_ACCEPTANCE' 
+  | 'ACTIVE' 
+  | 'RESOLVED' 
+  | 'CLOSED' 
+  | 'DECLINED';
+
+export interface EscalationKpiTerm {
+  id?: string;
+  name: string;
+  target: string;
+  actual?: string;
+  progressPercent?: number;
+  status: 'Met' | 'Running' | 'Not measured' | 'Breached';
+}
+
+export interface EscalationLedgerEvent {
+  id: string;
+  event: string;
+  actor: string;
+  timestamp: string;
+  type?: 'raised' | 'signed' | 'accepted' | 'response' | 'message' | 'closed';
+  details?: string;
+}
+
+export interface EscalationAgreement {
+  id: string;
+  issueId: string;
+  issueKey?: string;
+  issueTitle?: string;
+  escalatingTeamId: string;
+  escalatingTeamName?: string;
+  receivingTeamId: string;
+  receivingTeamName?: string;
+  status: EscalationAgreementStatus;
+  priority: 'Medium' | 'High' | 'Critical';
+  reason: string;
+  workflowId?: string;
+  workflowName?: string;
+  flaggedCount: number;
+  totalCount: number;
+  raisedByUserId: string;
+  raisedByUsername: string;
+  escalatingLeadId?: string;
+  escalatingLeadSignature?: string;
+  escalatingSignedAt?: string;
+  assignedCheckerId?: string;
+  assignedCheckerName?: string;
+  receivingLeadId?: string;
+  receivingLeadSignature?: string;
+  receivingAcceptedAt?: string;
+  assignedTechnicianId?: string;
+  assignedTechnicianName?: string;
+  kpis: EscalationKpiTerm[];
+  payloadOptions: {
+    sendSummary: boolean;
+    sendWorkflow: boolean;
+    sendFlaggedRows: boolean;
+    sendChatHistory: boolean;
+  };
+  ledger: EscalationLedgerEvent[];
+  clockStartedAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type IssueStatus = 
+  | 'Open' 
+  | 'Investigating' 
+  | 'Resolved' 
+  | 'Closed' 
+  | 'Escalated' 
+  | 'OPEN' 
+  | 'INVESTIGATING' 
+  | 'RESOLVED' 
+  | 'CLOSED' 
+  | 'ESCALATED';
 export type IssuePriority = 'Low' | 'Medium' | 'High' | 'Critical';
 
 export interface Issue {
@@ -247,6 +373,14 @@ export interface Issue {
   attachments?: any[];
   mappingTemplateId?: string;
   templateRequiredColumns?: string[];
+  escalatedToTeamId?: string;
+  escalationReason?: string;
+  escalatedAt?: string;
+  stagedEnvironment?: 'SANDBOX' | 'STAGING' | 'PRODUCTION';
+  stagedByUserId?: string;
+  stagedByUserName?: string;
+  stagedAt?: string;
+  findingsNotes?: string;
 }
 
 export interface CriteriaRule {
@@ -364,6 +498,48 @@ export interface HashtagPreset {
   };
   /** Optional linked saved file ingestion mapping template ID */
   mappingTemplateId?: string | null;
+
+  // ── Technician Solution Flow (Migration 038) ─────────────────────────────
+  /** Technician who authored and posted this solution hashtag */
+  ownerUserId?: string | null;
+  /** Full name of owner technician */
+  ownerName?: string | null;
+  /** Solution classification: TEMPORARY (30 days) vs SYSTEM_FIX */
+  solutionType?: 'TEMPORARY' | 'SYSTEM_FIX';
+  /** Expiration timestamp for temporary solutions */
+  expiresAt?: string | null;
+  /** Traceable Change Request identifier for permanent system fixes */
+  changeRequestId?: string | null;
+  /** Immutable locked process attachments (file schema, mapping recipe, validation DAG, SLA) */
+  lockedProcess?: {
+    ingestionFile?: any;
+    mappingTemplate?: any;
+    validationPipeline?: any;
+    escalationAgreement?: any;
+  } | null;
+  /** Checker approval gateway status */
+  checkerStatus?: 'PENDING_APPROVAL' | 'APPROVED' | 'REJECTED';
+  checkerId?: string | null;
+  checkerName?: string | null;
+  checkerApprovedAt?: string | null;
+  /** Escalating team ID that receives automated execution reports */
+  reportingTeamId?: string | null;
+  /** Sandbox dry-run results diff and verification checklist */
+  dryRunResults?: any;
+}
+
+export interface HashtagCollectedTransaction {
+  id: string;
+  hashtagTag: string;
+  transactionKey: string;
+  issueId?: string;
+  status: 'COLLECTED' | 'FIXED' | 'FAILED' | 'WAITING';
+  failureReason?: string;
+  beforePayload?: Record<string, any>;
+  afterPayload?: Record<string, any>;
+  collectedAt: string;
+  executedAt?: string;
+  executedBy?: string;
 }
 
 // ── File Ingestion Mapping Templates & Recipes (Domain 7) ───────────────────
@@ -568,6 +744,27 @@ export interface QueryApprovalRequest {
   requestDate: string;
   issueId?: string;
   issueTitle?: string;
+  approvalType?: 'PERMANENT' | 'TEMPORARY';
+  duration?: string;
+  reason?: string;
+  expiresAt?: string;
+}
+
+export interface SavedQuery {
+  id: string;
+  userId: string;
+  username: string;
+  title: string;
+  description?: string;
+  dbId: string;
+  dbName: string;
+  tableName?: string;
+  query: string;
+  tags?: string[];
+  isFavorite?: boolean;
+  isShared?: boolean;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface Plugin {
@@ -1938,12 +2135,36 @@ export interface ValueTranslationDictionary {
   mappings: {
     sourceValue: string;
     targetValue: string;
+    shortName?: string;
     notes?: string;
   }[];
+  groupName?: string;
+  /** Orientation relative to stored pairs: FORWARD = source->target, REVERSE = target->source. */
+  direction?: ValueDictionaryDirection;
+  caseSensitive?: boolean;
+  trimWhitespace?: boolean;
+  noMatchPolicy?: ValueDictionaryNoMatchPolicy;
+  defaultFallback?: string;
+  sourceLabel?: string;
+  targetLabel?: string;
   isSystemDefault?: boolean;
   createdBy?: string;
   createdAt?: string;
   updatedAt?: string;
+}
+
+export type ValueDictionaryDirection = 'FORWARD' | 'REVERSE' | 'BOTH';
+export type ValueDictionaryNoMatchPolicy = 'KEEP_ORIGINAL' | 'BLANK' | 'USE_FALLBACK' | 'FLAG';
+
+export interface ValueDictionaryColumnLink {
+  id: string;
+  dictionaryId: string;
+  dbId: string;
+  tableName: string;
+  columnName: string;
+  showInGrids: boolean;
+  createdBy?: string;
+  createdAt?: string;
 }
 
 // ==========================================

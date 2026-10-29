@@ -6,8 +6,12 @@
 import { 
   User, DatabaseColumnConfiguration, WorkspaceSettingProposal, TeamEscalationTarget, 
   TeamAdminPrivileges, WorkflowBundle, MailboxResponse, HashtagPreset, HashtagExecutionRun,
-  FileIngestionMappingTemplate, ValueTranslationDictionary
+  FileIngestionMappingTemplate, ValueTranslationDictionary, EscalationAgreement,
+  ValueDictionaryColumnLink, ValueDictionaryUsage, ValueDictionaryUntranslated, ValueDictionaryPreview,
+  Issue, HashtagCollectedTransaction, SavedQuery,
+  UserNotificationPreferences, AppNotification
 } from '../types';
+
 
 const API_BASE_URL = '/api';
 
@@ -386,7 +390,7 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(data)
     }),
-  runScheduledFtpStaging: (options: { targetType?: string; connectionId?: string; forceAll?: boolean }) =>
+  runScheduledFtpStaging: (options: { targetType?: string; connectionId?: string; forceAll?: boolean } = {}) =>
     fetchApi<{
       success: boolean;
       executedCount: number;
@@ -397,6 +401,21 @@ export const api = {
     }>('/db/ftp-staging/run-scheduled', {
       method: 'POST',
       body: JSON.stringify(options)
+    }),
+  dispatchSimulatedExternalRequest: (data: { teamId: string; channel: string; senderAddress: string; rawBody: string }) =>
+    fetchApi<{ success: boolean; id?: string }>('/messages/intake', {
+      method: 'POST',
+      body: JSON.stringify({
+        channel: data.channel,
+        senderAddress: data.senderAddress,
+        text: data.rawBody,
+        teamId: data.teamId
+      })
+    }),
+  proposeResolution: (data: any) =>
+    fetchApi<any>('/resolutions/propose', {
+      method: 'POST',
+      body: JSON.stringify(data)
     }),
   getUnconfiguredFtpFolders: (connectionId?: string) =>
     fetchApi<any[]>(connectionId ? `/db/ftp-staging/unconfigured-folders?connectionId=${connectionId}` : '/db/ftp-staging/unconfigured-folders'),
@@ -441,6 +460,27 @@ export const api = {
       body: JSON.stringify(queryData)
     }),
   getQueryLogs: () => fetchApi<any[]>('/db/query/logs'),
+  getSavedQueries: (userId?: string, dbId?: string) => {
+    const params = new URLSearchParams();
+    if (userId) params.set('userId', userId);
+    if (dbId) params.set('dbId', dbId);
+    const qs = params.toString();
+    return fetchApi<SavedQuery[]>(`/db/saved-queries${qs ? `?${qs}` : ''}`);
+  },
+  createSavedQuery: (data: Partial<SavedQuery>) =>
+    fetchApi<SavedQuery>('/db/saved-queries', {
+      method: 'POST',
+      body: JSON.stringify(data)
+    }),
+  updateSavedQuery: (id: string, updates: Partial<SavedQuery>) =>
+    fetchApi<SavedQuery>(`/db/saved-queries/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(updates)
+    }),
+  deleteSavedQuery: (id: string) =>
+    fetchApi<{ success: boolean; id: string }>(`/db/saved-queries/${id}`, {
+      method: 'DELETE'
+    }),
 
   // ================= Query Approvals & DB Access Requests =================
   getQueryApprovals: () => fetchApi<any[]>('/db/query/approvals'),
@@ -560,6 +600,81 @@ export const api = {
     }),
   markNotificationRead: (id: string) =>
     fetchApi<{ success: boolean }>(`/notifications/${id}/read`, { method: 'PUT' }),
+  markAllNotificationsRead: (userId?: string) =>
+    fetchApi<{ success: boolean }>('/notifications/read-all', {
+      method: 'PUT',
+      body: JSON.stringify({ userId })
+    }),
+  clearAllNotifications: (userId?: string) =>
+    fetchApi<{ success: boolean }>('/notifications/clear-all', {
+      method: 'DELETE',
+      body: JSON.stringify({ userId })
+    }),
+  deleteNotification: (id: string) =>
+    fetchApi<{ success: boolean }>(`/notifications/${id}`, { method: 'DELETE' }),
+  getNotificationPreferences: (userId?: string) =>
+    fetchApi<UserNotificationPreferences>(`/notifications/preferences${userId ? `?userId=${userId}` : ''}`),
+  saveNotificationPreferences: (prefs: UserNotificationPreferences) =>
+    fetchApi<UserNotificationPreferences>('/notifications/preferences', {
+      method: 'PUT',
+      body: JSON.stringify(prefs)
+    }),
+  sendTestNotification: (userId?: string) =>
+    fetchApi<AppNotification>('/notifications/test', {
+      method: 'POST',
+      body: JSON.stringify({ userId })
+    }),
+  snoozeNotification: (id: string, snoozeUntil: string) =>
+    fetchApi<{ success: boolean; snoozeUntil: string }>(`/notifications/${id}/snooze`, {
+      method: 'POST',
+      body: JSON.stringify({ snoozeUntil })
+    }),
+  archiveNotification: (id: string) =>
+    fetchApi<{ success: boolean }>(`/notifications/${id}/archive`, { method: 'POST' }),
+  takeNotificationAction: (id: string) =>
+    fetchApi<{ success: boolean; status: string }>(`/notifications/${id}/action`, { method: 'POST' }),
+
+  // ================= Inter-Team Escalation Agreements (Domain 9, Screens 27-32) =================
+  getEscalationAgreements: (filter?: { issueId?: string; teamId?: string; status?: string }) => {
+    const params = new URLSearchParams();
+    if (filter?.issueId) params.append('issueId', filter.issueId);
+    if (filter?.teamId) params.append('teamId', filter.teamId);
+    if (filter?.status) params.append('status', filter.status);
+    const qs = params.toString();
+    return fetchApi<EscalationAgreement[]>(`/escalations/agreements${qs ? `?${qs}` : ''}`);
+  },
+  getEscalationAgreementById: (id: string) =>
+    fetchApi<EscalationAgreement>(`/escalations/agreements/${id}`),
+  createEscalationAgreement: (data: Partial<EscalationAgreement>) =>
+    fetchApi<EscalationAgreement>('/escalations/agreements', {
+      method: 'POST',
+      body: JSON.stringify(data)
+    }),
+  signEscalatingLead: (id: string, data: { leadId: string; signature: string; checkerId: string; checkerName: string }) =>
+    fetchApi<EscalationAgreement>(`/escalations/agreements/${id}/sign-escalating`, {
+      method: 'POST',
+      body: JSON.stringify(data)
+    }),
+  acceptReceivingLead: (id: string, data: { leadId: string; signature: string; technicianId: string; technicianName: string }) =>
+    fetchApi<EscalationAgreement>(`/escalations/agreements/${id}/accept-receiving`, {
+      method: 'POST',
+      body: JSON.stringify(data)
+    }),
+  declineReceivingLead: (id: string, data: { leadId: string; reason: string }) =>
+    fetchApi<EscalationAgreement>(`/escalations/agreements/${id}/decline-receiving`, {
+      method: 'POST',
+      body: JSON.stringify(data)
+    }),
+  appendEscalationLedgerEvent: (id: string, data: { event: string; actor: string; type?: string; details?: string }) =>
+    fetchApi<EscalationAgreement>(`/escalations/agreements/${id}/ledger-event`, {
+      method: 'POST',
+      body: JSON.stringify(data)
+    }),
+  closeEscalationAgreement: (id: string, data: { closedBy: string }) =>
+    fetchApi<EscalationAgreement>(`/escalations/agreements/${id}/close`, {
+      method: 'PATCH',
+      body: JSON.stringify(data)
+    }),
 
   // ================= MongoDB Diagnostics =================
   getMongoStatus: () => fetchApi<{
@@ -1183,6 +1298,11 @@ export const api = {
       body: JSON.stringify(payload)
     }),
 
+  deleteMessageProvider: (id: string) =>
+    fetchApi<{ success: boolean }>(`/messages/providers/${encodeURIComponent(id)}`, {
+      method: 'DELETE'
+    }),
+
   testMessageProvider: (id: string) =>
     fetchApi<{ success: boolean; message: string; details?: any }>(`/messages/providers/${encodeURIComponent(id)}/test`, {
       method: 'POST'
@@ -1206,9 +1326,37 @@ export const api = {
       body: JSON.stringify(payload)
     }),
 
+  createAdminOAuth2Connection: (payload: any) =>
+    fetchApi<any>('/messages/admin/oauth2', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    }),
+
+  testAdminOAuth2Connection: (id: string) =>
+    fetchApi<{ success: boolean; message: string; details?: any }>(`/messages/providers/${encodeURIComponent(id)}/test`, {
+      method: 'POST'
+    }),
+
   deleteAdminOAuth2Connection: (id: string) =>
     fetchApi<{ success: boolean }>(`/messages/admin/oauth2/${encodeURIComponent(id)}`, {
       method: 'DELETE'
+    }),
+
+  getOAuth2AuthorizationUrl: (params: { providerId: string; userId: string; userEmail: string; returnUrl?: string }) => {
+    const qs = new URLSearchParams({
+      providerId: params.providerId,
+      userId: params.userId,
+      userEmail: params.userEmail,
+      returnUrl: params.returnUrl || window.location.href,
+      format: 'json'
+    }).toString();
+    return fetchApi<{ success: boolean; authorizationUrl: string; redirectUri: string }>(`/messages/oauth2/authorize?${qs}`);
+  },
+
+  exchangeManualOAuth2Grant: (payload: { providerId: string; userId: string; userEmail: string; grantToken: string }) =>
+    fetchApi<{ success: boolean; providerId: string; displayName: string; userEmail: string }>('/messages/oauth2/manual-grant', {
+      method: 'POST',
+      body: JSON.stringify(payload)
     }),
 
   fetchProviderMessages: (id: string) =>
@@ -1218,6 +1366,11 @@ export const api = {
 
   fetchTeamMessages: (teamId: string) =>
     fetchApi<{ success: boolean; totalStaged: number; providerCount: number; results: any[] }>(`/messages/teams/${encodeURIComponent(teamId)}/fetch`, {
+      method: 'POST'
+    }),
+
+  fetchUserProviderMessages: (userId: string) =>
+    fetchApi<{ success: boolean; totalStaged: number; results: any[] }>(`/messages/users/${encodeURIComponent(userId)}/fetch`, {
       method: 'POST'
     }),
 
@@ -1353,11 +1506,12 @@ export const api = {
     return fetchApi<MailboxResponse>(`/messages/mailbox${qs ? `?${qs}` : ''}`);
   },
 
-  getPersonalMailbox: (userId: string, filter: string = 'all', search?: string) => {
+  getPersonalMailbox: (userId: string, filter: string = 'all', search?: string, sync: boolean = false) => {
     const params = new URLSearchParams();
     if (userId) params.append('userId', userId);
     if (filter) params.append('filter', filter);
     if (search) params.append('search', search);
+    if (sync) params.append('sync', 'true');
     const qs = params.toString();
     return fetchApi<MailboxResponse>(`/messages/mailbox${qs ? `?${qs}` : ''}`);
   },
@@ -1392,12 +1546,62 @@ export const api = {
       }
     ),
 
+  // ================= User Contacts & Multi-Channel Identifiers =================
+  getUserContacts: (userId: string) =>
+    fetchApi<any[]>(`/messages/contacts?userId=${encodeURIComponent(userId)}`),
+
+  createUserContact: (payload: {
+    id?: string;
+    userId: string;
+    name: string;
+    organization?: string;
+    roleOrTitle?: string;
+    primaryEmail?: string;
+    primaryPhone?: string;
+    avatarUrl?: string;
+    notes?: string;
+    initialIdentifier?: {
+      channel: string;
+      identifierValue: string;
+      label?: string;
+    };
+  }) =>
+    fetchApi<{ id: string; success: boolean }>('/messages/contacts', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    }),
+
+  addContactIdentifier: (contactId: string, payload: {
+    channel: string;
+    identifierValue: string;
+    label?: string;
+    isPrimary?: boolean;
+  }) =>
+    fetchApi<{ id: string; success: boolean }>(`/messages/contacts/${encodeURIComponent(contactId)}/identifiers`, {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    }),
+
+  deleteUserContact: (contactId: string) =>
+    fetchApi<{ success: boolean }>(`/messages/contacts/${encodeURIComponent(contactId)}`, {
+      method: 'DELETE'
+    }),
+
+  deleteContactIdentifier: (identifierId: string) =>
+    fetchApi<{ success: boolean }>(`/messages/contacts/identifiers/${encodeURIComponent(identifierId)}`, {
+      method: 'DELETE'
+    }),
+
   // ================= Universal Hashtags =================
   getHashtags: (filter?: { type?: string; teamId?: string }) =>
     fetchApi<HashtagPreset[]>(`/hashtags${filter?.type ? `?type=${encodeURIComponent(filter.type)}` : ''}`),
 
+  getHashtag: (tag: string) =>
+    fetchApi<HashtagPreset>(`/hashtags/${encodeURIComponent(tag)}`),
+
   getHashtagByTag: (tag: string) =>
     fetchApi<HashtagPreset>(`/hashtags/${encodeURIComponent(tag)}`),
+
 
   createHashtag: (preset: HashtagPreset) =>
     fetchApi<HashtagPreset>('/hashtags', {
@@ -1515,6 +1719,46 @@ export const api = {
       method: 'DELETE'
     }),
 
+  previewValueDictionary: (id: string, value: string, draft?: Partial<ValueTranslationDictionary>) =>
+    fetchApi<ValueDictionaryPreview>(`/value-translation-dictionaries/${encodeURIComponent(id)}/preview`, {
+      method: 'POST',
+      body: JSON.stringify({ value, draft })
+    }),
+
+  getValueDictionaryUsage: (id: string) =>
+    fetchApi<ValueDictionaryUsage>(`/value-translation-dictionaries/${encodeURIComponent(id)}/usage`),
+
+  getValueDictionaryUntranslated: (id: string) =>
+    fetchApi<ValueDictionaryUntranslated>(`/value-translation-dictionaries/${encodeURIComponent(id)}/untranslated`),
+
+  getDistinctColumnValues: (dbId: string, tableName: string, columnName: string) =>
+    fetchApi<{ values: { value: string; count: number }[] }>('/value-dictionary-links/distinct-values', {
+      method: 'POST',
+      body: JSON.stringify({ dbId, tableName, columnName })
+    }),
+
+  getValueDictionaryLinks: (filter: { dictionaryId?: string; dbId?: string; tableName?: string } = {}) => {
+    const qs = new URLSearchParams(Object.entries(filter).filter(([, v]) => !!v) as [string, string][]).toString();
+    return fetchApi<ValueDictionaryColumnLink[]>(`/value-dictionary-links${qs ? `?${qs}` : ''}`);
+  },
+
+  createValueDictionaryLink: (link: { dictionaryId: string; dbId: string; tableName: string; columnName: string; showInGrids?: boolean; createdBy?: string }) =>
+    fetchApi<ValueDictionaryColumnLink>('/value-dictionary-links', {
+      method: 'POST',
+      body: JSON.stringify(link)
+    }),
+
+  setValueDictionaryLinkVisibility: (id: string, showInGrids: boolean) =>
+    fetchApi<{ success: boolean; id: string }>(`/value-dictionary-links/${encodeURIComponent(id)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ showInGrids })
+    }),
+
+  deleteValueDictionaryLink: (id: string) =>
+    fetchApi<{ success: boolean; id: string }>(`/value-dictionary-links/${encodeURIComponent(id)}`, {
+      method: 'DELETE'
+    }),
+
   // System Transformation Rules (PostgreSQL Persisted - Rule 23)
   getSystemTransformationRules: (category?: string) => {
     const params = new URLSearchParams();
@@ -1549,8 +1793,103 @@ export const api = {
     }),
 
   getAuthUsers: () =>
-    fetchApi<User[]>('/auth/users')
+    fetchApi<User[]>('/auth/users'),
+
+  // ================= Technician Solution Flow (Screens 38–44) =================
+  stageIssue: (
+    id: string,
+    environment: 'SANDBOX' | 'STAGING' | 'PRODUCTION',
+    notes?: string,
+    stagedByUserId?: string,
+    stagedByUserName?: string
+  ) =>
+    fetchApi<{ success: boolean; message: string; issue: Issue }>(`/issues/${encodeURIComponent(id)}/stage`, {
+      method: 'PATCH',
+      body: JSON.stringify({ environment, notes, stagedByUserId, stagedByUserName })
+    }),
+
+  dryRunSolution: (
+    script: string,
+    sampleRows?: Record<string, any>[],
+    parameters?: Record<string, any>
+  ) =>
+    fetchApi<{
+      valid: boolean;
+      tokens: string[];
+      diffs: Array<{ rowId: string; before: Record<string, any>; after: Record<string, any> }>;
+      checklist: Array<{ id: string; label: string; passed: boolean }>;
+      rowsEvaluated: number;
+    }>('/solutions/dry-run', {
+      method: 'POST',
+      body: JSON.stringify({ script, sampleRows, parameters })
+    }),
+
+  postHashtagSolution: (payload: {
+    tag: string;
+    description?: string;
+    issueId?: string;
+    solutionScript: string;
+    solutionType?: 'TEMPORARY' | 'SYSTEM_FIX';
+    expiresAt?: string;
+    lockedProcess?: {
+      fileSchemaName?: string;
+      mappingRecipeName?: string;
+      validationStageName?: string;
+      slaTerms?: string;
+      workflowId?: string;
+      workflowName?: string;
+      fileHeaders?: string[];
+    };
+    dryRunResults?: any;
+    reportingTeamId?: string;
+    authorUserId?: string;
+    authorName?: string;
+  }) =>
+    fetchApi<{ success: boolean; message: string; preset: HashtagPreset; stats: { total: number; fixed: number; failed: number; waiting: number } }>('/hashtags/post-solution', {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    }),
+
+  getHashtagCollectedTransactions: (tag: string, status?: string, limit?: number) => {
+    const params = new URLSearchParams();
+    if (status && status !== 'ALL') params.append('status', status);
+    if (limit) params.append('limit', String(limit));
+    const qs = params.toString();
+    const cleanTag = tag.trim().replace(/^#+/, '');
+    return fetchApi<{
+      tag: string;
+      transactions: HashtagCollectedTransaction[];
+      stats: { total: number; fixed: number; failed: number; waiting: number };
+    }>(`/hashtags/${encodeURIComponent(cleanTag)}/collected-transactions${qs ? `?${qs}` : ''}`);
+  },
+
+  remediateCollectedTransaction: (tag: string, id: string) => {
+    const cleanTag = tag.trim().replace(/^#+/, '');
+    return fetchApi<{ success: boolean; message: string; stats: { total: number; fixed: number; failed: number; waiting: number } }>(
+      `/hashtags/${encodeURIComponent(cleanTag)}/collected-transactions/${encodeURIComponent(id)}/remediate`,
+      { method: 'POST' }
+    );
+  },
+
+  requestHashtagChange: (
+    tag: string,
+    reason: string,
+    suggestedAdjustments?: string,
+    requestedByUserId?: string,
+    requestedByUserName?: string,
+    reportingTeamId?: string
+  ) => {
+    const cleanTag = tag.trim().replace(/^#+/, '');
+    return fetchApi<{ success: boolean; message: string; changeRequestId: string; preset: HashtagPreset }>(
+      `/hashtags/${encodeURIComponent(cleanTag)}/change-request`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ reason, suggestedAdjustments, requestedByUserId, requestedByUserName, reportingTeamId })
+      }
+    );
+  }
 };
+
 
 export const apiClient = api;
 

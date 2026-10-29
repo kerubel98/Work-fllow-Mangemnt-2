@@ -14,6 +14,7 @@ import WorkspaceTaskCreator from './issue/WorkspaceTaskCreator';
 import HashtagManager from './issue/HashtagManager';
 import { globalMappingService } from '../services/globalMappingService';
 import { api } from '../api/client';
+import { DataTablePagination } from './common/DataTablePagination';
 import { 
   AlertCircle, CheckCircle2, ChevronRight, MessageSquare, Terminal, Play, 
   Settings, Database, UserCheck, FileCode, Check, Send, Sparkles, Plus, Download, ShieldCheck,
@@ -115,6 +116,8 @@ export default function IssueDetailView({
 
   const [searchTerm, setSearchTerm] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('ALL');
+  const [taskListPage, setTaskListPage] = useState(1);
+  const [taskListPageSize, setTaskListPageSize] = useState(25);
   const [priorityFilter, setPriorityFilter] = useState<string>('ALL');
   const [hashtagFilter, setHashtagFilter] = useState<string>('ALL');
   const [taskScopeFilter, setTaskScopeFilter] = useState<'ALL' | 'MINE' | 'TEAM' | 'PRIVATE' | 'ASSIGNED'>('ALL');
@@ -1485,6 +1488,16 @@ export default function IssueDetailView({
 
     return matchesSearch && matchesStatus && matchesHashtag && matchesScope;
   });
+
+  const paginatedIssues = useMemo(() => {
+    const startIndex = (taskListPage - 1) * taskListPageSize;
+    return filteredIssues.slice(startIndex, startIndex + taskListPageSize);
+  }, [filteredIssues, taskListPage, taskListPageSize]);
+
+  useEffect(() => {
+    setTaskListPage(1);
+  }, [searchTerm, statusFilter, priorityFilter, hashtagFilter, taskScopeFilter]);
+
   useEffect(() => {
     if (selectedIssue) {
       setCustomSql(selectedIssue.solutionScript || (selectedIssue.linkedHashtag 
@@ -2189,7 +2202,7 @@ export default function IssueDetailView({
   };
 
   return (
-    <div className="space-y-3" id="issue-tracking-system">
+    <div className="space-y-3 pb-16" id="issue-tracking-system">
       
       {/* Top Mode Toggle Navigation Bar (Shown on secondary task views, hidden on clean Cases Workspace) */}
       {currentMode !== 'workspace' && (
@@ -2537,7 +2550,7 @@ export default function IssueDetailView({
                       </td>
                     </tr>
                   ) : (
-                    filteredIssues.map((issue) => (
+                    paginatedIssues.map((issue) => (
                       <tr key={issue.id} className="hover:bg-blue-50/30 transition-all group">
                         <td className="py-3.5 px-4 font-mono font-bold text-blue-700">
                           <button
@@ -2673,6 +2686,19 @@ export default function IssueDetailView({
                 </tbody>
               </table>
             </div>
+
+            {/* Table Pagination */}
+            <DataTablePagination
+              currentPage={taskListPage}
+              pageSize={taskListPageSize}
+              totalItems={filteredIssues.length}
+              onPageChange={setTaskListPage}
+              onPageSizeChange={(newSize) => {
+                setTaskListPageSize(newSize);
+                setTaskListPage(1);
+              }}
+              pageSizeOptions={[10, 25, 50, 100]}
+            />
           </div>
         </div>
       )}

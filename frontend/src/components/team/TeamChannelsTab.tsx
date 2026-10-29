@@ -144,7 +144,7 @@ const TeamChannelsTabContent: React.FC<TeamChannelsTabProps> = ({ currentTeam, c
       setOauthScope('ZohoMail.messages.ALL,ZohoMail.accounts.ALL');
       setOauthTokenUrl('');
       setOauthTenantId('');
-      setOauthGrantType('refresh_token');
+      setOauthGrantType('authorization_code');
       setProviderHost(zohoRegion === 'EU' ? 'imap.zoho.eu' : 'imappro.zoho.com');
     } else if (preset === 'MICROSOFT_365') {
       setOauthScope(providerChannel === 'teams' ? 'https://graph.microsoft.com/.default' : 'https://outlook.office365.com/.default');

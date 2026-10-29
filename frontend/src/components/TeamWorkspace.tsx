@@ -33,6 +33,8 @@ import { TeamChannelsTab } from './team/TeamChannelsTab';
 import { TeamStagedAssetsConsole } from './team/TeamStagedAssetsConsole';
 import { TeamMailboxTab } from './team/TeamMailboxTab';
 import { TeamHashtagReportsTab } from './team/TeamHashtagReportsTab';
+import { StageTaskModal } from './investigation/StageTaskModal';
+import { TechnicianInvestigationWorkspace } from './investigation/TechnicianInvestigationWorkspace';
 import { TaskPreFillFromMessage } from '../types';
 
 
@@ -152,6 +154,10 @@ export default function TeamWorkspace({
   const [teamSettingsSubTab, setTeamSettingsSubTab] = useState<TeamSettingsSubTab>(
     isInitialSettingsSubTab ? (initialActiveTab as TeamSettingsSubTab) : 'db-access'
   );
+
+  // Staged Task & Technician Investigation Workspace state (Screens 38, 39, 40)
+  const [stagedIssue, setStagedIssue] = useState<Issue | null>(null);
+  const [stagingIssue, setStagingIssue] = useState<Issue | null>(null);
 
   const isGlobalAdmin = 
     currentUser?.role === 'admin' || 
@@ -1388,8 +1394,28 @@ export default function TeamWorkspace({
 
   const pendingApprovalsCount = pendingResolutions.length + settingProposals.filter(p => p.status === 'PENDING_TEAM_APPROVAL' || p.status === 'ESCALATED_TO_TARGET_TEAM').length;
 
+  if (stagedIssue) {
+    return (
+      <div className="flex-1 flex flex-col h-full min-h-0 bg-[#F8FAFC] font-sans">
+        <TechnicianInvestigationWorkspace
+          issue={stagedIssue}
+          currentUser={currentUser}
+          onBack={() => setStagedIssue(null)}
+          onOpenRoom={() => {
+            setStagedIssue(null);
+            setActiveTab('discussion');
+          }}
+          onPostHashtagSuccess={(_preset) => {
+            setStagedIssue(null);
+            setActiveTab('reports');
+          }}
+        />
+      </div>
+    );
+  }
+
   return (
-    <div className="flex flex-col gap-2.5 h-full flex-1 min-h-0 overflow-hidden" id="team-workspace-container">
+    <div className="flex flex-col gap-2.5 h-full flex-1 min-h-0 overflow-hidden px-5 sm:px-6 pb-16" id="team-workspace-container">
       {/* 1. TOP HEADER: Single Switcher, Status Badges, 3 High-Value Actions (Shown in normal team tabs) */}
       {currentTeam && !isGovernanceActive && (
         <TeamHeader
@@ -1407,7 +1433,7 @@ export default function TeamWorkspace({
       )}
 
       {/* 2. MAIN WORKSPACE CONTENT */}
-      <main className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden space-y-2.5" id="team-workspace-main">
+      <main className="flex-1 flex flex-col min-w-0 min-h-0 overflow-hidden space-y-2.5 px-0 pb-12" id="team-workspace-main">
         {!currentTeam ? (
           <div className="flex-1 flex flex-col items-center justify-center p-8 bg-white rounded-2xl border border-slate-200/80 shadow-xs text-center">
             <div className="w-14 h-14 rounded-2xl bg-blue-50 flex items-center justify-center text-blue-600 mb-3 border border-blue-100">
@@ -1431,7 +1457,7 @@ export default function TeamWorkspace({
             {/* Primary 5-Zone Tab Bar (Only displayed for operational team workspace) */}
             {/* Primary Team Tab Bar matching 08_team_tasks.png & 09_team_mailbox.png */}
             {!isGovernanceActive && (
-              <div className="flex items-center gap-6 border-b border-slate-200 px-1 shrink-0 font-sans">
+              <div className="flex items-center gap-6 border-b border-slate-200 px-0 shrink-0 font-sans">
                 {[
                   { id: 'overview', label: 'Overview' },
                   { id: 'tasks', label: 'Tasks', count: teamTasks.filter(t => t.status !== 'Done').length },
@@ -1507,6 +1533,7 @@ export default function TeamWorkspace({
                     onUpdateTaskStatus={onUpdateTaskStatus}
                     onDeleteTask={onDeleteTask}
                     onOpenIssueInWorkspace={onOpenIssueInWorkspace}
+                    onStageTask={(target) => setStagingIssue(target)}
                   />
                 )}
 
@@ -1531,6 +1558,7 @@ export default function TeamWorkspace({
                     onSendMessage={onSendMessage}
                     availableTeams={visibleTeams}
                     users={users}
+                    onStageTask={(target) => setStagingIssue(target)}
                   />
                 )}
 
@@ -4308,6 +4336,19 @@ export default function TeamWorkspace({
       )}
           </div>
         )}
+      {/* STAGE TASK MODAL (Screen 38) */}
+      {stagingIssue && (
+        <StageTaskModal
+          isOpen={Boolean(stagingIssue)}
+          issue={stagingIssue}
+          currentUser={currentUser}
+          onClose={() => setStagingIssue(null)}
+          onStaged={(staged, env) => {
+            setStagingIssue(null);
+            setStagedIssue({ ...staged, stagedEnvironment: env });
+          }}
+        />
+      )}
       </main>
     </div>
   );

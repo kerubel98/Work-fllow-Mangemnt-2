@@ -16,3 +16,7 @@ backend/dist/
 frontend/dist/
 *.zip
 tesr.json
+redesigned_ui/
+presentation_ui/
+.opencode/
+

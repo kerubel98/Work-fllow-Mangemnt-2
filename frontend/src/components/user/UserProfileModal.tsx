@@ -3,7 +3,7 @@ import {
   X, User, Mail, Shield, CheckCircle2, AlertCircle, Camera,
   Upload, Sliders, Bell, Globe, Phone, Briefcase, Building,
   RefreshCw, Check, Sparkles, Send, Lock, Eye, Save, Trash2,
-  Paperclip, ShieldCheck
+  Paperclip, ShieldCheck, LogOut
 } from 'lucide-react';
 import { User as UserType, UserMessageProviderSettings, UserPreferences } from '../../types';
 import { api } from '../../api/client';
@@ -13,6 +13,7 @@ export interface UserProfileModalProps {
   onClose: () => void;
   currentUser: UserType;
   onUserUpdated?: (updatedUser: UserType) => void;
+  onLogout?: () => void;
 }
 
 // Preset avatars with modern clean gradients
@@ -45,6 +46,7 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({
   onClose,
   currentUser,
   onUserUpdated,
+  onLogout,
 }) => {
   const [activeTab, setActiveTab] = useState<'profile' | 'messaging' | 'preferences'>('profile');
 
@@ -997,6 +999,18 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({
           </div>
 
           <div className="flex items-center space-x-2.5">
+            {onLogout && (
+              <button
+                type="button"
+                onClick={onLogout}
+                disabled={isSaving}
+                className="px-3 py-2 text-rose-600 hover:text-rose-700 hover:bg-rose-50 border border-rose-200 rounded-xl text-xs font-semibold transition-colors cursor-pointer disabled:opacity-50 shadow-2xs flex items-center space-x-1.5"
+                title="Log out of session"
+              >
+                <LogOut size={13} />
+                <span>Logout</span>
+              </button>
+            )}
             <button
               type="button"
               onClick={onClose}

@@ -39,11 +39,29 @@ export class ErrorBoundary extends (React.Component as any) {
   }
 
   private handleReset = () => {
+    const errorMsg = this.state.error?.message || '';
+    const isChunkError =
+      errorMsg.includes('Failed to fetch dynamically imported module') ||
+      errorMsg.includes('dynamically imported module') ||
+      errorMsg.includes('Loading chunk') ||
+      this.state.error?.name === 'ChunkLoadError';
+
+    if (isChunkError) {
+      window.location.reload();
+      return;
+    }
     this.setState({ hasError: false, error: null });
   };
 
   public render() {
     if (this.state.hasError) {
+      const errorMsg = this.state.error?.message || String(this.state.error);
+      const isChunkError =
+        errorMsg.includes('Failed to fetch dynamically imported module') ||
+        errorMsg.includes('dynamically imported module') ||
+        errorMsg.includes('Loading chunk') ||
+        this.state.error?.name === 'ChunkLoadError';
+
       return (
         <div className="p-6 bg-rose-50/70 border border-rose-200 rounded-2xl space-y-4 text-slate-800 my-4 max-w-4xl mx-auto shadow-sm">
           <div className="flex items-center gap-3">
@@ -52,17 +70,21 @@ export class ErrorBoundary extends (React.Component as any) {
             </div>
             <div>
               <h3 className="text-sm font-bold text-rose-900">
-                {this.props.fallbackTitle || 'A module error occurred while rendering this page.'}
+                {isChunkError
+                  ? 'A newer application build is available'
+                  : (this.props.fallbackTitle || 'A module error occurred while rendering this page.')}
               </h3>
               <p className="text-xs text-rose-700">
-                {this.props.fallbackMessage || 'The view encountered an unexpected state. You can reload this view or reset local preferences.'}
+                {isChunkError
+                  ? 'Application assets were updated on the server. Reloading will fetch the latest modules.'
+                  : (this.props.fallbackMessage || 'The view encountered an unexpected state. You can reload this view or reset local preferences.')}
               </p>
             </div>
           </div>
 
           {this.state.error && (
             <div className="p-3 bg-white border border-rose-200 rounded-lg text-[11px] font-mono text-rose-800 overflow-x-auto">
-              {this.state.error.message || String(this.state.error)}
+              {errorMsg}
             </div>
           )}
 
@@ -73,7 +95,7 @@ export class ErrorBoundary extends (React.Component as any) {
               className="px-3.5 py-1.5 bg-rose-600 hover:bg-rose-500 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 transition cursor-pointer shadow-xs"
             >
               <RotateCcw className="w-3.5 h-3.5" />
-              <span>Retry Rendering</span>
+              <span>{isChunkError ? 'Reload Page & Update' : 'Retry Rendering'}</span>
             </button>
             <button
               type="button"

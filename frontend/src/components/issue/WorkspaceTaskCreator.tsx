@@ -25,6 +25,7 @@ import { globalMappingService } from '../../services/globalMappingService';
 import { Mail, Users, Lock } from 'lucide-react';
 import { StandardFileIngestionWorkspace, StandardFileIngestionWorkspaceRef } from '../common/StandardFileIngestionWorkspace';
 import { IngestionDatasetPayload } from '../../types';
+import { UploadAndCleanTransactionsView } from './UploadAndCleanTransactionsView';
 
 export interface WorkspaceTaskCreatorProps {
   currentUser: { id: string; username: string; role?: string; permanentTeamId?: string; shareWorkspaceWithTeam?: boolean; [key: string]: any };
@@ -65,6 +66,7 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
   });
 
   // Basic Task Information
+  const [creatorStep, setCreatorStep] = useState<'details' | 'upload_clean'>('details');
   const [createTitle, setCreateTitle] = useState('');
   const [createDesc, setCreateDesc] = useState('');
   const [createPriority, setCreatePriority] = useState<IssuePriority>('Medium');
@@ -758,73 +760,105 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
     }
   };
 
+  if (creatorStep === 'upload_clean') {
+    return (
+      <UploadAndCleanTransactionsView
+        fileName={createFileName || 'clearing_batch_feed.xlsx'}
+        onBackToDetails={() => setCreatorStep('details')}
+        onContinueToReview={() => setCreatorStep('details')}
+        onSaveTemplate={() => {
+          setCreatorStep('details');
+        }}
+      />
+    );
+  }
+
   return (
-    <div className="space-y-3">
-      {/* Header Banner for Create Task */}
-      <div className="bg-[#0F172B] border border-slate-800 rounded-xl p-3 sm:p-3.5 text-white shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-3">
+    <div className="h-full flex flex-col min-h-0 overflow-y-auto p-6 space-y-6 font-sans bg-[#F8FAFC]">
+      {/* 1. Header with Breadcrumbs & Back to Intake */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-2 border-b border-slate-200/80">
         <div className="space-y-1">
-          <div className="flex items-center space-x-2">
-            <span className="p-1 bg-blue-500/20 rounded-md text-blue-400">
-              <Plus size={16} />
-            </span>
-            <h2 className="text-sm font-bold">Create Task & Open Investigation Space</h2>
+          <div className="flex items-center gap-2 text-xs text-slate-500 font-medium">
+            <button 
+              type="button" 
+              onClick={onBackToWorkspace}
+              className="hover:text-slate-900 transition-colors flex items-center gap-1 cursor-pointer"
+            >
+              <span>Intake</span>
+            </button>
+            <span>/</span>
+            <span className="text-slate-800 font-semibold">New Task & Investigation Space</span>
           </div>
-          <p className="text-[11px] text-slate-300 max-w-2xl leading-relaxed">
-            Assign task, connect external database, upload files, and map columns for reconciliation directly in your workspace.
-          </p>
+          <div className="flex items-center gap-3 pt-1">
+            <div className="w-10 h-10 rounded-xl bg-orange-50 border border-orange-200/70 text-[#F27421] flex items-center justify-center font-bold shadow-2xs shrink-0">
+              <Plus size={20} />
+            </div>
+            <div>
+              <h1 className="text-xl font-bold font-heading text-slate-900 tracking-tight">Create Task & Open Investigation Space</h1>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Assign task, connect external database, upload files, and map columns for reconciliation directly in your workspace.
+              </p>
+            </div>
+          </div>
         </div>
 
         <button
           type="button"
           onClick={onBackToWorkspace}
-          className="px-3.5 py-1.5 bg-slate-800/90 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold rounded-lg flex items-center space-x-1.5 transition-all cursor-pointer self-start md:self-center"
+          className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-slate-700 hover:text-slate-900 bg-white border border-slate-200/90 rounded-xl shadow-2xs hover:bg-slate-50 transition-all cursor-pointer self-start sm:self-center shrink-0"
         >
-          <ArrowLeft size={13} />
-          <span>Back to Workspace</span>
+          <ArrowLeft size={14} className="text-slate-500" />
+          <span>Back to Intake</span>
         </button>
       </div>
 
-      {/* Email / Communication Intake Banner */}
+      {/* 2. Communication Intake Context Banner (when converted from Mailbox/Chat) */}
       {initialPreFill && (
-        <div className="bg-gradient-to-r from-blue-900/90 to-indigo-900/90 border border-blue-500/40 rounded-xl p-3.5 text-white shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-3 animate-in fade-in duration-150">
-          <div className="flex items-center space-x-3">
-            <div className="p-2 bg-blue-500/20 rounded-lg text-blue-300 shrink-0">
+        <div className="bg-gradient-to-r from-blue-50 via-indigo-50/30 to-white border border-blue-200/80 rounded-2xl p-4 shadow-2xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 animate-in fade-in duration-150">
+          <div className="flex items-center space-x-3.5">
+            <div className="w-10 h-10 rounded-xl bg-blue-600 text-white flex items-center justify-center shrink-0 shadow-2xs">
               <Mail size={18} />
             </div>
             <div>
               <div className="flex items-center space-x-2">
-                <span className="text-xs font-bold text-white">
+                <span className="text-xs font-bold text-slate-900">
                   Creating Task from {initialPreFill.channel ? initialPreFill.channel.toUpperCase() : 'EMAIL'}
                 </span>
-                <span className="text-[10px] bg-blue-400/20 text-blue-200 border border-blue-400/30 px-2 py-0.5 rounded-full font-mono">
+                <span className="text-[10px] bg-blue-100 text-blue-800 border border-blue-200 px-2 py-0.5 rounded-full font-mono font-bold">
                   {initialPreFill.sourceMessageId}
                 </span>
               </div>
-              <p className="text-[11px] text-slate-300">
-                Sender: <strong>{initialPreFill.senderName || initialPreFill.senderAddress || 'External Counterparty'}</strong>
+              <p className="text-xs text-slate-600 mt-0.5">
+                Sender: <strong className="text-slate-800">{initialPreFill.senderName || initialPreFill.senderAddress || 'External Counterparty'}</strong>
                 {initialPreFill.senderAddress && initialPreFill.senderName && ` <${initialPreFill.senderAddress}>`}
                 {createFileName && (
-                  <span className="ml-2 text-emerald-300 font-semibold">• Auto-loaded spreadsheet attachment "{createFileName}"</span>
+                  <span className="ml-2 text-emerald-700 font-semibold">• Auto-loaded spreadsheet attachment "{createFileName}"</span>
                 )}
               </p>
             </div>
           </div>
           <div className="flex items-center space-x-2 self-end sm:self-auto shrink-0">
-            <span className="text-[10px] bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 px-2.5 py-1 rounded-lg font-bold">
+            <span className="text-[11px] bg-emerald-50 text-emerald-700 border border-emerald-200 px-3 py-1 rounded-lg font-bold flex items-center gap-1.5">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse"></span>
               Team Public
             </span>
           </div>
         </div>
       )}
 
-      {/* Form Container */}
-      <div className="bg-white border border-slate-200/80 rounded-xl p-4 sm:p-5 shadow-xs space-y-4">
-        <form onSubmit={handleCreateTaskSubmit} className="space-y-5">
-          {/* Basic Task Information */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {/* Row 1: Task Title + Category / Hashtag Inline */}
-            <div className="md:col-span-2 space-y-1">
-              <label className="block text-[11px] font-bold text-slate-700 uppercase">
+      {/* 3. Main Form Container */}
+      <form onSubmit={handleCreateTaskSubmit} className="space-y-6">
+        {/* Card 1: Task Information & Governance */}
+        <div className="bg-white border border-slate-200/90 rounded-2xl p-5 sm:p-6 shadow-2xs space-y-5">
+          <div className="flex items-center gap-2 pb-3 border-b border-slate-100">
+            <FileText size={16} className="text-[#F27421]" />
+            <h2 className="text-xs font-bold text-slate-900 uppercase tracking-wider">1. General Task Information</h2>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+            {/* Task Title */}
+            <div className="md:col-span-2 space-y-1.5">
+              <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider">
                 Task Title <span className="text-rose-500">*</span>
               </label>
               <input
@@ -833,18 +867,19 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
                 value={createTitle}
                 onChange={(e) => setCreateTitle(e.target.value)}
                 placeholder="e.g. Chargeback Reconciliation Batch #801 or Settlement Audit"
-                className="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs text-slate-800 focus:outline-none focus:border-blue-500 focus:bg-white transition-all font-medium"
+                className="w-full bg-slate-50/70 border border-slate-200 rounded-xl p-3 text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-[#F27421]/20 focus:border-[#F27421] focus:bg-white transition-all font-medium"
               />
             </div>
 
-            <div className="md:col-span-1 space-y-1">
-              <label className="block text-[11px] font-bold text-slate-700 uppercase">
+            {/* Category / Hashtag (#) */}
+            <div className="md:col-span-1 space-y-1.5">
+              <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider">
                 Category / Hashtag (#)
               </label>
               <select
                 value={createHashtag}
                 onChange={(e) => setCreateHashtag(e.target.value)}
-                className="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs text-slate-800 focus:outline-none focus:border-blue-500 cursor-pointer font-medium"
+                className="w-full bg-slate-50/70 border border-slate-200 rounded-xl p-3 text-xs text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#F27421]/20 focus:border-[#F27421] focus:bg-white cursor-pointer font-medium transition-all"
               >
                 <option value="Untagged">🏷️ Untagged</option>
                 {hashtags.map(h => (
@@ -855,21 +890,21 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
 
             {/* Directive Info & Workflow Approval Banner */}
             {selectedTagPreset && (
-              <div className="md:col-span-3 p-3 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs bg-indigo-50/60 border-indigo-200">
+              <div className="md:col-span-3 p-3.5 rounded-xl border flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 text-xs bg-orange-50/30 border-orange-200/80 shadow-2xs">
                 <div className="flex items-center gap-2">
-                  <span className="font-mono font-bold text-indigo-900">{selectedTagPreset.tag}</span>
+                  <span className="font-mono font-bold text-[#F27421] bg-orange-100/70 px-2.5 py-0.5 rounded-md border border-orange-200">{selectedTagPreset.tag}</span>
                   <span className="text-slate-600 truncate max-w-sm">{selectedTagPreset.description}</span>
                 </div>
 
                 {selectedTagPreset.workflowName && (
                   <div className="flex items-center gap-2 shrink-0">
-                    <span className="text-slate-500 font-mono text-[11px]">Workflow:</span>
-                    <span className="font-bold text-slate-800">{selectedTagPreset.workflowName}</span>
+                    <span className="text-slate-500 text-[11px]">Workflow:</span>
+                    <span className="font-semibold text-slate-800">{selectedTagPreset.workflowName}</span>
                     {(() => {
                       const isApproved = linkedWorkflow?.status === 'APPROVED';
                       return (
-                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold flex items-center gap-1 ${
-                          isApproved ? 'bg-emerald-100 text-emerald-800 border border-emerald-200' : 'bg-amber-100 text-amber-800 border border-amber-200'
+                        <span className={`px-2.5 py-0.5 rounded-full text-[10px] font-bold flex items-center gap-1 ${
+                          isApproved ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-amber-50 text-amber-700 border border-amber-200'
                         }`}>
                           {isApproved ? <CheckCircle2 size={11} className="text-emerald-600" /> : <AlertTriangle size={11} className="text-amber-600" />}
                           <span>{isApproved ? 'APPROVED WORKFLOW' : 'UNAPPROVED / DRAFT'}</span>
@@ -883,13 +918,13 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
 
             {/* File Schema Mismatch Alert Banner */}
             {missingHashtagColumns.length > 0 && (
-              <div className="md:col-span-3 p-3.5 bg-rose-50 border border-rose-200 rounded-xl space-y-2 text-xs animate-in fade-in duration-150">
-                <div className="flex items-center justify-between text-rose-800 font-bold">
-                  <div className="flex items-center gap-1.5">
-                    <AlertTriangle size={15} className="text-rose-600 shrink-0" />
+              <div className="md:col-span-3 p-4 bg-rose-50/80 border border-rose-200 rounded-xl space-y-2.5 text-xs animate-in fade-in duration-150 shadow-2xs">
+                <div className="flex items-center justify-between text-rose-900 font-bold">
+                  <div className="flex items-center gap-2">
+                    <AlertTriangle size={16} className="text-rose-600 shrink-0" />
                     <span>File Schema Mismatch for Hashtag Directive {selectedTagPreset?.tag}</span>
                   </div>
-                  <span className="text-[10px] bg-rose-100 text-rose-800 px-2 py-0.5 rounded-full font-mono font-bold">
+                  <span className="text-[10px] bg-rose-100 text-rose-800 px-2.5 py-0.5 rounded-full font-mono font-bold border border-rose-200">
                     {missingHashtagColumns.length} Missing Column{missingHashtagColumns.length > 1 ? 's' : ''}
                   </span>
                 </div>
@@ -898,24 +933,25 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
                   The attached file <strong>"{createFileName}"</strong> does not contain the minimum required columns expected by this hashtag directive.
                 </p>
 
-                <div className="flex items-center gap-1.5 flex-wrap">
+                <div className="flex items-center gap-1.5 flex-wrap pt-1">
                   <span className="text-[10px] text-rose-600 font-bold uppercase font-mono">Missing Required:</span>
                   {missingHashtagColumns.map(col => (
-                    <span key={col} className="px-2 py-0.5 rounded bg-rose-200/80 text-rose-900 font-mono text-[11px] font-bold border border-rose-300">
+                    <span key={col} className="px-2 py-0.5 rounded bg-rose-100 text-rose-900 font-mono text-[11px] font-bold border border-rose-300">
                       ✕ {col}
                     </span>
                   ))}
                 </div>
 
-                <div className="pt-1.5 border-t border-rose-200/60 text-[10px] text-rose-600 font-mono flex items-center justify-between">
+                <div className="pt-2 border-t border-rose-200/60 text-[10px] text-rose-600 font-mono flex items-center justify-between">
                   <span>Detected Headers ({createRawHeaders.length}): {createRawHeaders.slice(0, 6).join(', ')}{createRawHeaders.length > 6 ? '...' : ''}</span>
                   <span>Action: Provide missing columns or map fields below</span>
                 </div>
               </div>
             )}
 
-            <div className="md:col-span-3">
-              <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">
+            {/* Task Description */}
+            <div className="md:col-span-3 space-y-1.5">
+              <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider">
                 Task Description / Investigation Notes
               </label>
               <textarea
@@ -923,18 +959,19 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
                 value={createDesc}
                 onChange={(e) => setCreateDesc(e.target.value)}
                 placeholder="Describe the operational goal, anomaly details, or instructions..."
-                className="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs text-slate-800 focus:outline-none focus:border-blue-500 focus:bg-white transition-all font-medium"
+                className="w-full bg-slate-50/70 border border-slate-200 rounded-xl p-3 text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-[#F27421]/20 focus:border-[#F27421] focus:bg-white transition-all font-medium"
               />
             </div>
 
-            <div className="md:col-span-2">
-              <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">
+            {/* Assignee */}
+            <div className="md:col-span-2 space-y-1.5">
+              <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider">
                 Assign Task To
               </label>
               <select
                 value={createAssigneeId}
                 onChange={(e) => setCreateAssigneeId(e.target.value)}
-                className="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs text-slate-800 focus:outline-none focus:border-blue-500 cursor-pointer font-medium"
+                className="w-full bg-slate-50/70 border border-slate-200 rounded-xl p-3 text-xs text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#F27421]/20 focus:border-[#F27421] focus:bg-white cursor-pointer font-medium transition-all"
               >
                 <option value={currentUser.id}>Assign to Myself (@{currentUser.username})</option>
                 {users.filter(u => u.id !== currentUser.id && u.isApproved).map(u => (
@@ -943,14 +980,15 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
               </select>
             </div>
 
-            <div className="md:col-span-1">
-              <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">
+            {/* Priority */}
+            <div className="md:col-span-1 space-y-1.5">
+              <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider">
                 Priority
               </label>
               <select
                 value={createPriority}
                 onChange={(e) => setCreatePriority(e.target.value as IssuePriority)}
-                className="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs text-slate-800 focus:outline-none focus:border-blue-500 cursor-pointer font-medium"
+                className="w-full bg-slate-50/70 border border-slate-200 rounded-xl p-3 text-xs text-slate-800 focus:outline-none focus:ring-2 focus:ring-[#F27421]/20 focus:border-[#F27421] focus:bg-white cursor-pointer font-medium transition-all"
               >
                 <option value="Low">Low Priority</option>
                 <option value="Medium">Medium Priority</option>
@@ -960,108 +998,134 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
             </div>
 
             {/* Task Visibility Option */}
-            <div className="md:col-span-3 bg-slate-50 border border-slate-200/80 rounded-xl p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+            <div className="md:col-span-3 bg-slate-50/80 border border-slate-200/90 rounded-xl p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div>
-                <span className="block text-[11px] font-bold text-slate-800 uppercase">
+                <span className="block text-xs font-bold text-slate-800">
                   Task Visibility & Team Collaboration
                 </span>
-                <span className="text-[10px] text-slate-500">
+                <span className="text-[11px] text-slate-500 mt-0.5 block">
                   {taskVisibility === 'TEAM_PUBLIC'
                     ? 'Visible to all members of your team workspace. Everyone can collaborate, inspect data, and propose resolutions.'
                     : 'Personal private task. Only you and team supervisors can access this task.'}
                 </span>
               </div>
-              <div className="flex items-center space-x-2 shrink-0">
+              <div className="flex items-center bg-slate-200/70 p-1 rounded-xl shrink-0">
                 <button
                   type="button"
                   onClick={() => setTaskVisibility('TEAM_PUBLIC')}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center space-x-1.5 ${
+                  className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer flex items-center space-x-1.5 ${
                     taskVisibility === 'TEAM_PUBLIC'
-                      ? 'bg-blue-600 text-white shadow-xs'
-                      : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-100'
+                      ? 'bg-white text-slate-900 shadow-2xs font-bold'
+                      : 'text-slate-600 hover:text-slate-900'
                   }`}
                 >
-                  <Users size={13} />
+                  <Users size={13} className={taskVisibility === 'TEAM_PUBLIC' ? 'text-[#F27421]' : 'text-slate-500'} />
                   <span>Team Public</span>
                 </button>
                 <button
                   type="button"
                   onClick={() => setTaskVisibility('PERSONAL_PRIVATE')}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition-all cursor-pointer flex items-center space-x-1.5 ${
+                  className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer flex items-center space-x-1.5 ${
                     taskVisibility === 'PERSONAL_PRIVATE'
-                      ? 'bg-purple-600 text-white shadow-xs'
-                      : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-100'
+                      ? 'bg-white text-slate-900 shadow-2xs font-bold'
+                      : 'text-slate-600 hover:text-slate-900'
                   }`}
                 >
-                  <Lock size={13} />
+                  <Lock size={13} className={taskVisibility === 'PERSONAL_PRIVATE' ? 'text-indigo-600' : 'text-slate-500'} />
                   <span>Personal Private</span>
                 </button>
               </div>
             </div>
           </div>
+        </div>
 
-          {/* Investigation Space Toggle Box */}
-          <div className="bg-slate-50 border border-slate-200/80 rounded-2xl p-5 space-y-4">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center space-x-2.5">
-                <input
-                  type="checkbox"
-                  id="toggle-investigation-space-component"
-                  checked={includeInvestigationSpace}
-                  onChange={(e) => setIncludeInvestigationSpace(e.target.checked)}
-                  className="w-4 h-4 accent-blue-600 rounded cursor-pointer"
-                />
-                <label htmlFor="toggle-investigation-space-component" className="text-xs font-bold text-slate-800 cursor-pointer flex items-center gap-1.5">
-                  <Layers size={15} className="text-blue-600" />
-                  <span>Attach File & Choose Mapping Template</span>
-                </label>
-              </div>
-              {includeInvestigationSpace && (
-                <span className="text-[10px] bg-blue-100 text-blue-800 px-2.5 py-0.5 rounded-full font-semibold">
+        {/* Card 2: Investigation Space & File Dataset */}
+        <div className="bg-white border border-slate-200/90 rounded-2xl p-5 sm:p-6 shadow-2xs space-y-4">
+          <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+            <div className="flex items-center space-x-3">
+              <input
+                type="checkbox"
+                id="toggle-investigation-space-component"
+                checked={includeInvestigationSpace}
+                onChange={(e) => setIncludeInvestigationSpace(e.target.checked)}
+                className="w-4 h-4 accent-[#F27421] rounded cursor-pointer"
+              />
+              <label htmlFor="toggle-investigation-space-component" className="text-xs font-bold text-slate-900 cursor-pointer flex items-center gap-2">
+                <Layers size={16} className="text-[#F27421]" />
+                <span>2. Attach File & Investigation Space</span>
+              </label>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setCreatorStep('upload_clean')}
+                className="px-3 py-1 bg-white hover:bg-slate-50 border border-slate-300 rounded-lg text-xs font-semibold text-slate-700 hover:text-slate-900 flex items-center space-x-1.5 shadow-2xs transition-all cursor-pointer"
+                title="Open interactive spreadsheet cleaning grid (Screen 21)"
+              >
+                <Sparkles size={13} className="text-[#F27421]" />
+                <span>Clean in Grid View</span>
+              </button>
+              {includeInvestigationSpace ? (
+                <span className="text-[11px] bg-orange-50 text-[#F27421] border border-orange-200/80 px-3 py-0.5 rounded-full font-bold">
                   Investigation Space Active
+                </span>
+              ) : (
+                <span className="text-[11px] bg-slate-100 text-slate-500 px-3 py-0.5 rounded-full font-medium">
+                  Optional (Single Task Mode)
                 </span>
               )}
             </div>
-
-            {includeInvestigationSpace && (
-              <div className="pt-2">
-                <StandardFileIngestionWorkspace
-                  ref={ingestionWorkspaceRef}
-                  currentUser={currentUser}
-                  selectedHashtag={selectedTagPreset}
-                  onDatasetReady={(payload) => {
-                    setCreateFileName(payload.fileName);
-                    setCreateRawHeaders(payload.activeHeaders);
-                    setCreateFileMapping(payload.columnMappings);
-                    setCreateParsedRows(payload.transformedRows);
-                    if (payload.selectedTemplateId) {
-                      setSelectedMappingId(payload.selectedTemplateId);
-                    }
-                  }}
-                />
-              </div>
-            )}
           </div>
 
-          {/* Form Actions */}
-          <div className="flex justify-end items-center space-x-3 pt-3 border-t border-slate-100">
+          {includeInvestigationSpace && (
+            <div className="pt-2">
+              <StandardFileIngestionWorkspace
+                ref={ingestionWorkspaceRef}
+                currentUser={currentUser}
+                selectedHashtag={selectedTagPreset}
+                onDatasetReady={(payload) => {
+                  setCreateFileName(payload.fileName);
+                  setCreateRawHeaders(payload.activeHeaders);
+                  setCreateFileMapping(payload.columnMappings);
+                  setCreateParsedRows(payload.transformedRows);
+                  if (payload.selectedTemplateId) {
+                    setSelectedMappingId(payload.selectedTemplateId);
+                  }
+                }}
+              />
+            </div>
+          )}
+        </div>
+
+        {/* Action Bar Footer */}
+        <div className="sticky bottom-0 bg-white/95 backdrop-blur-xs border border-slate-200/90 rounded-2xl p-4 shadow-md flex justify-between items-center z-10">
+          <button
+            type="button"
+            onClick={onBackToWorkspace}
+            className="px-4 py-2 bg-white border border-slate-200 text-slate-700 hover:bg-slate-50 text-xs font-semibold rounded-xl transition-all cursor-pointer flex items-center gap-1.5"
+          >
+            <ArrowLeft size={14} className="text-slate-500" />
+            <span>Back to Intake</span>
+          </button>
+
+          <div className="flex items-center gap-3">
             <button
               type="button"
               onClick={onBackToWorkspace}
-              className="px-5 py-2.5 border border-slate-200 text-slate-600 hover:bg-slate-50 text-xs font-bold rounded-xl transition-all cursor-pointer"
+              className="px-4 py-2 text-slate-500 hover:text-slate-800 text-xs font-semibold transition-all cursor-pointer"
             >
               Cancel
             </button>
             <button
               type="submit"
-              className="px-6 py-2.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-xl transition-all shadow-sm flex items-center space-x-2 cursor-pointer"
+              className="px-6 py-2.5 bg-[#F27421] hover:bg-[#e06516] active:bg-[#c95712] text-white text-xs font-bold rounded-xl transition-all shadow-2xs flex items-center space-x-2 cursor-pointer"
             >
               <Plus size={15} />
               <span>Create Task & Launch Workspace</span>
             </button>
           </div>
-        </form>
-      </div>
+        </div>
+      </form>
     </div>
   );
 };

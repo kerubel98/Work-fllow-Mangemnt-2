@@ -11,3 +11,5 @@ export * from './Tooltip';
 export * from './EmptyState';
 export * from './Overlay';
 export * from './Feedback';
+export * from './DataTablePagination';
+export { default as NotificationViewerDrawer } from './NotificationViewerDrawer';

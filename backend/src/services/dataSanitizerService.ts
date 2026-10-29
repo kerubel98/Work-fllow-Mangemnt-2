@@ -7,6 +7,7 @@ import {
   TransformOperation,
   ValueTranslationDictionary
 } from '../types.js';
+import { translateWithDictionary } from './valueDictionaryService.js';
 
 export interface MappingValidationResult {
   valid: boolean;
@@ -543,10 +544,7 @@ export function applyTransformationRule(
       if (param1 && valueDictionaries) {
         const dict = valueDictionaries.find(d => d.id === param1);
         if (dict) {
-          const match = dict.mappings.find(
-            m => m.sourceValue.trim().toLowerCase() === str.trim().toLowerCase()
-          );
-          return match ? match.targetValue : str;
+          return translateWithDictionary(dict, str).output;
         }
       }
       return str;

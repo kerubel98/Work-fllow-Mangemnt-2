@@ -4,16 +4,16 @@
  */
 
 import { getPostgresPool } from '../../config/postgres.js';
-import { 
-  MessageEnvelope, 
-  StagedMessage, 
-  StagedMessageAttachment, 
-  StagedMessageStatus, 
-  ProviderConnection, 
-  ProviderFetchJob, 
-  ExternalRequestSummary, 
+import {
+  MessageEnvelope,
+  StagedMessage,
+  StagedMessageAttachment,
+  StagedMessageStatus,
+  ProviderConnection,
+  ProviderFetchJob,
+  ExternalRequestSummary,
   TaskCreationPayload,
-  SupportedMessageChannel 
+  SupportedMessageChannel
 } from '../../models/messageTypes.js';
 import { attachmentParserService } from './attachmentParserService.js';
 import { getProviderConnector } from './providerConnectors.js';
@@ -21,6 +21,7 @@ import { outboundDispatchService } from './outboundDispatchService.js';
 import { repo } from '../../store/repository.js';
 import { Issue, ChatMessage } from '../../types.js';
 import { eventService } from '../events.js';
+import { randomUUID } from 'crypto';
 
 export class StagingService {
   /**
@@ -64,8 +65,12 @@ export class StagingService {
       );
 
       // 4. Resolve routing and initial status
-      const stagedId = `stg-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
-      const effectiveTeam = envelope.teamId || parsedEnrichment.parsedFields.suggestedTeamId || 'team-settlement-01';
+      const stagedId = `stg-${randomUUID()}`;
+      let effectiveTeam = envelope.teamId || parsedEnrichment.parsedFields.suggestedTeamId || 'team-settlement-01';
+      const teamCheck = await client.query('SELECT id FROM teams WHERE id = $1 LIMIT 1;', [effectiveTeam]);
+      if (teamCheck.rows.length === 0) {
+        effectiveTeam = 'team-settlement-01';
+      }
       const initialStatus: StagedMessageStatus = 
         parsedEnrichment.confidenceScore >= 0.7 ? 'READY_FOR_TASK_CREATION' : 'NEW';
 
@@ -305,9 +310,10 @@ export class StagingService {
         // If no rows parsed yet, attempt to read directly from storagePath if file exists on disk
         if (extractedRows.length === 0 && att.storagePath) {
           try {
-            const fs = await import('fs');
+            const fs = await import('fs/promises');
             const path = await import('path');
-            if (fs.existsSync(att.storagePath)) {
+            const exists = await fs.access(att.storagePath).then(() => true).catch(() => false);
+            if (exists) {
               const ext = path.extname(att.filename).toLowerCase();
               if (ext === '.xlsx' || ext === '.xls') {
                 const XLSX = await import('xlsx');
@@ -319,7 +325,7 @@ export class StagingService {
                   detectedHeaders = Array.from(new Set([...detectedHeaders, ...Object.keys(data[0])]));
                 }
               } else if (ext === '.csv') {
-                const raw = fs.readFileSync(att.storagePath, 'utf8');
+                const raw = await fs.readFile(att.storagePath, 'utf8');
                 const lines = raw.split(/\r?\n/).filter(l => l.trim().length > 0);
                 if (lines.length > 1) {
                   const delimiter = lines[0].includes('\t') ? '\t' : (lines[0].includes(';') ? ';' : ',');
@@ -343,7 +349,7 @@ export class StagingService {
       }
     }
 
-    const issueId = `ISS-${Date.now()}-${Math.floor(1000 + Math.random() * 9000)}`;
+    const issueId = `ISS-${randomUUID()}`;
     const effectiveTitle = staged.subject || `External ${staged.category.replace(/_/g, ' ')}`;
     const effectiveTeam = staged.teamId || 'team-settlement-01';
 
@@ -727,6 +733,13 @@ export class StagingService {
 
     const provider = res.rows[0];
     const connector = getProviderConnector(provider.channel);
+
+    // Personal user mailbox connections MUST have an individual user OAuth refreshToken.
+    // Prohibit falling back to organization client_credentials, which would expose the global admin's mailbox.
+    if (provider.user_id && provider.channel === 'email' && !provider.config?.refreshToken && !provider.config?.code) {
+      throw new Error(`Personal mailbox requires OAuth 2.0 user redirection consent. Please click Authorize to sign into your personal account.`);
+    }
+
     const effectiveConfig = await this.resolveEffectiveConfig(provider.config || {});
     const jobId = `job-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`;
 

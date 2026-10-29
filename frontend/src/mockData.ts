@@ -228,7 +228,167 @@ export const INITIAL_TEAM_MESSAGES: TeamDiscussionMessage[] = [];
 
 export const INITIAL_DIRECT_MESSAGES: DirectMessage[] = [];
 
-export const INITIAL_NOTIFICATIONS: AppNotification[] = [];
+export const INITIAL_NOTIFICATIONS: AppNotification[] = [
+  {
+    id: 'notif-sample-1',
+    userId: 'all',
+    type: 'task_assigned',
+    category: 'escalation',
+    status: 'needs_action',
+    priority: 'needs_action',
+    title: 'ISS-3854 · trn test was escalated to you',
+    message: 'From Card Disputes & Chargebacks Unit. Respond within 38 min.',
+    timestamp: new Date(Date.now() - 12 * 60 * 1000).toISOString(),
+    isRead: false,
+    actionLabel: 'Stage task',
+    actionType: 'stage_task',
+    secondaryActionLabel: 'Open room',
+    targetIssueId: 'ISS-3854',
+    metadata: {
+      slaRemainingMin: 38,
+      slaDueTime: '11:17',
+      workflowName: 'New Validation Pipeline v3',
+      flaggedCount: '24 of 500',
+      terms: 'Respond 4h · resolve 24h',
+      whatHappensNext: 'Stage the task to start your response clock and open your sandbox workspace. This notification clears when you do.'
+    }
+  },
+  {
+    id: 'notif-sample-2',
+    userId: 'all',
+    type: 'chat',
+    category: 'mention',
+    status: 'needs_action',
+    priority: 'needs_action',
+    title: '@kirubel_ops mentioned you in ISS-3854',
+    message: 'Can you check the fee rounding on the switch side?',
+    timestamp: new Date(Date.now() - 25 * 60 * 1000).toISOString(),
+    isRead: false,
+    actorName: 'kirubel_ops',
+    actionLabel: 'Reply',
+    actionType: 'reply',
+    targetIssueId: 'ISS-3854',
+    metadata: {
+      terms: 'Mention awaiting technician reply',
+      whatHappensNext: 'Reply to @kirubel_ops in the case discussion. This notification clears when you reply.'
+    }
+  },
+  {
+    id: 'notif-sample-3',
+    userId: 'all',
+    type: 'system',
+    category: 'sla',
+    status: 'needs_action',
+    priority: 'needs_action',
+    title: 'Response clock is at 80%',
+    message: '38 min left to respond to ISS-3854.',
+    timestamp: new Date(Date.now() - 30 * 60 * 1000).toISOString(),
+    isRead: false,
+    actionLabel: 'Open case',
+    actionType: 'open_case',
+    targetIssueId: 'ISS-3854',
+    metadata: {
+      slaRemainingMin: 38,
+      slaDueTime: '11:17',
+      workflowName: 'New Validation Pipeline v3',
+      terms: 'Response deadline approaching'
+    }
+  },
+  {
+    id: 'notif-sample-4',
+    userId: 'all',
+    type: 'system',
+    category: 'hashtag',
+    status: 'read',
+    priority: 'normal',
+    title: '#SETTLEMENT_AMOUNT_ROUNDING is live',
+    message: 'Approved by @checker_ops_2. 24 transactions collected.',
+    timestamp: new Date(Date.now() - 60 * 60 * 1000).toISOString(),
+    isRead: true,
+    actionLabel: 'View',
+    actionType: 'view',
+    linkTab: 'hashtags',
+    metadata: {
+      workflowName: 'Settlement Amount Rounding Rule',
+      flaggedCount: '24 transactions collected'
+    }
+  },
+  {
+    id: 'notif-sample-5',
+    userId: 'all',
+    type: 'system',
+    category: 'system',
+    status: 'unread',
+    priority: 'critical',
+    title: 'SettlemFTP is offline',
+    message: 'Directory discovery timed out. 2 feeds are paused.',
+    timestamp: new Date(Date.now() - 120 * 60 * 1000).toISOString(),
+    isRead: false,
+    actionLabel: 'Open',
+    actionType: 'open_preferences',
+    linkTab: 'data_setup',
+    metadata: {
+      terms: 'Staging directory offline',
+      whatHappensNext: 'Open Data setup to verify FTP host connectivity and resume paused feeds.'
+    }
+  },
+  {
+    id: 'notif-sample-6',
+    userId: 'all',
+    type: 'system',
+    category: 'investigation',
+    status: 'read',
+    priority: 'normal',
+    title: 'Sandbox dry run finished',
+    message: '24 rows would change, 0 errors.',
+    timestamp: new Date(Date.now() - 125 * 60 * 1000).toISOString(),
+    isRead: true,
+    actionLabel: 'Open',
+    actionType: 'open_case',
+    linkTab: 'workspace',
+    metadata: {
+      flaggedCount: '24 rows previewed',
+      workflowName: 'Sandbox Dry Run Execution'
+    }
+  },
+  {
+    id: 'notif-sample-7',
+    userId: 'all',
+    type: 'system',
+    category: 'system',
+    status: 'read',
+    priority: 'normal',
+    title: 'Code 07 has no name yet',
+    message: 'Found in institution1 across 128 rows.',
+    timestamp: new Date(Date.now() - 24 * 3600 * 1000).toISOString(),
+    isRead: true,
+    actionLabel: 'Add name',
+    actionType: 'open_preferences',
+    linkTab: 'data_setup',
+    metadata: {
+      workflowName: 'Value Dictionary Semantic Mapping'
+    }
+  },
+  {
+    id: 'notif-sample-8',
+    userId: 'all',
+    type: 'system',
+    category: 'hashtag',
+    status: 'read',
+    priority: 'normal',
+    title: 'Weekly digest',
+    message: '#SETTLEMENT_AMOUNT_ROUNDING fixed 289 of 312 transactions.',
+    timestamp: new Date(Date.now() - 25 * 3600 * 1000).toISOString(),
+    isRead: true,
+    actionLabel: 'View',
+    actionType: 'view',
+    linkTab: 'hashtags',
+    metadata: {
+      flaggedCount: '289 fixed'
+    }
+  }
+];
+
 
 
 

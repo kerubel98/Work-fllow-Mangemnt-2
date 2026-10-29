@@ -47,7 +47,7 @@ export const TeamOverviewTab: React.FC<TeamOverviewTabProps> = ({
         {/* Members Card */}
         <div 
           onClick={() => onNavigateTab('members')}
-          className="p-4 bg-white border border-slate-200/90 rounded-2xl shadow-xs hover:border-blue-400 hover:shadow-sm transition-all cursor-pointer group"
+          className="p-3 bg-white border border-slate-200/90 rounded-xl shadow-xs hover:border-blue-400 hover:shadow-sm transition-all cursor-pointer group"
         >
           <div className="flex items-center justify-between text-slate-500 mb-2">
             <span className="text-xs font-mono uppercase font-bold text-slate-500">Team Members</span>
@@ -56,7 +56,7 @@ export const TeamOverviewTab: React.FC<TeamOverviewTabProps> = ({
             </div>
           </div>
           <div className="flex items-baseline space-x-2">
-            <span className="text-2xl font-bold font-mono text-slate-900">{safeUsers.length}</span>
+            <span className="text-lg font-bold font-mono text-slate-900">{safeUsers.length}</span>
             <span className="text-xs text-slate-400 font-mono">active</span>
           </div>
           <div className="mt-2 text-[11px] text-blue-600 font-medium flex items-center gap-1 group-hover:underline">
@@ -68,7 +68,7 @@ export const TeamOverviewTab: React.FC<TeamOverviewTabProps> = ({
         {/* Tasks Card */}
         <div 
           onClick={() => onNavigateTab('tasks')}
-          className="p-4 bg-white border border-slate-200/90 rounded-2xl shadow-xs hover:border-emerald-400 hover:shadow-sm transition-all cursor-pointer group"
+          className="p-3 bg-white border border-slate-200/90 rounded-xl shadow-xs hover:border-emerald-400 hover:shadow-sm transition-all cursor-pointer group"
         >
           <div className="flex items-center justify-between text-slate-500 mb-2">
             <span className="text-xs font-mono uppercase font-bold text-slate-500">Task Velocity</span>
@@ -77,7 +77,7 @@ export const TeamOverviewTab: React.FC<TeamOverviewTabProps> = ({
             </div>
           </div>
           <div className="flex items-baseline space-x-2">
-            <span className="text-2xl font-bold font-mono text-slate-900">{inProgressTasks.length + todoTasks.length}</span>
+            <span className="text-lg font-bold font-mono text-slate-900">{inProgressTasks.length + todoTasks.length}</span>
             <span className="text-xs text-slate-400 font-mono">open ({completionRate}% done)</span>
           </div>
           <div className="mt-2 text-[11px] text-emerald-600 font-medium flex items-center gap-1 group-hover:underline">
@@ -89,7 +89,7 @@ export const TeamOverviewTab: React.FC<TeamOverviewTabProps> = ({
         {/* Discussions Card */}
         <div 
           onClick={() => onNavigateTab('discussion')}
-          className="p-4 bg-white border border-slate-200/90 rounded-2xl shadow-xs hover:border-purple-400 hover:shadow-sm transition-all cursor-pointer group"
+          className="p-3 bg-white border border-slate-200/90 rounded-xl shadow-xs hover:border-purple-400 hover:shadow-sm transition-all cursor-pointer group"
         >
           <div className="flex items-center justify-between text-slate-500 mb-2">
             <span className="text-xs font-mono uppercase font-bold text-slate-500">Discussion</span>
@@ -98,7 +98,7 @@ export const TeamOverviewTab: React.FC<TeamOverviewTabProps> = ({
             </div>
           </div>
           <div className="flex items-baseline space-x-2">
-            <span className="text-2xl font-bold font-mono text-slate-900">{safeMessages.length}</span>
+            <span className="text-lg font-bold font-mono text-slate-900">{safeMessages.length}</span>
             <span className="text-xs text-slate-400 font-mono">messages</span>
           </div>
           <div className="mt-2 text-[11px] text-purple-600 font-medium flex items-center gap-1 group-hover:underline">
@@ -110,7 +110,7 @@ export const TeamOverviewTab: React.FC<TeamOverviewTabProps> = ({
         {/* Resources Card */}
         <div 
           onClick={() => onNavigateTab('resources')}
-          className="p-4 bg-white border border-slate-200/90 rounded-2xl shadow-xs hover:border-amber-400 hover:shadow-sm transition-all cursor-pointer group"
+          className="p-3 bg-white border border-slate-200/90 rounded-xl shadow-xs hover:border-amber-400 hover:shadow-sm transition-all cursor-pointer group"
         >
           <div className="flex items-center justify-between text-slate-500 mb-2">
             <span className="text-xs font-mono uppercase font-bold text-slate-500">Resources</span>
@@ -119,7 +119,7 @@ export const TeamOverviewTab: React.FC<TeamOverviewTabProps> = ({
             </div>
           </div>
           <div className="flex items-baseline space-x-2">
-            <span className="text-2xl font-bold font-mono text-slate-900">{safeDatabases.length}</span>
+            <span className="text-lg font-bold font-mono text-slate-900">{safeDatabases.length}</span>
             <span className="text-xs text-slate-400 font-mono">connections</span>
           </div>
           <div className="mt-2 text-[11px] text-amber-600 font-medium flex items-center gap-1 group-hover:underline">

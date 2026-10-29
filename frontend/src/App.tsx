@@ -15,7 +15,6 @@ import {
   INITIAL_TEAM_TASKS, INITIAL_TEAM_INSIGHTS, INITIAL_TEAM_MESSAGES, INITIAL_NOTIFICATIONS, INITIAL_DIRECT_MESSAGES
 } from './mockData';
 import { api } from './api/client';
-import TitleBar from './components/TitleBar';
 import LoginScreen from './components/LoginScreen';
 import SideNav from './components/SideNav';
 import ErrorBoundary from './components/ErrorBoundary';
@@ -24,24 +23,34 @@ import { ShieldAlert } from 'lucide-react';
 import { getUserAdminCapabilities } from './utils/adminCapabilities';
 
 import { usePersistentState } from './hooks/usePersistentState';
+import { lazyWithRetry } from './utils/lazyWithRetry';
 
-// Code-split dynamic route panels
-const IssueDetailView = lazy(() => import('./components/IssueDetailView'));
-const TeamWorkspace = lazy(() => import('./components/TeamWorkspace'));
-const PersonalChat = lazy(() => import('./components/PersonalChat'));
-const DbQueryTool = lazy(() => import('./components/DbQueryTool'));
-const WorkspaceTaskCreator = lazy(() => import('./components/issue/WorkspaceTaskCreator'));
-const ManagerialDashboard = lazy(() => import('./components/ManagerialDashboard'));
-const AdminPanel = lazy(() => import('./components/AdminPanel'));
-const WorkspaceSettings = lazy(() => import('./components/WorkspaceSettings'));
-const SystemSettings = lazy(() => import('./components/settings/SystemSettings'));
-const AdminTeamResourcesMonitor = lazy(() => import('./components/AdminTeamResourcesMonitor'));
-const GlobalTransactionSettings = lazy(() => import('./components/GlobalTransactionSettings'));
-const WorkflowStudioFlowchart = lazy(() => import('./components/settings/WorkflowStudioFlowchart'));
-const ValidationBoxManager = lazy(() => import('./components/settings/ValidationBoxManager'));
-const AutomationsView = lazy(() => import('./components/automations/AutomationsView'));
-const IntakeView = lazy(() => import('./components/intake/IntakeView').then(m => ({ default: m.IntakeView })));
+// Code-split dynamic route panels with auto-reload protection for stale chunk hashes
+const IssueDetailView = lazyWithRetry(() => import('./components/IssueDetailView'));
+const TeamWorkspace = lazyWithRetry(() => import('./components/TeamWorkspace'));
+const PersonalChat = lazyWithRetry(() => import('./components/PersonalChat'));
+const DbQueryTool = lazyWithRetry(() => import('./components/DbQueryTool'));
+const WorkspaceTaskCreator = lazyWithRetry(() => import('./components/issue/WorkspaceTaskCreator'));
+const ManagerialDashboard = lazyWithRetry(() => import('./components/ManagerialDashboard'));
+const AdminPanel = lazyWithRetry(() => import('./components/AdminPanel'));
+const WorkspaceSettings = lazyWithRetry(() => import('./components/WorkspaceSettings'));
+const SystemSettings = lazyWithRetry(() => import('./components/settings/SystemSettings'));
+const AdminTeamResourcesMonitor = lazyWithRetry(() => import('./components/AdminTeamResourcesMonitor'));
+const GlobalTransactionSettings = lazyWithRetry(() => import('./components/GlobalTransactionSettings'));
+const WorkflowStudioFlowchart = lazyWithRetry(() => import('./components/settings/WorkflowStudioFlowchart'));
+const ValidationBoxManager = lazyWithRetry(() => import('./components/settings/ValidationBoxManager'));
+const AutomationsView = lazyWithRetry(() => import('./components/automations/AutomationsView'));
+const IntakeView = lazyWithRetry(() => import('./components/intake/IntakeView').then(m => ({ default: m.IntakeView })));
+const PeopleAccessView = lazyWithRetry(() => import('./components/admin/PeopleAccessView'));
+const ConnectionsView = lazyWithRetry(() => import('./components/admin/ConnectionsView'));
+const ApprovalsInboxView = lazyWithRetry(() => import('./components/admin/ApprovalsInboxView'));
+const QuerySandboxStandaloneView = lazyWithRetry(() => import('./components/sandbox/QuerySandboxStandaloneView'));
+const OperationalAuthorityCenter = lazyWithRetry(() => import('./components/authority/OperationalAuthorityCenter'));
+const NotificationCenterView = lazyWithRetry(() => import('./components/notifications/NotificationCenterView'));
+const NotificationPreferencesView = lazyWithRetry(() => import('./components/notifications/NotificationPreferencesView'));
 import TopBar from './components/TopBar';
+import NotificationToastsAndBanner from './components/notifications/NotificationToastsAndBanner';
+import NotificationViewerDrawer from './components/common/NotificationViewerDrawer';
 import { GovernanceProvider } from './context/GovernanceContext';
 import { GlobalMappingService } from './services/globalMappingService';
 
@@ -77,6 +86,7 @@ export default function App() {
   const [teamMessages, setTeamMessages] = usePersistentState<TeamDiscussionMessage[]>('it_team_messages', INITIAL_TEAM_MESSAGES);
   const [notifications, setNotifications] = usePersistentState<AppNotification[]>('it_notifications', INITIAL_NOTIFICATIONS);
   const [directMessages, setDirectMessages] = usePersistentState<DirectMessage[]>('it_direct_messages', INITIAL_DIRECT_MESSAGES);
+  const [isNotificationDrawerOpen, setIsNotificationDrawerOpen] = useState(false);
 
   // Deep-linking target states for Notifications & Navigation
   const [deepLinkTeamId, setDeepLinkTeamId] = useState<string | null>(null);
@@ -140,6 +150,26 @@ export default function App() {
   const [adminPanelSubTab, setAdminPanelSubTab] = useState<'analytics' | 'connection_settings' | 'user_admin' | 'systems' | 'plugins'>('analytics');
   const [systemSettingsTab, setSystemSettingsTab] = useState<'dictionary' | 'connections' | 'environment'>('dictionary');
 
+  // Sidebar collapse state synced with localStorage
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState<boolean>(() => {
+    try {
+      const saved = localStorage.getItem('it_sidebar_collapsed');
+      return saved !== null ? saved === 'true' : false;
+    } catch {
+      return false;
+    }
+  });
+
+  const toggleSidebar = () => {
+    setIsSidebarCollapsed(prev => {
+      const next = !prev;
+      try {
+        localStorage.setItem('it_sidebar_collapsed', String(next));
+      } catch { }
+      return next;
+    });
+  };
+
   const handleTabChange = (tab: string, targetIssueId?: string) => {
     if (targetIssueId) {
       setDeepLinkIssueId(targetIssueId);
@@ -151,15 +181,15 @@ export default function App() {
   };
 
   const handleSelectNavigation = (tab: string, subTab?: any) => {
-    if (tab === 'system_settings') {
-      if (subTab === 'connections' || subTab === 'dictionary' || subTab === 'environment') {
-        setSystemSettingsTab(subTab);
-      }
-      setActiveNavigation('system_settings');
+    if (tab === 'data_setup' || tab === 'txn_settings') {
+      setSystemSettingsTab(subTab || 'dictionary');
+      setActiveNavigation('data_setup');
       return;
     }
-    if (tab === 'txn_settings') {
-      setSystemSettingsTab('dictionary');
+    if (tab === 'system_settings') {
+      if (subTab === 'connections' || subTab === 'dictionary' || subTab === 'environment' || subTab === 'staging' || subTab === 'transformations') {
+        setSystemSettingsTab(subTab);
+      }
       setActiveNavigation('system_settings');
       return;
     }
@@ -326,6 +356,42 @@ export default function App() {
             });
           } catch (err) {
             console.warn('SSE notification:new parse error:', err);
+          }
+        });
+
+        eventSource.addEventListener('notification:read', (e: MessageEvent) => {
+          try {
+            const { id } = JSON.parse(e.data);
+            setNotifications(prev => prev.map(n => n.id === id ? { ...n, isRead: true } : n));
+          } catch (err) {
+            console.warn('SSE notification:read parse error:', err);
+          }
+        });
+
+        eventSource.addEventListener('notification:read_all', (e: MessageEvent) => {
+          try {
+            const { userId } = JSON.parse(e.data);
+            setNotifications(prev => prev.map(n => (!userId || n.userId === userId || n.userId === 'all') ? { ...n, isRead: true } : n));
+          } catch (err) {
+            console.warn('SSE notification:read_all parse error:', err);
+          }
+        });
+
+        eventSource.addEventListener('notification:cleared_all', (e: MessageEvent) => {
+          try {
+            const { userId } = JSON.parse(e.data);
+            setNotifications(prev => prev.filter(n => userId && n.userId !== userId && n.userId !== 'all'));
+          } catch (err) {
+            console.warn('SSE notification:cleared_all parse error:', err);
+          }
+        });
+
+        eventSource.addEventListener('notification:deleted', (e: MessageEvent) => {
+          try {
+            const { id } = JSON.parse(e.data);
+            setNotifications(prev => prev.filter(n => n.id !== id));
+          } catch (err) {
+            console.warn('SSE notification:deleted parse error:', err);
           }
         });
 
@@ -549,11 +615,48 @@ export default function App() {
   const handleMarkAllNotificationsAsRead = () => {
     if (!currentUser) return;
     setNotifications(prev => prev.map(n => (n.userId === currentUser.id || n.userId === 'all') ? { ...n, isRead: true } : n));
+    api.markAllNotificationsRead(currentUser.id).catch(err => console.warn('Could not mark all notifications read in API:', err));
   };
 
   const handleClearNotifications = () => {
     if (!currentUser) return;
     setNotifications(prev => prev.filter(n => n.userId !== currentUser.id && n.userId !== 'all'));
+    api.clearAllNotifications(currentUser.id).catch(err => console.warn('Could not clear notifications in API:', err));
+  };
+
+  const handleDeleteNotification = (id: string) => {
+    setNotifications(prev => prev.filter(n => n.id !== id));
+    api.deleteNotification(id).catch(err => console.warn('Could not delete notification in API:', err));
+  };
+
+  const handleSnoozeNotification = (id: string, snoozeUntil: string) => {
+    setNotifications(prev => prev.map(n => n.id === id ? { ...n, status: 'snoozed', snoozeUntil, isRead: true } : n));
+    api.snoozeNotification(id, snoozeUntil).catch(err => console.warn('Could not snooze notification in API:', err));
+  };
+
+  const handleArchiveNotification = (id: string) => {
+    setNotifications(prev => prev.map(n => n.id === id ? { ...n, status: 'archived', isRead: true } : n));
+    api.archiveNotification(id).catch(err => console.warn('Could not archive notification in API:', err));
+  };
+
+  const handleTakeNotificationAction = (notif: AppNotification) => {
+    setNotifications(prev => prev.map(n => n.id === notif.id ? { ...n, status: 'done', isRead: true } : n));
+    api.takeNotificationAction(notif.id).catch(err => console.warn('Could not take notification action in API:', err));
+
+    if (notif.actionType === 'stage_task' || notif.targetTaskId) {
+      if (notif.targetTaskId) setDeepLinkTaskId(notif.targetTaskId);
+      setActiveNavigation('team_workspace');
+    } else if (notif.actionType === 'reply' || notif.targetDirectUserId) {
+      if (notif.targetDirectUserId) setDeepLinkDirectUserId(notif.targetDirectUserId);
+      setActiveNavigation('direct_chat');
+    } else if (notif.actionType === 'open_case' || notif.targetIssueId) {
+      if (notif.targetIssueId) setDeepLinkIssueId(notif.targetIssueId);
+      setActiveNavigation('workspace');
+    } else if (notif.actionType === 'open_preferences') {
+      setActiveNavigation('notification_preferences');
+    } else {
+      handleNotificationClick(notif);
+    }
   };
 
   // Team Action Handlers
@@ -988,7 +1091,7 @@ export default function App() {
     if (tab === 'user_admin') {
       return caps.isFullAdmin || caps.canManageUsers;
     }
-    if (tab === 'txn_settings' || tab === 'system_settings') {
+    if (tab === 'txn_settings' || tab === 'system_settings' || tab === 'data_setup') {
       return caps.isFullAdmin || caps.canManageSystems || caps.canManageColumnMapping;
     }
     if (tab === 'admin_team_resources') {
@@ -1010,7 +1113,7 @@ export default function App() {
   };
 
   return (
-    <div className="h-screen w-screen overflow-hidden bg-[#F8FAFC] text-slate-900 flex flex-col font-sans" id="applet-viewport">
+    <div className="h-full w-full overflow-hidden bg-[#F8FAFC] text-slate-900 flex flex-col font-sans" id="applet-viewport">
       {!currentUser ? (
         <div className="h-full w-full overflow-y-auto">
           <LoginScreen
@@ -1024,7 +1127,7 @@ export default function App() {
           currentUser={effectiveUser || currentUser!}
           userTeamId={teams.find(t => t.memberIds.includes((effectiveUser || currentUser)?.id))?.id}
         >
-          <div className="flex h-screen w-screen overflow-hidden bg-[#F8FAFC]" id="app-desktop-workspace">
+          <div className="flex h-full w-full overflow-hidden bg-[#F8FAFC]" id="app-desktop-workspace">
             {/* 1. Left Vertical Native Sidebar Component (Full Height) */}
             <SideNav
               currentUser={effectiveUser || currentUser!}
@@ -1036,7 +1139,7 @@ export default function App() {
               onCreateTeamClick={handleTriggerCreateTeam}
               notifications={notifications}
               unreadDirectMessageCount={unreadDirectMessageCount}
-              pendingProposalsCount={queryApprovals.filter(q => q.status === 'PENDING').length}
+              pendingProposalsCount={queryApprovals.filter(q => q.status === 'pending').length}
               openIssuesCount={issues.filter(i => i.status !== 'Closed').length || 237}
               intakeCount={60}
               automationsCount={hashtags.length || 7}
@@ -1047,6 +1150,9 @@ export default function App() {
               onClearNotifications={handleClearNotifications}
               onNotificationClick={handleNotificationClick}
               onUserUpdated={handleUserUpdated}
+              isCollapsed={isSidebarCollapsed}
+              onToggleCollapsed={toggleSidebar}
+              onLogout={handleLogout}
             />
 
             {/* 2. Main Context Dynamic Area: TopBar + Canvas */}
@@ -1055,11 +1161,26 @@ export default function App() {
                 currentUser={effectiveUser || currentUser}
                 activeNavigation={activeNavigation}
                 activeTeamName={activeTeamName}
-                onLogout={handleLogout}
                 onSelectNavigation={setActiveNavigation}
                 unreadNotificationsCount={notifications.filter(n => !n.isRead).length}
-                onToggleNotifications={() => handleSelectNavigation('team_workspace')}
+                notifications={notifications}
+                onMarkNotificationAsRead={handleMarkNotificationAsRead}
+                onMarkAllNotificationsAsRead={handleMarkAllNotificationsAsRead}
+                onNotificationClick={handleNotificationClick}
+                onOpenNotificationCenter={() => setActiveNavigation('notifications')}
+                onOpenNotificationPreferences={() => setActiveNavigation('notification_preferences')}
+                onTakeNotificationAction={handleTakeNotificationAction}
+                onToggleNotifications={() => setIsNotificationDrawerOpen(prev => !prev)}
                 environmentName="Production"
+                isSidebarCollapsed={isSidebarCollapsed}
+                onToggleSidebar={toggleSidebar}
+              />
+
+              {/* Critical Alert Banner & Floating Toasts */}
+              <NotificationToastsAndBanner
+                notifications={notifications}
+                onNotificationClick={handleNotificationClick}
+                onTakeAction={handleTakeNotificationAction}
               />
 
               {/* Main Dynamic Viewport */}
@@ -1164,35 +1285,6 @@ export default function App() {
                   />
                 )}
 
-                {activeNavigation === 'create_case' && isAuthorizedTab('create_case') && (
-                  <WorkspaceTaskCreator
-                    hashtags={hashtags}
-                    currentUser={effectiveUser || currentUser}
-                    systems={systems}
-                    databases={databases}
-                    teams={teams}
-                    users={users}
-                    onCreateIssue={handleCreateIssue}
-                    onBackToWorkspace={() => {
-                      setMailboxTaskPreFill(null);
-                      setActiveNavigation('workspace');
-                    }}
-                    onTaskCreated={(generatedTaskId) => {
-                      if (mailboxTaskPreFill?.sourceMessageId && generatedTaskId) {
-                        api.linkMessageToIssue(mailboxTaskPreFill.sourceMessageId, generatedTaskId).catch(err => {
-                          console.warn('Could not link message to issue:', err);
-                        });
-                      }
-                      setMailboxTaskPreFill(null);
-                      setActiveNavigation('workspace');
-                      if (generatedTaskId) {
-                        setDeepLinkIssueId(generatedTaskId);
-                      }
-                    }}
-                    initialPreFill={mailboxTaskPreFill}
-                  />
-                )}
-
                 {activeNavigation === 'manager_analytics' && isAuthorizedTab('manager_analytics') && (
                   <ManagerialDashboard
                     issues={issues}
@@ -1238,31 +1330,17 @@ export default function App() {
                 )}
 
                 {activeNavigation === 'user_admin' && isAuthorizedTab('user_admin') && (
-                  <AdminPanel
-                    currentUser={effectiveUser || currentUser}
-                    teams={teams}
+                  <PeopleAccessView
+                    currentUser={effectiveUser || currentUser!}
                     users={users}
+                    teams={teams}
                     databases={databases}
-                    plugins={plugins}
-                    systems={systems}
-                    queryApprovals={queryApprovals}
-                    dbAccessRequests={dbAccessRequests}
-                    connectionUsageLogs={connectionUsageLogs}
-                    onResolveQueryApproval={handleResolveQueryApproval}
-                    onResolveDbAccessRequest={handleResolveDbAccessRequest}
                     onApproveUser={handleApproveUser}
                     onDeleteUser={handleDeleteUser}
-                    onTogglePlugin={handleTogglePlugin}
-                    onAddDatabase={handleAddDatabase}
-                    onToggleDbStatus={handleToggleDbStatus}
-                    onDeleteDb={handleDeleteDb}
-                    onUpdateDb={handleUpdateDatabase}
-                    onAddSystem={(sys) => setSystems(prev => [...prev, sys])}
-                    onDeleteSystem={(sysId) => setSystems(prev => prev.filter(s => s.id !== sysId))}
-                    onUpdateSystem={(updatedSys) => setSystems(prev => prev.map(s => s.id === updatedSys.id ? updatedSys : s))}
                     onUpdateUserPrivileges={handleUpdateUserPrivileges}
-                    activeSubTab="user_admin"
-                    onSelectSubTab={setAdminPanelSubTab}
+                    onCreateTeam={handleCreateTeam}
+                    onUpdateTeam={handleUpdateTeam}
+                    onDeleteTeam={handleDeleteTeam}
                   />
                 )}
 
@@ -1279,20 +1357,22 @@ export default function App() {
                   </ErrorBoundary>
                 )}
 
-                {activeNavigation === 'system_settings' && isAuthorizedTab('system_settings') && (
-                  <ErrorBoundary fallbackTitle="System Settings Error" fallbackMessage="Could not display System Settings. You can retry or return to workspace.">
-                    <SystemSettings
-                      currentUser={effectiveUser || currentUser!}
-                      teams={teams}
-                      databases={databases}
-                      systems={systems}
-                      onAddDatabase={handleAddDatabase}
-                      onToggleDbStatus={handleToggleDbStatus}
-                      onDeleteDb={handleDeleteDb}
-                      onUpdateDb={handleUpdateDatabase}
-                      onNavigateToWorkspace={() => setActiveNavigation('workspace')}
-                      initialTab={systemSettingsTab}
-                    />
+                {(activeNavigation === 'system_settings' || activeNavigation === 'data_setup' || activeNavigation === 'txn_settings') && isAuthorizedTab(activeNavigation) && (
+                  <ErrorBoundary fallbackTitle="Data Setup Error" fallbackMessage="Could not display Data Setup. You can retry or return to workspace.">
+                    <div className="flex-1 min-h-0 overflow-y-auto p-6" id="data-setup-scroll-container">
+                      <SystemSettings
+                        currentUser={effectiveUser || currentUser!}
+                        teams={teams}
+                        databases={databases}
+                        systems={systems}
+                        onAddDatabase={handleAddDatabase}
+                        onToggleDbStatus={handleToggleDbStatus}
+                        onDeleteDb={handleDeleteDb}
+                        onUpdateDb={handleUpdateDatabase}
+                        onNavigateToWorkspace={() => setActiveNavigation('workspace')}
+                        initialTab={systemSettingsTab || 'dictionary'}
+                      />
+                    </div>
                   </ErrorBoundary>
                 )}
 
@@ -1310,22 +1390,7 @@ export default function App() {
                   </ErrorBoundary>
                 )}
 
-                {activeNavigation === 'txn_settings' && isAuthorizedTab('txn_settings') && (
-                  <ErrorBoundary fallbackTitle="System Settings Error" fallbackMessage="Could not display System Settings. You can retry or return to workspace.">
-                    <SystemSettings
-                      currentUser={effectiveUser || currentUser!}
-                      teams={teams}
-                      databases={databases}
-                      systems={systems}
-                      onAddDatabase={handleAddDatabase}
-                      onToggleDbStatus={handleToggleDbStatus}
-                      onDeleteDb={handleDeleteDb}
-                      onUpdateDb={handleUpdateDatabase}
-                      onNavigateToWorkspace={() => setActiveNavigation('workspace')}
-                      initialTab="dictionary"
-                    />
-                  </ErrorBoundary>
-                )}
+
 
                 {/* REDESIGNED WORKSPACE ROUTES */}
                 {(activeNavigation === 'automations') && (
@@ -1359,6 +1424,12 @@ export default function App() {
                         setDeepLinkIssueId(caseId);
                         setActiveNavigation('workspace');
                       }}
+                      onNavigateToCreateTask={(prefill) => {
+                        if (prefill) {
+                          setMailboxTaskPreFill(prefill);
+                        }
+                        setActiveNavigation('create_case');
+                      }}
                     />
                   </ErrorBoundary>
                 )}
@@ -1375,7 +1446,7 @@ export default function App() {
                       onCreateIssue={handleCreateIssue}
                       onBackToWorkspace={() => {
                         setMailboxTaskPreFill(null);
-                        setActiveNavigation('workspace');
+                        setActiveNavigation('intake');
                       }}
                       onTaskCreated={(generatedTaskId) => {
                         if (mailboxTaskPreFill?.sourceMessageId && generatedTaskId) {
@@ -1396,85 +1467,76 @@ export default function App() {
 
                 {activeNavigation === 'connections' && (
                   <ErrorBoundary fallbackTitle="Connections Error">
-                    <AdminPanel
-                      currentUser={effectiveUser || currentUser}
-                      teams={teams}
-                      users={users}
+                    <ConnectionsView
+                      currentUser={effectiveUser || currentUser!}
                       databases={databases}
-                      plugins={plugins}
-                      systems={systems}
-                      queryApprovals={queryApprovals}
-                      dbAccessRequests={dbAccessRequests}
-                      connectionUsageLogs={connectionUsageLogs}
-                      onResolveQueryApproval={handleResolveQueryApproval}
-                      onResolveDbAccessRequest={handleResolveDbAccessRequest}
-                      onApproveUser={handleApproveUser}
-                      onDeleteUser={handleDeleteUser}
-                      onTogglePlugin={handleTogglePlugin}
+                      teams={teams}
                       onAddDatabase={handleAddDatabase}
-                      onToggleDbStatus={handleToggleDbStatus}
-                      onDeleteDb={handleDeleteDb}
                       onUpdateDb={handleUpdateDatabase}
-                      onAddSystem={(sys) => setSystems(prev => [...prev, sys])}
-                      onDeleteSystem={(sysId) => setSystems(prev => prev.filter(s => s.id !== sysId))}
-                      onUpdateSystem={(updatedSys) => setSystems(prev => prev.map(s => s.id === updatedSys.id ? updatedSys : s))}
-                      onUpdateUserPrivileges={handleUpdateUserPrivileges}
-                      activeSubTab="connection_settings"
-                      onSelectSubTab={setAdminPanelSubTab}
+                      onDeleteDb={handleDeleteDb}
+                      onToggleDbStatus={handleToggleDbStatus}
                     />
                   </ErrorBoundary>
                 )}
 
-                {activeNavigation === 'data_setup' && (
-                  <ErrorBoundary fallbackTitle="Data Setup Error">
-                    <SystemSettings
-                      currentUser={effectiveUser || currentUser!}
-                      teams={teams}
-                      databases={databases}
-                      systems={systems}
-                      onAddDatabase={handleAddDatabase}
-                      onToggleDbStatus={handleToggleDbStatus}
-                      onDeleteDb={handleDeleteDb}
-                      onUpdateDb={handleUpdateDatabase}
-                      onNavigateToWorkspace={() => setActiveNavigation('workspace')}
-                      initialTab="dictionary"
-                    />
+                {/* Query Sandbox */}
+                {(activeNavigation === 'query_sandbox' || activeNavigation === 'sql_sandbox') && (
+                  <ErrorBoundary fallbackTitle="Query Sandbox Error">
+                    <QuerySandboxStandaloneView currentUser={effectiveUser || currentUser!} />
                   </ErrorBoundary>
                 )}
 
                 {activeNavigation === 'approvals' && (
                   <ErrorBoundary fallbackTitle="Approvals Error">
-                    <AdminPanel
-                      currentUser={effectiveUser || currentUser}
-                      teams={teams}
-                      users={users}
-                      databases={databases}
-                      plugins={plugins}
-                      systems={systems}
+                    <ApprovalsInboxView
+                      currentUser={effectiveUser || currentUser!}
                       queryApprovals={queryApprovals}
                       dbAccessRequests={dbAccessRequests}
-                      connectionUsageLogs={connectionUsageLogs}
                       onResolveQueryApproval={handleResolveQueryApproval}
                       onResolveDbAccessRequest={handleResolveDbAccessRequest}
-                      onApproveUser={handleApproveUser}
-                      onDeleteUser={handleDeleteUser}
-                      onTogglePlugin={handleTogglePlugin}
-                      onAddDatabase={handleAddDatabase}
-                      onToggleDbStatus={handleToggleDbStatus}
-                      onDeleteDb={handleDeleteDb}
-                      onUpdateDb={handleUpdateDatabase}
-                      onAddSystem={(sys) => setSystems(prev => [...prev, sys])}
-                      onDeleteSystem={(sysId) => setSystems(prev => prev.filter(s => s.id !== sysId))}
-                      onUpdateSystem={(updatedSys) => setSystems(prev => prev.map(s => s.id === updatedSys.id ? updatedSys : s))}
-                      onUpdateUserPrivileges={handleUpdateUserPrivileges}
-                      activeSubTab="analytics"
-                      onSelectSubTab={setAdminPanelSubTab}
+                      onNavigateToWorkspace={() => setActiveNavigation('workspace')}
+                    />
+                  </ErrorBoundary>
+                )}
+
+                {activeNavigation === 'authority_center' && (
+                  <ErrorBoundary fallbackTitle="Authority Center Error">
+                    <OperationalAuthorityCenter
+                      currentUser={effectiveUser || currentUser!}
+                      teams={teams}
+                      onNavigateToWorkspace={() => setActiveNavigation('workspace')}
+                    />
+                  </ErrorBoundary>
+                )}
+
+                {/* Full Notification Center (46_notification_center) */}
+                {activeNavigation === 'notifications' && (
+                  <ErrorBoundary fallbackTitle="Notification Center Error">
+                    <NotificationCenterView
+                      notifications={notifications}
+                      onMarkAsRead={handleMarkNotificationAsRead}
+                      onMarkAllAsRead={handleMarkAllNotificationsAsRead}
+                      onSnoozeNotification={handleSnoozeNotification}
+                      onArchiveNotification={handleArchiveNotification}
+                      onTakeAction={handleTakeNotificationAction}
+                      onNavigateToTarget={handleNotificationClick}
+                      onOpenPreferences={() => setActiveNavigation('notification_preferences')}
+                    />
+                  </ErrorBoundary>
+                )}
+
+                {/* Notification Preferences (47_notification_preferences) */}
+                {activeNavigation === 'notification_preferences' && (
+                  <ErrorBoundary fallbackTitle="Notification Preferences Error">
+                    <NotificationPreferencesView
+                      userId={currentUser?.id}
+                      onBackToNotifications={() => setActiveNavigation('notifications')}
                     />
                   </ErrorBoundary>
                 )}
 
                 {/* Unauthorized Administrative Route Guard Screen */}
-                {['admin_panel', 'user_admin', 'txn_settings', 'system_settings', 'admin_team_resources'].includes(activeNavigation) && !isAuthorizedTab(activeNavigation) && (
+                {['admin_panel', 'user_admin', 'txn_settings', 'system_settings', 'data_setup', 'admin_team_resources'].includes(activeNavigation) && !isAuthorizedTab(activeNavigation) && (
                   <div className="flex flex-col items-center justify-center min-h-[60vh] text-center p-6 space-y-4" id="admin-access-denied-screen">
                     <div className="w-16 h-16 rounded-2xl bg-rose-50 border border-rose-200 flex items-center justify-center text-rose-600 shadow-xs">
                       <ShieldAlert size={32} />
@@ -1500,6 +1562,18 @@ export default function App() {
           </div>
         </div>
       </GovernanceProvider>
+    )}
+    {currentUser && (
+      <NotificationViewerDrawer
+        isOpen={isNotificationDrawerOpen}
+        onClose={() => setIsNotificationDrawerOpen(false)}
+        notifications={notifications}
+        onMarkAsRead={handleMarkNotificationAsRead}
+        onMarkAllAsRead={handleMarkAllNotificationsAsRead}
+        onClearAll={handleClearNotifications}
+        onDeleteNotification={handleDeleteNotification}
+        onNotificationClick={handleNotificationClick}
+      />
     )}
     <MessageModal />
   </div>

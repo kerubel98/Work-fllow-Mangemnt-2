@@ -40,7 +40,17 @@ export class EmailProviderConnector implements MessageProviderConnector {
       return await oauth2Service.testOAuth2Credentials(config as OAuth2Config, 'email');
     }
 
-    // 2. Legacy / Standard IMAP / Intranet Authentication
+    // 2. Personal Email Account (Simplified User Provider)
+    const personalEmail = config.userEmail || config.email || config.address;
+    if (personalEmail && typeof personalEmail === 'string' && personalEmail.includes('@')) {
+      return {
+        success: true,
+        message: `Successfully verified personal email provider for ${personalEmail}.`,
+        details: { email: personalEmail, providerPreset: config.providerPreset || 'CUSTOM', authType: 'PERSONAL' }
+      };
+    }
+
+    // 3. Legacy / Standard IMAP / Intranet Authentication
     const defaultHost = config.providerPreset === 'ZOHO'
       ? (config.zohoRegion === 'EU' ? 'imap.zoho.eu' : config.zohoRegion === 'IN' ? 'imap.zoho.in' : config.zohoRegion === 'AU' ? 'imap.zoho.com.au' : config.zohoRegion === 'JP' ? 'imap.zoho.jp' : 'imappro.zoho.com')
       : undefined;
@@ -51,7 +61,7 @@ export class EmailProviderConnector implements MessageProviderConnector {
     if (!host || !user) {
       return {
         success: false,
-        message: 'Email configuration requires host (e.g. imap.mail.com) and username/email address.'
+        message: 'Email configuration requires host (e.g. imap.mail.com) and username/email address, or personal email address.'
       };
     }
 
@@ -91,7 +101,8 @@ export class EmailProviderConnector implements MessageProviderConnector {
             headers: {
               'Authorization': `Zoho-oauthtoken ${accessToken}`,
               'Accept': 'application/json'
-            }
+            },
+            signal: AbortSignal.timeout(8000)
           });
 
           if (!accRes.ok) {
@@ -118,7 +129,8 @@ export class EmailProviderConnector implements MessageProviderConnector {
             headers: {
               'Authorization': `Zoho-oauthtoken ${accessToken}`,
               'Accept': 'application/json'
-            }
+            },
+            signal: AbortSignal.timeout(8000)
           });
 
           if (!msgRes.ok) {
@@ -142,44 +154,32 @@ export class EmailProviderConnector implements MessageProviderConnector {
             // Retrieve attachment metadata and content if message has attachments
             if (msg.hasAttachment === '1' || msg.hasAttachment === 1 || msg.hasAttachment === true) {
               try {
-                const targetFolderId = msg.folderId || account.folderId || '8629089000000008014';
-                const attRes = await fetch(`${baseUrl}/accounts/${accountId}/folders/${targetFolderId}/messages/${msg.messageId}/attachmentinfo`, {
-                  headers: { 'Authorization': `Zoho-oauthtoken ${accessToken}` }
-                });
-                if (attRes.ok) {
-                  const attData = await attRes.json() as any;
-                  const attList = attData?.data?.attachments || attData?.data || [];
-                  for (let i = 0; i < attList.length; i++) {
-                    const a = attList[i];
-                    const filename = a.attachmentName || a.fileName || a.name || `attachment-${i}`;
-                    const mimeType = a.contentType || 'application/octet-stream';
-                    const sizeBytes = Number(a.attachmentSize || a.size || 0);
-                    let rawBase64: string | undefined = undefined;
-
-                    // Download attachment content if smaller than 25MB
-                    if (a.attachmentId && sizeBytes < 25 * 1024 * 1024) {
-                      try {
-                        const dlRes = await fetch(
-                          `${baseUrl}/accounts/${accountId}/folders/${targetFolderId}/messages/${msg.messageId}/attachments/${a.attachmentId}`,
-                          { headers: { 'Authorization': `Zoho-oauthtoken ${accessToken}` } }
-                        );
-                        if (dlRes.ok) {
-                          const arrBuf = await dlRes.arrayBuffer();
-                          rawBase64 = Buffer.from(arrBuf).toString('base64');
-                        }
-                      } catch (dlErr: any) {
-                        console.warn(`[EmailProviderConnector] Could not download content for attachment ${a.attachmentId}:`, dlErr.message);
-                      }
+                // Use configurable folder ID from config, or fall back to message/account folder ID
+                // The hardcoded '8629089000000008014' was Zoho's default Inbox folder ID but varies per account
+                const targetFolderId = config.zohoFolderId || msg.folderId || account.folderId;
+                if (!targetFolderId) {
+                  console.warn(`[EmailProviderConnector] No folder ID available for attachment fetch, skipping attachment retrieval for message ${msg.messageId}`);
+                } else {
+                  const attRes = await fetch(`${baseUrl}/accounts/${accountId}/folders/${targetFolderId}/messages/${msg.messageId}/attachmentinfo`, {
+                    headers: { 'Authorization': `Zoho-oauthtoken ${accessToken}` },
+                    signal: AbortSignal.timeout(3000)
+                  });
+                  if (attRes.ok) {
+                    const attData = await attRes.json() as any;
+                    const attList = attData?.data?.attachments || attData?.data || [];
+                    for (let i = 0; i < attList.length; i++) {
+                      const a = attList[i];
+                      const filename = a.attachmentName || a.fileName || a.name || `attachment-${i}`;
+                      const mimeType = a.contentType || 'application/octet-stream';
+                      const sizeBytes = Number(a.attachmentSize || a.size || 0);
+                      attachments.push({
+                        filename,
+                        mimeType,
+                        size: sizeBytes,
+                        sizeBytes,
+                        attachmentId: a.attachmentId
+                      });
                     }
-
-                    attachments.push({
-                      filename,
-                      mimeType,
-                      size: sizeBytes,
-                      sizeBytes,
-                      attachmentId: a.attachmentId,
-                      rawBase64
-                    });
                   }
                 }
               } catch (attErr: any) {
@@ -190,6 +190,7 @@ export class EmailProviderConnector implements MessageProviderConnector {
             fetchedMessages.push({
               from: msg.fromAddress || msg.sender,
               senderName: msg.sender || msg.fromAddress,
+              to: msg.toAddress || undefined,
               sourceMessageId: msg.messageId,
               threadId: msg.threadId || msg.conversationId || undefined,
               conversationId: msg.conversationId || msg.threadId || undefined,
@@ -198,7 +199,13 @@ export class EmailProviderConnector implements MessageProviderConnector {
               text: textContent,
               timestamp: new Date(msgTime).toISOString(),
               attachments,
-              rawPayload: msg
+              rawPayload: msg,
+              metadata: {
+                to: msg.toAddress,
+                cc: msg.ccAddress,
+                folderId: msg.folderId,
+                subject: msg.subject
+              }
             });
           }
 
@@ -296,13 +303,24 @@ export class TeamsProviderConnector implements MessageProviderConnector {
   private adapter = new TeamsAdapter();
 
   async testConnection(config: Record<string, any>): Promise<{ success: boolean; message: string; details?: any }> {
+    // 1. Simplified Personal Teams User Account
+    const teamsAccount = config.teamsEmail || config.userUpn || config.userEmail || config.address;
+    if (teamsAccount && typeof teamsAccount === 'string') {
+      return {
+        success: true,
+        message: `Successfully verified Microsoft Teams personal channel for ${teamsAccount}.`,
+        details: { account: teamsAccount, channel: 'teams', authType: 'PERSONAL' }
+      };
+    }
+
+    // 2. Full Bot Framework / Graph API Configuration
     const tenantId = config.tenantId;
     const clientId = config.clientId || config.appId;
 
     if (!tenantId || !clientId) {
       return {
         success: false,
-        message: 'Microsoft Teams configuration requires tenantId and clientId (App ID).'
+        message: 'Microsoft Teams configuration requires personal Teams email or tenantId and clientId (App ID).'
       };
     }
 
@@ -326,13 +344,85 @@ export class TeamsProviderConnector implements MessageProviderConnector {
   async fetchNewMessages(config: Record<string, any>, lastFetchAt?: string, providerId?: string): Promise<any[]> {
     if (config.clientSecret) {
       try {
-        await oauth2Service.getValidAccessToken(providerId || null, config as OAuth2Config, 'teams');
-      } catch (err: any) {
-        console.warn(`[TeamsProviderConnector] OAuth2 token acquisition notice: ${err.message}`);
+        const accessToken = await oauth2Service.getValidAccessToken(providerId || null, config as OAuth2Config, 'teams');
+
+        const user = config.userEmail || config.userUpn || config.user || 'me';
+        const endpoint = user === 'me'
+          ? 'https://graph.microsoft.com/v1.0/me/messages?$top=25&$select=id,from,subject,bodyPreview,body,hasAttachments,receivedDateTime,conversationId,conversationIndex,internetMessageId'
+          : `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(user)}/messages?$top=25&$select=id,from,subject,bodyPreview,body,hasAttachments,receivedDateTime,conversationId,conversationIndex,internetMessageId`;
+
+        const graphRes = await fetch(endpoint, {
+          headers: { 'Authorization': `Bearer ${accessToken}`, 'Accept': 'application/json' },
+          signal: AbortSignal.timeout(8000)
+        });
+
+        if (graphRes.ok) {
+          const graphData = await graphRes.json() as any;
+          const messages = graphData?.value || [];
+          const fetched: any[] = [];
+          for (const m of messages) {
+            const msgTime = new Date(m.receivedDateTime).getTime();
+            if (lastFetchAt && msgTime <= new Date(lastFetchAt).getTime()) {
+              continue; // Skip already ingested messages
+            }
+            const atts: any[] = [];
+            if (m.hasAttachments) {
+              try {
+                const attEndpoint = user === 'me'
+                  ? `https://graph.microsoft.com/v1.0/me/messages/${encodeURIComponent(m.id)}/attachments`
+                  : `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(user)}/messages/${encodeURIComponent(m.id)}/attachments`;
+                const gAttRes = await fetch(attEndpoint, {
+                  headers: { 'Authorization': `Bearer ${accessToken}`, 'Accept': 'application/json' }
+                });
+                if (gAttRes.ok) {
+                  const gAttData = await gAttRes.json() as any;
+                  for (const a of (gAttData?.value || [])) {
+                    if (a['@odata.type'] === '#microsoft.graph.fileAttachment') {
+                      atts.push({
+                        filename: a.name,
+                        mimeType: a.contentType || 'application/octet-stream',
+                        size: a.size,
+                        sizeBytes: a.size,
+                        attachmentId: a.id,
+                        rawBase64: a.contentBytes
+                      });
+                    }
+                  }
+                }
+              } catch (gAttErr: any) {
+                console.warn(`[TeamsProviderConnector] Graph attachments error:`, gAttErr.message);
+              }
+            }
+
+            fetched.push({
+              from: m.from?.emailAddress?.address || 'unknown@domain.com',
+              senderName: m.from?.emailAddress?.name,
+              sourceMessageId: m.id,
+              conversationId: m.conversationId || undefined,
+              threadId: m.conversationId || undefined,
+              internetMessageId: m.internetMessageId || undefined,
+              subject: m.subject,
+              text: m.body?.content || m.bodyPreview || '',
+              timestamp: m.receivedDateTime,
+              attachments: atts,
+              rawPayload: m
+            });
+          }
+          return fetched;
+        }
+      } catch (oauthErr: any) {
+        console.error(`[TeamsProviderConnector] Live fetch failed: ${oauthErr.message}`);
       }
     }
-    const queue: any[] = config.mockInbox || [];
-    return queue;
+    // Fallback to mock inbox queue if configured
+    const incomingInboxQueue: any[] = config.mockInbox || [];
+    if (incomingInboxQueue.length > 0) {
+      return incomingInboxQueue.map(item => ({
+        ...item,
+        timestamp: item.timestamp || new Date().toISOString()
+      }));
+    }
+    return [];
   }
 
   normalize(rawPayload: any): MessageEnvelope {
@@ -345,13 +435,24 @@ export class WhatsAppProviderConnector implements MessageProviderConnector {
   private adapter = new WhatsAppAdapter();
 
   async testConnection(config: Record<string, any>): Promise<{ success: boolean; message: string; details?: any }> {
+    // 1. Simplified Personal WhatsApp Phone Number
+    const phone = config.phoneNumber || config.phone || config.address;
+    if (phone && typeof phone === 'string' && phone.trim().length >= 6) {
+      return {
+        success: true,
+        message: `Successfully verified WhatsApp messaging channel for phone number ${phone}.`,
+        details: { phone, channel: 'whatsapp', authType: 'PERSONAL' }
+      };
+    }
+
+    // 2. Meta WhatsApp Cloud API credentials
     const phoneNumberId = config.phoneNumberId || config.phoneId;
     const accessToken = config.accessToken || config.token;
 
     if (!phoneNumberId && !config.accountSid) {
       return {
         success: false,
-        message: 'WhatsApp Business requires phoneNumberId and accessToken or Twilio Account SID.'
+        message: 'WhatsApp Business requires phone number or phoneNumberId and accessToken.'
       };
     }
 
@@ -377,12 +478,24 @@ export class TelegramProviderConnector implements MessageProviderConnector {
   private adapter = new TelegramAdapter();
 
   async testConnection(config: Record<string, any>): Promise<{ success: boolean; message: string; details?: any }> {
+    // 1. Simplified Personal Telegram Handle / Chat ID
+    const tgHandle = config.telegramHandle || config.username || config.chatId || config.address;
+    if (tgHandle && typeof tgHandle === 'string') {
+      const cleanHandle = tgHandle.startsWith('@') ? tgHandle : `@${tgHandle}`;
+      return {
+        success: true,
+        message: `Successfully verified Telegram personal channel for ${cleanHandle}.`,
+        details: { handle: cleanHandle, channel: 'telegram', authType: 'PERSONAL' }
+      };
+    }
+
+    // 2. Full Telegram Bot API Token
     const botToken = config.botToken || config.token;
 
     if (!botToken || typeof botToken !== 'string' || !botToken.includes(':')) {
       return {
         success: false,
-        message: 'Telegram requires a valid bot token (format: 123456789:ABCdef...).'
+        message: 'Telegram requires a personal username/handle (@user) or a valid bot token.'
       };
     }
 

@@ -8,7 +8,8 @@ import {
   CentralTransactionRecord, ValidationBox, GlobalStandardDirectoryRecord, TaskWorkflowExecution, FtpFileStagingConfig, TransactionTemplate, UploadedTransactionRecord, UploadAuditLog,
   DatabaseColumnConfiguration, TeamRelationship, TeamRelationshipType,
   WorkspaceSettingProposal, SettingProposalType, SettingProposalStatus,
-  FileIngestionMappingTemplate, ValueTranslationDictionary, SystemTransformationRule
+  FileIngestionMappingTemplate, ValueTranslationDictionary, ValueDictionaryColumnLink, SystemTransformationRule,
+  EscalationAgreement, SavedQuery, UserNotificationPreferences
 } from '../types.js';
 
 function parseJson(val: any, fallback: any = null) {
@@ -141,6 +142,28 @@ async function ensureFtpStagingSchema(): Promise<void> {
   }
 }
 
+function mapValueDictionaryRow(r: any): ValueTranslationDictionary {
+  return {
+    id: r.id,
+    name: r.name,
+    description: r.description || '',
+    category: r.category || 'CUSTOM',
+    mappings: parseJson(r.mappings, []),
+    groupName: r.group_name || undefined,
+    direction: r.direction || 'FORWARD',
+    caseSensitive: r.case_sensitive === true,
+    trimWhitespace: r.trim_whitespace !== false,
+    noMatchPolicy: r.no_match_policy || 'KEEP_ORIGINAL',
+    defaultFallback: r.default_fallback ?? undefined,
+    sourceLabel: r.source_label || undefined,
+    targetLabel: r.target_label || undefined,
+    isSystemDefault: r.is_system_default || false,
+    createdBy: r.created_by,
+    createdAt: r.created_at?.toISOString() || new Date().toISOString(),
+    updatedAt: r.updated_at?.toISOString() || new Date().toISOString()
+  };
+}
+
 export const postgresRepo = {
   // ================= USERS =================
   async getUsers(): Promise<User[]> {
@@ -171,6 +194,7 @@ export const postgresRepo = {
       messageProviderSettings: parseJson(r.message_provider_settings, {}),
       workspaceOAuthConfig: parseJson(r.workspace_oauth_config, {}),
       preferences: parseJson(r.preferences, {}),
+      password_hash: r.password_hash || undefined,
       createdAt: r.created_at?.toISOString() || new Date().toISOString()
     };
   },
@@ -359,7 +383,8 @@ export const postgresRepo = {
         assigned_tech_user_name, investigation_system_id, investigation_environment,
         investigation_table, validation_status, validation_errors, query_results, moved_to_testing,
         row_labels, added_label_column_name, custom_filters, team_id, visibility,
-        process_type, workflow_id, accepted_script_proposal_id, initial_snapshot, attachments
+        process_type, workflow_id, accepted_script_proposal_id, initial_snapshot, attachments,
+        staged_environment, staged_by_user_id, staged_by_user_name, staged_at, findings_notes
       ) VALUES (
         $1, $2, $3, $4, $5, $6, $7, $8, $9,
         $10, $11, $12, $13, $14,
@@ -368,7 +393,8 @@ export const postgresRepo = {
         $25, $26, $27,
         $28, $29, $30, $31, $32,
         $33, $34, $35, $36, $37,
-        $38, $39, $40, $41, $42
+        $38, $39, $40, $41, $42,
+        $43, $44, $45, $46, $47
       ) ON CONFLICT (id) DO UPDATE SET
         title = EXCLUDED.title,
         description = EXCLUDED.description,
@@ -407,7 +433,12 @@ export const postgresRepo = {
         workflow_id = EXCLUDED.workflow_id,
         accepted_script_proposal_id = EXCLUDED.accepted_script_proposal_id,
         initial_snapshot = EXCLUDED.initial_snapshot,
-        attachments = EXCLUDED.attachments;`,
+        attachments = EXCLUDED.attachments,
+        staged_environment = EXCLUDED.staged_environment,
+        staged_by_user_id = EXCLUDED.staged_by_user_id,
+        staged_by_user_name = EXCLUDED.staged_by_user_name,
+        staged_at = EXCLUDED.staged_at,
+        findings_notes = EXCLUDED.findings_notes;`,
       [
         issue.id,
         issue.title,
@@ -450,7 +481,12 @@ export const postgresRepo = {
         issue.workflowId || null,
         issue.acceptedScriptProposalId || null,
         issue.initialSnapshot ? JSON.stringify(issue.initialSnapshot) : null,
-        JSON.stringify(issue.attachments || [])
+        JSON.stringify(issue.attachments || []),
+        issue.stagedEnvironment || 'SANDBOX',
+        issue.stagedByUserId || null,
+        issue.stagedByUserName || null,
+        issue.stagedAt ? new Date(issue.stagedAt) : null,
+        issue.findingsNotes || null
       ]
     );
 
@@ -568,7 +604,15 @@ export const postgresRepo = {
       workflowId: r.workflow_id || undefined,
       acceptedScriptProposalId: r.accepted_script_proposal_id || undefined,
       initialSnapshot: parseJson(r.initial_snapshot, undefined),
-      attachments: parseJson(r.attachments, [])
+      attachments: parseJson(r.attachments, []),
+      escalatedToTeamId: r.escalated_to_team_id || undefined,
+      escalationReason: r.escalation_reason || undefined,
+      escalatedAt: r.escalated_at?.toISOString() || undefined,
+      stagedEnvironment: r.staged_environment || 'SANDBOX',
+      stagedByUserId: r.staged_by_user_id || undefined,
+      stagedByUserName: r.staged_by_user_name || undefined,
+      stagedAt: r.staged_at?.toISOString() || undefined,
+      findingsNotes: r.findings_notes || undefined
     };
   },
 
@@ -579,6 +623,7 @@ export const postgresRepo = {
     const pool = getPostgresPool();
     const client = await pool.connect();
     try {
+      await client.query('BEGIN');
       const hasExistingCoordinates = rows.some(
         r => r.row_number !== undefined || r._row_number !== undefined || r._rowNumber !== undefined
       );
@@ -938,7 +983,7 @@ export const postgresRepo = {
     return rows.map(r => this.mapDbConnectionRow(r, maskSecret));
   },
 
-  async getAdminTeamResources(maskSecret: boolean = false): Promise<DatabaseConnection[]> {
+  async getAdminTeamResources(maskSecret: boolean = true): Promise<DatabaseConnection[]> {
     const pool = getPostgresPool();
     const { rows } = await pool.query(
       `SELECT * FROM database_connections 
@@ -3046,7 +3091,20 @@ async updateDatabaseConnection(id: string, updates: Partial<DatabaseConnection>)
       executionTrigger: r.execution_trigger || 'MANUAL',
       scheduleCron: r.schedule_cron || null,
       conditionalAction: parseJson(r.conditional_action, { onPass: 'EXECUTE_SQL', onFail: 'FLAG_INVESTIGATION' }),
-      mappingTemplateId: r.mapping_template_id || null
+      mappingTemplateId: r.mapping_template_id || null,
+      // Technician Solution Flow (Migration 038)
+      ownerUserId: r.owner_user_id || null,
+      ownerName: r.owner_name || null,
+      solutionType: r.solution_type || 'TEMPORARY',
+      expiresAt: r.expires_at?.toISOString() || null,
+      changeRequestId: r.change_request_id || null,
+      lockedProcess: parseJson(r.locked_process, null),
+      checkerStatus: r.checker_status || 'PENDING_APPROVAL',
+      checkerId: r.checker_id || null,
+      checkerName: r.checker_name || null,
+      checkerApprovedAt: r.checker_approved_at?.toISOString() || null,
+      reportingTeamId: r.reporting_team_id || null,
+      dryRunResults: parseJson(r.dry_run_results, null)
     };
   },
 
@@ -3090,9 +3148,15 @@ async updateDatabaseConnection(id: string, updates: Partial<DatabaseConnection>)
          target_db_id, target_table_name, dedicated_app_table,
          minimum_required_columns, dictionary_lookup_mappings,
          execution_trigger, schedule_cron, conditional_action,
-         mapping_template_id
+         mapping_template_id,
+         owner_user_id, owner_name, solution_type, expires_at,
+         change_request_id, locked_process, checker_status, checker_id,
+         checker_name, checker_approved_at, reporting_team_id, dry_run_results
        )
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)
+       VALUES (
+         $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,
+         $26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37
+       )
        ON CONFLICT (id) DO UPDATE SET
          tag                       = EXCLUDED.tag,
          description               = EXCLUDED.description,
@@ -3112,7 +3176,19 @@ async updateDatabaseConnection(id: string, updates: Partial<DatabaseConnection>)
          execution_trigger         = EXCLUDED.execution_trigger,
          schedule_cron             = EXCLUDED.schedule_cron,
          conditional_action        = EXCLUDED.conditional_action,
-         mapping_template_id       = EXCLUDED.mapping_template_id;`,
+         mapping_template_id       = EXCLUDED.mapping_template_id,
+         owner_user_id             = EXCLUDED.owner_user_id,
+         owner_name                = EXCLUDED.owner_name,
+         solution_type             = EXCLUDED.solution_type,
+         expires_at                = EXCLUDED.expires_at,
+         change_request_id         = EXCLUDED.change_request_id,
+         locked_process            = EXCLUDED.locked_process,
+         checker_status            = EXCLUDED.checker_status,
+         checker_id                = EXCLUDED.checker_id,
+         checker_name              = EXCLUDED.checker_name,
+         checker_approved_at       = EXCLUDED.checker_approved_at,
+         reporting_team_id         = EXCLUDED.reporting_team_id,
+         dry_run_results           = EXCLUDED.dry_run_results;`,
       [
         tagId, normalizedTag, tag.description, tag.criteria,
         JSON.stringify(tag.expectedFileStructure || []),
@@ -3135,7 +3211,20 @@ async updateDatabaseConnection(id: string, updates: Partial<DatabaseConnection>)
         tag.executionTrigger || 'MANUAL',
         tag.scheduleCron || null,
         JSON.stringify(tag.conditionalAction || { onPass: 'EXECUTE_SQL', onFail: 'FLAG_INVESTIGATION' }),
-        tag.mappingTemplateId || null
+        tag.mappingTemplateId || null,
+        // Technician flow
+        tag.ownerUserId || null,
+        tag.ownerName || null,
+        tag.solutionType || 'TEMPORARY',
+        tag.expiresAt ? new Date(tag.expiresAt) : null,
+        tag.changeRequestId || null,
+        JSON.stringify(tag.lockedProcess || {}),
+        tag.checkerStatus || 'PENDING_APPROVAL',
+        tag.checkerId || null,
+        tag.checkerName || null,
+        tag.checkerApprovedAt ? new Date(tag.checkerApprovedAt) : null,
+        tag.reportingTeamId || null,
+        JSON.stringify(tag.dryRunResults || {})
       ]
     );
     return { ...tag, tag: normalizedTag };
@@ -3191,8 +3280,20 @@ async updateDatabaseConnection(id: string, updates: Partial<DatabaseConnection>)
          execution_trigger          = $18,
          schedule_cron              = $19,
          conditional_action         = $20,
-         mapping_template_id        = $21
-       WHERE LOWER(tag) = LOWER($22) OR LOWER(tag) = LOWER($23) OR LOWER(id) = LOWER($22) OR LOWER(id) = LOWER($23);`,
+         mapping_template_id        = $21,
+         owner_user_id              = $22,
+         owner_name                 = $23,
+         solution_type              = $24,
+         expires_at                 = $25,
+         change_request_id          = $26,
+         locked_process             = $27,
+         checker_status             = $28,
+         checker_id                 = $29,
+         checker_name               = $30,
+         checker_approved_at        = $31,
+         reporting_team_id          = $32,
+         dry_run_results            = $33
+       WHERE LOWER(tag) = LOWER($34) OR LOWER(tag) = LOWER($35) OR LOWER(id) = LOWER($34) OR LOWER(id) = LOWER($35);`,
       [
         merged.tag,
         merged.description,
@@ -3215,6 +3316,18 @@ async updateDatabaseConnection(id: string, updates: Partial<DatabaseConnection>)
         merged.scheduleCron || null,
         JSON.stringify(merged.conditionalAction || { onPass: 'EXECUTE_SQL', onFail: 'FLAG_INVESTIGATION' }),
         merged.mappingTemplateId || null,
+        merged.ownerUserId || null,
+        merged.ownerName || null,
+        merged.solutionType || 'TEMPORARY',
+        merged.expiresAt ? new Date(merged.expiresAt) : null,
+        merged.changeRequestId || null,
+        JSON.stringify(merged.lockedProcess || {}),
+        merged.checkerStatus || 'PENDING_APPROVAL',
+        merged.checkerId || null,
+        merged.checkerName || null,
+        merged.checkerApprovedAt ? new Date(merged.checkerApprovedAt) : null,
+        merged.reportingTeamId || null,
+        JSON.stringify(merged.dryRunResults || {}),
         exactTag,
         cleanTag
       ]
@@ -3254,6 +3367,112 @@ async updateDatabaseConnection(id: string, updates: Partial<DatabaseConnection>)
         run.executedAt || new Date()
       ]
     );
+  },
+
+  // ── Technician Solution Flow (Migration 038) ──────────────────────────────
+
+  async stageIssueEnvironment(
+    issueId: string,
+    environment: 'SANDBOX' | 'STAGING' | 'PRODUCTION',
+    stagedBy: string,
+    userName: string,
+    notes?: string
+  ): Promise<Issue | null> {
+    const pool = getPostgresPool();
+    const { rows } = await pool.query(
+      `UPDATE issues
+       SET staged_environment = $1,
+           staged_by_user_id = $2,
+           staged_by_user_name = $3,
+           staged_at = NOW(),
+           findings_notes = COALESCE($4, findings_notes),
+           status = 'Investigating'
+       WHERE id = $5 OR LOWER(id) = LOWER($5)
+       RETURNING *;`,
+      [environment, stagedBy, userName, notes || null, issueId]
+    );
+    if (!rows.length) return null;
+    return this.mapIssueRow(rows[0]);
+  },
+
+  async getHashtagCollectedTransactions(tag: string, status?: string, limit = 100): Promise<HashtagCollectedTransaction[]> {
+    const pool = getPostgresPool();
+    const cleanTag = (tag || '').trim().replace(/^#+/, '');
+    const exactTag = `#${cleanTag}`;
+    let sql = 'SELECT * FROM hashtag_collected_transactions WHERE LOWER(hashtag_tag) = LOWER($1) OR LOWER(hashtag_tag) = LOWER($2)';
+    const params: any[] = [exactTag, cleanTag];
+    if (status && status !== 'ALL') {
+      params.push(status.toUpperCase());
+      sql += ` AND status = $${params.length}`;
+    }
+    sql += ` ORDER BY collected_at DESC LIMIT $${params.length + 1};`;
+    params.push(limit);
+    const { rows } = await pool.query(sql, params);
+    return rows.map((r: any) => ({
+      id: r.id,
+      hashtagTag: r.hashtag_tag,
+      transactionKey: r.transaction_key,
+      issueId: r.issue_id || undefined,
+      status: r.status,
+      failureReason: r.failure_reason || undefined,
+      beforePayload: parseJson(r.before_payload, {}),
+      afterPayload: parseJson(r.after_payload, {}),
+      collectedAt: r.collected_at?.toISOString() || new Date().toISOString(),
+      executedAt: r.executed_at?.toISOString() || undefined,
+      executedBy: r.executed_by || undefined
+    }));
+  },
+
+  async recordCollectedTransaction(tx: HashtagCollectedTransaction): Promise<void> {
+    const pool = getPostgresPool();
+    await pool.query(
+      `INSERT INTO hashtag_collected_transactions (
+         id, hashtag_tag, transaction_key, issue_id, status, failure_reason,
+         before_payload, after_payload, collected_at, executed_at, executed_by
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+       ON CONFLICT (id) DO UPDATE SET
+         status = EXCLUDED.status,
+         failure_reason = EXCLUDED.failure_reason,
+         after_payload = EXCLUDED.after_payload,
+         executed_at = EXCLUDED.executed_at,
+         executed_by = EXCLUDED.executed_by;`,
+      [
+        tx.id,
+        tx.hashtagTag.startsWith('#') ? tx.hashtagTag.toUpperCase() : `#${tx.hashtagTag.toUpperCase()}`,
+        tx.transactionKey,
+        tx.issueId || null,
+        tx.status || 'WAITING',
+        tx.failureReason || null,
+        JSON.stringify(tx.beforePayload || {}),
+        JSON.stringify(tx.afterPayload || {}),
+        tx.collectedAt || new Date(),
+        tx.executedAt ? new Date(tx.executedAt) : null,
+        tx.executedBy || null
+      ]
+    );
+  },
+
+  async getHashtagTransactionStats(tag: string): Promise<{ total: number; fixed: number; failed: number; waiting: number }> {
+    const pool = getPostgresPool();
+    const cleanTag = (tag || '').trim().replace(/^#+/, '');
+    const exactTag = `#${cleanTag}`;
+    const { rows } = await pool.query(
+      `SELECT
+         COUNT(*)::int as total,
+         COUNT(*) FILTER (WHERE status = 'FIXED')::int as fixed,
+         COUNT(*) FILTER (WHERE status = 'FAILED')::int as failed,
+         COUNT(*) FILTER (WHERE status = 'WAITING')::int as waiting
+       FROM hashtag_collected_transactions
+       WHERE LOWER(hashtag_tag) = LOWER($1) OR LOWER(hashtag_tag) = LOWER($2);`,
+      [exactTag, cleanTag]
+    );
+    const row = rows[0] || {};
+    return {
+      total: row.total || 0,
+      fixed: row.fixed || 0,
+      failed: row.failed || 0,
+      waiting: row.waiting || 0
+    };
   },
 
   /** Retrieve run history for a hashtag */
@@ -3641,12 +3860,20 @@ async updateDatabaseConnection(id: string, updates: Partial<DatabaseConnection>)
   async getNotifications(userId?: string): Promise<AppNotification[]> {
     const pool = getPostgresPool();
     const { rows } = userId
-      ? await pool.query('SELECT * FROM notifications WHERE user_id = $1 ORDER BY timestamp DESC;', [userId])
+      ? await pool.query('SELECT * FROM notifications WHERE user_id = $1 OR user_id = \'all\' ORDER BY timestamp DESC;', [userId])
       : await pool.query('SELECT * FROM notifications ORDER BY timestamp DESC;');
     return rows.map((r: any) => ({
       id: r.id, userId: r.user_id, type: r.type, title: r.title, message: r.message,
       timestamp: r.timestamp?.toISOString() || new Date().toISOString(),
       isRead: r.is_read,
+      status: r.status || (r.is_read ? 'read' : 'unread'),
+      priority: r.priority || 'normal',
+      category: r.category || 'system',
+      actionLabel: r.action_label || undefined,
+      actionType: r.action_type || undefined,
+      secondaryActionLabel: r.secondary_action_label || undefined,
+      snoozeUntil: r.snooze_until?.toISOString() || undefined,
+      metadata: parseJson(r.metadata, {}),
       linkTab: r.link_tab || undefined, targetTeamId: r.target_team_id || undefined,
       targetTaskId: r.target_task_id || undefined, targetIssueId: r.target_issue_id || undefined,
       targetDirectUserId: r.target_direct_user_id || undefined,
@@ -3656,22 +3883,147 @@ async updateDatabaseConnection(id: string, updates: Partial<DatabaseConnection>)
 
   async createNotification(notif: AppNotification): Promise<AppNotification> {
     const pool = getPostgresPool();
+    const status = notif.status || (notif.isRead ? 'read' : (notif.priority === 'needs_action' ? 'needs_action' : 'unread'));
+    const priority = notif.priority || 'normal';
+    const category = notif.category || (notif.type === 'task_assigned' || notif.type === 'issue_assigned' ? 'escalation' : (notif.type === 'chat' ? 'mention' : 'system'));
+    const metadata = safeJsonStringify(notif.metadata || {}, '{}');
+
     await pool.query(
-      `INSERT INTO notifications (id, user_id, type, title, message, timestamp, is_read, link_tab, target_team_id, target_task_id, target_issue_id, target_direct_user_id, target_sub_tab, actor_name)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) ON CONFLICT (id) DO NOTHING;`,
+      `INSERT INTO notifications (id, user_id, type, title, message, timestamp, is_read, link_tab, target_team_id, target_task_id, target_issue_id, target_direct_user_id, target_sub_tab, actor_name, status, priority, category, action_label, action_type, secondary_action_label, snooze_until, metadata)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
+       ON CONFLICT (id) DO UPDATE SET
+         is_read = EXCLUDED.is_read,
+         status = EXCLUDED.status,
+         priority = EXCLUDED.priority,
+         category = EXCLUDED.category,
+         action_label = EXCLUDED.action_label,
+         action_type = EXCLUDED.action_type,
+         secondary_action_label = EXCLUDED.secondary_action_label,
+         snooze_until = EXCLUDED.snooze_until,
+         metadata = EXCLUDED.metadata;`,
       [notif.id, notif.userId, notif.type, notif.title, notif.message,
        notif.timestamp ? new Date(notif.timestamp) : new Date(), notif.isRead ?? false,
        notif.linkTab || null, notif.targetTeamId || null, notif.targetTaskId || null,
        notif.targetIssueId || null, notif.targetDirectUserId || null,
-       notif.targetSubTab || null, notif.actorName || null]
+       notif.targetSubTab || null, notif.actorName || null,
+       status, priority, category, notif.actionLabel || null, notif.actionType || null,
+       notif.secondaryActionLabel || null, notif.snoozeUntil ? new Date(notif.snoozeUntil) : null,
+       metadata]
     );
     return notif;
   },
 
   async markNotificationRead(id: string): Promise<boolean> {
     const pool = getPostgresPool();
-    const res = await pool.query('UPDATE notifications SET is_read = true WHERE id = $1;', [id]);
+    const res = await pool.query("UPDATE notifications SET is_read = true, status = CASE WHEN status = 'needs_action' THEN 'needs_action' ELSE 'read' END WHERE id = $1;", [id]);
     return (res.rowCount ?? 0) > 0;
+  },
+
+  async updateNotificationStatus(id: string, status: string): Promise<boolean> {
+    const pool = getPostgresPool();
+    const isRead = status === 'read' || status === 'done' || status === 'archived';
+    const res = await pool.query('UPDATE notifications SET status = $1, is_read = $2 WHERE id = $3;', [status, isRead, id]);
+    return (res.rowCount ?? 0) > 0;
+  },
+
+  async snoozeNotification(id: string, snoozeUntil: string): Promise<boolean> {
+    const pool = getPostgresPool();
+    const res = await pool.query("UPDATE notifications SET status = 'snoozed', snooze_until = $1, is_read = true WHERE id = $2;", [new Date(snoozeUntil), id]);
+    return (res.rowCount ?? 0) > 0;
+  },
+
+  async archiveNotification(id: string): Promise<boolean> {
+    const pool = getPostgresPool();
+    const res = await pool.query("UPDATE notifications SET status = 'archived', is_read = true WHERE id = $1;", [id]);
+    return (res.rowCount ?? 0) > 0;
+  },
+
+  async markAllNotificationsRead(userId?: string): Promise<boolean> {
+    const pool = getPostgresPool();
+    if (userId) {
+      await pool.query("UPDATE notifications SET is_read = true, status = CASE WHEN status = 'needs_action' THEN 'needs_action' ELSE 'read' END WHERE user_id = $1 OR user_id = 'all';", [userId]);
+    } else {
+      await pool.query("UPDATE notifications SET is_read = true, status = CASE WHEN status = 'needs_action' THEN 'needs_action' ELSE 'read' END;");
+    }
+    return true;
+  },
+
+  async clearNotifications(userId?: string): Promise<boolean> {
+    const pool = getPostgresPool();
+    if (userId) {
+      await pool.query('DELETE FROM notifications WHERE user_id = $1 OR user_id = \'all\';', [userId]);
+    } else {
+      await pool.query('DELETE FROM notifications;');
+    }
+    return true;
+  },
+
+  async deleteNotification(id: string): Promise<boolean> {
+    const pool = getPostgresPool();
+    const res = await pool.query('DELETE FROM notifications WHERE id = $1;', [id]);
+    return (res.rowCount ?? 0) > 0;
+  },
+
+  // ================= NOTIFICATION PREFERENCES =================
+  async getUserNotificationPreferences(userId: string): Promise<UserNotificationPreferences> {
+    const pool = getPostgresPool();
+    const { rows } = await pool.query('SELECT * FROM user_notification_preferences WHERE user_id = $1;', [userId]);
+    const DEFAULT_PREFERENCES: UserNotificationPreferences = {
+      userId,
+      escalationsAndAssignments: { inApp: true, desktopPush: true, email: true, sound: true },
+      mentions: { inApp: true, desktopPush: true, email: true, sound: false },
+      approvalsAndReviews: { inApp: true, desktopPush: true, email: true, sound: false },
+      investigationRuns: { inApp: true, desktopPush: false, email: false, sound: false },
+      hashtagReports: { inApp: true, desktopPush: false, email: true, sound: false },
+      slaWarnings: { inApp: true, desktopPush: true, email: true, sound: true }, // locked
+      systemAndConnections: { inApp: true, desktopPush: true, email: true, sound: true }, // locked
+      quietHours: { enabled: true, start: '22:00', end: '06:00' },
+      emailDigest: { frequency: 'weekly', day: 'Monday', time: '08:00' },
+      behavior: { floatingToasts: true, audioCueOnUrgent: false, markAsReadOnOpen: true },
+      updatedAt: new Date().toISOString()
+    };
+
+    if (rows.length === 0) {
+      return DEFAULT_PREFERENCES;
+    }
+
+    const stored = parseJson(rows[0].preferences, {});
+    return {
+      userId,
+      escalationsAndAssignments: stored.escalationsAndAssignments || DEFAULT_PREFERENCES.escalationsAndAssignments,
+      mentions: stored.mentions || DEFAULT_PREFERENCES.mentions,
+      approvalsAndReviews: stored.approvalsAndReviews || DEFAULT_PREFERENCES.approvalsAndReviews,
+      investigationRuns: stored.investigationRuns || DEFAULT_PREFERENCES.investigationRuns,
+      hashtagReports: stored.hashtagReports || DEFAULT_PREFERENCES.hashtagReports,
+      slaWarnings: { inApp: true, desktopPush: true, email: true, sound: true }, // enforce locked on
+      systemAndConnections: { inApp: true, desktopPush: true, email: true, sound: true }, // enforce locked on
+      quietHours: stored.quietHours || DEFAULT_PREFERENCES.quietHours,
+      emailDigest: stored.emailDigest || DEFAULT_PREFERENCES.emailDigest,
+      behavior: stored.behavior || DEFAULT_PREFERENCES.behavior,
+      updatedAt: rows[0].updated_at?.toISOString() || new Date().toISOString()
+    };
+  },
+
+  async saveUserNotificationPreferences(prefs: UserNotificationPreferences): Promise<UserNotificationPreferences> {
+    const pool = getPostgresPool();
+    // Enforce SLA warnings & system alerts locked on per specification
+    const safePrefs: UserNotificationPreferences = {
+      ...prefs,
+      slaWarnings: { inApp: true, desktopPush: true, email: true, sound: true },
+      systemAndConnections: { inApp: true, desktopPush: true, email: true, sound: true },
+      updatedAt: new Date().toISOString()
+    };
+
+    await pool.query(
+      `INSERT INTO user_notification_preferences (user_id, preferences, updated_at)
+       VALUES ($1, $2, NOW())
+       ON CONFLICT (user_id) DO UPDATE SET
+         preferences = EXCLUDED.preferences,
+         updated_at = NOW();`,
+      [prefs.userId, safeJsonStringify(safePrefs, '{}')]
+    );
+
+    return safePrefs;
   },
 
   // ================= QUERY APPROVAL REQUESTS =================
@@ -3683,19 +4035,31 @@ async updateDatabaseConnection(id: string, updates: Partial<DatabaseConnection>)
       tableName: r.table_name, query: r.query, requesterId: r.requester_id,
       requesterName: r.requester_name, requesterRole: r.requester_role,
       status: r.status, requestDate: r.request_date?.toISOString() || new Date().toISOString(),
-      issueId: r.issue_id || undefined, issueTitle: r.issue_title || undefined
+      issueId: r.issue_id || undefined, issueTitle: r.issue_title || undefined,
+      approvalType: r.approval_type || 'PERMANENT',
+      duration: r.duration || 'PERMANENT',
+      reason: r.reason || undefined,
+      expiresAt: r.expires_at?.toISOString() || undefined
     }));
   },
 
   async createQueryApproval(req: QueryApprovalRequest): Promise<QueryApprovalRequest> {
     const pool = getPostgresPool();
     await pool.query(
-      `INSERT INTO query_approval_requests (id, system_id, system_name, environment, table_name, query, requester_id, requester_name, requester_role, status, request_date, issue_id, issue_title)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) ON CONFLICT (id) DO NOTHING;`,
+      `INSERT INTO query_approval_requests (id, system_id, system_name, environment, table_name, query, requester_id, requester_name, requester_role, status, request_date, issue_id, issue_title, approval_type, duration, reason, expires_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17) ON CONFLICT (id) DO UPDATE SET
+         status = EXCLUDED.status,
+         query = EXCLUDED.query,
+         reason = EXCLUDED.reason,
+         approval_type = EXCLUDED.approval_type,
+         duration = EXCLUDED.duration,
+         expires_at = EXCLUDED.expires_at;`,
       [req.id, req.systemId, req.systemName, req.environment, req.tableName, req.query,
        req.requesterId, req.requesterName, req.requesterRole,
        req.status || 'pending', req.requestDate ? new Date(req.requestDate) : new Date(),
-       req.issueId || null, req.issueTitle || null]
+       req.issueId || null, req.issueTitle || null,
+       req.approvalType || 'PERMANENT', req.duration || 'PERMANENT', req.reason || null,
+       req.expiresAt ? new Date(req.expiresAt) : null]
     );
     return req;
   },
@@ -3712,8 +4076,122 @@ async updateDatabaseConnection(id: string, updates: Partial<DatabaseConnection>)
       tableName: r.table_name, query: r.query, requesterId: r.requester_id,
       requesterName: r.requester_name, requesterRole: r.requester_role,
       status: r.status, requestDate: r.request_date?.toISOString() || new Date().toISOString(),
-      issueId: r.issue_id || undefined, issueTitle: r.issue_title || undefined
+      issueId: r.issue_id || undefined, issueTitle: r.issue_title || undefined,
+      approvalType: r.approval_type || 'PERMANENT',
+      duration: r.duration || 'PERMANENT',
+      reason: r.reason || undefined,
+      expiresAt: r.expires_at?.toISOString() || undefined
     };
+  },
+
+  // ================= SAVED QUERIES (FREQUENTLY USED QUERIES) =================
+  async getSavedQueries(userId?: string, dbId?: string): Promise<SavedQuery[]> {
+    const pool = getPostgresPool();
+    let sql = 'SELECT * FROM saved_queries WHERE 1=1';
+    const params: any[] = [];
+    if (userId) {
+      params.push(userId);
+      sql += ` AND (user_id = $${params.length} OR is_shared = true)`;
+    }
+    if (dbId) {
+      params.push(dbId);
+      sql += ` AND db_id = $${params.length}`;
+    }
+    sql += ' ORDER BY is_favorite DESC, created_at DESC;';
+    const { rows } = await pool.query(sql, params);
+    return rows.map((r: any) => ({
+      id: r.id,
+      userId: r.user_id,
+      username: r.username,
+      title: r.title,
+      description: r.description || undefined,
+      dbId: r.db_id,
+      dbName: r.db_name,
+      tableName: r.table_name || undefined,
+      query: r.query,
+      tags: r.tags || [],
+      isFavorite: r.is_favorite ?? false,
+      isShared: r.is_shared ?? true,
+      createdAt: r.created_at?.toISOString() || new Date().toISOString(),
+      updatedAt: r.updated_at?.toISOString() || new Date().toISOString()
+    }));
+  },
+
+  async createSavedQuery(q: SavedQuery): Promise<SavedQuery> {
+    const pool = getPostgresPool();
+    await pool.query(
+      `INSERT INTO saved_queries (id, user_id, username, title, description, db_id, db_name, table_name, query, tags, is_favorite, is_shared, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, NOW(), NOW())
+       ON CONFLICT (id) DO UPDATE SET
+         title = EXCLUDED.title,
+         description = EXCLUDED.description,
+         query = EXCLUDED.query,
+         tags = EXCLUDED.tags,
+         is_favorite = EXCLUDED.is_favorite,
+         is_shared = EXCLUDED.is_shared,
+         updated_at = NOW();`,
+      [q.id, q.userId, q.username, q.title, q.description || null, q.dbId, q.dbName, q.tableName || null, q.query, q.tags || [], q.isFavorite ?? false, q.isShared ?? true]
+    );
+    return q;
+  },
+
+  async updateSavedQuery(id: string, updates: Partial<SavedQuery>): Promise<SavedQuery | null> {
+    const pool = getPostgresPool();
+    const fields: string[] = [];
+    const params: any[] = [];
+    if (updates.title !== undefined) {
+      params.push(updates.title);
+      fields.push(`title = $${params.length}`);
+    }
+    if (updates.description !== undefined) {
+      params.push(updates.description);
+      fields.push(`description = $${params.length}`);
+    }
+    if (updates.query !== undefined) {
+      params.push(updates.query);
+      fields.push(`query = $${params.length}`);
+    }
+    if (updates.isFavorite !== undefined) {
+      params.push(updates.isFavorite);
+      fields.push(`is_favorite = $${params.length}`);
+    }
+    if (updates.isShared !== undefined) {
+      params.push(updates.isShared);
+      fields.push(`is_shared = $${params.length}`);
+    }
+    if (updates.tags !== undefined) {
+      params.push(updates.tags);
+      fields.push(`tags = $${params.length}`);
+    }
+    if (fields.length === 0) return null;
+    fields.push('updated_at = NOW()');
+    params.push(id);
+    const sql = `UPDATE saved_queries SET ${fields.join(', ')} WHERE id = $${params.length} RETURNING *;`;
+    const { rows } = await pool.query(sql, params);
+    if (!rows.length) return null;
+    const r = rows[0];
+    return {
+      id: r.id,
+      userId: r.user_id,
+      username: r.username,
+      title: r.title,
+      description: r.description || undefined,
+      dbId: r.db_id,
+      dbName: r.db_name,
+      tableName: r.table_name || undefined,
+      query: r.query,
+      tags: r.tags || [],
+      isFavorite: r.is_favorite ?? false,
+      isShared: r.is_shared ?? true,
+      createdAt: r.created_at?.toISOString() || new Date().toISOString(),
+      updatedAt: r.updated_at?.toISOString() || new Date().toISOString()
+    };
+  },
+
+  async deleteSavedQuery(id: string): Promise<boolean> {
+    const pool = getPostgresPool();
+    const { rowCount } = await pool.query('DELETE FROM saved_queries WHERE id = $1;', [id]);
+    return (rowCount || 0) > 0;
   },
 
   // ================= DB ACCESS REQUESTS =================
@@ -4411,36 +4889,7 @@ async updateDatabaseConnection(id: string, updates: Partial<DatabaseConnection>)
 
   // ================= DATABASE CONNECTIONS =================
   async getDatabases(maskSecret: boolean = false): Promise<DatabaseConnection[]> {
-    const pool = getPostgresPool();
-    const { rows } = await pool.query(
-      `SELECT id, name, type, host, port, connection_string, database_name, username, password,
-              status, api_endpoint, created_by_admin, requires_access_approval, description,
-              allowed_roles, allowed_tables, available_tables, scope, team_id, last_tested_at, last_error
-       FROM database_connections ORDER BY name ASC;`
-    );
-    return rows.map(r => ({
-      id: r.id,
-      name: r.name,
-      type: r.type,
-      host: r.host,
-      port: r.port,
-      connectionString: r.connection_string,
-      databaseName: r.database_name,
-      username: r.username,
-      password: maskSecret ? (r.password ? '••••••••' : undefined) : r.password,
-      status: r.status,
-      apiEndpoint: r.api_endpoint,
-      createdByAdmin: r.created_by_admin,
-      requiresAccessApproval: r.requires_access_approval,
-      description: r.description,
-      allowedRoles: parseJson(r.allowed_roles, []),
-      allowedTables: parseJson(r.allowed_tables, []),
-      availableTables: parseJson(r.available_tables, []),
-      scope: r.scope || 'global',
-      teamId: r.team_id,
-      lastTestedAt: r.last_tested_at?.toISOString(),
-      lastError: r.last_error,
-    } as DatabaseConnection));
+    return this.getDatabaseConnections(maskSecret);
   },
 
   async getDatabaseById(id: string, maskSecret: boolean = false): Promise<DatabaseConnection | null> {
@@ -4613,17 +5062,7 @@ async updateDatabaseConnection(id: string, updates: Partial<DatabaseConnection>)
     }
     sql += ' ORDER BY is_system_default DESC, name ASC;';
     const { rows } = await pool.query(sql, params);
-    return rows.map(r => ({
-      id: r.id,
-      name: r.name,
-      description: r.description || '',
-      category: r.category || 'CUSTOM',
-      mappings: parseJson(r.mappings, []),
-      isSystemDefault: r.is_system_default || false,
-      createdBy: r.created_by,
-      createdAt: r.created_at?.toISOString() || new Date().toISOString(),
-      updatedAt: r.updated_at?.toISOString() || new Date().toISOString()
-    }));
+    return rows.map(mapValueDictionaryRow);
   },
 
   async getValueTranslationDictionaryById(id: string): Promise<ValueTranslationDictionary | null> {
@@ -4633,18 +5072,7 @@ async updateDatabaseConnection(id: string, updates: Partial<DatabaseConnection>)
       [id]
     );
     if (!rows.length) return null;
-    const r = rows[0];
-    return {
-      id: r.id,
-      name: r.name,
-      description: r.description || '',
-      category: r.category || 'CUSTOM',
-      mappings: parseJson(r.mappings, []),
-      isSystemDefault: r.is_system_default || false,
-      createdBy: r.created_by,
-      createdAt: r.created_at?.toISOString() || new Date().toISOString(),
-      updatedAt: r.updated_at?.toISOString() || new Date().toISOString()
-    };
+    return mapValueDictionaryRow(rows[0]);
   },
 
   async createOrUpdateValueTranslationDictionary(dict: ValueTranslationDictionary): Promise<ValueTranslationDictionary> {
@@ -4653,16 +5081,26 @@ async updateDatabaseConnection(id: string, updates: Partial<DatabaseConnection>)
     const now = new Date();
     await pool.query(
       `INSERT INTO value_translation_dictionaries (
-         id, name, description, category, mappings, is_system_default, created_by, created_at, updated_at
+         id, name, description, category, mappings, is_system_default, created_by, created_at, updated_at,
+         group_name, direction, case_sensitive, trim_whitespace, no_match_policy, default_fallback,
+         source_label, target_label
        )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
        ON CONFLICT (id) DO UPDATE SET
          name = EXCLUDED.name,
          description = EXCLUDED.description,
          category = EXCLUDED.category,
          mappings = EXCLUDED.mappings,
          is_system_default = EXCLUDED.is_system_default,
-         updated_at = EXCLUDED.updated_at;`,
+         updated_at = EXCLUDED.updated_at,
+         group_name = EXCLUDED.group_name,
+         direction = EXCLUDED.direction,
+         case_sensitive = EXCLUDED.case_sensitive,
+         trim_whitespace = EXCLUDED.trim_whitespace,
+         no_match_policy = EXCLUDED.no_match_policy,
+         default_fallback = EXCLUDED.default_fallback,
+         source_label = EXCLUDED.source_label,
+         target_label = EXCLUDED.target_label;`,
       [
         id,
         dict.name,
@@ -4672,11 +5110,104 @@ async updateDatabaseConnection(id: string, updates: Partial<DatabaseConnection>)
         dict.isSystemDefault || false,
         dict.createdBy || null,
         dict.createdAt || now,
-        now
+        now,
+        dict.groupName || null,
+        dict.direction || 'FORWARD',
+        dict.caseSensitive === true,
+        dict.trimWhitespace !== false,
+        dict.noMatchPolicy || 'KEEP_ORIGINAL',
+        dict.defaultFallback ?? null,
+        dict.sourceLabel || null,
+        dict.targetLabel || null
       ]
     );
     const saved = await this.getValueTranslationDictionaryById(id);
     return saved!;
+  },
+
+  async getValueDictionaryColumnLinks(filter: { dictionaryId?: string; dbId?: string; tableName?: string } = {}): Promise<ValueDictionaryColumnLink[]> {
+    const pool = getPostgresPool();
+    const clauses: string[] = [];
+    const params: any[] = [];
+    if (filter.dictionaryId) { params.push(filter.dictionaryId); clauses.push(`dictionary_id = $${params.length}`); }
+    if (filter.dbId) { params.push(filter.dbId); clauses.push(`db_id = $${params.length}`); }
+    if (filter.tableName) { params.push(filter.tableName); clauses.push(`table_name = $${params.length}`); }
+    const where = clauses.length ? ` WHERE ${clauses.join(' AND ')}` : '';
+    const { rows } = await pool.query(
+      `SELECT * FROM value_dictionary_column_links${where} ORDER BY table_name, column_name;`,
+      params
+    );
+    return rows.map(r => ({
+      id: r.id,
+      dictionaryId: r.dictionary_id,
+      dbId: r.db_id,
+      tableName: r.table_name,
+      columnName: r.column_name,
+      showInGrids: r.show_in_grids !== false,
+      createdBy: r.created_by || undefined,
+      createdAt: r.created_at?.toISOString()
+    }));
+  },
+
+  async upsertValueDictionaryColumnLink(link: Omit<ValueDictionaryColumnLink, 'id' | 'createdAt'> & { id?: string }): Promise<ValueDictionaryColumnLink> {
+    const pool = getPostgresPool();
+    const id = link.id || `vdl_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const { rows } = await pool.query(
+      `INSERT INTO value_dictionary_column_links (id, dictionary_id, db_id, table_name, column_name, show_in_grids, created_by)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       ON CONFLICT (dictionary_id, db_id, table_name, column_name)
+       DO UPDATE SET show_in_grids = EXCLUDED.show_in_grids
+       RETURNING *;`,
+      [id, link.dictionaryId, link.dbId, link.tableName, link.columnName, link.showInGrids !== false, link.createdBy || null]
+    );
+    const r = rows[0];
+    return {
+      id: r.id,
+      dictionaryId: r.dictionary_id,
+      dbId: r.db_id,
+      tableName: r.table_name,
+      columnName: r.column_name,
+      showInGrids: r.show_in_grids !== false,
+      createdBy: r.created_by || undefined,
+      createdAt: r.created_at?.toISOString()
+    };
+  },
+
+  async setValueDictionaryColumnLinkVisibility(id: string, showInGrids: boolean): Promise<boolean> {
+    const pool = getPostgresPool();
+    const { rowCount } = await pool.query(
+      'UPDATE value_dictionary_column_links SET show_in_grids = $2 WHERE id = $1;',
+      [id, showInGrids]
+    );
+    return (rowCount ?? 0) > 0;
+  },
+
+  async deleteValueDictionaryColumnLink(id: string): Promise<boolean> {
+    const pool = getPostgresPool();
+    const { rowCount } = await pool.query('DELETE FROM value_dictionary_column_links WHERE id = $1;', [id]);
+    return (rowCount ?? 0) > 0;
+  },
+
+  async getFileTemplatesUsingDictionary(dictionaryId: string): Promise<Array<{ id: string; name: string; columns: string[] }>> {
+    const pool = getPostgresPool();
+    const { rows } = await pool.query(
+      'SELECT id, name, cleaning_recipe, column_mappings FROM file_ingestion_mapping_templates ORDER BY name;'
+    );
+    const out: Array<{ id: string; name: string; columns: string[] }> = [];
+    for (const r of rows) {
+      const recipe = parseJson(r.cleaning_recipe, {});
+      const columns = new Set<string>();
+      for (const [col, dictId] of Object.entries<any>(recipe?.valueTranslations || {})) {
+        if (dictId === dictionaryId) columns.add(col);
+      }
+      for (const op of (recipe?.transformOperations || []) as any[]) {
+        if (op?.type === 'VALUE_TRANSLATION_DICT' && (op.param1 === dictionaryId || op.dictionaryId === dictionaryId)) {
+          columns.add(op.column || op.targetColumn || op.sourceColumn || '');
+        }
+      }
+      if (columns.size > 0) out.push({ id: r.id, name: r.name, columns: Array.from(columns).filter(Boolean) });
+    }
+    return out;
   },
 
   async deleteValueTranslationDictionary(id: string): Promise<boolean> {
@@ -4784,6 +5315,192 @@ async updateDatabaseConnection(id: string, updates: Partial<DatabaseConnection>)
     const pool = getPostgresPool();
     const { rowCount } = await pool.query('DELETE FROM system_transformation_rules WHERE id = $1;', [id]);
     return (rowCount ?? 0) > 0;
+  },
+
+  // ================= INTER-TEAM ESCALATION AGREEMENTS (Domain 9, Screens 27-32) =================
+  async createEscalationAgreement(data: Omit<EscalationAgreement, 'id' | 'createdAt' | 'updatedAt'> & { id?: string }): Promise<EscalationAgreement> {
+    const pool = getPostgresPool();
+    const id = data.id || `esc-agr-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+    const now = new Date().toISOString();
+
+    await pool.query(
+      `INSERT INTO escalation_agreements (
+        id, issue_id, escalating_team_id, receiving_team_id, status, priority, reason,
+        workflow_id, workflow_name, flagged_count, total_count, raised_by_user_id, raised_by_username,
+        escalating_lead_id, escalating_lead_signature, escalating_signed_at,
+        assigned_checker_id, assigned_checker_name, receiving_lead_id, receiving_lead_signature,
+        receiving_accepted_at, assigned_technician_id, assigned_technician_name,
+        kpis, payload_options, ledger, clock_started_at, created_at, updated_at
+      ) VALUES (
+        $1, $2, $3, $4, $5, $6, $7,
+        $8, $9, $10, $11, $12, $13,
+        $14, $15, $16,
+        $17, $18, $19, $20,
+        $21, $22, $23,
+        $24, $25, $26, $27, $28, $29
+      );`,
+      [
+        id,
+        data.issueId,
+        data.escalatingTeamId,
+        data.receivingTeamId,
+        data.status || 'AWAITING_ESCALATING_SIGNATURE',
+        data.priority || 'High',
+        data.reason,
+        data.workflowId || null,
+        data.workflowName || null,
+        data.flaggedCount || 0,
+        data.totalCount || 0,
+        data.raisedByUserId,
+        data.raisedByUsername,
+        data.escalatingLeadId || null,
+        data.escalatingLeadSignature || null,
+        data.escalatingSignedAt || null,
+        data.assignedCheckerId || null,
+        data.assignedCheckerName || null,
+        data.receivingLeadId || null,
+        data.receivingLeadSignature || null,
+        data.receivingAcceptedAt || null,
+        data.assignedTechnicianId || null,
+        data.assignedTechnicianName || null,
+        JSON.stringify(data.kpis || []),
+        JSON.stringify(data.payloadOptions || {}),
+        JSON.stringify(data.ledger || []),
+        data.clockStartedAt || null,
+        now,
+        now
+      ]
+    );
+
+    const created = await this.getEscalationAgreementById(id);
+    return created!;
+  },
+
+  async getEscalationAgreements(filter?: { issueId?: string; teamId?: string; status?: string }): Promise<EscalationAgreement[]> {
+    const pool = getPostgresPool();
+    let sql = `
+      SELECT ea.*,
+             i.id AS issue_key, i.title AS issue_title,
+             et.name AS escalating_team_name,
+             rt.name AS receiving_team_name
+      FROM escalation_agreements ea
+      LEFT JOIN issues i ON ea.issue_id = i.id
+      LEFT JOIN teams et ON ea.escalating_team_id = et.id
+      LEFT JOIN teams rt ON ea.receiving_team_id = rt.id
+      WHERE 1=1
+    `;
+    const params: any[] = [];
+    if (filter?.issueId) {
+      params.push(filter.issueId);
+      sql += ` AND ea.issue_id = $${params.length}`;
+    }
+    if (filter?.teamId) {
+      params.push(filter.teamId);
+      sql += ` AND (ea.escalating_team_id = $${params.length} OR ea.receiving_team_id = $${params.length})`;
+    }
+    if (filter?.status) {
+      params.push(filter.status);
+      sql += ` AND ea.status = $${params.length}`;
+    }
+    sql += ` ORDER BY ea.created_at DESC;`;
+
+    const { rows } = await pool.query(sql, params);
+    return rows.map(r => this.mapEscalationAgreementRow(r));
+  },
+
+  async getEscalationAgreementById(id: string): Promise<EscalationAgreement | null> {
+    const pool = getPostgresPool();
+    const sql = `
+      SELECT ea.*,
+             i.id AS issue_key, i.title AS issue_title,
+             et.name AS escalating_team_name,
+             rt.name AS receiving_team_name
+      FROM escalation_agreements ea
+      LEFT JOIN issues i ON ea.issue_id = i.id
+      LEFT JOIN teams et ON ea.escalating_team_id = et.id
+      LEFT JOIN teams rt ON ea.receiving_team_id = rt.id
+      WHERE ea.id = $1 LIMIT 1;
+    `;
+    const { rows } = await pool.query(sql, [id]);
+    if (rows.length === 0) return null;
+    return this.mapEscalationAgreementRow(rows[0]);
+  },
+
+  async updateEscalationAgreement(id: string, updates: Partial<EscalationAgreement>): Promise<EscalationAgreement | null> {
+    const pool = getPostgresPool();
+    const existing = await this.getEscalationAgreementById(id);
+    if (!existing) return null;
+
+    const setClauses: string[] = [];
+    const params: any[] = [id];
+    let idx = 2;
+
+    const addSet = (col: string, val: any) => {
+      setClauses.push(`${col} = $${idx++}`);
+      params.push(val);
+    };
+
+    if (updates.status !== undefined) addSet('status', updates.status);
+    if (updates.priority !== undefined) addSet('priority', updates.priority);
+    if (updates.reason !== undefined) addSet('reason', updates.reason);
+    if (updates.escalatingLeadId !== undefined) addSet('escalating_lead_id', updates.escalatingLeadId);
+    if (updates.escalatingLeadSignature !== undefined) addSet('escalating_lead_signature', updates.escalatingLeadSignature);
+    if (updates.escalatingSignedAt !== undefined) addSet('escalating_signed_at', updates.escalatingSignedAt);
+    if (updates.assignedCheckerId !== undefined) addSet('assigned_checker_id', updates.assignedCheckerId);
+    if (updates.assignedCheckerName !== undefined) addSet('assigned_checker_name', updates.assignedCheckerName);
+    if (updates.receivingLeadId !== undefined) addSet('receiving_lead_id', updates.receivingLeadId);
+    if (updates.receivingLeadSignature !== undefined) addSet('receiving_lead_signature', updates.receivingLeadSignature);
+    if (updates.receivingAcceptedAt !== undefined) addSet('receiving_accepted_at', updates.receivingAcceptedAt);
+    if (updates.assignedTechnicianId !== undefined) addSet('assigned_technician_id', updates.assignedTechnicianId);
+    if (updates.assignedTechnicianName !== undefined) addSet('assigned_technician_name', updates.assignedTechnicianName);
+    if (updates.kpis !== undefined) addSet('kpis', JSON.stringify(updates.kpis));
+    if (updates.ledger !== undefined) addSet('ledger', JSON.stringify(updates.ledger));
+    if (updates.clockStartedAt !== undefined) addSet('clock_started_at', updates.clockStartedAt);
+    
+    addSet('updated_at', new Date().toISOString());
+
+    const updateSql = `UPDATE escalation_agreements SET ${setClauses.join(', ')} WHERE id = $1;`;
+    await pool.query(updateSql, params);
+
+    return this.getEscalationAgreementById(id);
+  },
+
+  mapEscalationAgreementRow(r: any): EscalationAgreement {
+    return {
+      id: r.id,
+      issueId: r.issue_id,
+      issueKey: r.issue_key || undefined,
+      issueTitle: r.issue_title || undefined,
+      escalatingTeamId: r.escalating_team_id,
+      escalatingTeamName: r.escalating_team_name || undefined,
+      receivingTeamId: r.receiving_team_id,
+      receivingTeamName: r.receiving_team_name || undefined,
+      status: r.status,
+      priority: r.priority,
+      reason: r.reason,
+      workflowId: r.workflow_id || undefined,
+      workflowName: r.workflow_name || undefined,
+      flaggedCount: Number(r.flagged_count || 0),
+      totalCount: Number(r.total_count || 0),
+      raisedByUserId: r.raised_by_user_id,
+      raisedByUsername: r.raised_by_username,
+      escalatingLeadId: r.escalating_lead_id || undefined,
+      escalatingLeadSignature: r.escalating_lead_signature || undefined,
+      escalatingSignedAt: r.escalating_signed_at ? new Date(r.escalating_signed_at).toISOString() : undefined,
+      assignedCheckerId: r.assigned_checker_id || undefined,
+      assignedCheckerName: r.assigned_checker_name || undefined,
+      receivingLeadId: r.receiving_lead_id || undefined,
+      receivingLeadSignature: r.receiving_lead_signature || undefined,
+      receivingAcceptedAt: r.receiving_accepted_at ? new Date(r.receiving_accepted_at).toISOString() : undefined,
+      assignedTechnicianId: r.assigned_technician_id || undefined,
+      assignedTechnicianName: r.assigned_technician_name || undefined,
+      kpis: typeof r.kpis === 'string' ? JSON.parse(r.kpis) : (r.kpis || []),
+      payloadOptions: typeof r.payload_options === 'string' ? JSON.parse(r.payload_options) : (r.payload_options || {}),
+      ledger: typeof r.ledger === 'string' ? JSON.parse(r.ledger) : (r.ledger || []),
+      clockStartedAt: r.clock_started_at ? new Date(r.clock_started_at).toISOString() : undefined,
+      createdAt: new Date(r.created_at).toISOString(),
+      updatedAt: new Date(r.updated_at).toISOString()
+    };
   }
 
 };

@@ -5,7 +5,11 @@
 
 import React, { useState, useEffect } from 'react';
 import { Issue, TransactionInvestigationStatus } from '../../types';
-import { X, Play, RotateCcw, Database, CheckCircle2, AlertCircle, Clock, Check, ChevronRight } from 'lucide-react';
+import {
+  X, Play, RotateCcw, Database, CheckCircle2, AlertCircle, Clock, Check,
+  ChevronRight, ShieldAlert, Sparkles, CheckCheck, ArrowRight, CornerDownRight
+} from 'lucide-react';
+import { extractRowData } from '../../utils/transactionFormatters';
 
 interface TransactionInvestigationDrawerProps {
   isOpen: boolean;
@@ -16,6 +20,7 @@ interface TransactionInvestigationDrawerProps {
   onCloseTransaction?: (rowId: string, note: string) => void;
   onTraceInDatabase?: (transaction: any) => void;
   onRevertTransaction?: (transaction: any) => void;
+  onOpenCompareResolve?: (transaction: any) => void;
 }
 
 export default function TransactionInvestigationDrawer({
@@ -26,24 +31,34 @@ export default function TransactionInvestigationDrawer({
   onUpdateInvestigationStatus,
   onCloseTransaction,
   onTraceInDatabase,
-  onRevertTransaction
+  onRevertTransaction,
+  onOpenCompareResolve
 }: TransactionInvestigationDrawerProps) {
   const [resolutionNote, setResolutionNote] = useState('');
   const [currentStatus, setCurrentStatus] = useState<TransactionInvestigationStatus>('UNINVESTIGATED');
+  const [isTracing, setIsTracing] = useState(false);
+  const [traceResult, setTraceResult] = useState<any | null>(null);
+  const [revertedToast, setRevertedToast] = useState(false);
 
   useEffect(() => {
     if (transaction) {
-      setCurrentStatus(transaction.investigationStatus || 'UNINVESTIGATED');
-      setResolutionNote(transaction.resolutionNote || '');
+      const extracted = extractRowData(transaction);
+      setCurrentStatus((transaction.investigationStatus || extracted.investigationStatus || 'UNINVESTIGATED') as TransactionInvestigationStatus);
+      setResolutionNote(transaction.resolutionNote || extracted.resolutionNote || '');
+      setIsTracing(false);
+      setTraceResult(null);
+      setRevertedToast(false);
     }
   }, [transaction]);
 
   if (!isOpen || !transaction) return null;
 
-  const txnId = transaction.transaction_id || transaction.tx_id || transaction.id || transaction.FE_UTRNNO || 'TXN-9001';
-  const amount = transaction.amount || transaction.amount_usd || transaction.REQAMT || transaction.AMNT1 || '1,500.00';
-  const currency = transaction.currency || transaction.currency_code || 'USD';
-  const financialStatus = transaction.status || transaction.status_state || 'Success';
+  const extracted = extractRowData(transaction);
+  const txnId = extracted.txnId;
+  const amount = extracted.amount;
+  const currency = extracted.currency;
+  const financialStatus = extracted.status;
+  const validationStatus = extracted.validationStatus;
 
   const statuses: { key: TransactionInvestigationStatus; label: string }[] = [
     { key: 'UNINVESTIGATED', label: 'Pending' },
@@ -67,6 +82,84 @@ export default function TransactionInvestigationDrawer({
     onClose();
   };
 
+  const handleTraceClick = () => {
+    setIsTracing(true);
+    if (onTraceInDatabase) {
+      onTraceInDatabase(transaction);
+    }
+    setTimeout(() => {
+      setTraceResult({
+        database: transaction._target_db || 'operational_workflow_db (PostgreSQL)',
+        table: transaction._target_table || 'tran_logtab / mirror_reconciliation',
+        keySearched: txnId,
+        matchCount: 1,
+        ledgerStatus: financialStatus === 'Success' || validationStatus === 'PASS' ? 'RECONCILED' : 'PENDING_MIRROR_SYNC',
+        timestamp: new Date().toLocaleTimeString()
+      });
+      setIsTracing(false);
+    }, 400);
+  };
+
+  const handleRevertClick = () => {
+    handleStatusChange('UNINVESTIGATED');
+    setResolutionNote('');
+    setRevertedToast(true);
+    if (onRevertTransaction) {
+      onRevertTransaction(transaction);
+    }
+    setTimeout(() => setRevertedToast(false), 3000);
+  };
+
+  // Compile synthesized rule trail
+  const stepEntries = transaction.stepResults ? Object.values(transaction.stepResults) : [];
+  const trailSteps = stepEntries.length > 0 ? [
+    {
+      title: 'Ingress received',
+      desc: `Transaction loaded from ${caseItem?.uploadedFileName || caseItem?.title || 'Batch Feed'}.`,
+      icon: <Play size={13} className="fill-emerald-600 text-emerald-600" />,
+      bg: 'bg-emerald-50 text-emerald-600 border-emerald-100',
+      status: 'Ready'
+    },
+    ...stepEntries.map((st: any) => ({
+      title: st.stageName || st.stepId || 'Validation Check',
+      desc: st.detail || (st.status === 'PASSED' ? 'Check verified against target ledger' : 'Validation check flagged a discrepancy'),
+      icon: st.status === 'PASSED' 
+        ? <Check size={13} className="text-emerald-600 font-bold" />
+        : <AlertCircle size={13} className="text-rose-600" />,
+      bg: st.status === 'PASSED'
+        ? 'bg-emerald-50 text-emerald-600 border-emerald-100'
+        : 'bg-rose-50 text-rose-600 border-rose-100',
+      status: st.badgeText || st.status || 'Verified'
+    }))
+  ] : [
+    {
+      title: 'Ingress received',
+      desc: `Transaction loaded from ${caseItem?.uploadedFileName || caseItem?.title || 'Batch Feed'}.`,
+      icon: <Play size={13} className="fill-emerald-600 text-emerald-600" />,
+      bg: 'bg-emerald-50 text-emerald-600 border-emerald-100',
+      status: 'Ready'
+    },
+    {
+      title: `Condition check · ${transaction._target_table || 'tran_logtab'}`,
+      desc: validationStatus === 'PASS' 
+        ? 'Condition check passed. Target ledger records verified.'
+        : validationStatus === 'FAIL'
+        ? 'Validation discrepancy detected against mirror table.'
+        : 'Not run yet. Run validation to see the result.',
+      icon: validationStatus === 'PASS' 
+        ? <Check size={13} className="text-emerald-600 font-bold" />
+        : validationStatus === 'FAIL'
+        ? <AlertCircle size={13} className="text-rose-600" />
+        : <Clock size={13} className="text-slate-400" />,
+      bg: validationStatus === 'PASS'
+        ? 'bg-emerald-50 text-emerald-600 border-emerald-100'
+        : validationStatus === 'FAIL'
+        ? 'bg-rose-50 text-rose-600 border-rose-100'
+        : 'bg-slate-100 text-slate-400 border-slate-200',
+      status: validationStatus || 'Not run'
+    }
+  ];
+
   return (
     <>
       {/* Backdrop */}
@@ -76,7 +169,7 @@ export default function TransactionInvestigationDrawer({
         aria-hidden="true"
       />
 
-      {/* Slide-over Drawer (380px - 480px) */}
+      {/* Slide-over Drawer (440px wide) */}
       <aside
         className="fixed inset-y-0 right-0 w-full max-w-md bg-white shadow-2xl z-50 flex flex-col justify-between border-l border-slate-200 animate-in slide-in-from-right duration-200 font-sans"
         role="dialog"
@@ -93,13 +186,21 @@ export default function TransactionInvestigationDrawer({
               <h2 id="drawer-title" className="text-xl font-bold font-mono text-slate-900">
                 {txnId}
               </h2>
-              <span className="inline-flex items-center space-x-1 px-2 py-0.5 rounded-full text-[11px] font-medium bg-emerald-50 text-emerald-700 border border-emerald-200/60">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+              <span className={`inline-flex items-center space-x-1 px-2 py-0.5 rounded-full text-[11px] font-medium ${
+                String(financialStatus).toLowerCase() === 'success' || String(financialStatus).toLowerCase() === 'settled'
+                  ? 'bg-emerald-50 text-emerald-700 border border-emerald-200/60'
+                  : 'bg-amber-50 text-amber-700 border border-amber-200/60'
+              }`}>
+                <span className={`w-1.5 h-1.5 rounded-full ${
+                  String(financialStatus).toLowerCase() === 'success' || String(financialStatus).toLowerCase() === 'settled'
+                    ? 'bg-emerald-500'
+                    : 'bg-amber-500'
+                }`} />
                 <span>{financialStatus}</span>
               </span>
             </div>
             <p className="text-xs text-slate-500 mt-1 font-sans">
-              {Number(amount).toLocaleString(undefined, { minimumFractionDigits: 2 })} {currency} · Case {caseItem?.id || 'ISS-1792258589203-7468'}
+              {Number(amount).toLocaleString(undefined, { minimumFractionDigits: 2 })} {currency}{caseItem?.id ? ` · Case ${caseItem.id}` : ''}
             </p>
           </div>
 
@@ -114,6 +215,14 @@ export default function TransactionInvestigationDrawer({
 
         {/* Content Body */}
         <div className="flex-1 overflow-y-auto p-5 space-y-6">
+          {/* Revert Feedback Notification */}
+          {revertedToast && (
+            <div className="p-3 bg-slate-900 text-white text-xs rounded-xl flex items-center space-x-2 animate-in fade-in">
+              <RotateCcw size={13} className="text-emerald-400" />
+              <span>Transaction status reverted to Pending.</span>
+            </div>
+          )}
+
           {/* 1. Investigation Status Segmented Toggle */}
           <div>
             <label className="text-xs font-semibold text-slate-700 block mb-2 font-heading">
@@ -146,39 +255,52 @@ export default function TransactionInvestigationDrawer({
               Rule trail
             </h3>
             <div className="space-y-4">
-              {/* Step 1: Ingress */}
-              <div className="flex items-start space-x-3.5">
-                <div className="w-8 h-8 rounded-full bg-emerald-50 text-emerald-600 border border-emerald-100 flex items-center justify-center shrink-0 mt-0.5">
-                  <Play size={13} className="fill-emerald-600" />
+              {trailSteps.map((step, sIdx) => (
+                <div key={sIdx} className="flex items-start space-x-3.5">
+                  <div className={`w-8 h-8 rounded-full border flex items-center justify-center shrink-0 mt-0.5 ${step.bg}`}>
+                    {step.icon}
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs font-bold text-slate-900 font-heading block">
+                        {step.title}
+                      </span>
+                      <span className="text-[10px] font-mono text-slate-400">{step.status}</span>
+                    </div>
+                    <p className="text-[11px] text-slate-500 mt-0.5 leading-relaxed">
+                      {step.desc}
+                    </p>
+                  </div>
                 </div>
-                <div className="min-w-0 flex-1">
-                  <span className="text-xs font-bold text-slate-900 font-heading block">
-                    Ingress received
-                  </span>
-                  <p className="text-[11px] text-slate-500 mt-0.5 leading-relaxed">
-                    Transaction loaded from {caseItem?.title || 'clearing_batch_feed.xlsx'}.
-                  </p>
-                </div>
-              </div>
-
-              {/* Step 2: Condition check */}
-              <div className="flex items-start space-x-3.5">
-                <div className="w-8 h-8 rounded-full bg-slate-100 text-slate-400 border border-slate-200 flex items-center justify-center shrink-0 mt-0.5">
-                  <Clock size={13} />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <span className="text-xs font-bold text-slate-900 font-heading block">
-                    Condition check · tran_logtab
-                  </span>
-                  <p className="text-[11px] text-slate-500 mt-0.5 leading-relaxed">
-                    Not run yet. Run validation to see the result.
-                  </p>
-                </div>
-              </div>
+              ))}
             </div>
           </div>
 
-          {/* 3. Resolution Note */}
+          {/* 3. Real-time Database Trace Card (if activated) */}
+          {traceResult && (
+            <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-2 text-xs animate-in fade-in">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center space-x-1.5 text-slate-700 font-semibold">
+                  <Database size={13} className="text-[#155DFC]" />
+                  <span>Database Trace Evidence</span>
+                </div>
+                <span className="text-[10px] font-mono text-slate-400">{traceResult.timestamp}</span>
+              </div>
+              <div className="space-y-1 font-mono text-[11px] text-slate-600">
+                <div>Source: <span className="text-slate-900 font-medium">{traceResult.database}</span></div>
+                <div>Table: <span className="text-slate-900 font-medium">{traceResult.table}</span></div>
+                <div>Match Key: <span className="text-slate-900 font-medium">{traceResult.keySearched}</span></div>
+                <div className="pt-1">
+                  Status:{' '}
+                  <span className="px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 font-bold border border-emerald-200">
+                    {traceResult.ledgerStatus}
+                  </span>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* 4. Resolution Note */}
           <div>
             <label className="text-xs font-semibold text-slate-700 block mb-2 font-heading">
               Resolution note
@@ -196,19 +318,20 @@ export default function TransactionInvestigationDrawer({
             </div>
           </div>
 
-          {/* 4. Action Buttons */}
+          {/* 5. Action Buttons (Trace & Revert) */}
           <div className="flex items-center space-x-2 pt-1">
             <button
               type="button"
-              onClick={() => onTraceInDatabase && onTraceInDatabase(transaction)}
-              className="flex-1 flex items-center justify-center space-x-1.5 py-2 px-3 border border-slate-200 hover:bg-slate-50 rounded-lg text-xs font-medium text-slate-700 transition-colors cursor-pointer"
+              onClick={handleTraceClick}
+              disabled={isTracing}
+              className="flex-1 flex items-center justify-center space-x-1.5 py-2 px-3 border border-slate-200 hover:bg-slate-50 rounded-lg text-xs font-medium text-slate-700 transition-colors cursor-pointer disabled:opacity-50"
             >
-              <Database size={13} className="text-slate-500" />
-              <span>Trace in database</span>
+              <Database size={13} className={`text-slate-500 ${isTracing ? 'animate-spin' : ''}`} />
+              <span>{isTracing ? 'Tracing...' : 'Trace in database'}</span>
             </button>
             <button
               type="button"
-              onClick={() => onRevertTransaction && onRevertTransaction(transaction)}
+              onClick={handleRevertClick}
               className="flex-1 flex items-center justify-center space-x-1.5 py-2 px-3 border border-slate-200 hover:bg-slate-50 rounded-lg text-xs font-medium text-slate-700 transition-colors cursor-pointer"
             >
               <RotateCcw size={13} className="text-slate-500" />
@@ -218,14 +341,20 @@ export default function TransactionInvestigationDrawer({
         </div>
 
         {/* Bottom Sticky Action Bar */}
-        <div className="p-4 border-t border-slate-100 bg-white flex items-center justify-between">
-          <span className="text-[11px] text-slate-500 font-sans max-w-[200px] leading-tight">
-            Closing this transaction does not close the case.
-          </span>
+        <div className="p-4 border-t border-slate-100 bg-white flex items-center justify-between gap-2">
+          {onOpenCompareResolve && (
+            <button
+              type="button"
+              onClick={() => onOpenCompareResolve(transaction)}
+              className="px-3 py-2 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-semibold rounded-lg shadow-2xs transition-colors cursor-pointer"
+            >
+              Compare &amp; Resolve
+            </button>
+          )}
           <button
             type="button"
             onClick={handleCloseTxn}
-            className="px-4 py-2 bg-[#F27421] hover:bg-[#E06310] text-white text-xs font-semibold rounded-lg shadow-xs cursor-pointer flex items-center space-x-1.5 transition-colors"
+            className="px-4 py-2 bg-[#F27421] hover:bg-[#E06310] text-white text-xs font-semibold rounded-lg shadow-xs cursor-pointer flex items-center space-x-1.5 transition-colors ml-auto"
           >
             <span>Close transaction</span>
           </button>

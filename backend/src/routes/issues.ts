@@ -556,6 +556,54 @@ issuesRouter.post('/:id/execute-script', async (req: Request, res: Response) => 
   }
 });
 
+// PATCH /api/issues/:id/stage - Stage task into environment (SANDBOX, STAGING, PRODUCTION)
+issuesRouter.patch('/:id/stage', async (req: Request, res: Response) => {
+  try {
+    const { environment, notes, stagedByUserId, stagedByUserName } = req.body;
+    if (!environment || !['SANDBOX', 'STAGING', 'PRODUCTION'].includes(environment)) {
+      return res.status(400).json({ error: 'Valid environment (SANDBOX, STAGING, PRODUCTION) is required' });
+    }
+
+    const issue = await repo.getIssueById(req.params.id);
+    if (!issue) return res.status(404).json({ error: 'Issue not found' });
+
+    const currentUserId = stagedByUserId || (req as any).user?.id || 'tech-user';
+    const currentUserName = stagedByUserName || (req as any).user?.name || (req as any).user?.username || 'Technician';
+
+    // Anti-self-approval / 4-Eyes principle: Direct staging to PRODUCTION requires explicit authorization
+    if (environment === 'PRODUCTION') {
+      const userRole = (req as any).user?.role;
+      if (userRole !== 'admin' && userRole !== 'lead' && userRole !== 'checker') {
+        // Must have checker authorization or admin privileges
+        return res.status(403).json({
+          error: 'Four-Eyes Principle: Staging directly into PRODUCTION requires Checker/Lead authorization.'
+        });
+      }
+    }
+
+    const updated = await repo.stageIssueEnvironment(
+      req.params.id,
+      environment as 'SANDBOX' | 'STAGING' | 'PRODUCTION',
+      currentUserId,
+      currentUserName,
+      notes
+    );
+
+    if (!updated) return res.status(404).json({ error: 'Failed to update issue staging environment' });
+
+    eventService.broadcastEvent('issue:updated', updated);
+
+    return res.json({
+      success: true,
+      message: `Issue ${req.params.id} successfully staged to ${environment}.`,
+      issue: updated
+    });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+
 // GET /api/issues/:id/audit-dossier - Unified immutable case package
 issuesRouter.get('/:id/audit-dossier', async (req: Request, res: Response) => {
   try {

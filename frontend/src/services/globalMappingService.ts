@@ -44,9 +44,43 @@ export interface RequiredColumnValidationResult {
   totalRequiredCount: number;
 }
 
-export const DEFAULT_GLOBAL_STANDARD_FIELDS: GlobalTransactionSchemaField[] = [];
+export const DEFAULT_GLOBAL_STANDARD_FIELDS: GlobalTransactionSchemaField[] = [
+  { id: 'gsd-task-id', key: 'task_id', label: 'Task Id (_task_id)', description: 'Ingestion task identifier', dataType: 'string', required: false, isStandard: true, category: 'System & internal', notes: 'Ingestion task identifier' },
+  { id: 'gsd-row-number', key: 'row_number', label: 'Row Number (_row_number)', description: 'Ingestion row sequence number', dataType: 'number', required: false, isStandard: true, category: 'System & internal', notes: 'Ingestion row sequence number' },
+  { id: 'gsd-validation-action', key: 'validation_action', label: 'Validation Action', description: 'Pipeline progression action', dataType: 'string', required: false, isStandard: true, category: 'Audit & timestamps', notes: 'Pipeline progression action' },
+  { id: 'gsd-validation-details', key: 'validation_details', label: 'Validation Details', description: 'Detailed validation diagnosis payload', dataType: 'string', required: false, isStandard: true, category: 'Audit & timestamps', notes: 'Detailed validation diagnosis payload' },
+  { id: 'gsd-mirrored-at', key: 'mirrored_at', label: 'Mirrored At (_mirrored_at)', description: 'Timestamp of record capture into mirror table', dataType: 'date', required: false, isStandard: true, category: 'Audit & timestamps', notes: 'Timestamp of record capture into mirror table' },
+  { id: 'gsd-acq-sdatetime', key: 'acq_sdatetime', label: 'ACQ SDATETIME', description: 'Acquirer system settlement and clearing date-time', dataType: 'date', required: false, isStandard: true, category: 'Audit & timestamps', notes: 'Sett · auth_log_tab · discovered' },
+  { id: 'gsd-captdate', key: 'captdate', label: 'CAPTDATE', description: 'Batch capture timestamp from terminal', dataType: 'string', required: false, isStandard: true, category: 'Audit & timestamps', notes: 'Sett · auth_log_tab · discovered' },
+  { id: 'gsd-sw-convertrate', key: 'sw_convertrate', label: 'SW CONVERTRATE', description: 'Switch foreign exchange conversion rate multiplier', dataType: 'number', required: false, isStandard: true, category: 'Financial & amounts', notes: 'Sett · auth_log_tab · discovered' },
+  { id: 'gsd-trace', key: 'trace', label: 'TRACE', description: 'System trace audit number (STAN)', dataType: 'string', required: false, isStandard: true, category: 'Identity & reference', notes: 'Sett · auth_log_tab · discovered' },
+  { id: 'gsd-finst-cc', key: 'finst_cc', label: 'FINST CC', description: 'Financial institution currency code', dataType: 'string', required: false, isStandard: false, category: 'Unclassified', notes: 'Sett · auth_log_tab · discovered' },
+  { id: 'gsd-merchant', key: 'merchant', label: 'MERCHANT', description: 'Merchant unique identifier or terminal merchant code', dataType: 'string', required: false, isStandard: true, category: 'Merchant & POS', notes: 'Sett · auth_log_tab · discovered' },
+  { id: 'gsd-acqinstcc', key: 'acqinstcc', label: 'ACQINSTCC', description: 'Acquiring institution country / currency code', dataType: 'string', required: false, isStandard: false, category: 'Unclassified', notes: 'Sett · auth_log_tab · discovered' },
+  { id: 'gsd-client-billingfee', key: 'client_billingfee', label: 'CLIENT BILLINGFEE', description: 'Client billing processing surcharge fee', dataType: 'number', required: false, isStandard: true, category: 'Financial & amounts', notes: 'Sett · auth_log_tab · discovered' },
+  { id: 'gsd-transaction-id', key: 'transaction_id', label: 'Transaction ID', description: 'Primary transaction key across all schemas', dataType: 'string', required: true, isStandard: true, category: 'Identity & reference', notes: 'Primary transaction key across all schemas' },
+  { id: 'gsd-amount', key: 'amount', label: 'Amount', description: 'Standard settlement numerical amount', dataType: 'number', required: true, isStandard: true, category: 'Financial & amounts', notes: 'Standard settlement numerical amount' },
+  { id: 'gsd-currency', key: 'currency', label: 'Currency', description: 'ISO currency code: ETB, USD, EUR', dataType: 'string', required: false, isStandard: true, category: 'Financial & amounts', notes: 'ISO currency code: ETB, USD, EUR' },
+  { id: 'gsd-card-number', key: 'card_number', label: 'Card Number', description: 'PCI-DSS compliant masked PAN (e.g. 4242••••••4242)', dataType: 'string', required: false, isStandard: true, category: 'Card & customer', notes: 'PCI-DSS compliant masked PAN (e.g. 4242••••••4242)' },
+  { id: 'gsd-status', key: 'status', label: 'Status', description: 'Normalized status: Authorized, Settled, Declined, Reversed', dataType: 'string', required: false, isStandard: true, category: 'General', notes: 'Normalized status: Authorized, Settled, Declined, Reversed' },
+  { id: 'gsd-response-code', key: 'response_code', label: 'Response Code', description: 'Standard response codes: 00 (Approved), 05 (Do not honor), 51 (Insufficient funds)', dataType: 'string', required: false, isStandard: true, category: 'General', notes: 'Standard response codes: 00 (Approved), 05 (Do not honor), 51 (Insufficient funds)' }
+];
 
-export const DEFAULT_DATABASE_TABLE_MAPPINGS: Record<string, DbTableMappingConfig> = {};
+export const DEFAULT_DATABASE_TABLE_MAPPINGS: Record<string, DbTableMappingConfig> = {
+  'db-sftp-local::mirror_ftp_aib__unsettled_xls': {
+    dbId: 'db-sftp-local',
+    dbName: 'LocalFTP (SFTP)',
+    tableName: 'mirror_ftp_aib__unsettled_xls',
+    columns: [
+      { physicalColumn: '_task_id', globalKey: 'task_id' },
+      { physicalColumn: '_row_number', globalKey: 'row_number' },
+      { physicalColumn: '_validation_action', globalKey: 'validation_action' },
+      { physicalColumn: '_validation_details', globalKey: 'validation_details' },
+      { physicalColumn: '_mirrored_at', globalKey: 'mirrored_at' }
+    ],
+    updatedAt: '2026-10-09T18:45:51Z'
+  }
+};
 
 // NON-AUTHORITATIVE OFFLINE CACHE KEYS (PostgreSQL global_standard_directory and database_table_mappings are the sole authority)
 const STORAGE_KEY = 'global_mapping_schema_config_v2';
@@ -111,6 +145,10 @@ export class GlobalMappingService {
             }
           }
 
+          if (!parsed.standardFields || parsed.standardFields.length === 0) {
+            parsed.standardFields = [...DEFAULT_GLOBAL_STANDARD_FIELDS];
+          }
+
           return parsed;
         }
       }
@@ -122,7 +160,7 @@ export class GlobalMappingService {
       version: '2.2.0',
       updatedAt: new Date().toISOString(),
       updatedBy: 'system_default',
-      standardFields: [],
+      standardFields: [...DEFAULT_GLOBAL_STANDARD_FIELDS],
       tableMappings: { ...DEFAULT_DATABASE_TABLE_MAPPINGS }
     };
   }

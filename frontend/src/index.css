@@ -86,9 +86,26 @@
   --shadow-ds-overlay: 0 24px 64px rgba(0, 0, 0, 0.5);
 }
 
+html {
+  zoom: 0.8;
+  height: 100%;
+  width: 100%;
+}
+
 body {
+  height: 100%;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
   background-color: #f8fafc;
   color: #0f172a;
+}
+
+#root {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
 }
 
 /* Visible keyboard focus everywhere (unlayered, so it also beats utility `focus:outline-none`). */

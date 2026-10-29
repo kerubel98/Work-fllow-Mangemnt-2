@@ -3,46 +3,46 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { lazy, ComponentType } from 'react';
+import { lazy, ComponentType } from 'react';
 
 /**
- * Resilient lazy loader for code-split modules.
- * Automatically retries failed dynamic imports (e.g. on server reboot or temporary network drop)
- * and safely reloads once if chunk hashes have updated after a new build.
+ * Enhanced lazy import with automatic retry and page reload for stale chunks.
+ * Prevents "Failed to fetch dynamically imported module" errors after production builds.
  */
 export function lazyWithRetry<T extends ComponentType<any>>(
-  factory: () => Promise<{ default: T }>,
-  moduleName?: string
-): React.LazyExoticComponent<T> {
+  factory: () => Promise<{ default: T } | { [key: string]: any }>
+) {
   return lazy(async () => {
-    const storageKey = `chunk_retry_${moduleName || 'general'}`;
-    const alreadyReloaded = window.sessionStorage.getItem(storageKey) === 'true';
+    const pageHasBeenForceReloaded = window.sessionStorage.getItem(
+      'chunk_reload_guard_' + window.location.pathname
+    );
 
     try {
-      const component = await factory();
-      window.sessionStorage.removeItem(storageKey);
-      return component;
-    } catch (firstError: any) {
-      console.warn(`[lazyWithRetry] First attempt failed for ${moduleName || 'module'}:`, firstError);
-
-      // Attempt 2: brief delay and retry (handles server restart/reconnect)
-      try {
-        await new Promise(resolve => setTimeout(resolve, 1200));
-        const component = await factory();
-        window.sessionStorage.removeItem(storageKey);
-        return component;
-      } catch (secondError: any) {
-        console.warn(`[lazyWithRetry] Second attempt failed for ${moduleName || 'module'}:`, secondError);
-
-        // Attempt 3: If chunk hash changed or stale cache, hard reload once
-        if (!alreadyReloaded) {
-          window.sessionStorage.setItem(storageKey, 'true');
-          window.location.reload();
-          return new Promise<{ default: T }>(() => {});
-        }
-
-        throw secondError;
+      const module = await factory();
+      // Clear reload guard on successful load
+      if (pageHasBeenForceReloaded) {
+        window.sessionStorage.removeItem('chunk_reload_guard_' + window.location.pathname);
       }
+      return 'default' in module ? (module as { default: T }) : { default: Object.values(module)[0] as T };
+    } catch (error: any) {
+      const isChunkError =
+        error?.message?.includes('Failed to fetch dynamically imported module') ||
+        error?.message?.includes('Importing a module script failed') ||
+        error?.message?.includes('error loading dynamically imported module') ||
+        error?.message?.includes('Loading chunk') ||
+        error?.name === 'ChunkLoadError';
+
+      if (isChunkError && !pageHasBeenForceReloaded) {
+        console.warn('[lazyWithRetry] Stale chunk detected after build. Force-reloading to fetch latest assets...', error);
+        window.sessionStorage.setItem('chunk_reload_guard_' + window.location.pathname, 'true');
+        window.location.reload();
+        // Return a pending promise so React doesn't crash before the reload kicks in
+        return new Promise(() => {}) as any;
+      }
+
+      // If already reloaded once and still failed, bubble up to ErrorBoundary
+      console.error('[lazyWithRetry] Dynamic import failed permanently:', error);
+      throw error;
     }
   });
 }

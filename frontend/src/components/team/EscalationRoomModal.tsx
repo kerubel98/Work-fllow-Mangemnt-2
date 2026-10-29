@@ -585,8 +585,21 @@ export const EscalationRoomModal: React.FC<EscalationRoomModalProps> = ({
         <div className="p-4 border-t border-slate-200 bg-white">
           <UnifiedChatInput
             currentUser={currentUser}
+            users={[
+              { id: 'u1', username: 'kirubel_ops', fullName: 'Kirubel Operations', role: 'operational' as any, status: 'active' },
+              { id: 'u2', username: 'manager_alex', fullName: 'Alex Manager', role: 'manager' as any, status: 'active' },
+              { id: 'u3', username: 'tech_sarah', fullName: 'Sarah Technician', role: 'tech' as any, status: 'active' },
+              { id: 'u4', username: 'samuel_tech', fullName: 'Samuel Technician', role: 'tech' as any, status: 'active' },
+              { id: 'u5', username: 'checker_ops_2', fullName: 'Checker Ops 2', role: 'operational' as any, status: 'active' },
+              { id: 'u6', username: 'admin', fullName: 'System Administrator', role: 'admin' as any, status: 'active' }
+            ]}
             teams={availableTeams}
-            placeholder="Type a message or command (@escalate_issue, @run_sandbox, @request_approval, / directives)..."
+            hashtags={[
+              { id: 'h1', tag: 'AIB_SETTLEMENT_2026', name: 'AIB Settlement 2026', description: 'Reconciliation preset for AIB' } as any,
+              { id: 'h2', tag: 'SETTLEMENT_AMOUNT_ROUNDING', name: 'Settlement Amount Rounding', description: 'Fee rounding reconciliation' } as any,
+              { id: 'h3', tag: 'FEE_VARIANCE_SWEEP', name: 'Fee Variance Sweep', description: 'Monthly fee tolerance sweep' } as any
+            ]}
+            placeholder="Type a message, @ to mention user, @@ for team, / for directives..."
             value={inputText}
             onChange={setInputText}
             disabled={isProcessingCommand}
@@ -598,6 +611,10 @@ export const EscalationRoomModal: React.FC<EscalationRoomModalProps> = ({
                 setInputText('@escalate_issue to="Core Operations" reason="Urgent escalation"');
               } else if (directive === 'request-approval') {
                 setInputText('@request_approval solution="Manual settlement override"');
+              } else if (directive === 'create-task') {
+                setInputText(`/create-task issue="${issue?.id || 'ISS-3854'}"`);
+              } else if (directive === 'call-hashtag') {
+                setInputText('#SETTLEMENT_AMOUNT_ROUNDING');
               }
             }}
             inputId="input-escalation-chat"

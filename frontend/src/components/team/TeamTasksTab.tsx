@@ -1,9 +1,9 @@
 import React, { useState } from 'react';
-import { Team, TeamTask, User } from '../../types';
+import { Team, TeamTask, User, Issue } from '../../types';
 import { 
   CheckSquare, Plus, Search, Filter, Calendar, 
   Trash2, User as UserIcon, ArrowRight, CheckCircle2, Clock,
-  ExternalLink, Globe, List, Activity
+  ExternalLink, Globe, List, Activity, Flag
 } from 'lucide-react';
 import { NoTasksEmptyState } from './TeamEmptyStates';
 
@@ -16,6 +16,7 @@ interface TeamTasksTabProps {
   onUpdateTaskStatus: (taskId: string, status: 'To Do' | 'In Progress' | 'Done') => void;
   onDeleteTask: (taskId: string) => void;
   onOpenIssueInWorkspace?: (issueId: string) => void;
+  onStageTask?: (issue: Issue) => void;
 }
 
 export const TeamTasksTab: React.FC<TeamTasksTabProps> = ({
@@ -26,7 +27,8 @@ export const TeamTasksTab: React.FC<TeamTasksTabProps> = ({
   onAddTaskClick,
   onUpdateTaskStatus,
   onDeleteTask,
-  onOpenIssueInWorkspace
+  onOpenIssueInWorkspace,
+  onStageTask
 }) => {
   const safeTasks = Array.isArray(tasks) ? tasks : [];
   const safeUsers = Array.isArray(teamUsers) ? teamUsers : [];
@@ -53,7 +55,7 @@ export const TeamTasksTab: React.FC<TeamTasksTabProps> = ({
   ];
 
   return (
-    <div className="space-y-4 font-sans" id="team-tasks-tab">
+    <div className="h-full min-h-0 flex flex-col space-y-4 font-sans px-0" id="team-tasks-tab">
       {/* Top Filter Bar matching 08_team_tasks.png */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-2.5">
@@ -101,15 +103,15 @@ export const TeamTasksTab: React.FC<TeamTasksTabProps> = ({
         <NoTasksEmptyState onAddTask={onAddTaskClick} />
       ) : (
         /* Kanban Columns */
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-start">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 h-full min-h-0">
           {columns.map(col => {
             const colTasks = filteredTasks.filter(t => t.status === col.id);
             const IconComp = col.icon;
 
             return (
-              <div 
-                key={col.id} 
-                className="bg-slate-50/70 border border-slate-200/80 rounded-2xl p-3.5 flex flex-col min-h-[360px]"
+              <div
+                key={col.id}
+                className="bg-slate-50/70 border border-slate-200/80 rounded-2xl p-3.5 flex flex-col h-full min-h-[420px] overflow-hidden"
               >
                 {/* Column Header */}
                 <div className="flex items-center justify-between pb-3 mb-3 border-b border-slate-200/60">
@@ -123,7 +125,7 @@ export const TeamTasksTab: React.FC<TeamTasksTabProps> = ({
                 </div>
 
                 {/* Column Tasks */}
-                <div className="space-y-2.5 flex-1 flex flex-col">
+                <div className="space-y-2.5 flex-1 flex flex-col overflow-y-auto no-scrollbar pr-0.5">
                   {colTasks.length === 0 ? (
                     <div className="flex-1 flex items-center justify-center p-6 text-center text-slate-400 text-xs font-sans">
                       No tasks yet
@@ -200,6 +202,35 @@ export const TeamTasksTab: React.FC<TeamTasksTabProps> = ({
                                 <span className="px-2 py-0.5 rounded bg-slate-100 text-slate-600 text-[10px] font-medium font-sans">
                                   Team public
                                 </span>
+                              )}
+                              {onStageTask && (sourceIssueId || task.priority === 'High' || task.priority === 'Critical') && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const issueKey = sourceIssueId || (task.id.startsWith('task-') ? `ISS-${task.id.slice(5, 11)}` : task.id);
+                                    const target: Issue = {
+                                      id: issueKey,
+                                      title: task.title || 'trn test',
+                                      description: task.description || 'Settlement amount differences under 50.00 caused by fee rounding on the switch side.',
+                                      priority: (task.priority as any) || 'High',
+                                      status: 'Investigating',
+                                      creatorId: task.creatorId || currentUser.id,
+                                      creatorName: task.creatorName || currentUser.username,
+                                      createdAt: task.createdAt || new Date().toISOString(),
+                                      type: 'file',
+                                      targetDb: 'Sett · MySQL',
+                                      targetTable: 'sv_fin_tab',
+                                      stagedEnvironment: 'SANDBOX' as any,
+                                      chat: []
+                                    };
+                                    onStageTask(target);
+                                  }}
+                                  className="px-2 py-0.5 rounded-md bg-orange-50 hover:bg-[#F27421] text-orange-700 hover:text-white border border-orange-200 text-[10px] font-bold font-mono transition-all flex items-center space-x-1 cursor-pointer"
+                                  title="Stage task into Level 2 Technician Investigation Workspace"
+                                >
+                                  <Flag size={10} />
+                                  <span>Stage task →</span>
+                                </button>
                               )}
                               {sourceIssueId && onOpenIssueInWorkspace && (
                                 <button

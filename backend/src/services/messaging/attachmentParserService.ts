@@ -49,6 +49,16 @@ export interface ExtractedRequestPayload {
 }
 
 export class AttachmentParserService {
+  // Configurable row limit for spreadsheet parsing (default 500)
+  // Can be overridden via environment variable or instance configuration
+  private readonly maxPreviewRows: number;
+  private readonly enableRowLimitWarning: boolean;
+
+  constructor(config?: { maxPreviewRows?: number; enableRowLimitWarning?: boolean }) {
+    this.maxPreviewRows = config?.maxPreviewRows ?? (process.env.ATTACHMENT_MAX_PREVIEW_ROWS ? Number(process.env.ATTACHMENT_MAX_PREVIEW_ROWS) : 500);
+    this.enableRowLimitWarning = config?.enableRowLimitWarning ?? (process.env.ATTACHMENT_WARN_ROW_LIMIT === 'true');
+  }
+
   /**
    * Main entrypoint to parse an array of message attachments and extract
    * structured business fields, tabular transaction sets, and metadata.
@@ -139,7 +149,10 @@ export class AttachmentParserService {
           const jsonData = XLSX.utils.sheet_to_json<Record<string, any>>(sheet, { defval: '' });
 
           const headers = jsonData.length > 0 ? Object.keys(jsonData[0]) : [];
-          const rows = jsonData.slice(0, 500); // First 500 rows for preview/staging
+          const rows = jsonData.slice(0, this.maxPreviewRows); // First N rows for preview/staging
+          if (this.enableRowLimitWarning && jsonData.length > this.maxPreviewRows) {
+            console.warn(`[AttachmentParserService] Spreadsheet "${att.filename}" has ${jsonData.length} total rows but only first ${this.maxPreviewRows} rows are parsed for preview. Increase ATTACHMENT_MAX_PREVIEW_ROWS to process more rows.`);
+          }
 
           return {
             attachmentId: att.id,
@@ -189,7 +202,10 @@ export class AttachmentParserService {
           const sheet = workbook.Sheets[sheetName];
           const jsonData = XLSX.utils.sheet_to_json<Record<string, any>>(sheet, { defval: '' });
           const headers = jsonData.length > 0 ? Object.keys(jsonData[0]) : [];
-          const rows = jsonData.slice(0, 500);
+          const rows = jsonData.slice(0, this.maxPreviewRows);
+          if (this.enableRowLimitWarning && jsonData.length > this.maxPreviewRows) {
+            console.warn(`[AttachmentParserService] Spreadsheet "${att.filename}" has ${jsonData.length} total rows but only first ${this.maxPreviewRows} rows are parsed for preview. Increase ATTACHMENT_MAX_PREVIEW_ROWS to process more rows.`);
+          }
           return {
             attachmentId: att.id,
             filename: att.filename,
@@ -235,13 +251,16 @@ export class AttachmentParserService {
             const headerLine = lines[0];
             const delimiter = headerLine.includes('\t') ? '\t' : (headerLine.includes(';') ? ';' : ',');
             headers = headerLine.split(delimiter).map(h => h.trim().replace(/^["']|["']$/g, ''));
-            for (let i = 1; i < lines.length && rows.length < 500; i++) {
+            for (let i = 1; i < lines.length && rows.length < this.maxPreviewRows; i++) {
               const cols = lines[i].split(delimiter).map(c => c.trim().replace(/^["']|["']$/g, ''));
               const rowObj: Record<string, any> = {};
               headers.forEach((h, idx) => {
                 rowObj[h] = cols[idx] ?? '';
               });
               rows.push(rowObj);
+            }
+            if (this.enableRowLimitWarning && lines.length - 1 > this.maxPreviewRows) {
+              console.warn(`[AttachmentParserService] CSV "${att.filename}" has ${lines.length - 1} total data rows but only first ${this.maxPreviewRows} rows are parsed for preview. Increase ATTACHMENT_MAX_PREVIEW_ROWS to process more rows.`);
             }
           }
         }
@@ -356,11 +375,11 @@ export class AttachmentParserService {
       score += 0.15;
     } else if (lower.includes('payment failure') || lower.includes('gateway timeout') || lower.includes('declined')) {
       category = 'PAYMENT_FAILURE';
-      suggestedTeamId = 'team-core-switch';
+      suggestedTeamId = 'team-settlement-01';
       score += 0.1;
     } else if (lower.includes('audit') || lower.includes('compliance')) {
       category = 'AUDIT_REQUEST';
-      suggestedTeamId = 'team-audit-01';
+      suggestedTeamId = 'team-settlement-01';
       score += 0.1;
     }
 
