@@ -164,6 +164,269 @@ const DEFAULT_INTAKE_ITEMS = [
     parsed_fields: {
       priority: 'Low'
     }
+  },
+  {
+    id: 'stg-cbe-007',
+    channel: 'email',
+    subject: 'CBE POS Acquirer Batch Variance Report',
+    sender_name: 'Abebe Bikila',
+    sender_address: 'abebe.b@cbe.com.et',
+    category: 'Reconciliation exception',
+    urgency: 'critical',
+    confidence_score: 0.92,
+    attachments: [{ filename: 'cbe_pos_variance_20261022.xlsx', size: '1.2 MB' }],
+    status: 'READY_FOR_TASK_CREATION',
+    created_at: new Date(Date.now() - 3600000 * 14).toISOString(),
+    raw_payload: JSON.stringify({
+      bank: 'Commercial Bank of Ethiopia',
+      discrepancyCount: 38,
+      totalAmountETB: 8940000.50
+    }, null, 2),
+    parsed_fields: {
+      caseReference: 'ISS-CBE-POS-07',
+      priority: 'Critical',
+      entity: 'Commercial Bank of Ethiopia'
+    }
+  },
+  {
+    id: 'stg-dashen-008',
+    channel: 'email',
+    subject: 'Dashen Bank ATM Dispense Discrepancy Log',
+    sender_name: 'Selamawit Tadesse',
+    sender_address: 'selamawit.t@dashenbanksc.com',
+    category: 'ATM exception',
+    urgency: 'high',
+    confidence_score: 0.85,
+    attachments: [{ filename: 'dashen_atm_dispense_log.csv', size: '512 KB' }],
+    status: 'NEW',
+    created_at: new Date(Date.now() - 3600000 * 16).toISOString(),
+    raw_payload: JSON.stringify({
+      terminalId: 'ATM-DASHEN-4401',
+      dispenseErrors: 12,
+      varianceAmount: 48000.00
+    }, null, 2),
+    parsed_fields: {
+      priority: 'High',
+      entity: 'Dashen Bank'
+    }
+  },
+  {
+    id: 'stg-telebirr-009',
+    channel: 'teams',
+    subject: 'Telebirr Wallet Interoperability Clearing File',
+    sender_name: 'Kalkidan Mulugeta',
+    sender_address: 'kalkidan.m@ethiotelecom.et',
+    category: 'Wallet settlement',
+    urgency: 'normal',
+    confidence_score: 0.88,
+    attachments: [{ filename: 'telebirr_clearing_oct24.csv', size: '3.4 MB' }],
+    status: 'READY_FOR_TASK_CREATION',
+    created_at: new Date(Date.now() - 3600000 * 18).toISOString(),
+    raw_payload: JSON.stringify({
+      feedType: 'P2M_INTEROP',
+      recordCount: 14200,
+      clearingWindow: 'T+0_EVENING'
+    }, null, 2),
+    parsed_fields: {
+      priority: 'Medium',
+      entity: 'Ethio Telecom (Telebirr)'
+    }
+  },
+  {
+    id: 'stg-nib-010',
+    channel: 'email',
+    subject: 'NIB International Bank ISO-8583 Settlement Feed',
+    sender_name: 'Dawit Haile',
+    sender_address: 'dawit.h@nibbanket.com',
+    category: 'Reconciliation exception',
+    urgency: 'normal',
+    confidence_score: 0.78,
+    attachments: [{ filename: 'nib_iso_settlement.xml', size: '890 KB' }],
+    status: 'CONVERTED_TO_TASK',
+    created_at: new Date(Date.now() - 3600000 * 20).toISOString(),
+    raw_payload: JSON.stringify({
+      switchBatch: 'SW-NIB-9921',
+      matchedCount: 4200,
+      unmatchedCount: 7
+    }, null, 2),
+    parsed_fields: {
+      caseReference: 'ISS-NIB-9921',
+      priority: 'Normal',
+      entity: 'Nib Bank'
+    }
+  },
+  {
+    id: 'stg-coop-011',
+    channel: 'email',
+    subject: 'Cooperative Bank of Oromia Dispute Triage',
+    sender_name: 'Gemechu Megersa',
+    sender_address: 'gemechu.m@coopbankoromia.com.et',
+    category: 'Dispute escalation',
+    urgency: 'high',
+    confidence_score: 0.90,
+    attachments: [{ filename: 'coop_dispute_bundle.zip', size: '2.1 MB' }],
+    status: 'ESCALATED',
+    created_at: new Date(Date.now() - 3600000 * 22).toISOString(),
+    raw_payload: JSON.stringify({
+      disputeType: 'CHARGEBACK_REVERSAL',
+      slaDeadline: '2026-10-29T16:00:00Z'
+    }, null, 2),
+    parsed_fields: {
+      caseReference: 'ESC-COOP-011',
+      priority: 'High',
+      entity: 'Coop Bank of Oromia'
+    }
+  },
+  {
+    id: 'stg-wegagen-012',
+    channel: 'email',
+    subject: 'Wegagen Bank Chargeback Document Bundle',
+    sender_name: 'Tigist Assefa',
+    sender_address: 'tigist.a@wegagenbank.com.et',
+    category: 'Chargeback review',
+    urgency: 'normal',
+    confidence_score: 0.82,
+    attachments: [{ filename: 'wegagen_chargebacks.pdf', size: '1.5 MB' }],
+    status: 'READY_FOR_TASK_CREATION',
+    created_at: new Date(Date.now() - 3600000 * 24).toISOString(),
+    raw_payload: JSON.stringify({
+      bank: 'Wegagen Bank',
+      caseCount: 16
+    }, null, 2),
+    parsed_fields: {
+      priority: 'Medium',
+      entity: 'Wegagen Bank'
+    }
+  },
+  {
+    id: 'stg-abyssinia-013',
+    channel: 'email',
+    subject: 'Bank of Abyssinia Clearing Fee Rounding Discrepancy',
+    sender_name: 'Natnael Girma',
+    sender_address: 'natnael.g@bankofabyssinia.com',
+    category: 'Fee discrepancy',
+    urgency: 'critical',
+    confidence_score: 0.95,
+    attachments: [{ filename: 'boa_fee_rounding_audit.xlsx', size: '640 KB' }],
+    status: 'READY_FOR_TASK_CREATION',
+    created_at: new Date(Date.now() - 3600000 * 26).toISOString(),
+    raw_payload: JSON.stringify({
+      bank: 'Bank of Abyssinia',
+      roundingDelta: 31250.75,
+      impactedTransactions: 124
+    }, null, 2),
+    parsed_fields: {
+      caseReference: 'ISS-BOA-FEE-13',
+      priority: 'Critical',
+      entity: 'Bank of Abyssinia'
+    }
+  },
+  {
+    id: 'stg-zemen-014',
+    channel: 'email',
+    subject: 'Zemen Bank Corporate Settlement Reconciliation',
+    sender_name: 'Almaz Tefera',
+    sender_address: 'almaz.t@zemenbank.com',
+    category: 'Corporate settlement',
+    urgency: 'normal',
+    confidence_score: 0.84,
+    attachments: [{ filename: 'zemen_corp_feed.csv', size: '320 KB' }],
+    status: 'NEW',
+    created_at: new Date(Date.now() - 3600000 * 28).toISOString(),
+    raw_payload: JSON.stringify({
+      corporateId: 'CORP-MIDROC-88',
+      transferCount: 45
+    }, null, 2),
+    parsed_fields: {
+      priority: 'Medium',
+      entity: 'Zemen Bank'
+    }
+  },
+  {
+    id: 'stg-oromia-015',
+    channel: 'email',
+    subject: 'Oromia Bank Switch Anomaly Notification',
+    sender_name: 'Tolosa Feyissa',
+    sender_address: 'tolosa.f@oromiabank.com',
+    category: 'System notice',
+    urgency: 'low',
+    confidence_score: 0.45,
+    attachments: [],
+    status: 'REJECTED',
+    created_at: new Date(Date.now() - 3600000 * 30).toISOString(),
+    raw_payload: JSON.stringify({
+      note: 'Duplicate inquiry, already triaged under batch SW-ORO-11'
+    }, null, 2),
+    parsed_fields: {
+      priority: 'Low',
+      entity: 'Oromia Bank'
+    }
+  },
+  {
+    id: 'stg-hibret-016',
+    channel: 'email',
+    subject: 'Hibret Bank Merchant Settlement Exception',
+    sender_name: 'Binyam Alemu',
+    sender_address: 'binyam.a@hibretbank.com.et',
+    category: 'Merchant settlement',
+    urgency: 'high',
+    confidence_score: 0.89,
+    attachments: [{ filename: 'hibret_merchant_recon.xlsx', size: '780 KB' }],
+    status: 'READY_FOR_TASK_CREATION',
+    created_at: new Date(Date.now() - 3600000 * 32).toISOString(),
+    raw_payload: JSON.stringify({
+      merchantId: 'MCH-HYATT-REGENCY',
+      discrepancyTotal: 67200.00
+    }, null, 2),
+    parsed_fields: {
+      caseReference: 'ISS-HIBRET-MCH-16',
+      priority: 'High',
+      entity: 'Hibret Bank'
+    }
+  },
+  {
+    id: 'stg-enat-017',
+    channel: 'email',
+    subject: 'Enat Bank Micro-Loan Batch Clearing File',
+    sender_name: 'Hanna Wolde',
+    sender_address: 'hanna.w@enatbanksc.com',
+    category: 'Loan clearance',
+    urgency: 'normal',
+    confidence_score: 0.77,
+    attachments: [{ filename: 'enat_microloan_t1.csv', size: '410 KB' }],
+    status: 'CONVERTED_TO_TASK',
+    created_at: new Date(Date.now() - 3600000 * 34).toISOString(),
+    raw_payload: JSON.stringify({
+      loanBatchId: 'LN-ENAT-7741',
+      totalDisbursed: 1250000.00
+    }, null, 2),
+    parsed_fields: {
+      caseReference: 'ISS-ENAT-7741',
+      priority: 'Normal',
+      entity: 'Enat Bank'
+    }
+  },
+  {
+    id: 'stg-lion-018',
+    channel: 'email',
+    subject: 'Lion International Bank End of Month Settlement Sweep',
+    sender_name: 'Yosef Kassa',
+    sender_address: 'yosef.k@anbesabank.com.et',
+    category: 'Reconciliation exception',
+    urgency: 'critical',
+    confidence_score: 0.94,
+    attachments: [{ filename: 'lion_eom_settlement.xlsx', size: '1.8 MB' }],
+    status: 'READY_FOR_TASK_CREATION',
+    created_at: new Date(Date.now() - 3600000 * 36).toISOString(),
+    raw_payload: JSON.stringify({
+      sweepId: 'SWEEP-LION-OCT',
+      unreconciledNet: 145800.00
+    }, null, 2),
+    parsed_fields: {
+      caseReference: 'ISS-LION-EOM-18',
+      priority: 'Critical',
+      entity: 'Lion International Bank'
+    }
   }
 ];
 
@@ -203,7 +466,7 @@ const IntakeViewContent: React.FC<IntakeViewProps> = ({
 
   // Pagination State for Requests Table
   const [requestPage, setRequestPage] = useState(1);
-  const [requestPageSize, setRequestPageSize] = useState(10);
+  const [requestPageSize, setRequestPageSize] = useState(7);
 
   // Selected item for review drawer
   const [selectedStaged, setSelectedStaged] = useState<any | null>(null);
@@ -563,125 +826,142 @@ const IntakeViewContent: React.FC<IntakeViewProps> = ({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 text-xs">
-                  {paginatedMessages.map(msg => {
-                    const atts = msg.attachments || [];
-                    const confidencePercent = Math.round((msg.confidence_score ?? 0.5) * 100);
+                  {paginatedMessages.length === 0 ? (
+                    <tr>
+                      <td colSpan={7} className="py-12 text-center text-slate-400 font-sans">
+                        <div className="flex flex-col items-center justify-center space-y-2">
+                          <Mail size={24} className="text-slate-300" />
+                          <p className="font-medium text-slate-600">No requests match the selected criteria</p>
+                          <p className="text-xs text-slate-400">Try adjusting your filters or search keywords</p>
+                        </div>
+                      </td>
+                    </tr>
+                  ) : (
+                    paginatedMessages.map(msg => {
+                      const atts = msg.attachments || [];
+                      const confidencePercent = Math.round((msg.confidence_score ?? 0.5) * 100);
 
-                    return (
-                      <tr key={msg.id} className="hover:bg-slate-50/70 transition">
-                        {/* Request Column */}
-                        <td className="py-3.5 px-4 max-w-sm">
-                          <div className="flex items-center space-x-3">
-                            <div className="w-8 h-8 rounded-lg bg-slate-100 flex items-center justify-center text-slate-500 shrink-0">
-                              <Mail size={15} />
-                            </div>
-                            <div className="min-w-0">
-                              <div className="font-bold text-slate-900 font-sans truncate">
-                                {msg.subject || 'External Service Request'}
+                      return (
+                        <tr key={msg.id} className="hover:bg-slate-50/70 transition">
+                          {/* Request Column */}
+                          <td className="py-3.5 px-4 max-w-sm">
+                            <div className="flex items-center space-x-3">
+                              <div className="w-8 h-8 rounded-lg bg-slate-100 flex items-center justify-center text-slate-500 shrink-0">
+                                <Mail size={15} />
                               </div>
-                              <div className="text-slate-400 text-xs truncate mt-0.5 font-sans">
-                                {msg.sender_name || msg.senderAddress || 'Partner Bank Operator'}
+                              <div className="min-w-0">
+                                <div className="font-bold text-slate-900 font-sans truncate">
+                                  {msg.subject || 'External Service Request'}
+                                </div>
+                                <div className="text-slate-400 text-xs truncate mt-0.5 font-sans">
+                                  {msg.sender_name || msg.senderAddress || 'Partner Bank Operator'}
+                                </div>
                               </div>
                             </div>
-                          </div>
-                        </td>
+                          </td>
 
-                        {/* Category */}
-                        <td className="py-3.5 px-4 text-slate-700 font-sans">
-                          {msg.category || 'Reconciliation exception'}
-                        </td>
+                          {/* Category */}
+                          <td className="py-3.5 px-4 text-slate-700 font-sans">
+                            {msg.category || 'Reconciliation exception'}
+                          </td>
 
-                        {/* Urgency */}
-                        <td className="py-3.5 px-4">
-                          <span className={`px-2.5 py-0.5 rounded text-xs font-medium font-sans ${
-                            msg.urgency === 'critical'
-                              ? 'bg-rose-50 text-rose-700 border border-rose-200/60'
-                              : msg.urgency === 'high'
-                              ? 'bg-amber-50 text-amber-700 border border-amber-200/60'
-                              : 'bg-slate-100 text-slate-600'
-                          }`}>
-                            {msg.urgency === 'critical' ? 'Critical' : msg.urgency === 'high' ? 'High' : 'Normal'}
-                          </span>
-                        </td>
+                          {/* Urgency */}
+                          <td className="py-3.5 px-4">
+                            <span className={`px-2.5 py-0.5 rounded text-xs font-medium font-sans ${
+                              msg.urgency === 'critical'
+                                ? 'bg-rose-50 text-rose-700 border border-rose-200/60'
+                                : msg.urgency === 'high'
+                                ? 'bg-amber-50 text-amber-700 border border-amber-200/60'
+                                : 'bg-slate-100 text-slate-600'
+                            }`}>
+                              {msg.urgency === 'critical' ? 'Critical' : msg.urgency === 'high' ? 'High' : 'Normal'}
+                            </span>
+                          </td>
 
-                        {/* AI Confidence */}
-                        <td className="py-3.5 px-4">
-                          <div className="flex items-center space-x-2">
-                            <div className="w-14 bg-slate-200 h-1.5 rounded-full overflow-hidden">
-                              <div 
-                                className="bg-[#0F142A] h-full rounded-full" 
-                                style={{ width: `${confidencePercent}%` }} 
-                              />
+                          {/* AI Confidence */}
+                          <td className="py-3.5 px-4">
+                            <div className="flex items-center space-x-2">
+                              <div className="w-14 bg-slate-200 h-1.5 rounded-full overflow-hidden">
+                                <div 
+                                  className="bg-[#0F142A] h-full rounded-full" 
+                                  style={{ width: `${confidencePercent}%` }} 
+                                />
+                              </div>
+                              <span className="text-xs text-slate-400 font-sans">
+                                {confidencePercent}%
+                              </span>
                             </div>
-                            <span className="text-xs text-slate-400 font-sans">
-                              {confidencePercent}%
-                            </span>
-                          </div>
-                        </td>
+                          </td>
 
-                        {/* Attachments */}
-                        <td className="py-3.5 px-4 text-slate-600 font-sans">
-                          {atts.length > 0 ? (
-                            `${atts.length} ${atts.length === 1 ? 'file' : 'files'}`
-                          ) : (
-                            <span className="text-slate-400">—</span>
-                          )}
-                        </td>
+                          {/* Attachments */}
+                          <td className="py-3.5 px-4 text-slate-600 font-sans">
+                            {atts.length > 0 ? (
+                              `${atts.length} ${atts.length === 1 ? 'file' : 'files'}`
+                            ) : (
+                              <span className="text-slate-400">—</span>
+                            )}
+                          </td>
 
-                        {/* Status */}
-                        <td className="py-3.5 px-4">
-                          {msg.status === 'READY_FOR_TASK_CREATION' ? (
-                            <span className="inline-flex items-center space-x-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-amber-50 text-amber-700 border border-amber-200/60">
-                              <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
-                              <span>Ready for task</span>
-                            </span>
-                          ) : msg.status === 'CONVERTED_TO_TASK' ? (
-                            <span className="inline-flex items-center space-x-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-emerald-50 text-emerald-700 border border-emerald-200/60">
-                              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
-                              <span>Converted</span>
-                            </span>
-                          ) : msg.status === 'ESCALATED' ? (
-                            <span className="inline-flex items-center space-x-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-purple-50 text-purple-700 border border-purple-200/60">
-                              <span className="w-1.5 h-1.5 rounded-full bg-purple-500" />
-                              <span>Escalated</span>
-                            </span>
-                          ) : (
-                            <span className="inline-flex items-center space-x-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-700 border border-slate-200">
-                              <span className="w-1.5 h-1.5 rounded-full bg-slate-500" />
-                              <span>New</span>
-                            </span>
-                          )}
-                        </td>
+                          {/* Status */}
+                          <td className="py-3.5 px-4">
+                            {msg.status === 'READY_FOR_TASK_CREATION' ? (
+                              <span className="inline-flex items-center space-x-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-amber-50 text-amber-700 border border-amber-200/60">
+                                <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+                                <span>Ready for task</span>
+                              </span>
+                            ) : msg.status === 'CONVERTED_TO_TASK' ? (
+                              <span className="inline-flex items-center space-x-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-emerald-50 text-emerald-700 border border-emerald-200/60">
+                                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                                <span>Converted</span>
+                              </span>
+                            ) : msg.status === 'ESCALATED' ? (
+                              <span className="inline-flex items-center space-x-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-purple-50 text-purple-700 border border-purple-200/60">
+                                <span className="w-1.5 h-1.5 rounded-full bg-purple-500" />
+                                <span>Escalated</span>
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center space-x-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-700 border border-slate-200">
+                                <span className="w-1.5 h-1.5 rounded-full bg-slate-500" />
+                                <span>New</span>
+                              </span>
+                            )}
+                          </td>
 
-                        {/* Review Action */}
-                        <td className="py-3.5 px-4 text-right">
-                          <button
-                            onClick={() => handleOpenReview(msg)}
-                            className="px-3 py-1 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 rounded-lg text-xs font-medium font-sans shadow-2xs transition-colors cursor-pointer"
-                          >
-                            Review
-                          </button>
-                        </td>
-                      </tr>
-                    );
-                  })}
+                          {/* Review Action */}
+                          <td className="py-3.5 px-4 text-right">
+                            <button
+                              onClick={() => handleOpenReview(msg)}
+                              className="px-3 py-1 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 rounded-lg text-xs font-medium font-sans shadow-2xs transition-colors cursor-pointer"
+                            >
+                              Review
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
                 </tbody>
               </table>
             </div>
-          </div>
 
-          {/* Requests Table Pagination */}
-          <DataTablePagination
-            currentPage={requestPage}
-            totalItems={filteredMessages.length}
-            pageSize={requestPageSize}
-            pageSizeOptions={[10, 25, 50, 100]}
-            onPageChange={setRequestPage}
-            onPageSizeChange={(newSize) => {
-              setRequestPageSize(newSize);
-              setRequestPage(1);
-            }}
-          />
+            {/* Requests Table Pagination Footer */}
+            <DataTablePagination
+              currentPage={requestPage}
+              totalItems={filteredMessages.length}
+              pageSize={requestPageSize}
+              pageSizeOptions={[5, 6, 7, 8, 10, 15, 20, 25, 50]}
+              onPageChange={setRequestPage}
+              onPageSizeChange={(newSize) => {
+                setRequestPageSize(newSize);
+                setRequestPage(1);
+              }}
+              statusBadge={
+                <span className="text-[11px] font-mono text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full border border-slate-200/60">
+                  {filteredMessages.length} filtered · {stagedMessages.length} total
+                </span>
+              }
+            />
+          </div>
 
         </div>
       )}
