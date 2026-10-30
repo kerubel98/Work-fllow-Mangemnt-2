@@ -131,6 +131,7 @@ export default function DatabaseColumnConfigurationStudio({ currentUser, teams =
 
   // Modal State
   const [isModalOpen, setIsModalOpen] = useState(false);
+  const [isAllGroupColsExpanded, setIsAllGroupColsExpanded] = useState(false);
   const [editingConfig, setEditingConfig] = useState<Partial<DatabaseColumnConfiguration> | null>(null);
   const [isSaving, setIsSaving] = useState(false);
 
@@ -426,25 +427,56 @@ export default function DatabaseColumnConfigurationStudio({ currentUser, teams =
         transform: 'NONE'
       });
     } else if (previewColumns.length > 0) {
-      defaultCols.push({
-        columnName: previewColumns[0].name,
-        priority: 1,
-        role: 'MATCH_KEY',
-        matchMode: 'EXACT',
-        transform: 'NONE'
+      const preferred = ['TR_GROUP_ID', 'BO_TYPE', 'PROC_NAME'];
+      const matched = preferred.filter(p => previewColumns.some(c => c.name.toUpperCase() === p));
+      if (matched.length > 0) {
+        matched.forEach((cName, idx) => {
+          const actualCol = previewColumns.find(c => c.name.toUpperCase() === cName)?.name || cName;
+          defaultCols.push({
+            columnName: actualCol,
+            priority: idx + 1,
+            role: 'MATCH_KEY',
+            matchMode: 'EXACT',
+            transform: 'NONE'
+          });
+        });
+      } else {
+        previewColumns.slice(0, 3).forEach((col, idx) => {
+          defaultCols.push({
+            columnName: col.name,
+            priority: idx + 1,
+            role: 'MATCH_KEY',
+            matchMode: 'EXACT',
+            transform: 'NONE'
+          });
+        });
+      }
+    } else {
+      ['TR_GROUP_ID', 'BO_TYPE', 'PROC_NAME'].forEach((col, idx) => {
+        defaultCols.push({
+          columnName: col,
+          priority: idx + 1,
+          role: 'MATCH_KEY',
+          matchMode: 'EXACT',
+          transform: 'NONE'
+        });
       });
     }
 
+    const defaultGroupCols = defaultCols.map(c => c.columnName);
+    const boTypeCol = previewColumns.find(c => c.name.toUpperCase() === 'BO_TYPE')?.name || 
+      (previewColumns.length > 1 ? previewColumns[1].name : 'BO_TYPE');
+
     setEditingConfig({
-      name: prefillColumn ? `Check on ${prefillColumn}` : 'New Column Rule',
+      name: prefillColumn ? `Check on ${prefillColumn}` : 'New column rule',
       dbId: selectedDbId,
-      dbName: currentDb?.name || 'Selected Database',
-      tableName: selectedTable,
+      dbName: currentDb?.name || 'Sett',
+      tableName: selectedTable || 'tran_log_tab',
       ruleType: 'DUPLICATE_CHECK',
       description: 'Automated column validation rule',
       columns: defaultCols,
-      groupByColumns: [],
-      filterConditions: [],
+      groupByColumns: defaultGroupCols,
+      filterConditions: [{ columnName: boTypeCol, operator: '=', value: 'CMTP254' }],
       aggregationRules: [{ function: 'COUNT', operator: '>', value: 1 }],
       primaryKeyColumn: previewColumns.length > 0 ? previewColumns[0].name : '',
       roleColumn: previewColumns.length > 1 ? previewColumns[1].name : '',
@@ -465,10 +497,11 @@ export default function DatabaseColumnConfigurationStudio({ currentUser, teams =
       valueLabels: [],
       unmappedValueAction: 'FLAG',
       violationAction: 'FLAG',
-      severity: 'CRITICAL',
+      severity: 'WARNING',
       violationMessage: 'Duplicate or conflicting values detected across priority columns',
       isActive: true
     });
+    setTestResult(null);
     setIsModalOpen(true);
   };
 
@@ -816,7 +849,7 @@ export default function DatabaseColumnConfigurationStudio({ currentUser, teams =
   if (!isAdmin && activeDbs.length === 0) {
     return (
       <div className="w-full bg-white border border-slate-200 rounded-2xl p-8 shadow-xs text-center space-y-4 font-sans" id="no-created-resources-banner">
-        <div className="w-14 h-14 rounded-2xl bg-blue-50 border border-blue-200 flex items-center justify-center text-[#155DFC] mx-auto shadow-2xs">
+        <div className="w-14 h-14 rounded-2xl bg-slate-100 border border-slate-200 flex items-center justify-center text-[#0F142A] mx-auto shadow-2xs">
           <Lock size={26} />
         </div>
         <div className="max-w-md mx-auto space-y-1.5">
@@ -852,7 +885,7 @@ export default function DatabaseColumnConfigurationStudio({ currentUser, teams =
       {/* 1. TOP HEADER & DATABASE/TABLE SELECTOR BAR */}
       <div className="bg-white border border-slate-200/90 rounded-2xl p-2.5 sm:p-3 text-slate-800 shadow-xs flex items-center justify-between gap-2 overflow-x-auto no-scrollbar" id="db-column-config-header">
         <div className="flex items-center gap-2 shrink-0">
-          <div className="p-1.5 bg-blue-50 text-[#155DFC] rounded-lg border border-blue-200/60 shrink-0">
+          <div className="p-1.5 bg-[#0F142A] text-white rounded-xl shadow-2xs shrink-0">
             <ShieldCheck className="w-4 h-4" />
           </div>
           <div className="flex items-center gap-1.5 shrink-0">
@@ -941,7 +974,7 @@ export default function DatabaseColumnConfigurationStudio({ currentUser, teams =
             onClick={() => handleOpenCreateModal()}
             disabled={!selectedTable || !canManageColumnMapping}
             title={!canManageColumnMapping ? 'Column mapping is restricted to Operational Teams' : undefined}
-            className="px-3 py-1.5 bg-[#155DFC] hover:bg-[#155DFC]/90 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 shadow-xs transition cursor-pointer disabled:opacity-50 shrink-0 whitespace-nowrap"
+            className="px-3.5 py-2 bg-[#F27421] hover:bg-[#d65f15] text-white rounded-xl text-xs font-semibold flex items-center gap-1.5 shadow-xs transition cursor-pointer disabled:opacity-50 shrink-0 whitespace-nowrap"
           >
             <Plus className="w-3.5 h-3.5" />
             <span>Create Column Rule</span>
@@ -1044,7 +1077,7 @@ export default function DatabaseColumnConfigurationStudio({ currentUser, teams =
                                   e.stopPropagation();
                                   handleOpenCreateModal(colName);
                                 }}
-                                className="px-1.5 py-0.5 bg-blue-50 hover:bg-blue-600 hover:text-white text-blue-600 border border-blue-200 rounded text-[10px] font-bold transition flex items-center gap-0.5 cursor-pointer"
+                                className="px-2 py-0.5 bg-orange-50 hover:bg-[#F27421] text-[#F27421] hover:text-white border border-orange-200 rounded-md text-[10px] font-bold transition flex items-center gap-0.5 cursor-pointer shadow-2xs"
                                 title={`Create Rule on ${colName}`}
                               >
                                 <Plus className="w-2.5 h-2.5" />
@@ -1065,7 +1098,7 @@ export default function DatabaseColumnConfigurationStudio({ currentUser, teams =
                       </tr>
                     ) : (
                       filteredPreviewRows.map((row, idx) => (
-                        <tr key={idx} className="hover:bg-blue-50/40 transition">
+                        <tr key={idx} className="hover:bg-slate-50 transition">
                           <td className="px-3 py-1.5 text-slate-400 text-center text-[10px]">{idx + 1}</td>
                           {previewColumns.map((col, cIdx) => {
                             const colName = col.name || (typeof col === 'string' ? col : `col_${cIdx}`);
@@ -1349,7 +1382,7 @@ export default function DatabaseColumnConfigurationStudio({ currentUser, teams =
               type="button"
               onClick={() => handleOpenCreateModal()}
               disabled={!selectedTable}
-              className="px-4 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-bold inline-flex items-center gap-1.5 transition cursor-pointer"
+              className="px-4 py-2 bg-[#F27421] hover:bg-[#d65f15] text-white rounded-xl text-xs font-semibold inline-flex items-center gap-1.5 transition cursor-pointer shadow-xs"
             >
               <Plus className="w-3.5 h-3.5" />
               <span>Create First Rule for {selectedTable || 'Table'}</span>
@@ -1709,23 +1742,23 @@ export default function DatabaseColumnConfigurationStudio({ currentUser, teams =
         )}
       </div>
 
-      {/* 5. RULE EDITOR MODAL (ZERO HARDCODED SETTINGS) */}
+      {/* 5. RULE EDITOR MODAL (ZERO HARDCODED SETTINGS) - MATCHING 05_duplicate_check_builder.png */}
       {isModalOpen && editingConfig && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto animate-fadeIn">
-          <div className="bg-white rounded-2xl max-w-2xl w-full border border-slate-200 shadow-2xl overflow-hidden my-6">
+        <div className="fixed inset-0 z-50 bg-slate-900/50 backdrop-blur-xs flex items-center justify-center p-4 overflow-y-auto animate-fadeIn">
+          <div className="bg-white rounded-2xl w-full max-w-5xl shadow-2xl border border-slate-100 overflow-hidden my-auto animate-in fade-in duration-150 flex flex-col">
             {/* Modal Header */}
-            <div className="px-6 py-4 bg-slate-900 text-white flex items-center justify-between border-b border-slate-800">
-              <div className="flex items-center gap-3">
-                <div className="p-2 bg-blue-600/20 text-blue-400 rounded-lg border border-blue-500/30">
-                  <Sliders className="w-5 h-5" />
-                </div>
-                <div>
-                  <h3 className="text-sm font-bold tracking-tight">
-                    {editingConfig.id ? 'Edit Database Column Rule' : 'Create Database Column Rule'}
-                  </h3>
-                  <p className="text-[11px] text-slate-400">
-                    Target Table: <span className="font-mono text-blue-300">{editingConfig.tableName}</span> on <span className="font-mono text-purple-300">{editingConfig.dbName}</span>
-                  </p>
+            <div className="px-8 pt-6 pb-4 flex items-start justify-between border-b border-slate-100">
+              <div>
+                <h2 className="text-xl font-bold text-slate-900">
+                  {editingConfig.id 
+                    ? (editingConfig.ruleType === 'DUPLICATE_CHECK' ? 'Edit duplicate check' : 'Edit column rule')
+                    : (editingConfig.ruleType === 'DUPLICATE_CHECK' ? 'New duplicate check' : 'New column rule')}
+                </h2>
+                <div className="text-xs text-slate-400 mt-0.5 flex items-center gap-1.5 font-normal">
+                  <span>Table</span>
+                  <span className="font-semibold text-slate-700 font-mono">{editingConfig.tableName}</span>
+                  <span>on</span>
+                  <span className="font-semibold text-slate-700">{editingConfig.dbName || currentDb?.name || 'Sett'}</span>
                 </div>
               </div>
               <button
@@ -1733,479 +1766,269 @@ export default function DatabaseColumnConfigurationStudio({ currentUser, teams =
                 onClick={() => {
                   setIsModalOpen(false);
                   setEditingConfig(null);
+                  setTestResult(null);
                 }}
-                className="p-1 rounded-lg hover:bg-slate-800 text-slate-400 hover:text-white transition cursor-pointer"
+                className="text-slate-400 hover:text-slate-600 p-1.5 rounded-lg hover:bg-slate-100 transition cursor-pointer"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
             {/* Modal Body / Form */}
-            <form onSubmit={handleSaveConfig} className="p-6 space-y-5 text-xs max-h-[75vh] overflow-y-auto">
-              {/* SECTION A: RULE METADATA */}
-              <div className="space-y-3">
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1">
-                      Rule Name <span className="text-red-500">*</span>
-                    </label>
-                    <input
-                      type="text"
-                      required
-                      placeholder="e.g. Duplicate Card Charge Check"
-                      value={editingConfig.name || ''}
-                      onChange={(e) => setEditingConfig({ ...editingConfig, name: e.target.value })}
-                      className="w-full text-xs p-2 bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:outline-none focus:ring-1 focus:ring-blue-500 font-semibold"
-                    />
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1">
-                      Rule Type <span className="text-red-500">*</span>
-                    </label>
-                    <select
-                      value={editingConfig.ruleType}
-                      onChange={(e) => setEditingConfig({ ...editingConfig, ruleType: e.target.value as any })}
-                      className="w-full text-xs p-2 bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:outline-none focus:ring-1 focus:ring-blue-500 font-semibold"
-                    >
-                      {RULE_TYPE_OPTIONS.map(opt => (
-                        <option key={opt.type} value={opt.type}>{opt.label}</option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1">
-                    Rule Description
-                  </label>
-                  <input
-                    type="text"
-                    placeholder="Brief description of what this rule detects..."
-                    value={editingConfig.description || ''}
-                    onChange={(e) => setEditingConfig({ ...editingConfig, description: e.target.value })}
-                    className="w-full text-xs p-2 bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:outline-none focus:ring-1 focus:ring-blue-500"
-                  />
-                </div>
-              </div>
-
-              {/* SECTION B: MULTI-COLUMN PRIORITY LIST (HEART OF THE FEATURE) */}
-              <div className="space-y-3 pt-3 border-t border-slate-100">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <h4 className="text-xs font-bold text-slate-800 uppercase tracking-wider">
-                      Priority Column List
-                    </h4>
-                    <p className="text-[11px] text-slate-500">
-                      Order columns by matching priority: Priority 1 is the primary key candidate, Priority 2 is the secondary discriminator, etc.
-                    </p>
-                  </div>
-
-                  {/* Add Column Dropdown */}
-                  <div className="flex items-center gap-1.5">
-                    <select
-                      onChange={(e) => {
-                        if (e.target.value) {
-                          handleAddColumnToRule(e.target.value);
-                          e.target.value = '';
-                        }
-                      }}
-                      defaultValue=""
-                      className="text-xs p-1.5 bg-blue-50 text-blue-700 border border-blue-200 rounded-lg focus:outline-none font-bold cursor-pointer"
-                    >
-                      <option value="" disabled>+ Add Column to Priority...</option>
-                      {previewColumns.map(c => (
-                        <option key={c.name} value={c.name}>{c.name} ({c.type})</option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-
-                {/* Priority List Items */}
-                {(!editingConfig.columns || editingConfig.columns.length === 0) ? (
-                  <div className="p-4 border border-dashed border-slate-200 rounded-lg text-center text-slate-400">
-                    No columns added to priority list. Select a column above or click "+ Rule" on the live preview table.
-                  </div>
-                ) : (
-                  <div className="space-y-2">
-                    {editingConfig.columns.map((col, idx) => (
-                      <div 
-                        key={col.columnName}
-                        className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 p-2.5 bg-slate-50 border border-slate-200 rounded-lg"
-                      >
-                        <div className="flex items-center gap-2.5">
-                          {/* Priority Badge */}
-                          <div className={`w-6 h-6 rounded-full text-[10px] font-bold flex items-center justify-center flex-shrink-0 ${
-                            col.priority === 1 ? 'bg-blue-600 text-white' : 'bg-slate-300 text-slate-800'
-                          }`}>
-                            P{col.priority}
-                          </div>
-                          <div>
-                            <span className="font-mono font-bold text-slate-900 text-xs">{col.columnName}</span>
-                            <span className="text-[10px] text-slate-400 ml-1.5 font-sans">
-                              {idx === 0 ? '(Primary Match)' : idx === 1 ? '(Secondary)' : '(Tie-Breaker)'}
-                            </span>
-                          </div>
-                        </div>
-
-                        {/* Options: Match Mode & Actions */}
-                        <div className="flex items-center gap-2">
-                          <select
-                            value={col.matchMode || 'EXACT'}
-                            onChange={(e) => handleUpdateColumnProp(idx, 'matchMode', e.target.value)}
-                            className="text-[11px] p-1 bg-white border border-slate-200 rounded font-medium focus:outline-none"
-                            title="Match mode for this column"
-                          >
-                            <option value="EXACT">Exact Match</option>
-                            <option value="CASE_INSENSITIVE">Case Insensitive</option>
-                            <option value="TRIMMED">Trim Whitespace</option>
-                          </select>
-
-                          {/* Reordering Up/Down */}
-                          <div className="flex items-center border border-slate-200 rounded bg-white">
-                            <button
-                              type="button"
-                              onClick={() => handleMoveColumnPriority(idx, 'up')}
-                              disabled={idx === 0}
-                              className="p-1 hover:bg-slate-100 disabled:opacity-30 text-slate-600 rounded-l"
-                              title="Increase Priority"
-                            >
-                              <ArrowUp className="w-3 h-3" />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => handleMoveColumnPriority(idx, 'down')}
-                              disabled={idx === (editingConfig.columns?.length || 1) - 1}
-                              className="p-1 hover:bg-slate-100 disabled:opacity-30 text-slate-600 rounded-r"
-                              title="Decrease Priority"
-                            >
-                              <ArrowDown className="w-3 h-3" />
-                            </button>
-                          </div>
-
-                          {/* Remove */}
-                          <button
-                            type="button"
-                            onClick={() => handleRemoveColumnFromRule(idx)}
-                            className="p-1 hover:bg-red-50 text-slate-400 hover:text-red-600 rounded transition"
-                            title="Remove Column"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-
-              {/* SECTION C.0: DUPLICATE EVALUATION CRITERIA (VALUE & COUNT) */}
-              {(editingConfig.ruleType === 'DUPLICATE_CHECK' || editingConfig.ruleType === 'UNIQUE_CONSTRAINT') && (
-                <div className="p-3.5 bg-amber-50/70 border border-amber-200 rounded-xl space-y-3">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <Copy className="w-4 h-4 text-amber-600" />
-                      <div>
-                        <h4 className="text-xs font-bold text-amber-950 uppercase tracking-wider">
-                          Duplicate Check Criteria (Value & Occurrence Count)
-                        </h4>
-                        <p className="text-[11px] text-amber-800">
-                          At least one column must be selected to check for duplicate values or occurrence counts across rows.
-                        </p>
-                      </div>
+            <form onSubmit={handleSaveConfig} className="flex flex-col">
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 px-8 py-6 max-h-[calc(85vh-130px)] overflow-y-auto">
+                {/* Left Column: Form & Conditions (lg:col-span-7) */}
+                <div className="lg:col-span-7 space-y-6">
+                  {/* Rule Name & Rule Type */}
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-700 mb-1.5">Rule name</label>
+                      <input
+                        type="text"
+                        required
+                        value={editingConfig.name || ''}
+                        onChange={(e) => setEditingConfig({ ...editingConfig, name: e.target.value })}
+                        className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-xs text-slate-900 focus:outline-none focus:border-[#F27421]"
+                        placeholder="New column rule"
+                      />
                     </div>
-                  </div>
-
-                  {(!editingConfig.columns || editingConfig.columns.length === 0) ? (
-                    <div className="p-3 bg-amber-100/80 border border-amber-300 rounded-lg flex items-center justify-between text-xs text-amber-950 font-semibold">
-                      <div className="flex items-center gap-2">
-                        <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0" />
-                        <span>At least one column must be checked for value or count. Please select a column above.</span>
-                      </div>
-                      {previewColumns.length > 0 && (
-                        <button
-                          type="button"
-                          onClick={() => handleAddColumnToRule(previewColumns[0].name)}
-                          className="px-2.5 py-1 bg-amber-700 hover:bg-amber-800 text-white rounded text-[11px] font-bold transition cursor-pointer shrink-0 ml-2"
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-700 mb-1.5">Rule type</label>
+                      <div className="relative">
+                        <select
+                          value={editingConfig.ruleType}
+                          onChange={(e) => setEditingConfig({ ...editingConfig, ruleType: e.target.value as any })}
+                          className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-xs text-slate-900 appearance-none focus:outline-none focus:border-[#F27421] pr-8 cursor-pointer"
                         >
-                          + Select "{previewColumns[0].name}"
-                        </button>
-                      )}
-                    </div>
-                  ) : (
-                    <div className="space-y-3">
-                      {/* Active Columns to Check for Value */}
-                      <div className="p-2.5 bg-white border border-amber-200 rounded-lg space-y-1.5">
-                        <span className="text-[10px] font-bold uppercase tracking-wider text-amber-900 block">
-                          Priority Column(s) Evaluated ({editingConfig.columns.length}):
-                        </span>
-                        <div className="flex flex-wrap gap-1.5">
-                          {editingConfig.columns.map((c, idx) => (
-                            <span
-                              key={c.columnName}
-                              className="px-2 py-0.5 bg-amber-100 text-amber-950 border border-amber-300 rounded text-[11px] font-mono font-bold flex items-center gap-1"
-                            >
-                              <span className="text-[9px] bg-amber-600 text-white rounded-full w-3.5 h-3.5 flex items-center justify-center">
-                                {idx + 1}
-                              </span>
-                              {c.columnName}
-                              <span className="text-[9px] font-sans font-normal text-amber-700">({c.matchMode || 'EXACT'})</span>
-                            </span>
+                          {RULE_TYPE_OPTIONS.map(opt => (
+                            <option key={opt.type} value={opt.type}>{opt.label}</option>
                           ))}
-                        </div>
+                        </select>
+                        <ChevronDown className="w-4 h-4 text-slate-400 absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none" />
                       </div>
+                    </div>
+                  </div>
 
-                      {/* 1. Common Grouping Column(s) (Partition Key) */}
-                      <div className="p-2.5 bg-white border border-amber-200 rounded-lg space-y-2">
+                  {/* DUPLICATE CHECK BUILDER (MATCHING 05_duplicate_check_builder.png) */}
+                  {(editingConfig.ruleType === 'DUPLICATE_CHECK' || editingConfig.ruleType === 'UNIQUE_CONSTRAINT') && (
+                    <>
+                      {/* 1 · Match on (in priority order) */}
+                      <div className="space-y-2.5">
                         <div className="flex items-center justify-between">
-                          <span className="text-[10px] font-bold uppercase tracking-wider text-amber-900 block">
-                            Common Grouping Column(s) (Partition Key):
-                          </span>
-                          <span className="text-[9px] text-amber-700 italic">
-                            {(editingConfig.groupByColumns || []).length > 0
-                              ? `${(editingConfig.groupByColumns || []).length} grouping column(s) selected`
-                              : 'Default: Groups across priority columns'}
-                          </span>
-                        </div>
-                        <div className="flex flex-wrap gap-1.5 items-center">
-                          {previewColumns.map(col => {
-                            const isGrouped = (editingConfig.groupByColumns || []).includes(col.name);
-                            return (
-                              <button
-                                key={col.name}
-                                type="button"
-                                onClick={() => {
-                                  const current = editingConfig.groupByColumns || [];
-                                  const updated = isGrouped
-                                    ? current.filter(c => c !== col.name)
-                                    : [...current, col.name];
-                                  setEditingConfig({ ...editingConfig, groupByColumns: updated });
-                                }}
-                                className={`px-2 py-0.5 rounded text-[11px] font-mono font-bold border transition cursor-pointer flex items-center gap-1 ${
-                                  isGrouped
-                                    ? 'bg-amber-600 text-white border-amber-700 shadow-xs'
-                                    : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-amber-50 hover:border-amber-300'
-                                }`}
-                              >
-                                <span>{isGrouped ? '✓' : '+'}</span>
-                                <span>{col.name}</span>
-                              </button>
-                            );
-                          })}
-                        </div>
-                        <p className="text-[10px] text-slate-500">
-                          Rows sharing the same values in these column(s) (e.g. <strong className="font-mono text-slate-700">TR_GROUP_ID</strong>) belong to the same group for duplicate and occurrence counting.
-                        </p>
-                      </div>
-
-                      {/* 2. Conditional Row Filter (Column Name, Comparator & Value) */}
-                      <div className="p-2.5 bg-white border border-amber-200 rounded-lg space-y-2">
-                        <div className="flex items-center justify-between">
-                          <div>
-                            <span className="text-[10px] font-bold uppercase tracking-wider text-amber-900 block">
-                              Conditional Row Filter (Column Name, Comparator & Value):
-                            </span>
-                            <p className="text-[10px] text-slate-500">
-                              Only count rows within each common group that match these conditions (e.g. <span className="font-mono font-bold text-amber-900">BO_TYPE = 'CMTP254'</span>).
-                            </p>
+                          <span className="text-xs font-bold text-slate-900">1 · Match on (in priority order)</span>
+                          <div className="relative">
+                            <select
+                              onChange={(e) => {
+                                if (e.target.value) {
+                                  handleAddColumnToRule(e.target.value);
+                                  e.target.value = '';
+                                }
+                              }}
+                              defaultValue=""
+                              className="px-2.5 py-1 text-xs font-semibold text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition cursor-pointer shadow-2xs focus:outline-none"
+                            >
+                              <option value="" disabled>+ Add column</option>
+                              {(previewColumns.length > 0 ? previewColumns.map(c => c.name) : ['FE_UTRNNO', 'ACCT_NUM1', 'AMNT1', 'CURRENCY1', 'STATUS', 'TR_GROUP_ID', 'BO_TYPE', 'PROC_NAME'])
+                                .filter(c => !(editingConfig.columns || []).some(col => col.columnName === c))
+                                .map(c => (
+                                  <option key={c} value={c}>{c}</option>
+                                ))}
+                            </select>
                           </div>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              const current = editingConfig.filterConditions || [];
-                              const defaultCol = previewColumns.length > 0 ? previewColumns[0].name : '';
-                              setEditingConfig({
-                                ...editingConfig,
-                                filterConditions: [...current, { columnName: defaultCol, operator: '=', value: '' }]
-                              });
-                            }}
-                            className="px-2 py-1 bg-amber-600 hover:bg-amber-700 text-white rounded text-[10px] font-bold transition flex items-center gap-1 cursor-pointer shrink-0 ml-2"
-                          >
-                            <Plus className="w-3 h-3" />
-                            <span>Add Condition</span>
-                          </button>
                         </div>
 
-                        {(!editingConfig.filterConditions || editingConfig.filterConditions.length === 0) ? (
-                          <div className="text-[10px] text-slate-400 italic p-1.5 bg-slate-50 border border-slate-200 rounded">
-                            No row filter configured. All rows within each common group will be counted.
+                        {(!editingConfig.columns || editingConfig.columns.length === 0) ? (
+                          <div className="p-4 border border-dashed border-slate-200 rounded-xl text-center text-xs text-slate-400">
+                            No priority columns added yet. Select a column from "+ Add column" above.
                           </div>
                         ) : (
-                          <div className="space-y-1.5">
-                            {editingConfig.filterConditions.map((cond, cIdx) => {
-                              const sampleVals = getDiscoveredColumnValues(cond.columnName);
-                              return (
-                                <div key={cIdx} className="p-1.5 bg-amber-50/50 border border-amber-200 rounded space-y-1">
-                                  <div className="flex items-center gap-1.5 flex-wrap">
+                          <div className="space-y-2">
+                            {editingConfig.columns.map((col, idx) => (
+                              <div
+                                key={col.columnName}
+                                className="flex items-center justify-between gap-3 px-3 py-2 bg-white border border-slate-200 rounded-xl shadow-2xs hover:border-slate-300 transition"
+                              >
+                                <div className="flex items-center gap-3 min-w-0">
+                                  <span className="w-6 h-6 rounded-full bg-slate-950 text-white text-[10px] font-bold flex items-center justify-center shrink-0">
+                                    P{idx + 1}
+                                  </span>
+                                  <span className="font-bold text-slate-900 text-xs font-mono truncate">
+                                    {col.columnName}
+                                  </span>
+                                </div>
+
+                                <div className="flex items-center gap-2">
+                                  <div className="relative">
                                     <select
-                                      value={cond.columnName}
-                                      onChange={(e) => {
-                                        const updated = [...(editingConfig.filterConditions || [])];
-                                        updated[cIdx] = { ...updated[cIdx], columnName: e.target.value };
-                                        setEditingConfig({ ...editingConfig, filterConditions: updated });
-                                      }}
-                                      className="text-xs p-1 bg-white border border-slate-300 rounded font-mono font-bold text-slate-800"
+                                      value={col.matchMode || 'EXACT'}
+                                      onChange={(e) => handleUpdateColumnProp(idx, 'matchMode', e.target.value)}
+                                      className="bg-white border border-slate-200 rounded-lg px-2.5 py-1 text-xs text-slate-700 appearance-none pr-6 focus:outline-none focus:border-[#F27421] cursor-pointer"
                                     >
-                                      {previewColumns.map(col => (
-                                        <option key={col.name} value={col.name}>{col.name}</option>
-                                      ))}
+                                      <option value="EXACT">Exact match</option>
+                                      <option value="CASE_INSENSITIVE">Case insensitive</option>
+                                      <option value="TRIMMED">Trim whitespace</option>
                                     </select>
-
-                                    <select
-                                      value={cond.operator}
-                                      onChange={(e) => {
-                                        const updated = [...(editingConfig.filterConditions || [])];
-                                        updated[cIdx] = { ...updated[cIdx], operator: e.target.value as any };
-                                        setEditingConfig({ ...editingConfig, filterConditions: updated });
-                                      }}
-                                      className="text-xs p-1 bg-white border border-slate-300 rounded font-bold text-slate-800"
-                                    >
-                                      <option value="=">= Exactly Equals</option>
-                                      <option value="!=">!= Not Equal</option>
-                                      <option value=">">&gt; Greater Than</option>
-                                      <option value=">=">&gt;= Greater or Equal</option>
-                                      <option value="<">&lt; Less Than</option>
-                                      <option value="<=">&lt;= Less or Equal</option>
-                                      <option value="IN">IN (Comma-separated)</option>
-                                      <option value="NOT_IN">NOT IN</option>
-                                      <option value="STARTS_WITH">STARTS WITH</option>
-                                      <option value="LIKE">CONTAINS</option>
-                                    </select>
-
-                                    <input
-                                      type="text"
-                                      placeholder="Value (e.g. CMTP254 or __NULL__)..."
-                                      value={cond.value}
-                                      onChange={(e) => {
-                                        const updated = [...(editingConfig.filterConditions || [])];
-                                        updated[cIdx] = { ...updated[cIdx], value: e.target.value };
-                                        setEditingConfig({ ...editingConfig, filterConditions: updated });
-                                      }}
-                                      className="text-xs p-1 bg-white border border-slate-300 rounded font-mono flex-1 min-w-[140px]"
-                                    />
-
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        const updated = (editingConfig.filterConditions || []).filter((_, i) => i !== cIdx);
-                                        setEditingConfig({ ...editingConfig, filterConditions: updated });
-                                      }}
-                                      className="p-1 text-slate-400 hover:text-red-600 rounded transition cursor-pointer"
-                                      title="Remove condition"
-                                    >
-                                      <X className="w-3.5 h-3.5" />
-                                    </button>
+                                    <ChevronDown className="w-3.5 h-3.5 text-slate-400 absolute right-1.5 top-1/2 -translate-y-1/2 pointer-events-none" />
                                   </div>
 
-                                  {sampleVals.length > 0 && (
-                                    <div className="flex items-center gap-1 flex-wrap pl-1">
-                                      <span className="text-[9px] text-slate-400">Sample values:</span>
-                                      {sampleVals.slice(0, 5).map(sv => (
-                                        <button
-                                          key={sv}
-                                          type="button"
-                                          onClick={() => {
-                                            const updated = [...(editingConfig.filterConditions || [])];
-                                            updated[cIdx] = { ...updated[cIdx], value: sv };
-                                            setEditingConfig({ ...editingConfig, filterConditions: updated });
-                                          }}
-                                          className="px-1.5 py-0.2 bg-white hover:bg-amber-100 text-slate-700 hover:text-amber-900 border border-slate-200 rounded text-[9px] font-mono transition cursor-pointer"
-                                        >
-                                          {sv}
-                                        </button>
-                                      ))}
-                                    </div>
-                                  )}
+                                  <button
+                                    type="button"
+                                    onClick={() => handleRemoveColumnFromRule(idx)}
+                                    className="p-1 text-slate-400 hover:text-slate-600 rounded transition cursor-pointer"
+                                    title="Remove priority column"
+                                  >
+                                    <X className="w-4 h-4" />
+                                  </button>
                                 </div>
-                              );
-                            })}
+                              </div>
+                            ))}
                           </div>
                         )}
                       </div>
 
-                      {/* 3. Occurrence Count Condition */}
-                      <div className="p-2.5 bg-white border border-amber-200 rounded-lg space-y-2">
-                        <span className="text-[10px] font-bold uppercase tracking-wider text-amber-900 block">
-                          Occurrence Count Criterion:
-                        </span>
-                        <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                          <div>
-                            <label className="block text-[10px] font-bold text-amber-900 mb-1">Check Function</label>
-                            <input
-                              type="text"
-                              value={
-                                editingConfig.filterConditions && editingConfig.filterConditions.length > 0
-                                  ? 'COUNT(*) (Filtered Rows in Group)'
-                                  : 'COUNT(*) (Rows in Group)'
-                              }
-                              disabled
-                              className="w-full text-xs p-1.5 bg-slate-100 border border-slate-200 rounded font-mono font-bold text-slate-700"
-                            />
-                          </div>
-
-                          <div>
-                            <label className="block text-[10px] font-bold text-amber-900 mb-1">Occurrence / Duplicate Condition</label>
-                            <select
-                              value={editingConfig.aggregationRules?.[0]?.operator || '>'}
-                              onChange={(e) => {
-                                const updated = [...(editingConfig.aggregationRules || [{ function: 'COUNT', operator: '>', value: 1 }])];
-                                updated[0] = { ...updated[0], function: 'COUNT', operator: e.target.value as any };
-                                setEditingConfig({ ...editingConfig, aggregationRules: updated });
-                              }}
-                              className="w-full text-xs p-1.5 bg-white border border-amber-300 rounded font-bold text-amber-950 focus:outline-none"
-                            >
-                              <option value="=">= Expected Count = 1 (Unique Requirement: Flags duplicates if Count &gt; 1)</option>
-                              <option value=">">&gt; Exceeds Threshold (Default: Flags when Count &gt; 1)</option>
-                              <option value=">=">&gt;= Greater or Equal (Flags when Count &gt;= Threshold)</option>
-                              <option value="!=">!= Discrepancy (Flags when Count != Threshold)</option>
-                            </select>
-                          </div>
-
-                          <div>
-                            <label className="block text-[10px] font-bold text-amber-900 mb-1">
-                              {editingConfig.aggregationRules?.[0]?.operator === '=' || editingConfig.aggregationRules?.[0]?.operator === '=='
-                                ? 'Expected Occurrences'
-                                : 'Threshold Count'}
-                            </label>
-                            <input
-                              type="number"
-                              min={1}
-                              value={editingConfig.aggregationRules?.[0]?.value ?? 1}
-                              onChange={(e) => {
-                                const updated = [...(editingConfig.aggregationRules || [{ function: 'COUNT', operator: '>', value: 1 }])];
-                                updated[0] = { ...updated[0], function: 'COUNT', value: Math.max(1, Number(e.target.value) || 1) };
-                                setEditingConfig({ ...editingConfig, aggregationRules: updated });
-                              }}
-                              className="w-full text-xs p-1.5 bg-white border border-amber-300 rounded font-mono font-bold text-amber-950 focus:outline-none"
-                            />
-                          </div>
+                      {/* 2 · Group rows by */}
+                      <div className="space-y-2">
+                        <div>
+                          <span className="text-xs font-bold text-slate-900">2 · Group rows by</span>
+                          <p className="text-[11px] text-slate-400 mt-0.5">Rows sharing these values are counted together.</p>
                         </div>
-
-                        <p className="text-[10px] text-amber-700 font-medium">
-                          {(editingConfig.aggregationRules?.[0]?.operator === '=' || editingConfig.aggregationRules?.[0]?.operator === '==') ? (
-                            <>
-                              Within each common group of <strong className="font-mono font-bold text-amber-950">{(editingConfig.groupByColumns && editingConfig.groupByColumns.length > 0 ? editingConfig.groupByColumns : editingConfig.columns.map(c => c.columnName)).join(' + ')}</strong>
-                              {editingConfig.filterConditions && editingConfig.filterConditions.length > 0 && (
-                                <> matching filter <strong className="font-mono font-bold text-amber-950">[{editingConfig.filterConditions.map(c => `${c.columnName} ${c.operator} ${c.value}`).join(' AND ')}]</strong></>
-                              )}, expects occurrence count <strong className="font-mono font-bold">= {editingConfig.aggregationRules?.[0]?.value ?? 1}</strong>. Occurring {editingConfig.aggregationRules?.[0]?.value ?? 1} time(s) passes cleanly; occurrences exceeding this threshold will be flagged as duplicates.
-                            </>
-                          ) : (
-                            <>
-                              Within each common group of <strong className="font-mono font-bold text-amber-950">{(editingConfig.groupByColumns && editingConfig.groupByColumns.length > 0 ? editingConfig.groupByColumns : editingConfig.columns.map(c => c.columnName)).join(' + ')}</strong>
-                              {editingConfig.filterConditions && editingConfig.filterConditions.length > 0 && (
-                                <> matching filter <strong className="font-mono font-bold text-amber-950">[{editingConfig.filterConditions.map(c => `${c.columnName} ${c.operator} ${c.value}`).join(' AND ')}]</strong></>
-                              )}, flags duplicate rows when occurrence count <strong className="font-mono font-bold">{editingConfig.aggregationRules?.[0]?.operator || '>'} {editingConfig.aggregationRules?.[0]?.value ?? 1}</strong>.
-                            </>
-                          )}
-                        </p>
+                        <div className="flex flex-wrap gap-1.5 pt-1">
+                          {(() => {
+                            const allCols = previewColumns.length > 0 
+                              ? previewColumns.map(c => c.name) 
+                              : ['FE_UTRNNO', 'INSTITUTION1', 'INSTITUTION2', 'AMNT1', 'AMNT2', 'ACCT_NUM1', 'CURRENCY1', 'STATUS', 'TR_DATE', 'TR_GROUP_ID', 'BO_TYPE', 'PROC_NAME', 'TRAN_PLACE', 'VISA_DATA', 'AGENT1', 'USER_ID'];
+                            const displayCols = isAllGroupColsExpanded ? allCols : allCols.slice(0, 16);
+                            return (
+                              <>
+                                {displayCols.map((c) => {
+                                  const isSelected = (editingConfig.groupByColumns || []).includes(c);
+                                  return (
+                                    <button
+                                      key={c}
+                                      type="button"
+                                      onClick={() => {
+                                        const current = editingConfig.groupByColumns || [];
+                                        const updated = isSelected 
+                                          ? current.filter(item => item !== c)
+                                          : [...current, c];
+                                        setEditingConfig({ ...editingConfig, groupByColumns: updated });
+                                      }}
+                                      className={`px-2.5 py-1 rounded-md text-xs font-mono font-medium transition cursor-pointer ${
+                                        isSelected
+                                          ? 'bg-[#0F142A] text-white shadow-2xs'
+                                          : 'bg-white hover:bg-slate-50 text-slate-700 border border-slate-200'
+                                      }`}
+                                    >
+                                      {c}
+                                    </button>
+                                  );
+                                })}
+                                {allCols.length > 16 && (
+                                  <button
+                                    type="button"
+                                    onClick={() => setIsAllGroupColsExpanded(!isAllGroupColsExpanded)}
+                                    className="px-2 py-1 rounded-md text-xs font-mono text-slate-400 bg-slate-50 border border-slate-200/50 hover:bg-slate-100 transition cursor-pointer"
+                                  >
+                                    {isAllGroupColsExpanded ? 'Show less' : `+${allCols.length - 16} more`}
+                                  </button>
+                                )}
+                              </>
+                            );
+                          })()}
+                        </div>
                       </div>
-                    </div>
-                  )}
-                </div>
-              )}
 
-              {/* SECTION C: GROUPING CHECKS & AGGREGATIONS (IF GROUPING_CHECK) */}
-              {editingConfig.ruleType === 'GROUPING_CHECK' && (
+                      {/* 3 · Only count rows where */}
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between">
+                          <span className="text-xs font-bold text-slate-900">3 · Only count rows where</span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const defaultCol = previewColumns.length > 0 ? previewColumns[0].name : 'BO_TYPE';
+                              setEditingConfig({
+                                ...editingConfig,
+                                filterConditions: [...(editingConfig.filterConditions || []), { columnName: defaultCol, operator: '=', value: '' }]
+                              });
+                            }}
+                            className="px-2.5 py-1 text-xs font-semibold text-slate-700 bg-white border border-slate-200 rounded-lg hover:bg-slate-50 transition cursor-pointer shadow-2xs"
+                          >
+                            + Condition
+                          </button>
+                        </div>
+                        {(!editingConfig.filterConditions || editingConfig.filterConditions.length === 0) ? (
+                          <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-400">
+                            No filter conditions configured. All rows within each group will be counted.
+                          </div>
+                        ) : (
+                          <div className="space-y-2">
+                            {editingConfig.filterConditions.map((cond, idx) => (
+                              <div key={idx} className="flex items-center gap-2">
+                                <div className="w-1/3">
+                                  <select
+                                    value={cond.columnName}
+                                    onChange={(e) => {
+                                      const updated = [...(editingConfig.filterConditions || [])];
+                                      updated[idx] = { ...updated[idx], columnName: e.target.value };
+                                      setEditingConfig({ ...editingConfig, filterConditions: updated });
+                                    }}
+                                    className="w-full bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs font-mono text-slate-900 focus:outline-none focus:border-[#F27421]"
+                                  >
+                                    {(previewColumns.length > 0 ? previewColumns.map(c => c.name) : ['BO_TYPE', 'STATUS', 'TR_GROUP_ID', 'PROC_NAME', 'FE_UTRNNO']).map(col => (
+                                      <option key={col} value={col}>{col}</option>
+                                    ))}
+                                  </select>
+                                </div>
+                                <div className="w-16">
+                                  <select
+                                    value={cond.operator}
+                                    onChange={(e) => {
+                                      const updated = [...(editingConfig.filterConditions || [])];
+                                      updated[idx] = { ...updated[idx], operator: e.target.value as any };
+                                      setEditingConfig({ ...editingConfig, filterConditions: updated });
+                                    }}
+                                    className="w-full bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs font-mono text-slate-900 focus:outline-none focus:border-[#F27421] text-center"
+                                  >
+                                    <option value="=">=</option>
+                                    <option value="!=">!=</option>
+                                    <option value=">">&gt;</option>
+                                    <option value="<">&lt;</option>
+                                    <option value="LIKE">LIKE</option>
+                                    <option value="IN">IN</option>
+                                  </select>
+                                </div>
+                                <input
+                                  type="text"
+                                  value={cond.value}
+                                  onChange={(e) => {
+                                    const updated = [...(editingConfig.filterConditions || [])];
+                                    updated[idx] = { ...updated[idx], value: e.target.value };
+                                    setEditingConfig({ ...editingConfig, filterConditions: updated });
+                                  }}
+                                  className="flex-1 bg-white border border-slate-200 rounded-lg px-3 py-1.5 text-xs font-mono text-slate-900 focus:outline-none focus:border-[#F27421]"
+                                  placeholder="CMTP254"
+                                />
+                                {editingConfig.filterConditions.length > 1 && (
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      const updated = (editingConfig.filterConditions || []).filter((_, i) => i !== idx);
+                                      setEditingConfig({ ...editingConfig, filterConditions: updated });
+                                    }}
+                                    className="p-1.5 text-slate-400 hover:text-rose-500 rounded transition cursor-pointer"
+                                  >
+                                    <X className="w-4 h-4" />
+                                  </button>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+                    </>
+                  )}
+
+                                {editingConfig.ruleType === 'GROUPING_CHECK' && (
                 <div className="p-3 bg-blue-50/60 border border-blue-200 rounded-lg space-y-3 pt-3">
                   <div className="flex items-center gap-2">
                     <Layers className="w-4 h-4 text-blue-600" />
@@ -3756,225 +3579,147 @@ export default function DatabaseColumnConfigurationStudio({ currentUser, teams =
                 </div>
               )}
 
-              {/* SECTION D: VIOLATION ACTION & GOVERNANCE */}
-              <div className="space-y-3 pt-3 border-t border-slate-100">
-                <h4 className="text-xs font-bold text-slate-800 uppercase tracking-wider">
-                  Violation Action & Severity
-                </h4>
-
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1">
-                      Pipeline Action on Violation
-                    </label>
-                    <select
-                      value={editingConfig.violationAction}
-                      onChange={(e) => setEditingConfig({ ...editingConfig, violationAction: e.target.value as any })}
-                      className="w-full text-xs p-2 bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:outline-none focus:ring-1 focus:ring-blue-500 font-semibold"
-                    >
-                      <option value="FLAG">FLAG (Mark for Technical Investigation)</option>
-                      <option value="STOP">STOP (Halt Pipeline Execution Immediately)</option>
-                      <option value="CONTINUE">CONTINUE (Log Warning and Continue)</option>
-                      <option value="REPORT">REPORT (Generate Exception File)</option>
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1">
-                      Status Behavior <span className="text-blue-600 font-mono">(Two-Level)</span>
-                    </label>
-                    <select
-                      value={editingConfig.statusBehavior || 'MUTATE_STATUS'}
-                      onChange={(e) => setEditingConfig({ ...editingConfig, statusBehavior: e.target.value as any })}
-                      className="w-full text-xs p-2 bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:outline-none focus:ring-1 focus:ring-blue-500 font-semibold"
-                    >
-                      <option value="MUTATE_STATUS">MUTATE_STATUS (Fail & Stop)</option>
-                      <option value="REPORT_ONLY">REPORT_ONLY (Keep PASS, Log Details)</option>
-                    </select>
-                  </div>
-
-                  <div>
-                    <label className="block text-xs font-bold text-slate-700 mb-1">
-                      Severity Level
-                    </label>
-                    <select
-                      value={editingConfig.severity}
-                      onChange={(e) => setEditingConfig({ ...editingConfig, severity: e.target.value as any })}
-                      className="w-full text-xs p-2 bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:outline-none focus:ring-1 focus:ring-blue-500 font-semibold"
-                    >
-                      <option value="CRITICAL">CRITICAL</option>
-                      <option value="WARNING">WARNING</option>
-                      <option value="INFO">INFO</option>
-                    </select>
-                  </div>
                 </div>
 
-                <div className="flex items-center gap-2 pt-1">
-                  <input
-                    type="checkbox"
-                    id="affectsReconStatus"
-                    checked={editingConfig.affectsReconciliationStatus !== false}
-                    onChange={(e) => setEditingConfig({ ...editingConfig, affectsReconciliationStatus: e.target.checked })}
-                    className="w-4 h-4 rounded text-blue-600 focus:ring-blue-500 cursor-pointer"
-                  />
-                  <label htmlFor="affectsReconStatus" className="text-xs text-slate-700 font-medium cursor-pointer">
-                    Affects Level 1 Reconciliation Status (if unchecked, evaluated purely as Level 2 Business Rule)
-                  </label>
-                </div>
-
-                <div>
-                  <label className="block text-xs font-bold text-slate-700 mb-1">
-                    Custom Violation Message
-                  </label>
-                  <input
-                    type="text"
-                    value={editingConfig.violationMessage || ''}
-                    onChange={(e) => setEditingConfig({ ...editingConfig, violationMessage: e.target.value })}
-                    className="w-full text-xs p-2 bg-slate-50 border border-slate-200 rounded-lg focus:bg-white focus:outline-none focus:ring-1 focus:ring-blue-500"
-                    placeholder="e.g. Duplicate transaction found across priority columns: {key}"
-                  />
-                </div>
-              </div>
-
-              {/* LIVE TRIAL RUN BUTTON INSIDE MODAL */}
-              <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg flex items-center justify-between">
-                <div>
-                  <span className="text-xs font-bold text-slate-800">Test Rule on Live Sample Data</span>
-                  <p className="text-[11px] text-slate-500">Evaluates current rule configuration against the {previewRows.length} loaded sample records.</p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => handleTestRule(editingConfig)}
-                  disabled={isTesting || previewRows.length === 0}
-                  className="px-3 py-1.5 bg-purple-600 hover:bg-purple-500 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 transition cursor-pointer disabled:opacity-50"
-                >
-                  <Play className={`w-3 h-3 ${isTesting ? 'animate-spin' : ''}`} />
-                  <span>{isTesting ? 'Testing...' : 'Test on Live Data'}</span>
-                </button>
-              </div>
-
-              {/* INLINE TEST RESULTS ACCORDION INSIDE MODAL */}
-              {testResult && (
-                <div className="p-3 bg-slate-100 border border-slate-300 rounded-xl space-y-2.5 animate-fadeIn">
-                  <div className="flex flex-wrap items-center justify-between gap-2">
-                    <div className="flex items-center gap-2">
-                      {testResult.verdict === 'PASS' ? (
-                        <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-                      ) : (
-                        <AlertOctagon className="w-4 h-4 text-rose-600" />
-                      )}
-                      <span className="text-xs font-bold text-slate-800">
-                        {testResult.verdict === 'PASS' ? 'Trial Run Passed (Zero Violations)' : `Trial Run: ${testResult.violationCount} Violation(s)`}
-                      </span>
+                {/* Right Column: Rule Summary, Actions & Test Runner (lg:col-span-5) */}
+                <div className="lg:col-span-5 space-y-4">
+                  <div className="bg-slate-50 border border-slate-200 rounded-2xl p-5 space-y-4">
+                    <div>
+                      <h3 className="text-xs font-bold text-slate-900 mb-2">Rule summary</h3>
+                      <div className="bg-white border border-slate-200 rounded-xl p-4 text-xs text-slate-700 leading-relaxed shadow-2xs">
+                        <p>
+                          Flag a row as <span className="font-bold text-amber-600">{(editingConfig.severity || 'WARNING').toLowerCase()}</span> when more than <span className="font-bold text-slate-900">{editingConfig.aggregationRules?.[0]?.value ?? 1}</span> row shares the same{' '}
+                          {(editingConfig.columns && editingConfig.columns.length > 0 ? editingConfig.columns : [{ columnName: 'TR_GROUP_ID' }, { columnName: 'BO_TYPE' }, { columnName: 'PROC_NAME' }]).map(c => (
+                            <span key={c.columnName} className="inline-block bg-slate-100 text-slate-800 font-mono text-[11px] px-1.5 py-0.5 rounded mx-0.5 font-semibold">
+                              {c.columnName}
+                            </span>
+                          ))}
+                          {editingConfig.filterConditions && editingConfig.filterConditions.length > 0 && (
+                            <>
+                              , counting only rows where{' '}
+                              {editingConfig.filterConditions.map((c, i) => (
+                                <span key={i} className="inline-block bg-slate-100 text-slate-800 font-mono text-[11px] px-1.5 py-0.5 rounded mx-0.5 font-semibold">
+                                  {c.columnName} {c.operator} {c.value || "''"}
+                                </span>
+                              ))}
+                              .
+                            </>
+                          )}
+                        </p>
+                      </div>
                     </div>
 
-                    <div className="flex items-center gap-1.5">
+                    <div className="grid grid-cols-2 gap-3">
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-700 mb-1.5">If violated</label>
+                        <div className="relative">
+                          <select
+                            value={editingConfig.violationAction || 'FLAG'}
+                            onChange={(e) => setEditingConfig({ ...editingConfig, violationAction: e.target.value as any })}
+                            className="w-full bg-white border border-slate-200 rounded-lg px-2.5 py-2 text-xs text-slate-900 appearance-none focus:outline-none focus:border-[#F27421] pr-7 cursor-pointer"
+                          >
+                            <option value="FLAG">Flag for review</option>
+                            <option value="STOP">Stop pipeline</option>
+                            <option value="CLOSE">Close case</option>
+                            <option value="REPORT">Report only</option>
+                          </select>
+                          <ChevronDown className="w-3.5 h-3.5 text-slate-400 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
+                        </div>
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-700 mb-1.5">Severity</label>
+                        <div className="relative">
+                          <select
+                            value={editingConfig.severity || 'WARNING'}
+                            onChange={(e) => setEditingConfig({ ...editingConfig, severity: e.target.value as any })}
+                            className="w-full bg-white border border-slate-200 rounded-lg px-2.5 py-2 text-xs text-slate-900 appearance-none focus:outline-none focus:border-[#F27421] pr-7 cursor-pointer"
+                          >
+                            <option value="WARNING">Warning</option>
+                            <option value="CRITICAL">Critical</option>
+                            <option value="INFO">Info</option>
+                          </select>
+                          <ChevronDown className="w-3.5 h-3.5 text-slate-400 absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none" />
+                        </div>
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-semibold text-slate-700 mb-1.5">Message</label>
+                      <input
+                        type="text"
+                        value={editingConfig.violationMessage || ''}
+                        onChange={(e) => setEditingConfig({ ...editingConfig, violationMessage: e.target.value })}
+                        className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-xs text-slate-900 focus:outline-none focus:border-[#F27421]"
+                        placeholder="Duplicate or conflicting values detected across priority columns"
+                      />
+                    </div>
+
+                    {/* Try it on sample data */}
+                    <div className="bg-white border border-slate-200 rounded-xl p-3.5 flex items-center justify-between shadow-2xs">
+                      <div>
+                        <div className="text-xs font-bold text-slate-900">Try it on sample data</div>
+                        <div className="text-[11px] text-slate-400 mt-0.5">{previewRows.length || 50} rows loaded</div>
+                      </div>
                       <button
                         type="button"
-                        onClick={() => setTestResultFilter('PASSED')}
-                        className={`px-2 py-0.5 rounded text-[10px] font-bold transition cursor-pointer ${
-                          testResultFilter === 'PASSED'
-                            ? 'bg-emerald-600 text-white'
-                            : 'bg-emerald-100 text-emerald-800 hover:bg-emerald-200'
-                        }`}
+                        onClick={() => handleTestRule(editingConfig)}
+                        disabled={isTesting || previewRows.length === 0}
+                        className="px-3.5 py-1.5 bg-white hover:bg-slate-50 text-slate-800 border border-slate-200 rounded-lg text-xs font-semibold flex items-center gap-1.5 shadow-2xs transition cursor-pointer disabled:opacity-50"
                       >
-                        ✓ Passed ({testResult.passedCount ?? (testResult.totalRows - testResult.violationCount)})
-                      </button>
-
-                      {testResult.violationCount > 0 && (
-                        <button
-                          type="button"
-                          onClick={() => setTestResultFilter('VIOLATIONS')}
-                          className={`px-2 py-0.5 rounded text-[10px] font-bold transition cursor-pointer ${
-                            testResultFilter === 'VIOLATIONS'
-                              ? 'bg-rose-600 text-white'
-                              : 'bg-rose-100 text-rose-800 hover:bg-rose-200'
-                          }`}
-                        >
-                          ⚠ Violations ({testResult.violationCount})
-                        </button>
-                      )}
-
-                      <button
-                        type="button"
-                        onClick={() => setTestResultFilter('ALL')}
-                        className={`px-2 py-0.5 rounded text-[10px] font-bold transition cursor-pointer ${
-                          testResultFilter === 'ALL'
-                            ? 'bg-slate-700 text-white'
-                            : 'bg-white text-slate-700 hover:bg-slate-200'
-                        }`}
-                      >
-                        All ({testResult.totalRows})
+                        <Play className={`w-3.5 h-3.5 text-slate-700 ${isTesting ? 'animate-spin' : ''}`} />
+                        <span>{isTesting ? 'Testing...' : 'Run test'}</span>
                       </button>
                     </div>
-                  </div>
 
-                  {/* Inline table */}
-                  <div className="border border-slate-200 rounded-lg overflow-x-auto max-h-48 bg-white">
-                    <table className="w-full text-left text-xs divide-y divide-slate-100 font-sans">
-                      <thead className="bg-slate-50 text-[10px] uppercase font-bold text-slate-500 sticky top-0">
-                        <tr>
-                          <th className="px-2.5 py-1.5 w-12 text-center">Row</th>
-                          <th className="px-2.5 py-1.5 w-20 text-center">Status</th>
-                          <th className="px-2.5 py-1.5">Meaning / Info / Violation Detail</th>
-                          <th className="px-2.5 py-1.5">Values</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-100 text-[11px] font-mono">
-                        {(testResultFilter === 'ALL' || testResultFilter === 'VIOLATIONS') && testResult.violations.map((v, i) => (
-                          <tr key={`m-viol-${i}`} className="bg-rose-50/25 hover:bg-rose-50/50">
-                            <td className="px-2.5 py-1 text-center text-slate-500 font-sans">{v.rowIndex + 1}</td>
-                            <td className="px-2.5 py-1 text-center font-sans">
-                              <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-rose-100 text-rose-800">
-                                FAIL
-                              </span>
-                            </td>
-                            <td className="px-2.5 py-1 text-rose-700 font-sans font-medium">{v.reason}</td>
-                            <td className="px-2.5 py-1 text-slate-600 text-[10px]">
-                              {JSON.stringify(v.matchedPriorityValues)}
-                            </td>
-                          </tr>
-                        ))}
-
-                        {(testResultFilter === 'ALL' || testResultFilter === 'PASSED') && (testResult.passedRows || []).map((p, i) => (
-                          <tr key={`m-pass-${i}`} className="bg-emerald-50/25 hover:bg-emerald-50/50">
-                            <td className="px-2.5 py-1 text-center text-slate-500 font-sans">{p.rowIndex + 1}</td>
-                            <td className="px-2.5 py-1 text-center font-sans">
-                              <span className="px-1.5 py-0.5 rounded text-[9px] font-bold bg-emerald-100 text-emerald-800">
-                                PASS
-                              </span>
-                            </td>
-                            <td className="px-2.5 py-1 text-emerald-800 font-sans font-medium">{p.info || 'Satisfied'}</td>
-                            <td className="px-2.5 py-1 text-slate-600 text-[10px]">
-                              {JSON.stringify(p.matchedPriorityValues)}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                    {/* Inline Test Results Preview */}
+                    {testResult && (
+                      <div className="bg-white border border-slate-200 rounded-xl p-3 space-y-2 text-xs shadow-2xs animate-fadeIn">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-1.5">
+                            {testResult.verdict === 'PASS' ? (
+                              <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                            ) : (
+                              <AlertTriangle className="w-4 h-4 text-rose-600" />
+                            )}
+                            <span className="font-bold text-slate-900">
+                              {testResult.verdict === 'PASS' ? 'Trial Run: All Passed' : `${testResult.violationCount} Violation(s) Found`}
+                            </span>
+                          </div>
+                          <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                            testResult.verdict === 'PASS' ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'
+                          }`}>
+                            {testResult.verdict}
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-slate-500">
+                          {testResult.passedCount ?? (testResult.totalRows - testResult.violationCount)} passed, {testResult.violationCount} violated across {testResult.totalRows} sample records.
+                        </p>
+                      </div>
+                    )}
                   </div>
                 </div>
-              )}
+              </div>
 
               {/* Modal Footer */}
-              <div className="flex items-center justify-end gap-2.5 pt-4 border-t border-slate-100">
+              <div className="px-8 py-4 bg-white border-t border-slate-100 flex items-center justify-end gap-3 rounded-b-2xl">
                 <button
                   type="button"
                   onClick={() => {
                     setIsModalOpen(false);
                     setEditingConfig(null);
+                    setTestResult(null);
                   }}
-                  className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-semibold transition cursor-pointer"
+                  className="px-4 py-2 border border-slate-200 hover:bg-slate-100 text-slate-700 rounded-lg text-xs font-semibold transition cursor-pointer"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={isSaving}
-                  className="px-5 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-bold flex items-center gap-1.5 transition shadow-xs cursor-pointer disabled:opacity-50"
+                  className="px-5 py-2 bg-[#F27421] hover:bg-[#d65f15] text-white rounded-lg text-xs font-semibold flex items-center gap-1.5 transition shadow-xs cursor-pointer disabled:opacity-50"
                 >
-                  <Check className="w-4 h-4" />
-                  <span>{isSaving ? 'Saving...' : 'Save Configuration'}</span>
+                  {isSaving ? 'Saving...' : 'Save rule'}
                 </button>
               </div>
             </form>

@@ -1399,18 +1399,12 @@ export default function App() {
                   </ErrorBoundary>
                 )}
 
-                {(activeNavigation === 'workflows' || activeNavigation === 'workflow_studio') && (
-                  <ErrorBoundary fallbackTitle="Workflow Studio Error">
-                    <WorkflowStudioFlowchart
-                      currentUser={effectiveUser || currentUser!}
-                    />
-                  </ErrorBoundary>
-                )}
-
-                {(activeNavigation === 'rules' || activeNavigation === 'rules_library') && (
-                  <ErrorBoundary fallbackTitle="Rules Library Error">
+                {(activeNavigation === 'workflows' || activeNavigation === 'workflow_studio' || activeNavigation === 'rules' || activeNavigation === 'rules_library') && (
+                  <ErrorBoundary fallbackTitle="Rules and Workflows Studio Error">
                     <ValidationBoxManager
                       currentUser={effectiveUser || currentUser!}
+                      teams={teams}
+                      initialTab={(activeNavigation === 'workflows' || activeNavigation === 'workflow_studio') ? 'workflows' : 'validation_boxes'}
                     />
                   </ErrorBoundary>
                 )}

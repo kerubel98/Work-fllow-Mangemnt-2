@@ -1,6 +1,7 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
   Boxes,
+  GitBranch,
   Plus,
   Search,
   CheckCircle2,
@@ -22,6 +23,7 @@ import {
   AlertCircle,
   AlertTriangle,
   Share2,
+  Save,
   ChevronDown,
   ChevronUp,
   Eye,
@@ -33,16 +35,34 @@ import { globalMappingService } from '../../services/globalMappingService';
 import { showSystemAlert } from '../common/MessageModal';
 import { ShareAssetModal } from '../common/ShareAssetModal';
 import { AssetStatusBadge } from '../common/AssetStatusBadge';
+import DatabaseColumnConfigurationStudio from './DatabaseColumnConfiguration';
+import WorkflowStudioFlowchart from './WorkflowStudioFlowchart';
 
 interface ValidationBoxManagerProps {
   currentUser?: any;
+  teams?: any[];
+  initialTab?: 'validation_boxes' | 'column_rules' | 'workflows';
 }
 
-export const ValidationBoxManager: React.FC<ValidationBoxManagerProps> = ({ currentUser }) => {
+export const ValidationBoxManager: React.FC<ValidationBoxManagerProps> = ({ currentUser, teams = [], initialTab = 'validation_boxes' }) => {
   const [boxes, setBoxes] = useState<ValidationBox[]>([]);
   const [databases, setDatabases] = useState<DatabaseConnection[]>([]);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<'validation_boxes' | 'column_rules'>('validation_boxes');
+  const [activeTab, setActiveTab] = useState<'validation_boxes' | 'column_rules' | 'workflows'>(initialTab);
+
+  useEffect(() => {
+    if (initialTab) {
+      setActiveTab(initialTab);
+    }
+  }, [initialTab]);
+  const [workflowsCount, setWorkflowsCount] = useState<number>(0);
+  const workflowStudioRef = useRef<any>(null);
+  const [wfState, setWfState] = useState({
+    hasUnsavedChanges: false,
+    isSaving: false,
+    canShare: false,
+    activeWorkflowName: ''
+  });
   const [columnRules, setColumnRules] = useState<DatabaseColumnConfiguration[]>([]);
   const [selectedColumnRuleId, setSelectedColumnRuleId] = useState<string | null>(null);
   const [isNewRuleDropdownOpen, setIsNewRuleDropdownOpen] = useState(false);
@@ -149,7 +169,7 @@ export const ValidationBoxManager: React.FC<ValidationBoxManagerProps> = ({ curr
   // Test Runner drawer
   const [testingBox, setTestingBox] = useState<ValidationBox | null>(null);
   const [testParams, setTestParams] = useState<Record<string, any>>({});
-  const [testSampleJson, setTestSampleJson] = useState('{\n  "transaction_id": "TXN-1001",\n  "amount": 149.99\n}');
+  const [testSampleJson, setTestSampleJson] = useState('{\r\n  "transaction_id": "TXN-1001",\r\n  "amount": 149.99\r\n}');
   const [testViewMode, setTestViewMode] = useState<'FORM' | 'JSON'>('FORM');
   const [newParamKey, setNewParamKey] = useState('');
   const [newParamVal, setNewParamVal] = useState('');
@@ -319,17 +339,19 @@ export const ValidationBoxManager: React.FC<ValidationBoxManagerProps> = ({ curr
   const loadData = async () => {
     setLoading(true);
     try {
-      const [vBoxes, dbs, colConfigs] = await Promise.all([
+      const [vBoxes, dbs, colConfigs, _globalCfg, wfList] = await Promise.all([
         api.getValidationBoxes(),
         api.getDatabases(),
         api.getColumnConfigurations().catch(() => []),
-        globalMappingService.fetchConfigFromBackend()
+        globalMappingService.fetchConfigFromBackend(),
+        api.getWorkflows(currentUser?.teamId).catch(() => [])
       ]);
       const safeBoxes = vBoxes || [];
       const safeConfigs = colConfigs || [];
       setBoxes(safeBoxes);
       setDatabases(dbs || []);
       setColumnRules(safeConfigs);
+      setWorkflowsCount(wfList?.length || 0);
       if (!selectedBoxId && safeBoxes.length > 0) {
         setSelectedBoxId(safeBoxes[0].id);
       }
@@ -683,7 +705,7 @@ export const ValidationBoxManager: React.FC<ValidationBoxManagerProps> = ({ curr
 
   const handleClearAllHistory = async () => {
     if (!confirm(
-      'DANGER: Permanently delete ALL validation check history across all tasks?\n\nThis will wipe:\n- All workflow execution records\n- All investigation tasks, batches, and transaction results\n\nThis action cannot be undone.'
+      'DANGER: Permanently delete ALL validation check history across all tasks?\r\n\r\nThis will wipe:\r\n- All workflow execution records\r\n- All investigation tasks, batches, and transaction results\r\n\r\nThis action cannot be undone.'
     )) return;
     setIsClearingAll(true);
     try {
@@ -825,33 +847,64 @@ export const ValidationBoxManager: React.FC<ValidationBoxManagerProps> = ({ curr
     });
 
   return (
-    <div className="space-y-4 font-sans p-6 bg-slate-50/50 min-h-full">
-      {/* Breadcrumb matching 04_rules_library.png */}
-      <div className="flex items-center gap-1.5 text-xs text-slate-400 font-medium">
-        <span>Build</span>
-        <span>/</span>
-        <span className="text-slate-700 font-semibold">Rules</span>
-      </div>
-
-      {/* 1. Header Toolbar matching 04_rules_library.png */}
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 shrink-0" id="val-box-header">
+    <div className="h-full flex flex-col min-h-0 overflow-hidden font-sans px-3.5 pt-2 pb-1 bg-slate-50/50 space-y-1.5">
+      {/* Header Toolbar matching 04_rules_library.png with minimal vertical space */}
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-1.5 shrink-0" id="val-box-header">
         <div>
-          <h1 className="text-2xl font-bold text-slate-900 tracking-tight">Rules</h1>
-          <p className="text-xs text-slate-500 mt-0.5">
-            Reusable building blocks that workflows call to search, compare and verify data.
-          </p>
+          <div className="flex items-center gap-1 text-[10px] text-slate-400 font-medium">
+            <span>Build</span>
+            <span>/</span>
+            <span className="text-slate-700 font-semibold">
+              {activeTab === 'workflows' ? 'Workflows' : activeTab === 'column_rules' ? 'DB Rules' : 'Rules'}
+            </span>
+          </div>
+          <h1 className="text-lg font-bold text-slate-900 tracking-tight leading-tight">
+            {activeTab === 'workflows' ? 'Workflow Pipelines' : activeTab === 'column_rules' ? 'Database Rules' : 'Rules'}
+          </h1>
         </div>
 
-        <div className="relative" id="val-box-actions-row">
-          <button
-            type="button"
-            onClick={() => setIsNewRuleDropdownOpen(prev => !prev)}
-            className="flex items-center gap-1.5 px-4 py-2 bg-[#F27421] hover:bg-[#d65f15] text-white rounded-lg font-semibold text-xs transition-colors shadow-xs cursor-pointer"
-          >
-            <Plus className="w-4 h-4" />
-            <span>New rule</span>
-            <ChevronDown className="w-3.5 h-3.5 opacity-80" />
-          </button>
+        <div className="flex items-center gap-2" id="val-box-actions-row">
+          {activeTab === 'workflows' && (
+            <>
+              {wfState.hasUnsavedChanges && (
+                <span className="px-2.5 py-1 rounded-full text-[10px] font-mono font-bold bg-amber-50 text-amber-700 border border-amber-200 flex items-center gap-1.5 shadow-2xs">
+                  <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse"></span>
+                  <span>Unsaved</span>
+                </span>
+              )}
+
+              <button
+                type="button"
+                onClick={() => workflowStudioRef.current?.share?.()}
+                className="h-8 px-3 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 rounded-lg text-xs font-semibold flex items-center gap-1.5 cursor-pointer shadow-2xs transition"
+                title="Share workflow"
+              >
+                <Share2 size={13} className="text-slate-500" />
+                <span>Share</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => workflowStudioRef.current?.save?.()}
+                disabled={wfState.isSaving}
+                className="h-8 px-3.5 rounded-lg text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-sm transition disabled:opacity-50 bg-[#F27421] hover:bg-[#e06516] text-white"
+              >
+                <Save size={13} />
+                <span>{wfState.isSaving ? 'Saving...' : 'Save flowchart'}</span>
+              </button>
+            </>
+          )}
+
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setIsNewRuleDropdownOpen(prev => !prev)}
+              className="h-8 flex items-center gap-1.5 px-3.5 bg-[#F27421] hover:bg-[#d65f15] text-white rounded-lg font-semibold text-xs transition-colors shadow-xs cursor-pointer"
+            >
+              <Plus className="w-4 h-4" />
+              <span>New rule</span>
+              <ChevronDown className="w-3.5 h-3.5 opacity-80" />
+            </button>
 
           {isNewRuleDropdownOpen && (
             <div className="absolute right-0 mt-1.5 w-60 bg-white border border-slate-200 rounded-xl shadow-xl z-50 py-1 divide-y divide-slate-100">
@@ -876,28 +929,45 @@ export const ValidationBoxManager: React.FC<ValidationBoxManagerProps> = ({ curr
                   type="button"
                   onClick={() => {
                     setIsNewRuleDropdownOpen(false);
-                    setIsDuplicateCheckModalOpen(true);
+                    setActiveTab('column_rules');
                   }}
                   className="w-full text-left px-3 py-2 text-xs text-slate-700 hover:bg-slate-50 rounded-lg flex items-center gap-2.5 cursor-pointer"
                 >
-                  <Layers className="w-4 h-4 text-indigo-600" />
+                  <Database className="w-4 h-4 text-indigo-600" />
                   <div>
-                    <div className="font-bold text-slate-900">Duplicate check</div>
-                    <div className="text-[10px] text-slate-400">Match across priority columns</div>
+                    <div className="font-bold text-slate-900">DB Rules</div>
+                    <div className="text-[10px] text-slate-400">Database selector, live sample & constraints</div>
+                  </div>
+                </button>
+              </div>
+              <div className="p-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsNewRuleDropdownOpen(false);
+                    setActiveTab('workflows');
+                  }}
+                  className="w-full text-left px-3 py-2 text-xs text-slate-700 hover:bg-slate-50 rounded-lg flex items-center gap-2.5 cursor-pointer"
+                >
+                  <GitBranch className="w-4 h-4 text-emerald-600" />
+                  <div>
+                    <div className="font-bold text-slate-900">Workflow</div>
+                    <div className="text-[10px] text-slate-400">Flowchart DAG pipeline & stage triggers</div>
                   </div>
                 </button>
               </div>
             </div>
           )}
+          </div>
         </div>
       </div>
 
       {/* 2. Top Navigation Tabs matching 04_rules_library.png */}
-      <div className="flex items-center gap-6 border-b border-slate-200 text-sm font-medium">
+      <div className="flex items-center gap-5 border-b border-slate-200 text-xs font-semibold shrink-0">
         <button
           type="button"
           onClick={() => setActiveTab('validation_boxes')}
-          className={`pb-3 flex items-center gap-2 cursor-pointer transition-colors relative ${
+          className={`pb-2 flex items-center gap-2 cursor-pointer transition-colors relative ${
             activeTab === 'validation_boxes'
               ? 'text-slate-900 font-bold border-b-2 border-[#F27421]'
               : 'text-slate-500 hover:text-slate-800'
@@ -914,420 +984,285 @@ export const ValidationBoxManager: React.FC<ValidationBoxManagerProps> = ({ curr
         <button
           type="button"
           onClick={() => setActiveTab('column_rules')}
-          className={`pb-3 flex items-center gap-2 cursor-pointer transition-colors relative ${
+          className={`pb-2 flex items-center gap-2 cursor-pointer transition-colors relative ${
             activeTab === 'column_rules'
               ? 'text-slate-900 font-bold border-b-2 border-[#F27421]'
               : 'text-slate-500 hover:text-slate-800'
           }`}
         >
-          <span>Column rules</span>
+          <Database className="w-3.5 h-3.5" />
+          <span>DB Rules</span>
           <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
             activeTab === 'column_rules' ? 'bg-[#0F142A] text-white' : 'bg-slate-100 text-slate-600'
           }`}>
             {columnRules.length || 1}
           </span>
         </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveTab('workflows')}
+          className={`pb-2 flex items-center gap-2 cursor-pointer transition-colors relative ${
+            activeTab === 'workflows'
+              ? 'text-slate-900 font-bold border-b-2 border-[#F27421]'
+              : 'text-slate-500 hover:text-slate-800'
+          }`}
+        >
+          <GitBranch className="w-3.5 h-3.5" />
+          <span>Workflows</span>
+          <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
+            activeTab === 'workflows' ? 'bg-[#0F142A] text-white' : 'bg-slate-100 text-slate-600'
+          }`}>
+            {workflowsCount}
+          </span>
+        </button>
       </div>
 
-      {/* 3. Sub-Filter Pills & Search Bar */}
-      <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
-        <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-0.5">
-          {(activeTab === 'validation_boxes' ? navItems : columnRuleNavItems).map(item => {
-            const active = selectedTypeFilter === item.key || (item.key === 'ALL' && selectedTypeFilter === 'ALL');
-            return (
-              <button
-                key={item.key}
-                type="button"
-                onClick={() => setSelectedTypeFilter(item.key as any)}
-                className={`px-3 py-1 rounded-lg text-xs font-semibold transition flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
-                  active
-                    ? 'bg-slate-100 text-slate-900 border border-slate-200/80 shadow-2xs font-bold'
-                    : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100/60'
-                }`}
-              >
-                <span>{item.label}</span>
-                <span className={`text-[10px] ${active ? 'text-slate-700 font-bold' : 'text-slate-400'}`}>
-                  {item.count}
-                </span>
-              </button>
-            );
-          })}
-        </div>
-
-        <div className="relative w-72">
-          <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-          <input
-            type="text"
-            placeholder={activeTab === 'validation_boxes' ? 'Search rules...' : 'Search column rules...'}
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className="w-full bg-white border border-slate-200 rounded-lg pl-8 pr-3 py-1.5 text-xs text-slate-900 placeholder-slate-400 focus:outline-none focus:border-[#F27421] transition shadow-2xs"
+      {/* Content Switch: DB Rules Studio vs Workflows vs Validation Boxes Library */}
+      {activeTab === 'column_rules' ? (
+        <div className="pt-1 flex-1 min-h-0 overflow-y-auto">
+          <DatabaseColumnConfigurationStudio
+            currentUser={currentUser}
+            teams={teams}
+            databases={databases}
           />
         </div>
-      </div>
-
-      {/* 4. Main Grid: 2 Columns of Cards on the left + Inspector Card on the right */}
-      <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_320px] gap-4 items-start">
-        <div className="space-y-4">
-          {loading ? (
-            <div className="py-16 text-center text-slate-400 animate-pulse font-medium">Loading rules...</div>
-          ) : activeTab === 'validation_boxes' ? (
-            filteredBoxes.length === 0 ? (
-              <div className="p-12 text-center border border-dashed border-slate-200 rounded-xl bg-white">
-                <Boxes className="w-12 h-12 text-slate-400 mx-auto mb-3" />
-                <h3 className="text-base font-bold text-slate-800 mb-1">No Validation Boxes found</h3>
-                <p className="text-xs text-slate-500 max-w-md mx-auto mb-4">
-                  Build standalone rule blocks to separate external querying from integrity checks before linking them in the Workflow Studio.
-                </p>
-                <div className="flex justify-center gap-2 flex-wrap">
-                  <button type="button" onClick={() => handleOpenCreateModal('INGESTION_SEARCH')} className="px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-lg text-xs font-bold transition-colors cursor-pointer">+ Add Search Box</button>
-                  <button type="button" onClick={() => handleOpenCreateModal('CONDITION_CHECK')} className="px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-lg text-xs font-bold transition-colors cursor-pointer">+ Add Condition Check</button>
-                  <button type="button" onClick={() => handleOpenCreateModal('RECONCILIATION')} className="px-3 py-1.5 bg-cyan-50 hover:bg-cyan-100 text-cyan-700 border border-cyan-200 rounded-lg text-xs font-bold transition-colors cursor-pointer">+ Add Reconciliation Box</button>
-                </div>
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {filteredBoxes.map((box) => {
-                  const getTypeMeta = () => {
-                    switch (box.boxType) {
-                      case 'INGESTION_SEARCH':
-                        return { label: 'Search & ingest', icon: Database };
-                      case 'RECONCILIATION':
-                        return { label: 'Reconciliation', icon: Layers };
-                      case 'REPORT':
-                        return { label: 'Report output', icon: Cpu };
-                      case 'CONDITION_CHECK':
-                      default:
-                        return { label: 'Condition check', icon: CheckCircle2 };
-                    }
-                  };
-                  const meta = getTypeMeta();
-                  const Icon = meta.icon;
-                  const isSelected = selectedBox?.id === box.id;
-
-                  return (
-                    <div
-                      key={box.id}
-                      role="button"
-                      tabIndex={0}
-                      onClick={() => setSelectedBoxId(box.id)}
-                      className={`group relative w-full text-left bg-white rounded-xl p-4 flex flex-col justify-between transition-all cursor-pointer ${
-                        isSelected
-                          ? 'border-2 border-[#F27421] shadow-xs'
-                          : 'border border-slate-200 hover:border-slate-300 shadow-2xs'
-                      }`}
-                    >
-                      <div>
-                        <div className="flex items-start justify-between gap-3 mb-2">
-                          <div className="flex items-center gap-2.5 min-w-0">
-                            <div className="p-2 rounded-lg shrink-0 border border-slate-200 bg-slate-50 text-slate-700">
-                              <Icon className="w-4 h-4" />
-                            </div>
-                            <div className="min-w-0">
-                              <h3 className="font-bold text-slate-900 text-sm truncate" title={box.name}>{box.name}</h3>
-                              <div className="text-xs text-slate-400 capitalize mt-0.5">
-                                {meta.label}
-                              </div>
-                            </div>
-                          </div>
-                          <div className="flex items-center">
-                            <button
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setSharingBox(box);
-                                setIsShareModalOpen(true);
-                              }}
-                              className="p-1 text-slate-400 hover:text-slate-700 transition cursor-pointer"
-                              title="More Options"
-                            >
-                              <MoreHorizontal className="w-4 h-4" />
-                            </button>
-                          </div>
-                        </div>
-
-                        <p className="text-xs text-slate-500 line-clamp-2 mb-3 leading-relaxed">
-                          {box.description || 'No description provided.'}
-                        </p>
-
-                        {/* Tag pills row */}
-                        <div className="flex items-center gap-1.5 flex-wrap mb-4">
-                          <span className="bg-slate-100 text-slate-600 text-xs px-2 py-0.5 rounded font-medium border border-slate-200/60">
-                            {databases.find(d => d.id === box.targetDbId)?.name || 'Sett'}
-                          </span>
-                          <span className="bg-slate-100 text-slate-600 text-xs px-2 py-0.5 rounded font-medium border border-slate-200/60">
-                            {box.targetTable || 'tran_log_tab'}
-                          </span>
-                          {box.searchParameters && box.searchParameters.length > 0 && (
-                            <span className="bg-slate-100 text-slate-600 text-xs px-2 py-0.5 rounded font-mono border border-slate-200/60">
-                              {box.searchParameters[0].inputField} → {box.searchParameters[0].targetColumn}
-                            </span>
-                          )}
-                        </div>
-                      </div>
-
-                      <div className="pt-2 flex items-center justify-between gap-2 border-t border-slate-100">
-                        <span className="bg-slate-100 text-slate-600 text-[11px] font-medium px-2.5 py-0.5 rounded-full">
-                          {(box as any).status || 'Draft'}
-                        </span>
-                        <button
-                          type="button"
-                          onClick={(e) => { e.stopPropagation(); handleOpenTestDrawer(box); }}
-                          className="flex items-center gap-1.5 px-3 py-1 rounded-lg border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-semibold transition cursor-pointer"
-                        >
-                          <span>▷</span>
-                          <span>Test</span>
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )
-          ) : (
-            /* COLUMN RULES TAB */
-            filteredColumnRules.length === 0 ? (
-              <div className="p-12 text-center border border-dashed border-slate-200 rounded-xl bg-white">
-                <Layers className="w-12 h-12 text-slate-400 mx-auto mb-3" />
-                <h3 className="text-base font-bold text-slate-800 mb-1">No Column Rules configured</h3>
-                <p className="text-xs text-slate-500 max-w-md mx-auto mb-4">
-                  Define table-level duplicate checks, completeness constraints, or value bounds.
-                </p>
-                <button
-                  type="button"
-                  onClick={() => setIsDuplicateCheckModalOpen(true)}
-                  className="px-4 py-2 bg-[#F27421] text-white rounded-lg text-xs font-semibold hover:bg-[#d65f15] transition cursor-pointer"
-                >
-                  + Add Duplicate Check
-                </button>
-              </div>
-            ) : (
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {filteredColumnRules.map((rule) => {
-                  const isSelected = selectedColumnRule?.id === rule.id;
-                  return (
-                    <div
-                      key={rule.id}
-                      role="button"
-                      tabIndex={0}
-                      onClick={() => setSelectedColumnRuleId(rule.id)}
-                      className={`group relative w-full text-left bg-white rounded-xl p-4 flex flex-col justify-between transition-all cursor-pointer ${
-                        isSelected
-                          ? 'border-2 border-[#F27421] shadow-xs'
-                          : 'border border-slate-200 hover:border-slate-300 shadow-2xs'
-                      }`}
-                    >
-                      <div>
-                        <div className="flex items-start justify-between gap-3 mb-2">
-                          <div className="flex items-center gap-2.5 min-w-0">
-                            <div className="p-2 rounded-lg shrink-0 border border-slate-200 bg-slate-50 text-indigo-700">
-                              <Layers className="w-4 h-4" />
-                            </div>
-                            <div className="min-w-0">
-                              <h3 className="font-bold text-slate-900 text-sm truncate" title={rule.ruleName}>
-                                {rule.ruleName || 'Column Rule'}
-                              </h3>
-                              <div className="text-xs text-slate-400 capitalize mt-0.5">
-                                {rule.ruleType === 'DUPLICATE_CHECK' ? 'Duplicate check' : rule.ruleType}
-                              </div>
-                            </div>
-                          </div>
-                          <div className="flex items-center">
-                            <button
-                              type="button"
-                              className="p-1 text-slate-400 hover:text-slate-700 transition cursor-pointer"
-                              title="Options"
-                            >
-                              <MoreHorizontal className="w-4 h-4" />
-                            </button>
-                          </div>
-                        </div>
-
-                        <p className="text-xs text-slate-500 line-clamp-2 mb-3 leading-relaxed">
-                          {rule.violationMessage || 'Verifies duplicate and uniqueness constraints across composite columns.'}
-                        </p>
-
-                        <div className="flex items-center gap-1.5 flex-wrap mb-4">
-                          <span className="bg-slate-100 text-slate-600 text-xs px-2 py-0.5 rounded font-medium border border-slate-200/60">
-                            {databases.find(d => d.id === rule.targetDbId)?.name || 'Sett'}
-                          </span>
-                          <span className="bg-slate-100 text-slate-600 text-xs px-2 py-0.5 rounded font-medium border border-slate-200/60 font-mono">
-                            {rule.tableName}
-                          </span>
-                          {rule.columns && rule.columns.length > 0 && (
-                            <span className="bg-slate-100 text-slate-600 text-xs px-2 py-0.5 rounded font-mono border border-slate-200/60">
-                              {rule.columns.map(c => c.columnName).join(', ')}
-                            </span>
-                          )}
-                        </div>
-                      </div>
-
-                      <div className="pt-2 flex items-center justify-between gap-2 border-t border-slate-100">
-                        <span className="bg-slate-100 text-slate-600 text-[11px] font-medium px-2.5 py-0.5 rounded-full">
-                          Active
-                        </span>
-                        <button
-                          type="button"
-                          className="flex items-center gap-1.5 px-3 py-1 rounded-lg border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-semibold transition cursor-pointer"
-                        >
-                          <span>▷</span>
-                          <span>Test</span>
-                        </button>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )
-          )}
+      ) : activeTab === 'workflows' ? (
+        <div className="pt-0 flex-1 min-h-0 overflow-hidden -mx-3.5 -mb-1 flex flex-col">
+          <WorkflowStudioFlowchart
+            ref={workflowStudioRef}
+            currentUser={currentUser}
+            hideHeader={true}
+            onWorkflowStateChange={setWfState}
+          />
         </div>
-
-        {/* 5. Right Inspector Card matching 04_rules_library.png */}
-        <aside className="bg-white border border-slate-200 rounded-xl p-5 h-fit shadow-xs">
-          {activeTab === 'validation_boxes' ? (
-            selectedBox ? (
-              <div className="space-y-4">
-                <div className="flex items-center gap-2.5">
-                  <div className="p-2 rounded-lg bg-slate-50 text-slate-700 border border-slate-200 shrink-0">
-                    {selectedBox.boxType === 'INGESTION_SEARCH' ? <Database className="w-4 h-4" /> : selectedBox.boxType === 'RECONCILIATION' ? <Layers className="w-4 h-4" /> : selectedBox.boxType === 'REPORT' ? <Cpu className="w-4 h-4" /> : <CheckCircle2 className="w-4 h-4" />}
-                  </div>
-                  <div className="min-w-0">
-                    <div className="text-[11px] font-medium text-slate-400">Selected</div>
-                    <div className="text-base font-bold text-slate-900 truncate">{selectedBox.name}</div>
-                  </div>
-                </div>
-
-                <div className="text-xs text-slate-500 leading-relaxed">
-                  {selectedBox.description || 'No description configured for this validation box.'}
-                </div>
-
-                <div className="space-y-2.5 text-xs pt-1">
-                  <div className="flex items-center justify-between border-b border-slate-100 pb-2">
-                    <span className="text-slate-400">Database</span>
-                    <span className="font-medium text-slate-800">{databases.find(d => d.id === selectedBox.targetDbId)?.name || 'Sett'}</span>
-                  </div>
-                  <div className="flex items-center justify-between border-b border-slate-100 pb-2">
-                    <span className="text-slate-400">Table</span>
-                    <span className="font-mono text-slate-800">{selectedBox.targetTable || 'tran_log_tab'}</span>
-                  </div>
-                  <div className="flex items-center justify-between border-b border-slate-100 pb-2">
-                    <span className="text-slate-400">Type</span>
-                    <span className="font-medium text-slate-800 capitalize">
-                      {selectedBox.boxType === 'INGESTION_SEARCH' ? 'Ingestion search' : selectedBox.boxType === 'RECONCILIATION' ? 'Reconciliation' : selectedBox.boxType === 'REPORT' ? 'Report output' : 'Condition check'}
+      ) : (
+        <div className="pt-1 flex-1 min-h-0 overflow-y-auto space-y-3">
+          {/* 3. Sub-Filter Pills & Search Bar */}
+          <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+            <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar py-0.5">
+              {navItems.map(item => {
+                const active = selectedTypeFilter === item.key || (item.key === 'ALL' && selectedTypeFilter === 'ALL');
+                return (
+                  <button
+                    key={item.key}
+                    type="button"
+                    onClick={() => setSelectedTypeFilter(item.key as any)}
+                    className={`px-3 py-1 rounded-lg text-xs font-semibold transition flex items-center gap-1.5 cursor-pointer whitespace-nowrap ${
+                      active
+                        ? 'bg-slate-100 text-slate-900 border border-slate-200/80 shadow-2xs font-bold'
+                        : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100/60'
+                    }`}
+                  >
+                    <span>{item.label}</span>
+                    <span className={`text-[10px] ${active ? 'text-slate-700 font-bold' : 'text-slate-400'}`}>
+                      {item.count}
                     </span>
-                  </div>
-                  <div className="flex items-center justify-between border-b border-slate-100 pb-2">
-                    <span className="text-slate-400">Parameters</span>
-                    <span className="font-medium text-slate-800">{selectedBox.searchParameters?.length ? `${selectedBox.searchParameters.length} active` : '0'}</span>
-                  </div>
-                  <div className="flex items-center justify-between pb-1">
-                    <span className="text-slate-400">Used in</span>
-                    <span className="font-medium text-slate-800">1 workflow</span>
-                  </div>
-                </div>
+                  </button>
+                );
+              })}
+            </div>
 
-                <div className="flex items-center gap-2 pt-2 border-t border-slate-100">
-                  <button
-                    type="button"
-                    onClick={() => handleOpenEditModal(selectedBox)}
-                    className="flex-1 px-3 py-2 text-xs font-semibold bg-[#0F142A] hover:bg-slate-800 text-white rounded-lg transition flex items-center justify-center gap-1.5 cursor-pointer shadow-2xs"
-                  >
-                    <Edit3 className="w-3.5 h-3.5" />
-                    <span>Edit</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleOpenTestDrawer(selectedBox)}
-                    className="flex-1 px-3 py-2 text-xs font-semibold border border-slate-200 hover:bg-slate-50 text-slate-700 rounded-lg transition flex items-center justify-center gap-1.5 cursor-pointer"
-                  >
-                    <span>▷</span>
-                    <span>Run test</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => { setSharingBox(selectedBox); setIsShareModalOpen(true); }}
-                    className="p-2 border border-slate-200 hover:bg-slate-50 text-slate-500 rounded-lg transition cursor-pointer"
-                    title="More Options"
-                  >
-                    <MoreHorizontal className="w-4 h-4" />
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <div className="p-6 text-center text-slate-400 text-xs">Select a validation box to inspect it here.</div>
-            )
-          ) : (
-            /* COLUMN RULE INSPECTOR */
-            selectedColumnRule ? (
-              <div className="space-y-4">
-                <div className="flex items-center gap-2.5">
-                  <div className="p-2 rounded-lg bg-slate-50 text-indigo-700 border border-slate-200 shrink-0">
-                    <Layers className="w-4 h-4" />
-                  </div>
-                  <div className="min-w-0">
-                    <div className="text-[11px] font-medium text-slate-400">Selected</div>
-                    <div className="text-base font-bold text-slate-900 truncate">{selectedColumnRule.ruleName}</div>
-                  </div>
-                </div>
+            <div className="relative w-72">
+              <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input
+                type="text"
+                placeholder="Search validation boxes..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="w-full bg-white border border-slate-200 rounded-lg pl-8 pr-3 py-1.5 text-xs text-slate-900 placeholder-slate-400 focus:outline-none focus:border-[#F27421] transition shadow-2xs"
+              />
+            </div>
+          </div>
 
-                <div className="text-xs text-slate-500 leading-relaxed">
-                  {selectedColumnRule.violationMessage || 'Verifies duplicate and uniqueness constraints across rows.'}
+          {/* 4. Main Grid: 2 Columns of Cards on the left + Inspector Card on the right */}
+          <div className="grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_320px] gap-4 items-start">
+            <div className="space-y-4">
+              {loading ? (
+                <div className="py-16 text-center text-slate-400 animate-pulse font-medium">Loading rules...</div>
+              ) : filteredBoxes.length === 0 ? (
+                <div className="p-12 text-center border border-dashed border-slate-200 rounded-xl bg-white">
+                  <Boxes className="w-12 h-12 text-slate-400 mx-auto mb-3" />
+                  <h3 className="text-base font-bold text-slate-800 mb-1">No Validation Boxes found</h3>
+                  <p className="text-xs text-slate-500 max-w-md mx-auto mb-4">
+                    Build standalone rule blocks to separate external querying from integrity checks before linking them in the Workflow Studio.
+                  </p>
+                  <div className="flex justify-center gap-2 flex-wrap">
+                    <button type="button" onClick={() => handleOpenCreateModal('INGESTION_SEARCH')} className="px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-lg text-xs font-bold transition-colors cursor-pointer">+ Add Search Box</button>
+                    <button type="button" onClick={() => handleOpenCreateModal('CONDITION_CHECK')} className="px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-lg text-xs font-bold transition-colors cursor-pointer">+ Add Condition Check</button>
+                    <button type="button" onClick={() => handleOpenCreateModal('RECONCILIATION')} className="px-3 py-1.5 bg-cyan-50 hover:bg-cyan-100 text-cyan-700 border border-cyan-200 rounded-lg text-xs font-bold transition-colors cursor-pointer">+ Add Reconciliation Box</button>
+                  </div>
                 </div>
+              ) : (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {filteredBoxes.map((box) => {
+                    const isSelected = selectedBox?.id === box.id;
+                    return (
+                      <div
+                        key={box.id}
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => setSelectedBoxId(box.id)}
+                        className={`group relative w-full text-left bg-white rounded-xl p-4 flex flex-col justify-between transition-all cursor-pointer ${
+                          isSelected
+                            ? 'border-2 border-[#F27421] shadow-xs'
+                            : 'border border-slate-200 hover:border-slate-300 shadow-2xs'
+                        }`}
+                      >
+                        <div>
+                          <div className="flex items-start justify-between gap-3 mb-2">
+                            <div className="flex items-center gap-2.5 min-w-0">
+                              <div className={`p-2 rounded-lg shrink-0 border ${
+                                box.boxType === 'INGESTION_SEARCH' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' :
+                                box.boxType === 'RECONCILIATION' ? 'bg-indigo-50 text-indigo-700 border-indigo-200' :
+                                box.boxType === 'REPORT' ? 'bg-cyan-50 text-cyan-700 border-cyan-200' :
+                                'bg-blue-50 text-blue-700 border-blue-200'
+                              }`}>
+                                {box.boxType === 'INGESTION_SEARCH' ? <Database className="w-4 h-4" /> :
+                                 box.boxType === 'RECONCILIATION' ? <Layers className="w-4 h-4" /> :
+                                 box.boxType === 'REPORT' ? <Cpu className="w-4 h-4" /> :
+                                 <CheckCircle2 className="w-4 h-4" />}
+                              </div>
+                              <div className="min-w-0">
+                                <h3 className="font-bold text-slate-900 text-sm truncate" title={box.name}>
+                                  {box.name}
+                                </h3>
+                                <div className="text-xs text-slate-400 capitalize mt-0.5">
+                                  {box.boxType === 'INGESTION_SEARCH' ? 'Ingestion search' :
+                                   box.boxType === 'RECONCILIATION' ? 'Reconciliation' :
+                                   box.boxType === 'REPORT' ? 'Report output' :
+                                   'Condition check'}
+                                </div>
+                              </div>
+                            </div>
+                            <div className="flex items-center">
+                              <button
+                                type="button"
+                                onClick={(e) => { e.stopPropagation(); setSharingBox(box); setIsShareModalOpen(true); }}
+                                className="p-1 text-slate-400 hover:text-slate-700 transition cursor-pointer"
+                                title="Share"
+                              >
+                                <Share2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          </div>
 
-                <div className="space-y-2.5 text-xs pt-1">
-                  <div className="flex items-center justify-between border-b border-slate-100 pb-2">
-                    <span className="text-slate-400">Database</span>
-                    <span className="font-medium text-slate-800">{databases.find(d => d.id === selectedColumnRule.targetDbId)?.name || 'Sett'}</span>
-                  </div>
-                  <div className="flex items-center justify-between border-b border-slate-100 pb-2">
-                    <span className="text-slate-400">Table</span>
-                    <span className="font-mono text-slate-800">{selectedColumnRule.tableName}</span>
-                  </div>
-                  <div className="flex items-center justify-between border-b border-slate-100 pb-2">
-                    <span className="text-slate-400">Type</span>
-                    <span className="font-medium text-slate-800 capitalize">Duplicate check</span>
-                  </div>
-                  <div className="flex items-center justify-between border-b border-slate-100 pb-2">
-                    <span className="text-slate-400">Columns</span>
-                    <span className="font-medium text-slate-800">{selectedColumnRule.columns?.length || 1} priority</span>
-                  </div>
-                  <div className="flex items-center justify-between pb-1">
-                    <span className="text-slate-400">Severity</span>
-                    <span className="font-medium text-slate-800">{selectedColumnRule.severity || 'WARNING'}</span>
-                  </div>
-                </div>
+                          <p className="text-xs text-slate-500 line-clamp-2 mb-3 leading-relaxed">
+                            {box.description || 'No description provided.'}
+                          </p>
 
-                <div className="flex items-center gap-2 pt-2 border-t border-slate-100">
-                  <button
-                    type="button"
-                    onClick={() => setIsDuplicateCheckModalOpen(true)}
-                    className="flex-1 px-3 py-2 text-xs font-semibold bg-[#0F142A] hover:bg-slate-800 text-white rounded-lg transition flex items-center justify-center gap-1.5 cursor-pointer shadow-2xs"
-                  >
-                    <Edit3 className="w-3.5 h-3.5" />
-                    <span>Edit</span>
-                  </button>
-                  <button
-                    type="button"
-                    className="flex-1 px-3 py-2 text-xs font-semibold border border-slate-200 hover:bg-slate-50 text-slate-700 rounded-lg transition flex items-center justify-center gap-1.5 cursor-pointer"
-                  >
-                    <span>▷</span>
-                    <span>Run test</span>
-                  </button>
-                  <button
-                    type="button"
-                    className="p-2 border border-slate-200 hover:bg-slate-50 text-slate-500 rounded-lg transition cursor-pointer"
-                    title="More Options"
-                  >
-                    <MoreHorizontal className="w-4 h-4" />
-                  </button>
+                          <div className="flex items-center gap-1.5 flex-wrap mb-4">
+                            <span className="bg-slate-100 text-slate-600 text-xs px-2 py-0.5 rounded font-medium border border-slate-200/60">
+                              {databases.find(d => d.id === box.targetDbId)?.name || 'Sett'}
+                            </span>
+                            <span className="bg-slate-100 text-slate-600 text-xs px-2 py-0.5 rounded font-medium border border-slate-200/60 font-mono">
+                              {box.targetTable || 'tran_log_tab'}
+                            </span>
+                            {box.searchParameters && box.searchParameters.length > 0 && (
+                              <span className="bg-slate-100 text-slate-600 text-xs px-2 py-0.5 rounded font-mono border border-slate-200/60">
+                                {box.searchParameters[0].inputField} → {box.searchParameters[0].targetColumn}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="pt-2 flex items-center justify-between gap-2 border-t border-slate-100">
+                          <span className="bg-slate-100 text-slate-600 text-[11px] font-medium px-2.5 py-0.5 rounded-full">
+                            {(box as any).status || 'Draft'}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); handleOpenTestDrawer(box); }}
+                            className="flex items-center gap-1.5 px-3 py-1 rounded-lg border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-semibold transition cursor-pointer"
+                          >
+                            <span>▷</span>
+                            <span>Test</span>
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
                 </div>
-              </div>
-            ) : (
-              <div className="p-6 text-center text-slate-400 text-xs">Select a column rule to inspect it here.</div>
-            )
-          )}
-        </aside>
-      </div>
+              )}
+            </div>
+
+            {/* 5. Right Inspector Card */}
+            <aside className="bg-white border border-slate-200 rounded-xl p-5 h-fit shadow-xs">
+              {selectedBox ? (
+                <div className="space-y-4">
+                  <div className="flex items-center gap-2.5">
+                    <div className="p-2 rounded-lg bg-slate-50 text-slate-700 border border-slate-200 shrink-0">
+                      {selectedBox.boxType === 'INGESTION_SEARCH' ? <Database className="w-4 h-4" /> : selectedBox.boxType === 'RECONCILIATION' ? <Layers className="w-4 h-4" /> : selectedBox.boxType === 'REPORT' ? <Cpu className="w-4 h-4" /> : <CheckCircle2 className="w-4 h-4" />}
+                    </div>
+                    <div className="min-w-0">
+                      <div className="text-[11px] font-medium text-slate-400">Selected</div>
+                      <div className="text-base font-bold text-slate-900 truncate">{selectedBox.name}</div>
+                    </div>
+                  </div>
+
+                  <div className="text-xs text-slate-500 leading-relaxed">
+                    {selectedBox.description || 'No description configured for this validation box.'}
+                  </div>
+
+                  <div className="space-y-2.5 text-xs pt-1">
+                    <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                      <span className="text-slate-400">Database</span>
+                      <span className="font-medium text-slate-800">{databases.find(d => d.id === selectedBox.targetDbId)?.name || 'Sett'}</span>
+                    </div>
+                    <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                      <span className="text-slate-400">Table</span>
+                      <span className="font-mono text-slate-800">{selectedBox.targetTable || 'tran_log_tab'}</span>
+                    </div>
+                    <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                      <span className="text-slate-400">Type</span>
+                      <span className="font-medium text-slate-800 capitalize">
+                        {selectedBox.boxType === 'INGESTION_SEARCH' ? 'Ingestion search' : selectedBox.boxType === 'RECONCILIATION' ? 'Reconciliation' : selectedBox.boxType === 'REPORT' ? 'Report output' : 'Condition check'}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between border-b border-slate-100 pb-2">
+                      <span className="text-slate-400">Parameters</span>
+                      <span className="font-medium text-slate-800">{selectedBox.searchParameters?.length ? `${selectedBox.searchParameters.length} active` : '0'}</span>
+                    </div>
+                    <div className="flex items-center justify-between pb-1">
+                      <span className="text-slate-400">Used in</span>
+                      <span className="font-medium text-slate-800">1 workflow</span>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 pt-2 border-t border-slate-100">
+                    <button
+                      type="button"
+                      onClick={() => handleOpenEditModal(selectedBox)}
+                      className="flex-1 px-3 py-2 text-xs font-semibold bg-[#0F142A] hover:bg-slate-800 text-white rounded-lg transition flex items-center justify-center gap-1.5 cursor-pointer shadow-2xs"
+                    >
+                      <Edit3 className="w-3.5 h-3.5" />
+                      <span>Edit</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleOpenTestDrawer(selectedBox)}
+                      className="flex-1 px-3 py-2 text-xs font-semibold border border-slate-200 hover:bg-slate-50 text-slate-700 rounded-lg transition flex items-center justify-center gap-1.5 cursor-pointer"
+                    >
+                      <span>▷</span>
+                      <span>Run test</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setSharingBox(selectedBox); setIsShareModalOpen(true); }}
+                      className="p-2 border border-slate-200 hover:bg-slate-50 text-slate-500 rounded-lg transition cursor-pointer"
+                      title="More Options"
+                    >
+                      <MoreHorizontal className="w-4 h-4" />
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div className="p-6 text-center text-slate-400 text-xs">Select a validation box to inspect it here.</div>
+              )}
+            </aside>
+          </div>
+        </div>
+      )}
 
       {/* Modal: Create/Edit Validation Box */}
       {isModalOpen && (

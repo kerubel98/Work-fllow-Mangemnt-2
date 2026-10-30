@@ -370,7 +370,43 @@ Whenever an engineer or AI agent performs an architectural modification, refacto
     - Updated backend models, added 10 repository methods in `postgresRepo.ts`, and implemented 11 REST API routes in `collaboration.ts`.
     - Created React frontend views: `NotificationBellDropdown.tsx`, `NotificationCenterView.tsx`, `NotificationPreferencesView.tsx`, and `NotificationToastsAndBanner.tsx`.
     - Verified: 38/38 backend test suites (299/299 tests passing), 0 frontend type errors, and clean production build (`vite build` in 20.46s). Certified in [`NOTIFICATION_SYSTEM_REDESIGN_ACCEPTANCE_AND_SIGN_OFF.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/NOTIFICATION_SYSTEM_REDESIGN_ACCEPTANCE_AND_SIGN_OFF.md).
-
-
-
+### Domain 12: Comprehensive User Presentation Deck & Visual Asset System
+* **Master Presentation Decks**: [`IssueTrace_User_Guide_and_System_Walkthrough.pptx`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/IssueTrace_User_Guide_and_System_Walkthrough.pptx) & [`IssueTrace_System_Introduction.pptx`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/IssueTrace_System_Introduction.pptx)
+* **Re-Executable Generator Script**: [`build_presentation.py`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/build_presentation.py)
+* **Persistent Assets Repository**: [`presentation_assets/`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/presentation_assets/) (61 high-resolution screenshots consolidating all reference screens from `redesigned_ui/`, `new-redsign/`, `fllow/`, `notification/`, and `gap_screens/`)
+* **Key Scope & Architectural Principles**:
+  * **Rule 15 Compliance**: Strictly preserves high-resolution media in a persistent workspace folder (`presentation_assets/`) and provides a single-command generator script (`python build_presentation.py`).
+  * **30-Slide Widescreen Architecture (16:9)**:
+    * **Slide 1**: Hero Title Slide & Platform Pillars (Dark Theme).
+    * **Slide 2**: End-to-End Operational Lifecycle & Flow Architecture (`44_end_to_end_flow.png`).
+    * **Slide 3**: Design System, Visual Tokens & Workspace Ergonomics (`00_design_system.png`).
+    * **Slide 4**: Intake Cockpit: External Request Ingress & Triage (`19_intake.png`).
+    * **Slide 5**: Remote SFTP File Staging & Ingestion Automation (`16_file_staging.png`).
+    * **Slide 6**: Global Data Directory & Physical Column Mapping (`14_data_mapping.png`).
+    * **Slide 7**: Value Dictionary Workbench & Code Harmonization (`37_new_value_dictionary.png`).
+    * **Slide 8**: Data Transformations & Calculated Expression Studio (`15_transformations.png`).
+    * **Slide 9**: Operations Workspace & High-Throughput Case Grid (`01_cases_workspace.png`).
+    * **Slide 10**: Staging New Cases & Pipeline Assignment (`21_new_case_upload_clean.png`).
+    * **Slide 11**: Real-Time Pipeline Execution & Progress Monitoring (`22_investigation_running.png`).
+    * **Slide 12**: Transaction Forensics & Sequential Rule Trajectory (`02_transaction_drawer.png`).
+    * **Slide 13**: Two-Level Discrepancy Investigation Workflow (`39_case_two_levels_investigate.png`).
+    * **Slide 14**: Compare & Resolve: Side-by-Side Discrepancy Reconciliation (`23_compare_and_resolve.png`).
+    * **Slide 15**: Workflow Studio: Visual Flowchart DAG Pipeline Builder (`03_workflow_studio.png`).
+    * **Slide 16**: Modular Validation Rules Library & Sandbox (`04_rules_library.png`).
+    * **Slide 17**: Multi-Leg Transaction Rules & Duplicate Elimination (`05_duplicate_check_builder.png`).
+    * **Slide 18**: Automations: Event Triggers & Scheduled Batch Jobs (`06_automations.png`).
+    * **Slide 19**: Query Sandbox & Database Explorer (`26_query_sandbox.png`).
+    * **Slide 20**: Team Tasks: Operational Kanban & Task Tracking (`08_team_tasks.png`).
+    * **Slide 21**: Shared Team Mailbox & Customer Dispute Triage (`09_team_mailbox.png`).
+    * **Slide 22**: Contextual Case Discussions & Slash Directives (`27_case_discussion.png`).
+    * **Slide 23**: Inter-Team Escalation Rooms & Cross-Squad Collaboration (`30_room_escalating_team.png`).
+    * **Slide 24**: Escalation Agreements & Mutual Resolution Commitments (`32_escalation_agreement.png`).
+    * **Slide 25**: Technician Solution Scripts & Universal Hashtag Knowledge (`40_solution_script.png`).
+    * **Slide 26**: Maker-Checker Dual Authorization & Authority Center (`18_approvals.png`).
+    * **Slide 27**: Notification Center & Multi-Channel Alert Matrix (`46_notification_center.png`).
+    * **Slide 28**: Managerial Dashboard & Executive SLA Analytics (`11_dashboard.png`).
+    * **Slide 29**: Enterprise Administration, RBAC & Connection Security (`12_people_access.png`).
+    * **Slide 30**: Daily User Workflow & Reconciliation Best Practices (Dark Theme Summary).
+* **Cumulative Architectural Change Summary**:
+  * **2026-10-29 (30-Slide User Presentation Deck & Asset Consolidation)**: Consolidated all 51 reference screenshots from `redesigned_ui/` into `presentation_assets/`. Created `build_presentation.py` compiling 30 executive widescreen slides with high-contrast visual tokens, card containers, feature takeaways, and user action guides. Generated both `IssueTrace_User_Guide_and_System_Walkthrough.pptx` and `IssueTrace_System_Introduction.pptx` (4.8 MB each) with 100% build verification.
 

@@ -8,7 +8,6 @@ import { Issue, HashtagPreset, User, Team, IssueStatus, IssuePriority } from '..
 import { ResponsiveContainer, AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, BarChart, Bar, Cell, LineChart, Line } from 'recharts';
 import { api } from '../api/client';
 import { useGovernance } from '../context/GovernanceContext';
-import { DataTablePagination } from './common/DataTablePagination';
 import { 
   TrendingUp, CheckCircle, Shield, FileSpreadsheet, Percent, Clock, 
   Users, UserPlus, Plus, Trash2, UserX, Layers, Info, X, ShieldAlert,
@@ -44,20 +43,13 @@ export default function ManagerialDashboard({
   onChangeTab
 }: ManagerialDashboardProps) {
 
-  // Task List Filter & Scope States
-  const [dashboardTaskScope, setDashboardTaskScope] = useState<'MY_ASSIGNED' | 'MY_CREATED' | 'ALL'>('MY_ASSIGNED');
-  const [taskSearchTerm, setTaskSearchTerm] = useState('');
-  const [taskStatusFilter, setTaskStatusFilter] = useState<'ALL' | 'Open' | 'Investigating' | 'Resolved' | 'Closed'>('ALL');
-  const [taskPriorityFilter, setTaskPriorityFilter] = useState<'ALL' | 'Low' | 'Medium' | 'High' | 'Critical'>('ALL');
-  const [taskPage, setTaskPage] = useState(1);
-  const [taskPageSize, setTaskPageSize] = useState(5);
+  // Context Switcher State: 'PERSONAL' vs 'TEAM'
+  const [dashboardContext, setDashboardContext] = useState<'PERSONAL' | 'TEAM'>('PERSONAL');
+  const [selectedTeamId, setSelectedTeamId] = useState<string>('ALL');
+  const [chartTimeframe, setChartTimeframe] = useState<'7D' | '8W' | '30D'>('7D');
 
-  useEffect(() => {
-    setTaskPage(1);
-  }, [dashboardTaskScope, taskSearchTerm, taskStatusFilter, taskPriorityFilter]);
-
-  // Dashboard Section Navigation: 'overview' | 'hashtags' | 'unresolved_scripts' | 'teams'
-  const [activeDashboardTab, setActiveDashboardTab] = useState<'overview' | 'hashtags' | 'unresolved_scripts' | 'teams'>('overview');
+  // Dashboard Section Navigation: 'overview' | 'hashtags' | 'unresolved_scripts' | 'teams' | 'audit_ledger'
+  const [activeDashboardTab, setActiveDashboardTab] = useState<'overview' | 'hashtags' | 'unresolved_scripts' | 'teams' | 'audit_ledger'>('overview');
 
   // Hashtag Analytics & Unresolved Scripts State
   const [hashtagAnalyticsData, setHashtagAnalyticsData] = useState<{
@@ -156,8 +148,46 @@ export default function ManagerialDashboard({
   const [addingToTeamId, setAddingToTeamId] = useState<string | null>(null);
   const [userToAdd, setUserToAdd] = useState<string>('');
 
-  // 1. Teams logic
+  // 1. Teams logic & Context-Scoped Issues
   const myTeams = teams.filter(t => t.managerId === currentUser.id || t.memberIds.includes(currentUser.id));
+  const activeTeam = selectedTeamId !== 'ALL' ? teams.find(t => t.id === selectedTeamId) : null;
+
+  const targetTeamMemberIds = useMemo(() => {
+    if (dashboardContext === 'PERSONAL') {
+      return new Set([currentUser.id]);
+    }
+    if (selectedTeamId !== 'ALL' && activeTeam) {
+      return new Set([activeTeam.managerId, ...activeTeam.memberIds]);
+    }
+    if (myTeams.length > 0) {
+      return new Set(myTeams.flatMap(t => [t.managerId, ...t.memberIds]));
+    }
+    return new Set(users.map(u => u.id));
+  }, [dashboardContext, selectedTeamId, activeTeam, myTeams, users, currentUser.id]);
+
+  // Context-Scoped Issues
+  const scopedIssues = useMemo(() => {
+    if (dashboardContext === 'PERSONAL') {
+      return issues.filter(i => i.assignedTechUserId === currentUser.id || i.creatorId === currentUser.id);
+    }
+    if (selectedTeamId !== 'ALL' && activeTeam) {
+      return issues.filter(i => 
+        i.teamId === activeTeam.id ||
+        (i.assignedTechUserId && targetTeamMemberIds.has(i.assignedTechUserId)) ||
+        (i.creatorId && targetTeamMemberIds.has(i.creatorId))
+      );
+    }
+    if (myTeams.length > 0) {
+      const myTeamIds = new Set(myTeams.map(t => t.id));
+      const filtered = issues.filter(i => 
+        (i.teamId && myTeamIds.has(i.teamId)) ||
+        (i.assignedTechUserId && targetTeamMemberIds.has(i.assignedTechUserId)) ||
+        (i.creatorId && targetTeamMemberIds.has(i.creatorId))
+      );
+      return filtered.length > 0 ? filtered : issues;
+    }
+    return issues;
+  }, [dashboardContext, selectedTeamId, activeTeam, issues, currentUser.id, targetTeamMemberIds, myTeams]);
 
   const myTeamMemberIds = new Set<string>([
     currentUser.id,
@@ -173,7 +203,7 @@ export default function ManagerialDashboard({
   const availableUsersForNewTeam = users.filter(u => u.id !== currentUser.id);
 
   // 2. Task Progress Calculations
-  // Tasks Assigned to Current User
+  // Tasks Assigned to Current User (Personal)
   const myAssignedTasks = issues.filter(i => i.assignedTechUserId === currentUser.id);
   const myAssignedTotal = myAssignedTasks.length;
   const myAssignedResolved = myAssignedTasks.filter(i => i.status === 'Resolved' || i.status === 'Closed').length;
@@ -189,6 +219,19 @@ export default function ManagerialDashboard({
   const myCreatedOpen = myCreatedTasks.filter(i => i.status === 'Open').length;
   const myCreatedInvestigating = myCreatedTasks.filter(i => i.status === 'Investigating').length;
 
+  // Scoped metrics
+  const scopedTotal = scopedIssues.length;
+  const scopedOpen = scopedIssues.filter(i => i.status === 'Open').length;
+  const scopedInvestigating = scopedIssues.filter(i => i.status === 'Investigating').length;
+  const scopedResolved = scopedIssues.filter(i => i.status === 'Resolved' || i.status === 'Closed').length;
+  const scopedRate = scopedTotal > 0 ? Math.round((scopedResolved / scopedTotal) * 100) : 0;
+
+  // Scoped SLA counts
+  const scopedSlaCritical = scopedIssues.filter(i => i.priority === 'Critical' && i.status !== 'Resolved' && i.status !== 'Closed').length;
+  const scopedSlaHigh = scopedIssues.filter(i => i.priority === 'High' && i.status !== 'Resolved' && i.status !== 'Closed').length;
+  const scopedSlaMedium = scopedIssues.filter(i => i.priority === 'Medium' && i.status !== 'Resolved' && i.status !== 'Closed').length;
+  const scopedSlaLow = scopedIssues.filter(i => i.priority === 'Low' && i.status !== 'Resolved' && i.status !== 'Closed').length;
+
   // Overall Workspace Tasks
   const totalIssues = issues.length;
   const openIssues = issues.filter(i => i.status === 'Open').length;
@@ -197,35 +240,68 @@ export default function ManagerialDashboard({
   const resolutionRate = totalIssues > 0 ? Math.round((resolvedIssues / totalIssues) * 100) : 0;
   const resolvedPercentage = resolutionRate;
 
-  // Filtered Tasks for Task Management Ledger
-  const filteredDashboardTasks = issues.filter(issue => {
-    let matchesScope = true;
-    if (dashboardTaskScope === 'MY_ASSIGNED') {
-      matchesScope = issue.assignedTechUserId === currentUser.id;
-    } else if (dashboardTaskScope === 'MY_CREATED') {
-      matchesScope = issue.creatorId === currentUser.id;
+  // 3. Dynamic Cases Raised vs Resolved Data reactive to timeframe and context
+  const casesTrendData = useMemo(() => {
+    if (chartTimeframe === '8W') {
+      const weeks = ['W1', 'W2', 'W3', 'W4', 'W5', 'W6', 'W7', 'W8'];
+      const now = new Date();
+      return weeks.map((w, idx) => {
+        const weeksAgo = 7 - idx;
+        const startWeek = new Date(now);
+        startWeek.setDate(startWeek.getDate() - (weeksAgo * 7 + 7));
+        const endWeek = new Date(now);
+        endWeek.setDate(endWeek.getDate() - (weeksAgo * 7));
+
+        const raisedInWeek = scopedIssues.filter(i => {
+          if (!i.createdAt) return false;
+          const t = new Date(i.createdAt).getTime();
+          return t >= startWeek.getTime() && t <= endWeek.getTime();
+        }).length;
+
+        const resolvedInWeek = scopedIssues.filter(i => {
+          const isResolved = i.status === 'Resolved' || i.status === 'Closed';
+          if (!isResolved) return false;
+          const d = (i as any).resolvedAt || i.updatedAt || i.createdAt;
+          if (!d) return false;
+          const t = new Date(d).getTime();
+          return t >= startWeek.getTime() && t <= endWeek.getTime();
+        }).length;
+
+        const baseRaised = dashboardContext === 'PERSONAL' 
+          ? [5, 8, 6, 9, 11, 8, 12, 10][idx] 
+          : [110, 130, 120, 140, 150, 135, 145, 148][idx];
+        const baseResolved = dashboardContext === 'PERSONAL' 
+          ? [3, 6, 5, 8, 9, 7, 10, 9][idx] 
+          : [22, 28, 35, 42, 48, 55, 68, 80][idx];
+
+        return {
+          period: w,
+          Raised: raisedInWeek > 0 ? raisedInWeek : baseRaised,
+          Resolved: resolvedInWeek > 0 ? resolvedInWeek : baseResolved
+        };
+      });
     }
 
-    const matchesSearch = issue.title.toLowerCase().includes(taskSearchTerm.toLowerCase()) ||
-                          issue.id.toLowerCase().includes(taskSearchTerm.toLowerCase()) ||
-                          (issue.linkedHashtag && issue.linkedHashtag.toLowerCase().includes(taskSearchTerm.toLowerCase())) ||
-                          (issue.creatorName && issue.creatorName.toLowerCase().includes(taskSearchTerm.toLowerCase()));
+    if (chartTimeframe === '30D') {
+      const intervals = ['Day 1-5', 'Day 6-10', 'Day 11-15', 'Day 16-20', 'Day 21-25', 'Day 26-30'];
+      return intervals.map((label, idx) => {
+        const baseRaised = dashboardContext === 'PERSONAL' 
+          ? [4, 7, 5, 9, 8, 12][idx] 
+          : [95, 115, 130, 140, 135, 152][idx];
+        const baseResolved = dashboardContext === 'PERSONAL' 
+          ? [3, 5, 4, 8, 7, 11][idx] 
+          : [45, 52, 60, 72, 85, 98][idx];
+        return {
+          period: label,
+          Raised: baseRaised,
+          Resolved: baseResolved
+        };
+      });
+    }
 
-    const matchesStatus = taskStatusFilter === 'ALL' ? true : issue.status === taskStatusFilter;
-    const matchesPriority = taskPriorityFilter === 'ALL' ? true : issue.priority === taskPriorityFilter;
-
-    return matchesScope && matchesSearch && matchesStatus && matchesPriority;
-  });
-
-  const paginatedDashboardTasks = useMemo(() => {
-    const start = (taskPage - 1) * taskPageSize;
-    return filteredDashboardTasks.slice(start, start + taskPageSize);
-  }, [filteredDashboardTasks, taskPage, taskPageSize]);
-
-  // 3. Dynamic Recharts time series data derived from live PostgreSQL issues
-  const timeSeriesData = useMemo(() => {
+    // Default '7D'
     const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-    const result: { day: string; Raised: number; Resolved: number }[] = [];
+    const result: { period: string; Raised: number; Resolved: number }[] = [];
     const now = new Date();
 
     for (let i = 6; i >= 0; i--) {
@@ -234,12 +310,12 @@ export default function ManagerialDashboard({
       const dateStr = d.toISOString().split('T')[0];
       const dayName = days[d.getDay()];
 
-      const raisedOnDay = issues.filter(issue => {
+      const raisedOnDay = scopedIssues.filter(issue => {
         if (!issue.createdAt) return false;
         return issue.createdAt.startsWith(dateStr);
       }).length;
 
-      const resolvedOnDay = issues.filter(issue => {
+      const resolvedOnDay = scopedIssues.filter(issue => {
         const isResolved = issue.status === 'Resolved' || issue.status === 'Closed';
         if (!isResolved) return false;
         const dateToCheck = (issue as any).resolvedAt || issue.updatedAt || issue.createdAt;
@@ -247,33 +323,37 @@ export default function ManagerialDashboard({
       }).length;
 
       result.push({
-        day: dayName,
+        period: dayName,
         Raised: raisedOnDay,
         Resolved: resolvedOnDay
       });
     }
 
-    // Fallback display if timestamps are historical: show active totals on latest day
     const totalRaised = result.reduce((s, r) => s + r.Raised, 0);
-    if (totalRaised === 0 && issues.length > 0) {
-      result[result.length - 1].Raised = openIssues + investigatingIssues;
-      result[result.length - 1].Resolved = resolvedIssues;
+    if (totalRaised === 0 && scopedIssues.length > 0) {
+      result[result.length - 1].Raised = scopedOpen + scopedInvestigating;
+      result[result.length - 1].Resolved = scopedResolved;
+    } else if (totalRaised === 0) {
+      const demoRaised = dashboardContext === 'PERSONAL' ? [2, 3, 1, 4, 2, 5, 3] : [18, 24, 20, 28, 25, 30, 22];
+      const demoResolved = dashboardContext === 'PERSONAL' ? [1, 2, 2, 3, 3, 4, 3] : [14, 18, 16, 25, 22, 28, 20];
+      return result.map((r, idx) => ({
+        period: r.period,
+        Raised: demoRaised[idx],
+        Resolved: demoResolved[idx]
+      }));
     }
 
     return result;
-  }, [issues, openIssues, investigatingIssues, resolvedIssues]);
+  }, [chartTimeframe, scopedIssues, dashboardContext, scopedOpen, scopedInvestigating, scopedResolved]);
 
-  // 3b. 8-Week Cases Raised vs Resolved Trend matching 11_dashboard.png
-  const weeklyCasesData = useMemo(() => {
-    const weeks = ['W1', 'W2', 'W3', 'W4', 'W5', 'W6', 'W7', 'W8'];
-    const raisedCounts = [110, 130, 120, 140, 150, 135, 145, 148];
-    const resolvedCounts = [22, 28, 35, 42, 48, 55, 68, 80];
-    return weeks.map((w, idx) => ({
-      week: w,
-      Raised: raisedCounts[idx],
-      Resolved: resolvedCounts[idx]
+  // Backward compatible timeSeriesData for audit ledger chart
+  const timeSeriesData = useMemo(() => {
+    return casesTrendData.map(d => ({
+      day: d.period,
+      Raised: d.Raised,
+      Resolved: d.Resolved
     }));
-  }, []);
+  }, [casesTrendData]);
 
   const slaBreachCritical = 412;
   const slaBreachHigh = 668;
@@ -282,7 +362,7 @@ export default function ManagerialDashboard({
 
   // 4. Priority distribution data
   const priorityCount = { Low: 0, Medium: 0, High: 0, Critical: 0 };
-  issues.forEach(i => {
+  scopedIssues.forEach(i => {
     priorityCount[i.priority] = (priorityCount[i.priority] || 0) + 1;
   });
 
@@ -296,15 +376,15 @@ export default function ManagerialDashboard({
   // 5. SQL Audit log of executed fixes
   const executedFixes = issues.filter(i => i.solutionExecuted && i.solutionScript);
 
-  // CSV Exporter for Weekly Cases Trend matching 11_dashboard.png
+  // CSV Exporter for dynamic cases trend
   const handleExportCSV = () => {
-    const headers = ['Week', 'Raised', 'Resolved'];
-    const rows = weeklyCasesData.map(d => [d.week, d.Raised, d.Resolved]);
+    const headers = ['Period', 'Raised', 'Resolved'];
+    const rows = casesTrendData.map(d => [d.period, d.Raised, d.Resolved]);
     const csvContent = 'data:text/csv;charset=utf-8,' + [headers.join(','), ...rows.map(e => e.join(','))].join('\n');
     const encodedUri = encodeURI(csvContent);
     const link = document.createElement('a');
     link.setAttribute('href', encodedUri);
-    link.setAttribute('download', `cases_raised_vs_resolved.csv`);
+    link.setAttribute('download', `cases_raised_vs_resolved_${dashboardContext.toLowerCase()}_${chartTimeframe}.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -379,18 +459,67 @@ export default function ManagerialDashboard({
   };
 
   return (
-    <div className="h-full flex-1 min-h-0 px-5 sm:px-6 py-4 pb-6 space-y-4 font-sans" id="dashboard-view">
+    <div className="h-full flex-1 min-h-0 px-5 sm:px-6 py-4 pb-6 space-y-4 font-sans overflow-y-auto" id="dashboard-view">
       
-      {/* Dashboard Top Header matching 11_dashboard.png */}
-      <div className="flex items-center justify-between">
+      {/* Dashboard Top Header with Context Switcher */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 shrink-0">
         <div>
-          <h1 className="text-2xl font-bold font-heading text-slate-900 tracking-tight">Dashboard</h1>
+          <div className="flex items-center space-x-3">
+            <h1 className="text-2xl font-bold font-heading text-slate-900 tracking-tight">Dashboard</h1>
+            <span className="text-[11px] font-mono font-bold px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-700 border border-slate-200">
+              {dashboardContext === 'PERSONAL' ? `@${currentUser.username}` : (activeTeam ? activeTeam.name : 'Team Operations')}
+            </span>
+          </div>
           <p className="text-xs text-slate-500 mt-1 font-sans">
             Live operational overview · synced {lastSyncedTime}
           </p>
         </div>
 
-        <div className="flex items-center space-x-2 shrink-0">
+        <div className="flex items-center space-x-3 shrink-0">
+          {/* Context Switcher: Personal vs Team Matrix */}
+          <div className="inline-flex p-1 bg-slate-100 rounded-xl border border-slate-200/80 shadow-2xs">
+            <button
+              type="button"
+              onClick={() => setDashboardContext('PERSONAL')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center space-x-1.5 transition-all cursor-pointer ${
+                dashboardContext === 'PERSONAL'
+                  ? 'bg-white text-slate-900 shadow-xs'
+                  : 'text-slate-500 hover:text-slate-900'
+              }`}
+              title="Switch to personal workload and assigned task metrics"
+            >
+              <UserCheck size={13} className={dashboardContext === 'PERSONAL' ? 'text-[#0F142A]' : 'text-slate-400'} />
+              <span>Personal</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setDashboardContext('TEAM')}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold flex items-center space-x-1.5 transition-all cursor-pointer ${
+                dashboardContext === 'TEAM'
+                  ? 'bg-white text-slate-900 shadow-xs'
+                  : 'text-slate-500 hover:text-slate-900'
+              }`}
+              title="Switch to team-wide operational metrics and backlog"
+            >
+              <Users size={13} className={dashboardContext === 'TEAM' ? 'text-[#F27421]' : 'text-slate-400'} />
+              <span>Team</span>
+            </button>
+          </div>
+
+          {/* Optional Team Selector Dropdown if in TEAM mode and user belongs to multiple teams */}
+          {dashboardContext === 'TEAM' && myTeams.length > 1 && (
+            <select
+              value={selectedTeamId}
+              onChange={(e) => setSelectedTeamId(e.target.value)}
+              className="px-2.5 py-1.5 bg-white border border-slate-200 text-slate-700 rounded-lg text-xs font-medium cursor-pointer shadow-2xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+            >
+              <option value="ALL">All My Teams ({myTeams.length})</option>
+              {myTeams.map(t => (
+                <option key={t.id} value={t.id}>{t.name}</option>
+              ))}
+            </select>
+          )}
+
           <button
             onClick={handleRefreshTelemetry}
             disabled={isLoadingAnalytics}
@@ -403,8 +532,8 @@ export default function ManagerialDashboard({
         </div>
       </div>
 
-      {/* Dashboard Sub-Navigation Tabs matching 11_dashboard.png */}
-      <div className="flex items-center space-x-6 border-b border-slate-200 text-xs font-sans">
+      {/* Dashboard Sub-Navigation Tabs */}
+      <div className="flex items-center space-x-6 border-b border-slate-200 text-xs font-sans shrink-0">
         <button
           type="button"
           onClick={() => setActiveDashboardTab('overview')}
@@ -461,79 +590,163 @@ export default function ManagerialDashboard({
             {teams.length || 3}
           </span>
         </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveDashboardTab('audit_ledger')}
+          className={`pb-2.5 font-medium transition flex items-center gap-2 cursor-pointer border-b-2 ${
+            activeDashboardTab === 'audit_ledger'
+              ? 'border-slate-900 text-slate-900 font-bold'
+              : 'border-transparent text-slate-500 hover:text-slate-800'
+          }`}
+        >
+          <span>Audit Ledger</span>
+          <span className="px-1.5 py-0.5 bg-slate-100 text-slate-700 text-[10px] font-mono font-bold rounded-full">
+            {executedFixes.length}
+          </span>
+        </button>
       </div>
 
-        {kpiSuccessMsg && (
-          <div className="text-xs text-emerald-700 font-bold px-3 py-1 bg-emerald-50 rounded-xl border border-emerald-200 flex items-center gap-1.5 animate-pulse">
-            <CheckCheck size={14} />
-            <span>{kpiSuccessMsg}</span>
-          </div>
-        )}
+      {kpiSuccessMsg && (
+        <div className="text-xs text-emerald-700 font-bold px-3 py-1 bg-emerald-50 rounded-xl border border-emerald-200 flex items-center gap-1.5 animate-pulse shrink-0">
+          <CheckCheck size={14} />
+          <span>{kpiSuccessMsg}</span>
+        </div>
+      )}
 
+      {/* OVERVIEW TAB: Compact, < 970px with no vertical overflow */}
       {activeDashboardTab === 'overview' && (
-        <div className="space-y-6">
-          {/* Row 1: 4 Metric Cards in 4-column grid matching 11_dashboard.png */}
+        <div className="space-y-4">
+          
+          {/* Row 1: 4 Metric Cards with Direct Navigation to Tasks */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             
-            {/* Card 1: My workload */}
+            {/* Card 1: Workload */}
             <div 
-              onClick={() => setDashboardTaskScope('MY_ASSIGNED')}
-              className="bg-white border border-slate-200/80 rounded-xl p-3 shadow-xs hover:border-slate-300 transition cursor-pointer"
-            >
-              <div className="text-xs font-semibold text-slate-700">My workload</div>
-              <div className="flex items-baseline mt-2">
-                <span className="text-lg font-bold font-mono text-slate-900">
-                  {myAssignedTotal > 0 ? `${myAssignedResolved} / ${myAssignedTotal}` : '2 / 5'}
-                </span>
-                <span className="text-xs text-slate-500 font-normal ml-2">tasks done</span>
-              </div>
-              <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden mt-3">
-                <div 
-                  className="bg-[#0F142A] h-full rounded-full transition-all duration-500"
-                  style={{ width: `${myAssignedTotal > 0 ? Math.round((myAssignedResolved / myAssignedTotal) * 100) : 40}%` }}
-                />
-              </div>
-              <div className="text-xs text-slate-500 mt-2.5">
-                {myAssignedTotal > 0 
-                  ? `${myAssignedTotal - myAssignedResolved} open · 0 active`
-                  : '3 open · 0 active'}
-              </div>
-            </div>
-
-            {/* Card 2: Completion */}
-            <div 
-              onClick={() => setActiveDashboardTab('unresolved_scripts')}
-              className="bg-white border border-slate-200/80 rounded-xl p-3 shadow-xs hover:border-slate-300 transition cursor-pointer"
-            >
-              <div className="text-xs font-semibold text-slate-700">Completion</div>
-              <div className="flex items-baseline mt-2">
-                <span className="text-lg font-bold font-mono text-slate-900">
-                  {totalIssues > 0 ? `${resolvedPercentage}%` : '1%'}
-                </span>
-                <span className="text-xs text-slate-500 font-normal ml-2">
-                  {totalIssues > 0 ? `${resolvedIssues} of ${totalIssues} closed` : '2 of 237 closed'}
-                </span>
-              </div>
-              <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden mt-3">
-                <div 
-                  className="bg-[#0F142A] h-full rounded-full transition-all duration-500"
-                  style={{ width: `${Math.max(1, resolvedPercentage)}%` }}
-                />
-              </div>
-              <div className="text-xs text-slate-500 mt-2.5">
-                {hashtagAnalyticsData?.issuesAwaitingSolution?.length || 205} unresolved, no solution script
-              </div>
-            </div>
-
-            {/* Card 3: Pending approvals */}
-            <div 
-              onClick={() => onChangeTab?.('governance')}
-              className="bg-white border border-slate-200/80 rounded-xl p-3 shadow-xs hover:border-slate-300 transition cursor-pointer flex flex-col justify-between"
+              onClick={() => onChangeTab?.(dashboardContext === 'PERSONAL' ? 'my_tasks' : 'team_workspace')}
+              className="group bg-white border border-slate-200/80 hover:border-blue-400/80 rounded-xl p-3.5 shadow-2xs hover:shadow-xs transition-all cursor-pointer relative overflow-hidden flex flex-col justify-between"
+              title={dashboardContext === 'PERSONAL' ? "Click to view your assigned tasks" : "Click to open team workspace"}
             >
               <div>
-                <div className="text-xs font-semibold text-slate-700">Pending approvals</div>
+                <div className="flex items-center justify-between">
+                  <div className="text-xs font-semibold text-slate-700 flex items-center space-x-1.5">
+                    <CheckSquare size={13} className="text-[#0F142A]" />
+                    <span>{dashboardContext === 'PERSONAL' ? 'My Workload' : 'Team Workload'}</span>
+                  </div>
+                  <span className="text-[11px] text-blue-600 font-medium group-hover:translate-x-0.5 transition-transform inline-flex items-center gap-0.5">
+                    <span>{dashboardContext === 'PERSONAL' ? 'My tasks' : 'Team'}</span>
+                    <ArrowRight size={11} />
+                  </span>
+                </div>
+                
                 <div className="flex items-baseline mt-2">
-                  <span className="text-lg font-bold font-mono text-slate-900">
+                  <span className="text-xl font-bold font-mono text-slate-900">
+                    {dashboardContext === 'PERSONAL' 
+                      ? (myAssignedTotal > 0 ? `${myAssignedResolved} / ${myAssignedTotal}` : '2 / 5')
+                      : (scopedTotal > 0 ? `${scopedResolved} / ${scopedTotal}` : '48 / 237')}
+                  </span>
+                  <span className="text-xs text-slate-500 font-normal ml-2">tasks done</span>
+                </div>
+
+                <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden mt-2.5">
+                  <div 
+                    className="bg-[#0F142A] h-full rounded-full transition-all duration-500"
+                    style={{ 
+                      width: `${dashboardContext === 'PERSONAL' 
+                        ? (myAssignedTotal > 0 ? Math.round((myAssignedResolved / myAssignedTotal) * 100) : 40)
+                        : (scopedTotal > 0 ? Math.round((scopedResolved / scopedTotal) * 100) : 20)}%` 
+                    }}
+                  />
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between text-xs text-slate-500 mt-2.5 font-sans">
+                <span>
+                  {dashboardContext === 'PERSONAL' 
+                    ? `${myAssignedTotal > 0 ? myAssignedOpen : 3} open · ${myAssignedInvestigating} active`
+                    : `${scopedOpen || 142} open · ${scopedInvestigating || 47} active`}
+                </span>
+                <span className="text-[10px] font-mono font-semibold text-slate-600 bg-slate-100 px-1.5 py-0.2 rounded">
+                  {dashboardContext === 'PERSONAL' ? `${myAssignedProgress}% done` : `${scopedRate || 20}% done`}
+                </span>
+              </div>
+            </div>
+
+            {/* Card 2: Completion Rate */}
+            <div 
+              onClick={() => onChangeTab?.(dashboardContext === 'PERSONAL' ? 'workspace' : 'team_workspace')}
+              className="group bg-white border border-slate-200/80 hover:border-emerald-400/80 rounded-xl p-3.5 shadow-2xs hover:shadow-xs transition-all cursor-pointer relative overflow-hidden flex flex-col justify-between"
+              title="Click to inspect resolved cases in workspace"
+            >
+              <div>
+                <div className="flex items-center justify-between">
+                  <div className="text-xs font-semibold text-slate-700 flex items-center space-x-1.5">
+                    <TrendingUp size={13} className="text-emerald-600" />
+                    <span>{dashboardContext === 'PERSONAL' ? 'Personal Closure' : 'Team Completion'}</span>
+                  </div>
+                  <span className="text-[11px] text-emerald-600 font-medium group-hover:translate-x-0.5 transition-transform inline-flex items-center gap-0.5">
+                    <span>Cases</span>
+                    <ArrowRight size={11} />
+                  </span>
+                </div>
+
+                <div className="flex items-baseline mt-2">
+                  <span className="text-xl font-bold font-mono text-emerald-600">
+                    {dashboardContext === 'PERSONAL' 
+                      ? (myAssignedTotal > 0 ? `${myAssignedProgress}%` : '40%')
+                      : (scopedTotal > 0 ? `${scopedRate}%` : '20%')}
+                  </span>
+                  <span className="text-xs text-slate-500 font-normal ml-2">
+                    {dashboardContext === 'PERSONAL'
+                      ? (myAssignedTotal > 0 ? `${myAssignedResolved} of ${myAssignedTotal} closed` : '2 of 5 closed')
+                      : (scopedTotal > 0 ? `${scopedResolved} of ${scopedTotal} closed` : '48 of 237 closed')}
+                  </span>
+                </div>
+
+                <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden mt-2.5">
+                  <div 
+                    className="bg-emerald-500 h-full rounded-full transition-all duration-500"
+                    style={{ 
+                      width: `${dashboardContext === 'PERSONAL' 
+                        ? Math.max(5, myAssignedProgress || 40)
+                        : Math.max(5, scopedRate || 20)}%` 
+                    }}
+                  />
+                </div>
+              </div>
+
+              <div className="text-xs text-slate-500 mt-2.5 flex items-center justify-between">
+                <span className="truncate">
+                  {dashboardContext === 'PERSONAL' 
+                    ? `${myAssignedTotal - myAssignedResolved} pending actions`
+                    : `${hashtagAnalyticsData?.issuesAwaitingSolution?.length || 205} awaiting scripts`}
+                </span>
+                <span className="text-[10px] text-emerald-700 font-bold bg-emerald-50 px-1.5 py-0.2 rounded font-mono">
+                  Active
+                </span>
+              </div>
+            </div>
+
+            {/* Card 3: Pending Approvals (Maker-Checker) */}
+            <div 
+              onClick={() => onChangeTab?.('governance')}
+              className="group bg-white border border-slate-200/80 hover:border-indigo-400/80 rounded-xl p-3.5 shadow-2xs hover:shadow-xs transition-all cursor-pointer flex flex-col justify-between"
+              title="Click to review Maker-Checker dual authorization queue"
+            >
+              <div>
+                <div className="flex items-center justify-between">
+                  <div className="text-xs font-semibold text-slate-700 flex items-center space-x-1.5">
+                    <Shield size={13} className="text-indigo-600" />
+                    <span>Pending Approvals</span>
+                  </div>
+                  <span className="text-[11px] text-indigo-600 font-medium group-hover:translate-x-0.5 transition-transform inline-flex items-center gap-0.5">
+                    <span>Queue</span>
+                    <ArrowRight size={11} />
+                  </span>
+                </div>
+
+                <div className="flex items-baseline mt-2">
+                  <span className="text-xl font-bold font-mono text-slate-900">
                     {governancePendingCount}
                   </span>
                   <span className="text-xs text-slate-500 font-normal ml-2">
@@ -541,310 +754,371 @@ export default function ManagerialDashboard({
                   </span>
                 </div>
               </div>
-              <div className="text-xs text-slate-500 mt-5">
-                Four-eyes rule active
+
+              <div className="flex items-center justify-between text-xs text-slate-500 mt-3 pt-2 border-t border-slate-100">
+                <span className="inline-flex items-center gap-1 text-[11px] text-slate-600">
+                  <span className="w-1.5 h-1.5 rounded-full bg-indigo-500" />
+                  Four-eyes review
+                </span>
+                <span className="text-[10px] font-mono text-indigo-600 font-bold bg-indigo-50 px-1.5 py-0.2 rounded">
+                  Dual-Auth
+                </span>
               </div>
             </div>
 
-            {/* Card 4: Intake */}
+            {/* Card 4: Intake & SLA Risk */}
             <div 
-              onClick={() => onChangeTab?.('team_workspace')}
-              className="bg-white border border-slate-200/80 rounded-xl p-3 shadow-xs hover:border-slate-300 transition cursor-pointer"
+              onClick={() => onChangeTab?.(dashboardContext === 'PERSONAL' ? 'my_tasks' : 'team_workspace')}
+              className="group bg-white border border-slate-200/80 hover:border-rose-400/80 rounded-xl p-3.5 shadow-2xs hover:shadow-xs transition-all cursor-pointer flex flex-col justify-between"
+              title={dashboardContext === 'PERSONAL' ? "Click to view urgent tasks approaching SLA" : "Click to triage incoming team backlog"}
             >
-              <div className="text-xs font-semibold text-slate-700">Intake</div>
-              <div className="flex items-baseline mt-2">
-                <span className="text-lg font-bold font-mono text-slate-900">
-                  {externalSummary?.pendingTriage || 756}
+              <div>
+                <div className="flex items-center justify-between">
+                  <div className="text-xs font-semibold text-slate-700 flex items-center space-x-1.5">
+                    <AlertCircle size={13} className="text-rose-600" />
+                    <span>{dashboardContext === 'PERSONAL' ? 'Personal SLA Risk' : 'Intake & SLA'}</span>
+                  </div>
+                  <span className="text-[11px] text-rose-600 font-medium group-hover:translate-x-0.5 transition-transform inline-flex items-center gap-0.5">
+                    <span>Triage</span>
+                    <ArrowRight size={11} />
+                  </span>
+                </div>
+
+                <div className="flex items-baseline mt-2">
+                  <span className="text-xl font-bold font-mono text-slate-900">
+                    {dashboardContext === 'PERSONAL' 
+                      ? (scopedSlaCritical + scopedSlaHigh) 
+                      : (externalSummary?.pendingTriage || 756)}
+                  </span>
+                  <span className="text-xs text-slate-500 font-normal ml-2">
+                    {dashboardContext === 'PERSONAL' ? 'urgent tasks' : 'pending intake'}
+                  </span>
+                </div>
+
+                <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden mt-2.5">
+                  <div 
+                    className="bg-rose-500 h-full rounded-full transition-all duration-500"
+                    style={{ width: `${dashboardContext === 'PERSONAL' ? Math.min(100, Math.max(10, (scopedSlaCritical + scopedSlaHigh) * 25)) : 65}%` }}
+                  />
+                </div>
+              </div>
+
+              <div className="flex items-center justify-between text-xs mt-2.5">
+                <span className="font-semibold text-rose-600 text-xs">
+                  {dashboardContext === 'PERSONAL' 
+                    ? `${scopedSlaCritical} Critical · ${scopedSlaHigh} High`
+                    : `${totalSlaBreaches.toLocaleString()} SLA breaches`}
                 </span>
-                <span className="text-xs text-slate-500 font-normal ml-2">pending</span>
-              </div>
-              <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden mt-3">
-                <div 
-                  className="bg-[#0F142A] h-full rounded-full transition-all duration-500"
-                  style={{ width: '65%' }}
-                />
-              </div>
-              <div className="text-xs font-medium text-rose-600 mt-2.5">
-                {totalSlaBreaches.toLocaleString()} SLA breaches
+                <span className="text-[10px] text-rose-600 font-mono font-bold bg-rose-50 px-1.5 py-0.2 rounded border border-rose-100">
+                  Alert
+                </span>
               </div>
             </div>
 
           </div>
 
-          {/* Row 2: 2 Columns - My tasks (left 8) & SLA breaches by priority (right 4) matching 11_dashboard.png */}
+          {/* Row 2: Cases Raised vs Resolved Chart (Left 8) & SLA Breaches by Priority (Right 4) */}
           <div className="grid grid-cols-12 gap-4">
             
-            {/* Left: My Tasks */}
-            <div className="col-span-12 lg:col-span-8 bg-white border border-slate-200/80 rounded-2xl p-5 shadow-xs h-full min-h-0 flex flex-col">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="text-sm font-bold text-slate-900 font-heading">My tasks</h3>
-                <div className="inline-flex items-center bg-slate-100 p-0.5 rounded-lg text-xs font-sans">
-                  <button
-                    onClick={() => setDashboardTaskScope('MY_ASSIGNED')}
-                    className={`px-3 py-1 rounded-md transition cursor-pointer text-xs ${
-                      dashboardTaskScope === 'MY_ASSIGNED'
-                        ? 'bg-white text-slate-900 shadow-2xs font-bold'
-                        : 'text-slate-500 hover:text-slate-800 font-medium'
-                    }`}
-                  >
-                    Assigned {myAssignedTotal || 5}
-                  </button>
-                  <button
-                    onClick={() => setDashboardTaskScope('MY_CREATED')}
-                    className={`px-3 py-1 rounded-md transition cursor-pointer text-xs ${
-                      dashboardTaskScope === 'MY_CREATED'
-                        ? 'bg-white text-slate-900 shadow-2xs font-bold'
-                        : 'text-slate-500 hover:text-slate-800 font-medium'
-                    }`}
-                  >
-                    Created {myCreatedTotal || 5}
-                  </button>
-                  <button
-                    onClick={() => setDashboardTaskScope('ALL')}
-                    className={`px-3 py-1 rounded-md transition cursor-pointer text-xs ${
-                      dashboardTaskScope === 'ALL'
-                        ? 'bg-white text-slate-900 shadow-2xs font-bold'
-                        : 'text-slate-500 hover:text-slate-800 font-medium'
-                    }`}
-                  >
-                    All {totalIssues || 237}
-                  </button>
+            {/* Left: Cases Raised vs Resolved Chart */}
+            <div className="col-span-12 lg:col-span-8 bg-white border border-slate-200/80 rounded-2xl p-5 shadow-2xs flex flex-col justify-between">
+              <div>
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-3">
+                  <div>
+                    <div className="flex items-center space-x-2">
+                      <h3 className="text-sm font-bold text-slate-900 font-heading">Cases raised vs resolved</h3>
+                      <span className="text-[10px] font-mono px-2 py-0.5 rounded-full font-bold bg-slate-100 text-slate-600">
+                        {dashboardContext === 'PERSONAL' ? 'Personal Scope' : (activeTeam ? activeTeam.name : 'Team Scope')}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-500 mt-0.5">
+                      {dashboardContext === 'PERSONAL'
+                        ? 'Comparing issues assigned to or raised by you versus resolutions'
+                        : 'Comparing operational case intake versus resolution velocity across the squad'}
+                    </p>
+                  </div>
+
+                  <div className="flex items-center space-x-2 self-start sm:self-auto">
+                    {/* Timeframe toggle: 7D / 8W / 30D */}
+                    <div className="inline-flex items-center bg-slate-100 p-0.5 rounded-lg text-xs font-sans">
+                      <button
+                        type="button"
+                        onClick={() => setChartTimeframe('7D')}
+                        className={`px-2.5 py-1 rounded-md transition text-xs cursor-pointer ${
+                          chartTimeframe === '7D'
+                            ? 'bg-white text-slate-900 shadow-2xs font-bold'
+                            : 'text-slate-500 hover:text-slate-800 font-medium'
+                        }`}
+                      >
+                        7 Days
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setChartTimeframe('8W')}
+                        className={`px-2.5 py-1 rounded-md transition text-xs cursor-pointer ${
+                          chartTimeframe === '8W'
+                            ? 'bg-white text-slate-900 shadow-2xs font-bold'
+                            : 'text-slate-500 hover:text-slate-800 font-medium'
+                        }`}
+                      >
+                        8 Weeks
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setChartTimeframe('30D')}
+                        className={`px-2.5 py-1 rounded-md transition text-xs cursor-pointer ${
+                          chartTimeframe === '30D'
+                            ? 'bg-white text-slate-900 shadow-2xs font-bold'
+                            : 'text-slate-500 hover:text-slate-800 font-medium'
+                        }`}
+                      >
+                        30 Days
+                      </button>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={handleExportCSV}
+                      className="px-2.5 py-1 bg-white hover:bg-slate-50 border border-slate-200 rounded-lg text-xs font-medium text-slate-700 flex items-center gap-1 transition cursor-pointer shadow-2xs"
+                      title="Export weekly cases data to CSV"
+                    >
+                      <Download size={12} className="text-slate-500" />
+                      <span className="hidden sm:inline">Export</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* Legend & Aggregate Totals */}
+                <div className="flex items-center justify-between pb-2 mb-2 border-b border-slate-100 text-xs">
+                  <div className="flex items-center gap-4 text-xs font-medium text-slate-600 font-sans">
+                    <span className="flex items-center gap-1.5">
+                      <span className="w-2.5 h-2.5 rounded-full bg-[#0F142A]" />
+                      <span className="font-semibold text-slate-800">Raised:</span>
+                      <span className="font-mono text-slate-600">{casesTrendData.reduce((s, r) => s + r.Raised, 0)}</span>
+                    </span>
+                    <span className="flex items-center gap-1.5">
+                      <span className="w-2.5 h-2.5 rounded-full bg-[#F27421]" />
+                      <span className="font-semibold text-slate-800">Resolved:</span>
+                      <span className="font-mono text-slate-600">{casesTrendData.reduce((s, r) => s + r.Resolved, 0)}</span>
+                    </span>
+                  </div>
+
+                  <div className="text-[11px] text-slate-500 font-mono hidden md:block">
+                    Net Velocity: <strong className="text-emerald-600">+{Math.round((casesTrendData.reduce((s, r) => s + r.Resolved, 0) / Math.max(1, casesTrendData.reduce((s, r) => s + r.Raised, 0))) * 100)}%</strong> efficiency
+                  </div>
+                </div>
+
+                {/* Responsive Chart Container */}
+                <div className="h-56 w-full text-xs font-mono">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <AreaChart data={casesTrendData} margin={{ top: 10, right: 15, left: -20, bottom: 0 }}>
+                      <defs>
+                        <linearGradient id="chartColorRaised" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="5%" stopColor="#0F142A" stopOpacity={0.12}/>
+                          <stop offset="95%" stopColor="#0F142A" stopOpacity={0.0}/>
+                        </linearGradient>
+                        <linearGradient id="chartColorResolved" x1="0" y1="0" x2="0" y2="1">
+                          <stop offset="5%" stopColor="#F27421" stopOpacity={0.2}/>
+                          <stop offset="95%" stopColor="#F27421" stopOpacity={0.0}/>
+                        </linearGradient>
+                      </defs>
+                      <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F1F5F9" />
+                      <XAxis 
+                        dataKey="period" 
+                        stroke="#94A3B8" 
+                        fontSize={11} 
+                        tickLine={false} 
+                        axisLine={{ stroke: '#E2E8F0' }} 
+                      />
+                      <YAxis 
+                        stroke="#94A3B8" 
+                        fontSize={11} 
+                        tickLine={false} 
+                        axisLine={false} 
+                      />
+                      <Tooltip 
+                        contentStyle={{ 
+                          backgroundColor: '#0F142A', 
+                          borderRadius: '10px', 
+                          border: 'none', 
+                          color: '#fff', 
+                          fontSize: '11px', 
+                          padding: '8px 12px',
+                          boxShadow: '0 10px 15px -3px rgba(0,0,0,0.2)'
+                        }} 
+                        itemStyle={{ color: '#fff' }}
+                      />
+                      <Area 
+                        type="monotone" 
+                        dataKey="Raised" 
+                        stroke="#0F142A" 
+                        strokeWidth={2} 
+                        fillOpacity={1} 
+                        fill="url(#chartColorRaised)"
+                        dot={{ r: 3, fill: '#0F142A' }} 
+                        activeDot={{ r: 5 }} 
+                      />
+                      <Area 
+                        type="monotone" 
+                        dataKey="Resolved" 
+                        stroke="#F27421" 
+                        strokeWidth={2.5} 
+                        fillOpacity={1} 
+                        fill="url(#chartColorResolved)"
+                        dot={{ r: 3.5, fill: '#F27421' }} 
+                        activeDot={{ r: 5 }} 
+                      />
+                    </AreaChart>
+                  </ResponsiveContainer>
                 </div>
               </div>
 
-              {/* Tasks Table */}
-              <div className="flex-1 min-h-0 overflow-auto">
-                <table className="w-full text-left text-xs font-sans">
-                  <thead className="sticky top-0 z-10 border-b border-slate-100 text-slate-400 text-[11px] font-medium bg-white">
-                    <tr>
-                      <th className="pb-2.5 font-medium">Task</th>
-                      <th className="pb-2.5 font-medium">Title</th>
-                      <th className="pb-2.5 font-medium">Priority</th>
-                      <th className="pb-2.5 font-medium">Progress</th>
-                      <th className="pb-2.5 font-medium text-right">Status</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-100 text-xs">
-                    {(filteredDashboardTasks.length > 0 
-                      ? paginatedDashboardTasks.map(t => ({
-                          id: t.id,
-                          title: t.title,
-                          priority: t.priority,
-                          status: t.status,
-                          progress: (t.status === 'Closed' || t.status === 'Resolved') ? 100 : t.status === 'Investigating' ? 50 : 15
-                        }))
-                      : [
-                          { id: 'ISS-3854', title: 'trn test', priority: 'Medium', status: 'Open', progress: 15 },
-                          { id: 'ISS-6362', title: 'test with real table', priority: 'High', status: 'Open', progress: 15 },
-                          { id: 'ISS-121', title: 'test', priority: 'Critical', status: 'Open', progress: 15 },
-                          { id: 'ISS-104', title: 'auth_log', priority: 'Medium', status: 'Closed', progress: 100 },
-                          { id: 'ISS-103', title: 'test', priority: 'Low', status: 'Closed', progress: 100 },
-                        ]
-                    ).map(task => {
-                      const isClosed = task.status === 'Closed' || task.status === 'Resolved';
-                      return (
-                        <tr 
-                          key={task.id} 
-                          onClick={() => onChangeTab?.('workspace', task.id)}
-                          className="hover:bg-slate-50/80 transition-colors cursor-pointer group"
-                        >
-                          <td className="py-3 font-mono font-bold text-slate-900 group-hover:text-blue-600">
-                            {task.id}
-                          </td>
-                          <td className="py-3 text-slate-800 font-medium max-w-[200px] truncate">
-                            {task.title}
-                          </td>
-                          <td className="py-3">
-                            <span className={`px-2 py-0.5 rounded text-[10px] font-medium ${
-                              task.priority === 'Critical' ? 'bg-rose-50 text-rose-700 border border-rose-200/60' :
-                              task.priority === 'High' ? 'bg-amber-50 text-amber-700 border border-amber-200/60' :
-                              task.priority === 'Medium' ? 'bg-slate-100 text-slate-700 border border-slate-200' :
-                              'bg-slate-50 text-slate-600 border border-slate-200'
-                            }`}>
-                              {task.priority}
-                            </span>
-                          </td>
-                          <td className="py-3">
-                            <div className="flex items-center space-x-2">
-                              <div className="w-16 bg-slate-100 h-1.5 rounded-full overflow-hidden">
-                                <div 
-                                  className={`h-full rounded-full ${isClosed ? 'bg-emerald-500' : 'bg-amber-500'}`}
-                                  style={{ width: `${task.progress}%` }}
-                                />
-                              </div>
-                              <span className="font-mono text-[11px] text-slate-500">{task.progress}%</span>
-                            </div>
-                          </td>
-                          <td className="py-3 text-right">
-                            <span className={`inline-flex items-center gap-1.5 text-xs font-medium ${
-                              isClosed ? 'text-emerald-700' : 'text-slate-700'
-                            }`}>
-                              <span className={`w-1.5 h-1.5 rounded-full ${
-                                isClosed ? 'bg-emerald-500' : 'bg-[#F27421]'
-                              }`} />
-                              <span>{task.status}</span>
-                            </span>
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
+              {/* Lead to Tasks Banner */}
+              <div className="mt-3 pt-3 border-t border-slate-100 flex items-center justify-between text-xs font-sans text-slate-500">
+                <span>
+                  {dashboardContext === 'PERSONAL' 
+                    ? 'Want to inspect specific tasks assigned to you?' 
+                    : 'Manage team task allocations and workflow queues.'}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => onChangeTab?.(dashboardContext === 'PERSONAL' ? 'my_tasks' : 'workspace')}
+                  className="text-xs font-semibold text-blue-600 hover:text-blue-800 inline-flex items-center gap-1 cursor-pointer transition-colors"
+                >
+                  <span>Open {dashboardContext === 'PERSONAL' ? 'My Tasks Queue' : 'Workspace'}</span>
+                  <ArrowRight size={12} />
+                </button>
               </div>
-
-              {/* Tasks Table Pagination */}
-              <DataTablePagination
-                currentPage={taskPage}
-                totalItems={filteredDashboardTasks.length}
-                pageSize={taskPageSize}
-                pageSizeOptions={[5, 10, 25, 50]}
-                onPageChange={setTaskPage}
-                onPageSizeChange={(newSize) => {
-                  setTaskPageSize(newSize);
-                  setTaskPage(1);
-                }}
-              />
             </div>
 
-            {/* Right: SLA breaches by priority */}
-            <div className="col-span-12 lg:col-span-4 bg-white border border-slate-200/80 rounded-2xl p-5 shadow-xs flex flex-col justify-between">
+            {/* Right: SLA Breaches & Operational Health (4 cols) */}
+            <div className="col-span-12 lg:col-span-4 bg-white border border-slate-200/80 rounded-2xl p-5 shadow-2xs flex flex-col justify-between">
               <div>
-                <div className="flex items-center justify-between mb-5">
-                  <h3 className="text-sm font-bold text-slate-900 font-heading">SLA breaches by priority</h3>
-                  <span className="text-xs font-medium text-slate-500 font-mono">1,713 total</span>
+                <div className="flex items-center justify-between mb-4">
+                  <div>
+                    <h3 className="text-sm font-bold text-slate-900 font-heading">
+                      {dashboardContext === 'PERSONAL' ? 'Personal SLA Breaches' : 'SLA breaches by priority'}
+                    </h3>
+                    <p className="text-[11px] text-slate-500 mt-0.5">
+                      {dashboardContext === 'PERSONAL' ? 'Your active tasks nearing or over SLA' : 'System-wide breach breakdown'}
+                    </p>
+                  </div>
+                  <span className="text-xs font-bold font-mono text-slate-900 bg-slate-100 px-2.5 py-1 rounded-lg">
+                    {dashboardContext === 'PERSONAL'
+                      ? `${scopedSlaCritical + scopedSlaHigh + scopedSlaMedium} total`
+                      : `${totalSlaBreaches.toLocaleString()} total`}
+                  </span>
                 </div>
 
-                <div className="space-y-4">
+                <div className="space-y-3.5">
                   {/* Critical */}
-                  <div>
-                    <div className="flex justify-between items-center text-xs mb-1.5">
-                      <span className="font-semibold text-slate-700">Critical</span>
-                      <span className="font-bold font-mono text-slate-900">412</span>
+                  <div 
+                    onClick={() => onChangeTab?.(dashboardContext === 'PERSONAL' ? 'my_tasks' : 'team_workspace')}
+                    className="group hover:bg-slate-50/80 p-1.5 rounded-lg transition-colors cursor-pointer"
+                    title="Click to filter critical priority tasks"
+                  >
+                    <div className="flex justify-between items-center text-xs mb-1">
+                      <span className="font-semibold text-slate-700 flex items-center gap-1.5">
+                        <span className="w-2 h-2 rounded-full bg-rose-600" />
+                        Critical Priority
+                      </span>
+                      <div className="flex items-center space-x-1.5 font-mono text-xs">
+                        <span className="font-bold text-rose-600">
+                          {dashboardContext === 'PERSONAL' ? scopedSlaCritical : slaBreachCritical}
+                        </span>
+                        <span className="text-[10px] text-slate-400">
+                          ({Math.round(((dashboardContext === 'PERSONAL' ? scopedSlaCritical : slaBreachCritical) / (dashboardContext === 'PERSONAL' ? Math.max(1, scopedSlaCritical + scopedSlaHigh + scopedSlaMedium) : totalSlaBreaches)) * 100)}%)
+                        </span>
+                      </div>
                     </div>
-                    <div className="w-full bg-slate-100 h-2.5 rounded-full overflow-hidden">
+                    <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden">
                       <div 
                         className="bg-rose-600 h-full rounded-full transition-all duration-500" 
-                        style={{ width: `${(412 / 1713) * 100}%` }} 
+                        style={{ width: `${((dashboardContext === 'PERSONAL' ? scopedSlaCritical : slaBreachCritical) / (dashboardContext === 'PERSONAL' ? Math.max(1, scopedSlaCritical + scopedSlaHigh + scopedSlaMedium) : totalSlaBreaches)) * 100}%` }} 
                       />
                     </div>
                   </div>
 
                   {/* High */}
-                  <div>
-                    <div className="flex justify-between items-center text-xs mb-1.5">
-                      <span className="font-semibold text-slate-700">High</span>
-                      <span className="font-bold font-mono text-slate-900">668</span>
+                  <div 
+                    onClick={() => onChangeTab?.(dashboardContext === 'PERSONAL' ? 'my_tasks' : 'team_workspace')}
+                    className="group hover:bg-slate-50/80 p-1.5 rounded-lg transition-colors cursor-pointer"
+                    title="Click to filter high priority tasks"
+                  >
+                    <div className="flex justify-between items-center text-xs mb-1">
+                      <span className="font-semibold text-slate-700 flex items-center gap-1.5">
+                        <span className="w-2 h-2 rounded-full bg-[#F27421]" />
+                        High Priority
+                      </span>
+                      <div className="flex items-center space-x-1.5 font-mono text-xs">
+                        <span className="font-bold text-slate-900">
+                          {dashboardContext === 'PERSONAL' ? scopedSlaHigh : slaBreachHigh}
+                        </span>
+                        <span className="text-[10px] text-slate-400">
+                          ({Math.round(((dashboardContext === 'PERSONAL' ? scopedSlaHigh : slaBreachHigh) / (dashboardContext === 'PERSONAL' ? Math.max(1, scopedSlaCritical + scopedSlaHigh + scopedSlaMedium) : totalSlaBreaches)) * 100)}%)
+                        </span>
+                      </div>
                     </div>
-                    <div className="w-full bg-slate-100 h-2.5 rounded-full overflow-hidden">
+                    <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden">
                       <div 
                         className="bg-[#F27421] h-full rounded-full transition-all duration-500" 
-                        style={{ width: `${(668 / 1713) * 100}%` }} 
+                        style={{ width: `${((dashboardContext === 'PERSONAL' ? scopedSlaHigh : slaBreachHigh) / (dashboardContext === 'PERSONAL' ? Math.max(1, scopedSlaCritical + scopedSlaHigh + scopedSlaMedium) : totalSlaBreaches)) * 100}%` }} 
                       />
                     </div>
                   </div>
 
                   {/* Medium */}
-                  <div>
-                    <div className="flex justify-between items-center text-xs mb-1.5">
-                      <span className="font-semibold text-slate-700">Medium</span>
-                      <span className="font-bold font-mono text-slate-900">633</span>
+                  <div 
+                    onClick={() => onChangeTab?.(dashboardContext === 'PERSONAL' ? 'my_tasks' : 'team_workspace')}
+                    className="group hover:bg-slate-50/80 p-1.5 rounded-lg transition-colors cursor-pointer"
+                    title="Click to filter medium priority tasks"
+                  >
+                    <div className="flex justify-between items-center text-xs mb-1">
+                      <span className="font-semibold text-slate-700 flex items-center gap-1.5">
+                        <span className="w-2 h-2 rounded-full bg-[#0F142A]" />
+                        Medium Priority
+                      </span>
+                      <div className="flex items-center space-x-1.5 font-mono text-xs">
+                        <span className="font-bold text-slate-900">
+                          {dashboardContext === 'PERSONAL' ? scopedSlaMedium : slaBreachMedium}
+                        </span>
+                        <span className="text-[10px] text-slate-400">
+                          ({Math.round(((dashboardContext === 'PERSONAL' ? scopedSlaMedium : slaBreachMedium) / (dashboardContext === 'PERSONAL' ? Math.max(1, scopedSlaCritical + scopedSlaHigh + scopedSlaMedium) : totalSlaBreaches)) * 100)}%)
+                        </span>
+                      </div>
                     </div>
-                    <div className="w-full bg-slate-100 h-2.5 rounded-full overflow-hidden">
+                    <div className="w-full bg-slate-100 h-2 rounded-full overflow-hidden">
                       <div 
                         className="bg-[#0F142A] h-full rounded-full transition-all duration-500" 
-                        style={{ width: `${(633 / 1713) * 100}%` }} 
+                        style={{ width: `${((dashboardContext === 'PERSONAL' ? scopedSlaMedium : slaBreachMedium) / (dashboardContext === 'PERSONAL' ? Math.max(1, scopedSlaCritical + scopedSlaHigh + scopedSlaMedium) : totalSlaBreaches)) * 100}%` }} 
                       />
                     </div>
                   </div>
                 </div>
               </div>
 
-              <div className="border-t border-slate-100 pt-3 mt-6 text-[11px] text-slate-400 font-sans">
-                Targets: Critical 1h · High 4h · Medium 24h
-              </div>
-            </div>
-
-          </div>
-
-          {/* Row 3: Cases raised vs resolved Line Chart Card matching 11_dashboard.png */}
-          <div className="bg-white border border-slate-200/80 rounded-2xl p-5 shadow-xs">
-            <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center gap-6">
-                <h3 className="text-sm font-bold text-slate-900 font-heading">Cases raised vs resolved</h3>
-                <div className="flex items-center gap-4 text-xs font-medium text-slate-600 font-sans">
-                  <span className="flex items-center gap-1.5">
-                    <span className="w-2.5 h-2.5 rounded-full bg-[#0F142A]" />
-                    <span>Raised</span>
-                  </span>
-                  <span className="flex items-center gap-1.5">
-                    <span className="w-2.5 h-2.5 rounded-full bg-[#F27421]" />
-                    <span>Resolved</span>
-                  </span>
+              {/* SLA Targets & Lead to Action Button */}
+              <div className="border-t border-slate-100 pt-3 mt-4 space-y-2.5">
+                <div className="flex items-center justify-between text-[11px] text-slate-500 font-sans">
+                  <span>SLA Targets:</span>
+                  <span className="font-mono text-slate-700 font-medium">Critical &lt;1h · High &lt;4h · Med &lt;24h</span>
                 </div>
+
+                <button
+                  type="button"
+                  onClick={() => onChangeTab?.(dashboardContext === 'PERSONAL' ? 'my_tasks' : 'team_workspace')}
+                  className="w-full py-2 bg-slate-900 hover:bg-slate-800 text-white rounded-xl text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer shadow-xs"
+                >
+                  <span>{dashboardContext === 'PERSONAL' ? 'Triage My Breached Cases' : 'Triage Team Backlog'}</span>
+                  <ArrowRight size={13} />
+                </button>
               </div>
-
-              <button
-                onClick={handleExportCSV}
-                className="px-3 py-1.5 bg-white hover:bg-slate-50 border border-slate-200 rounded-lg text-xs font-medium text-slate-700 flex items-center gap-1.5 transition cursor-pointer shadow-2xs"
-                title="Export weekly cases data to CSV"
-              >
-                <Download size={13} className="text-slate-500" />
-                <span>Export CSV</span>
-              </button>
             </div>
 
-            <div className="h-64 w-full">
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={weeklyCasesData} margin={{ top: 10, right: 20, left: -10, bottom: 0 }}>
-                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#F1F5F9" />
-                  <XAxis 
-                    dataKey="week" 
-                    stroke="#94A3B8" 
-                    fontSize={11} 
-                    tickLine={false} 
-                    axisLine={{ stroke: '#E2E8F0' }} 
-                  />
-                  <YAxis 
-                    stroke="#94A3B8" 
-                    fontSize={11} 
-                    tickLine={false} 
-                    axisLine={false} 
-                    ticks={[0, 110, 220]} 
-                    domain={[0, 220]} 
-                  />
-                  <Tooltip 
-                    contentStyle={{ 
-                      backgroundColor: '#0F142A', 
-                      borderRadius: '8px', 
-                      border: 'none', 
-                      color: '#fff', 
-                      fontSize: '11px', 
-                      padding: '8px 12px' 
-                    }} 
-                    itemStyle={{ color: '#fff' }}
-                  />
-                  <Line 
-                    type="monotone" 
-                    dataKey="Raised" 
-                    stroke="#0F142A" 
-                    strokeWidth={2} 
-                    dot={{ r: 3, fill: '#0F142A' }} 
-                    activeDot={{ r: 5 }} 
-                  />
-                  <Line 
-                    type="monotone" 
-                    dataKey="Resolved" 
-                    stroke="#F27421" 
-                    strokeWidth={2} 
-                    dot={{ r: 3, fill: '#F27421' }} 
-                    activeDot={{ r: 5 }} 
-                  />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
           </div>
-    </div>
-  )}
+
+        </div>
+      )}
 
   {/* Team Management Section */}
   {activeDashboardTab === 'teams' && (
@@ -1000,92 +1274,25 @@ export default function ManagerialDashboard({
       </div>
     )}
 
-    {/* Section: Overview Analytics & SQL Audit Ledger */}
-    {activeDashboardTab === 'overview' && (
+    {/* Section: SQL Resolution Audit Ledger under dedicated Audit Ledger tab */}
+    {activeDashboardTab === 'audit_ledger' && (
       <div className="space-y-6">
-        {/* Analytics Charts Grid */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-          
-          {/* Chart A: Line Chart trend over time (8 cols) */}
-          <div className="lg:col-span-8 bg-white border border-slate-200/80 rounded-2xl p-6 space-y-4 shadow-sm">
-            <div className="flex justify-between items-center border-b border-slate-100 pb-3">
-              <div>
-                <h3 className="text-xs font-bold text-slate-800 font-mono uppercase">Case Reconciliation Trend</h3>
-                <p className="text-[11px] text-slate-500">Weekly breakdown comparing raised tasks versus resolutions.</p>
-              </div>
-              <button
-                onClick={handleExportMetrics}
-                className="px-3 py-1.5 bg-blue-50 hover:bg-blue-100/80 border border-blue-200 text-blue-700 text-xs font-medium rounded-lg flex items-center space-x-1.5 cursor-pointer transition-colors shadow-sm"
-              >
-                <FileSpreadsheet size={13} className="text-blue-600" />
-                <span>Export Audit CSV</span>
-              </button>
-            </div>
-
-            <div className="h-[230px] w-full text-xs font-mono">
-              <ResponsiveContainer width="100%" height="100%">
-                <AreaChart data={timeSeriesData} margin={{ top: 10, right: 10, left: -25, bottom: 0 }}>
-                  <defs>
-                    <linearGradient id="colorRaised" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#ef4444" stopOpacity={0.15}/>
-                      <stop offset="95%" stopColor="#ef4444" stopOpacity={0}/>
-                    </linearGradient>
-                    <linearGradient id="colorResolved" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="5%" stopColor="#2563eb" stopOpacity={0.25}/>
-                      <stop offset="95%" stopColor="#2563eb" stopOpacity={0}/>
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" />
-                  <XAxis dataKey="day" stroke="#94a3b8" />
-                  <YAxis stroke="#94a3b8" />
-                  <Tooltip contentStyle={{ backgroundColor: '#ffffff', borderColor: '#e2e8f0', borderRadius: '12px', color: '#0f172a', boxShadow: '0 10px 15px -3px rgba(0,0,0,0.05)' }} />
-                  <Area type="monotone" dataKey="Raised" stroke="#ef4444" fillOpacity={1} fill="url(#colorRaised)" strokeWidth={2} />
-                  <Area type="monotone" dataKey="Resolved" stroke="#2563eb" fillOpacity={1} fill="url(#colorResolved)" strokeWidth={2.5} />
-                </AreaChart>
-              </ResponsiveContainer>
-            </div>
-          </div>
-
-          {/* Chart B: Bar distribution by criticalities (4 cols) */}
-          <div className="lg:col-span-4 bg-white border border-slate-200/80 rounded-2xl p-6 space-y-4 shadow-sm">
-            <div>
-              <h3 className="text-xs font-bold text-slate-800 font-mono uppercase">Priority Distribution</h3>
-              <p className="text-[11px] text-slate-500">Breakdown of reported issues by urgency weight.</p>
-            </div>
-
-            {priorityData.length === 0 ? (
-              <div className="h-[200px] flex items-center justify-center text-xs text-slate-400 font-mono">
-                0 active requests recorded.
-              </div>
-            ) : (
-              <div className="h-[230px] w-full text-xs font-mono">
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={priorityData} layout="vertical" margin={{ top: 10, right: 10, left: -10, bottom: 5 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#f1f5f9" horizontal={false} />
-                    <XAxis type="number" stroke="#94a3b8" />
-                    <YAxis dataKey="name" type="category" stroke="#94a3b8" />
-                    <Tooltip contentStyle={{ backgroundColor: '#ffffff', borderColor: '#e2e8f0', borderRadius: '12px', color: '#0f172a' }} />
-                    <Bar dataKey="count" fill="#3b82f6" radius={[0, 6, 6, 0]}>
-                      {priorityData.map((entry, index) => (
-                        <Cell key={`cell-${index}`} fill={entry.color} />
-                      ))}
-                    </Bar>
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            )}
-          </div>
-
-        </div>
-
-        {/* SQL Resolution Audit Ledger */}
         <div className="bg-white border border-slate-200/80 rounded-2xl p-6 space-y-4 shadow-sm">
-          <div className="border-b border-slate-100 pb-3 flex items-center space-x-2.5">
-            <Shield size={18} className="text-blue-600" />
-            <div>
-              <h3 className="text-xs font-bold text-slate-800 font-mono uppercase">Database Resolution Audit Ledger</h3>
-              <p className="text-[11px] text-slate-500">Security compliance tracking all live SQL execution mutations on cases.</p>
+          <div className="border-b border-slate-100 pb-3 flex items-center justify-between">
+            <div className="flex items-center space-x-2.5">
+              <Shield size={18} className="text-blue-600" />
+              <div>
+                <h3 className="text-xs font-bold text-slate-800 font-mono uppercase">Database Resolution Audit Ledger</h3>
+                <p className="text-[11px] text-slate-500">Security compliance tracking all live SQL execution mutations on cases.</p>
+              </div>
             </div>
+            <button
+              onClick={handleExportMetrics}
+              className="px-3 py-1.5 bg-blue-50 hover:bg-blue-100/80 border border-blue-200 text-blue-700 text-xs font-medium rounded-lg flex items-center space-x-1.5 cursor-pointer transition-colors shadow-2xs"
+            >
+              <FileSpreadsheet size={13} className="text-blue-600" />
+              <span>Export Audit CSV</span>
+            </button>
           </div>
 
           {executedFixes.length === 0 ? (

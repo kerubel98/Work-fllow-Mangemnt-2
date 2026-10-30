@@ -67,17 +67,34 @@ import { WorkflowInspector } from './workflow/WorkflowInspector';
 import { WorkflowValidationSummary } from './workflow/WorkflowValidationSummary';
 import { WorkflowStagesView } from './workflow/WorkflowStagesView';
 
-interface WorkflowStudioFlowchartProps {
+export interface WorkflowStudioFlowchartProps {
   currentUser?: any;
   selectedWorkflowId?: string;
   onSelectWorkflow?: (workflow: DatabaseValidationWorkflow) => void;
+  hideHeader?: boolean;
+  onWorkflowStateChange?: (state: {
+    hasUnsavedChanges: boolean;
+    isSaving: boolean;
+    canShare: boolean;
+    activeWorkflowName: string;
+  }) => void;
 }
 
-export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = ({
+export interface WorkflowStudioFlowchartHandle {
+  save: () => Promise<void>;
+  share: () => void;
+  hasUnsavedChanges: boolean;
+  isSaving: boolean;
+  activeWorkflow: DatabaseValidationWorkflow | null;
+}
+
+export const WorkflowStudioFlowchart = React.forwardRef<WorkflowStudioFlowchartHandle, WorkflowStudioFlowchartProps>(({
   currentUser,
   selectedWorkflowId,
-  onSelectWorkflow
-}) => {
+  onSelectWorkflow,
+  hideHeader = false,
+  onWorkflowStateChange
+}, ref) => {
   const [workflows, setWorkflows] = useState<DatabaseValidationWorkflow[]>([]);
   const [validationBoxes, setValidationBoxes] = useState<ValidationBox[]>([]);
   const [databases, setDatabases] = useState<any[]>([]);
@@ -1569,6 +1586,23 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
     }
   };
 
+  React.useImperativeHandle(ref, () => ({
+    save: handleSaveWorkflow,
+    share: () => setShowShareModal(true),
+    hasUnsavedChanges,
+    isSaving,
+    activeWorkflow
+  }), [handleSaveWorkflow, hasUnsavedChanges, isSaving, activeWorkflow]);
+
+  useEffect(() => {
+    onWorkflowStateChange?.({
+      hasUnsavedChanges,
+      isSaving,
+      canShare: Boolean(activeWorkflow),
+      activeWorkflowName: workflowName || activeWorkflow?.name || 'New Validation Pipeline'
+    });
+  }, [hasUnsavedChanges, isSaving, activeWorkflow, workflowName, onWorkflowStateChange]);
+
   /**
    * Calculates precise connection point coordinates for vertical top-to-bottom layout
    */
@@ -1606,181 +1640,9 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
     : 'bg-[radial-gradient(#e2e8f0_1.2px,transparent_1.2px)]';
 
   return (
-    <div className="h-full flex flex-col min-h-0 overflow-hidden px-5 sm:px-6 py-4 pb-4 space-y-2 font-sans bg-[#F8FAFC]">
-      {/* Consolidated Workflow Navigation & Controls Card */}
-      <div className="bg-white border border-slate-200 rounded-2xl p-4 text-slate-800 shadow-2xs space-y-3 shrink-0" id="workflow-studio-header">
-        {/* Middle: Back button, Title & Status, Actions */}
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-2.5 flex-1 min-w-[260px]">
-            {/* Back Button */}
-            <button
-              type="button"
-              onClick={() => onSelectWorkflow && onSelectWorkflow(null as any)}
-              className="w-8 h-8 rounded-xl border border-slate-200 hover:bg-slate-50 text-slate-600 flex items-center justify-center transition cursor-pointer shadow-2xs"
-              title="Back to Workflows"
-            >
-              <ChevronLeft size={16} />
-            </button>
-
-            {/* Editable Workflow Title */}
-            <input
-              type="text"
-              value={workflowName}
-              onChange={(e) => setWorkflowName(e.target.value)}
-              placeholder="New Validation Pipeline..."
-              className="text-base sm:text-lg font-bold text-slate-900 bg-transparent hover:bg-slate-50 focus:bg-white border border-transparent hover:border-slate-200 focus:border-[#F27421] flex-wrap rounded-xl px-2.5 py-1 focus:outline-none transition min-w-[180px] max-w-sm flex-1 font-sans"
-              title="Click to rename workflow"
-            />
-
-            {/* Live Status Badge */}
-            <AssetStatusBadge
-              status={(activeWorkflow as any)?.status || 'DRAFT'}
-              isLocked={Boolean((activeWorkflow as any)?.is_locked)}
-              approvedByName={(activeWorkflow as any)?.approved_by_user_name}
-            />
-          </div>
-
-          {/* Actions: Save, Share & Delete */}
-          <div className="flex items-center gap-2 shrink-0">
-            {hasUnsavedChanges && (
-              <span className="px-2.5 py-1 rounded-full text-[10px] font-mono font-bold bg-amber-50 text-amber-700 border border-amber-200 flex items-center gap-1.5 shadow-2xs">
-                <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse"></span>
-                <span>Unsaved</span>
-              </span>
-            )}
-
-            {activeWorkflow && (
-              <button
-                type="button"
-                onClick={() => setShowShareModal(true)}
-                className="px-3.5 py-2 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 rounded-xl text-xs font-semibold flex items-center gap-1.5 cursor-pointer shadow-2xs transition"
-                title={`Share workflow "${activeWorkflow.name}"`}
-              >
-                <Share2 size={13} className="text-slate-500" />
-                <span>Share</span>
-              </button>
-            )}
-
-            <button
-              type="button"
-              onClick={() => handleSaveWorkflow()}
-              disabled={isSaving}
-              className="px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-sm transition disabled:opacity-50 bg-[#F27421] hover:bg-[#e06516] text-white"
-            >
-              <Save size={13} />
-              <span>{isSaving ? 'Saving...' : 'Save flowchart'}</span>
-            </button>
-
-            {activeWorkflow && (
-              <button
-                type="button"
-                onClick={handleDeleteWorkflow}
-                className="p-2 text-slate-400 hover:text-rose-600 hover:bg-rose-50 border border-transparent hover:border-rose-200 rounded-xl transition cursor-pointer"
-                title={`Delete workflow "${activeWorkflow.name}"`}
-              >
-                <Trash2 size={14} />
-              </button>
-            )}
-          </div>
-        </div>
-
-        {/* Bottom Row: Badges (Category, DB/Table, hashtag, rules accepted) */}
-        <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-100 text-xs">
-          {/* Category Selector Pill */}
-          <select
-            value={workflowCategory}
-            onChange={(e: any) => setWorkflowCategory(e.target.value)}
-            className="text-xs font-medium bg-slate-100 hover:bg-slate-200/60 border border-slate-200 rounded-full px-3 py-1 text-slate-700 focus:outline-none focus:border-[#F27421] cursor-pointer shadow-2xs"
-            title="Workflow Business Category"
-          >
-            <option value="Settlement">Settlement</option>
-            <option value="Reconciliation">Reconciliation</option>
-            <option value="Compliance">Compliance</option>
-            <option value="Fulfillment">Fulfillment</option>
-            <option value="Custom">Custom</option>
-          </select>
-
-          {/* Target Database & Scope Table Target Selection */}
-          <div className="flex items-center gap-1.5 bg-slate-100 border border-slate-200 rounded-full px-3 py-1 text-xs text-slate-700 shadow-2xs">
-            <Database size={13} className="text-slate-500 shrink-0" />
-            <select
-              value={workflowDbId}
-              onChange={(e) => {
-                const newDbId = e.target.value;
-                setWorkflowDbId(newDbId);
-                const db = databases.find(d => String(d.id) === String(newDbId));
-                const tbls: string[] = db?.availableTables || db?.allowedTables || (db?.metadata?.tables) || [];
-                if (tbls.length > 0 && (!workflowTable || !tbls.includes(workflowTable))) {
-                  setWorkflowTable(tbls[0]);
-                } else if (!newDbId) {
-                  setWorkflowTable('');
-                }
-              }}
-              className="bg-transparent border-none text-xs font-semibold text-slate-800 focus:outline-none cursor-pointer max-w-[130px] truncate"
-              title="Target Database Connection"
-            >
-              <option value="">(No Target DB)</option>
-              {databases.map(db => (
-                <option key={db.id} value={db.id}>{db.name || db.database || db.id}</option>
-              ))}
-            </select>
-
-            {workflowDbId && (
-              <>
-                <span className="text-slate-400">/</span>
-                <select
-                  value={workflowTable}
-                  onChange={(e) => setWorkflowTable(e.target.value)}
-                  className="bg-transparent border-none text-xs font-medium text-slate-800 focus:outline-none cursor-pointer max-w-[120px] truncate font-mono"
-                  title="Scope Table"
-                >
-                  <option value="">(All Tables)</option>
-                  {(() => {
-                    const db = databases.find(d => String(d.id) === String(workflowDbId));
-                    const tbls: string[] = db?.availableTables || db?.allowedTables || (db?.metadata?.tables) || [];
-                    return tbls.map((tbl: string) => (
-                      <option key={tbl} value={tbl}>{tbl}</option>
-                    ));
-                  })()}
-                </select>
-              </>
-            )}
-          </div>
-
-          {/* Scoped Team Tag */}
-          <span className="text-xs font-mono font-medium text-slate-700 bg-slate-100 px-3 py-1 rounded-full border border-slate-200 whitespace-nowrap shadow-2xs">
-            #{activeWorkflow?.teamId || currentUser?.teamId || 'team-cards'}
-          </span>
-
-          {/* Workflow DB Column Rules Acceptance Button */}
-          <button
-            type="button"
-            onClick={() => {
-              setSelectedNode(null);
-              setSelectedConnection(null);
-              setRightPanelCollapsed(false);
-            }}
-            className={`flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold transition cursor-pointer border shadow-2xs ${workflowAttachedDbConfigIds.length > 0
-              ? 'bg-orange-50 border-orange-200 text-[#F27421] hover:bg-orange-100'
-              : 'bg-slate-100 border-slate-200 text-slate-600 hover:text-slate-900'
-              }`}
-            title="Open Workflow DB Column Configuration Acceptance Panel"
-          >
-            <ShieldCheck size={13} className={workflowAttachedDbConfigIds.length > 0 ? 'text-[#F27421]' : 'text-slate-500'} />
-            <span>{workflowAttachedDbConfigIds.length} DB rules accepted</span>
-          </button>
-        </div>
-
-        {saveSuccessMsg && (
-          <div className="p-2.5 bg-emerald-50 border border-emerald-200 rounded-xl text-emerald-800 text-xs flex items-center gap-2 animate-in fade-in">
-            <CheckCircle2 size={14} className="text-emerald-600 shrink-0" />
-            <span>{saveSuccessMsg}</span>
-          </div>
-        )}
-      </div>
-
+    <div className="h-full flex flex-col min-h-0 overflow-hidden font-sans bg-[#F8FAFC] p-0 space-y-0">
       {/* Main Studio Area: 3-Pane Power-User Architecture */}
-      <div className="flex-1 min-h-0 flex flex-col xl:flex-row gap-0 bg-white rounded-2xl border border-slate-200 overflow-hidden shadow-xs items-stretch">
+      <div className="flex-1 min-h-0 flex flex-col xl:flex-row gap-0 bg-white rounded-none border-t border-slate-200 overflow-hidden shadow-xs items-stretch">
         {!leftPanelCollapsed && (
           <div className="shrink-0 h-full flex flex-col min-h-0">
             <WorkflowPalette
@@ -1804,9 +1666,139 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
         {/* Center: Interactive Vertical Flowchart Canvas */}
         <div className={`relative flex-1 w-full h-full min-h-0 bg-[#FCFCFD] flex flex-col min-w-0 ${!rightPanelCollapsed ? 'border-r border-slate-200' : ''}`}>
           {/* Top Floating / Pre-Flight Topology and Toolbar Row */}
-          <div className="bg-white/80 backdrop-blur-md px-4 py-2.5 border-b border-slate-200 flex items-center justify-between text-xs text-slate-700 shrink-0 z-20">
-            {/* Left: Pre-Flight Validation Status Badge */}
-            <WorkflowValidationSummary nodes={nodes} connections={connections} />
+          <div className="bg-white/80 backdrop-blur-md px-3 py-1.5 border-b border-slate-200 flex flex-wrap items-center justify-between text-xs text-slate-700 shrink-0 z-20 gap-2">
+            {/* Left: Back button (if modal), Title, Status, Category, DB/Table, Team, Rules Accepted, Validation Summary */}
+            <div className="flex items-center gap-2 min-w-0 flex-wrap">
+              {onSelectWorkflow && (
+                <button
+                  type="button"
+                  onClick={() => onSelectWorkflow(null as any)}
+                  className="w-7 h-7 rounded-lg border border-slate-200 hover:bg-slate-50 text-slate-600 flex items-center justify-center transition cursor-pointer shadow-2xs"
+                  title="Back to Workflows"
+                >
+                  <ChevronLeft size={14} />
+                </button>
+              )}
+
+              <input
+                type="text"
+                value={workflowName}
+                onChange={(e) => setWorkflowName(e.target.value)}
+                placeholder="New Validation Pipeline..."
+                className="text-xs font-bold text-slate-900 bg-transparent hover:bg-slate-100/60 focus:bg-white border border-transparent hover:border-slate-200 focus:border-[#F27421] rounded-md px-2 py-0.5 focus:outline-none transition max-w-[170px] truncate font-sans"
+                title="Click to rename workflow"
+              />
+
+              <AssetStatusBadge
+                status={(activeWorkflow as any)?.status || 'DRAFT'}
+                isLocked={Boolean((activeWorkflow as any)?.is_locked)}
+                approvedByName={(activeWorkflow as any)?.approved_by_user_name}
+              />
+
+              {/* Category Selector Pill */}
+              <select
+                value={workflowCategory}
+                onChange={(e) => setWorkflowCategory(e.target.value)}
+                className="text-[11px] font-medium bg-slate-100 hover:bg-slate-200/60 border border-slate-200 rounded-full px-2.5 py-0.5 text-slate-700 focus:outline-none focus:border-[#F27421] cursor-pointer shadow-2xs"
+                title="Workflow Business Category"
+              >
+                <option value="Settlement">Settlement</option>
+                <option value="Reconciliation">Reconciliation</option>
+                <option value="Compliance">Compliance</option>
+                <option value="Fulfillment">Fulfillment</option>
+                <option value="Custom">Custom</option>
+              </select>
+
+              {/* Target Database & Scope Table Target Selection */}
+              <div className="flex items-center gap-1 bg-slate-100 border border-slate-200 rounded-full px-2.5 py-0.5 text-[11px] text-slate-700 shadow-2xs">
+                <Database size={11} className="text-slate-500 shrink-0" />
+                <select
+                  value={workflowDbId}
+                  onChange={(e) => {
+                    const newDbId = e.target.value;
+                    setWorkflowDbId(newDbId);
+                    const db = databases.find(d => String(d.id) === String(newDbId));
+                    const tbls = db?.availableTables || db?.allowedTables || (db?.metadata?.tables) || [];
+                    if (tbls.length > 0 && (!workflowTable || !tbls.includes(workflowTable))) {
+                      setWorkflowTable(tbls[0]);
+                    } else if (!newDbId) {
+                      setWorkflowTable('');
+                    }
+                  }}
+                  className="bg-transparent border-none text-[11px] font-semibold text-slate-800 focus:outline-none cursor-pointer max-w-[110px] truncate"
+                  title="Target Database Connection"
+                >
+                  <option value="">(No Target DB)</option>
+                  {databases.map(db => (
+                    <option key={db.id} value={db.id}>{db.name || db.database || db.id}</option>
+                  ))}
+                </select>
+
+                {workflowDbId && (
+                  <>
+                    <span className="text-slate-400">/</span>
+                    <select
+                      value={workflowTable}
+                      onChange={(e) => setWorkflowTable(e.target.value)}
+                      className="bg-transparent border-none text-[11px] font-medium text-slate-800 focus:outline-none cursor-pointer max-w-[95px] truncate font-mono"
+                      title="Scope Table"
+                    >
+                      <option value="">(All Tables)</option>
+                      {(() => {
+                        const db = databases.find(d => String(d.id) === String(workflowDbId));
+                        const tbls = db?.availableTables || db?.allowedTables || (db?.metadata?.tables) || [];
+                        return tbls.map((tbl) => (
+                          <option key={tbl} value={tbl}>{tbl}</option>
+                        ));
+                      })()}
+                    </select>
+                  </>
+                )}
+              </div>
+
+              {/* Scoped Team Tag */}
+              <span className="text-[10px] font-mono font-medium text-slate-600 bg-slate-100 px-2 py-0.5 rounded-full border border-slate-200 whitespace-nowrap shadow-2xs">
+                #{activeWorkflow?.teamId || currentUser?.teamId || 'team-cards'}
+              </span>
+
+              {/* Workflow DB Column Rules Acceptance Button */}
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedNode(null);
+                  setSelectedConnection(null);
+                  setRightPanelCollapsed(false);
+                }}
+                className={`flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold transition cursor-pointer border shadow-2xs ${workflowAttachedDbConfigIds.length > 0
+                  ? 'bg-orange-50 border-orange-200 text-[#F27421] hover:bg-orange-100'
+                  : 'bg-slate-100 border-slate-200 text-slate-600 hover:text-slate-900'
+                  }`}
+                title="Open Workflow DB Column Configuration Acceptance Panel"
+              >
+                <ShieldCheck size={11} className={workflowAttachedDbConfigIds.length > 0 ? 'text-[#F27421]' : 'text-slate-500'} />
+                <span>{workflowAttachedDbConfigIds.length} DB rules accepted</span>
+              </button>
+
+              {activeWorkflow && (
+                <button
+                  type="button"
+                  onClick={handleDeleteWorkflow}
+                  className="p-1 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition cursor-pointer"
+                  title={`Delete workflow "${activeWorkflow.name}"`}
+                >
+                  <Trash2 size={13} />
+                </button>
+              )}
+
+              {saveSuccessMsg && (
+                <div className="px-2 py-0.5 bg-emerald-50 border border-emerald-200 rounded-lg text-emerald-800 text-[11px] flex items-center gap-1 animate-in fade-in">
+                  <CheckCircle2 size={12} className="text-emerald-600 shrink-0" />
+                  <span>{saveSuccessMsg}</span>
+                </div>
+              )}
+
+              <WorkflowValidationSummary nodes={nodes} connections={connections} />
+            </div>
 
             {/* Right: View Mode Toggle, Auto-align, Zoom, Actions */}
             <div className="flex items-center gap-2">
@@ -2804,6 +2796,6 @@ export const WorkflowStudioFlowchart: React.FC<WorkflowStudioFlowchartProps> = (
       )}
     </div>
   );
-};
+});
 
 export default WorkflowStudioFlowchart;
