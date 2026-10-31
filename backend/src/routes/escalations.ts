@@ -50,6 +50,17 @@ escalationsRouter.post('/agreements', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'issueId, escalatingTeamId, receivingTeamId, reason, and raisedByUserId are required' });
     }
 
+    // Enforce Single Escalation Invariance: A case cannot be escalated more than once
+    const existingAgreements = await postgresRepo.getEscalationAgreements({ issueId });
+    if (existingAgreements && existingAgreements.length > 0) {
+      return res.status(400).json({ error: 'This case has already been escalated and cannot be escalated more than once.' });
+    }
+
+    const targetIssue = await postgresRepo.getIssueById(issueId);
+    if (targetIssue && (targetIssue.escalatedAt || targetIssue.escalatedToTeamId || targetIssue.status === 'ESCALATED')) {
+      return res.status(400).json({ error: 'This case has already been escalated and cannot be escalated more than once.' });
+    }
+
     const now = new Date();
     const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 

@@ -9,7 +9,8 @@ import {
   Play, Download, MessageSquare, MoreHorizontal, Clock, Tag,
   Search, SlidersHorizontal, RotateCcw, ChevronRight, ChevronLeft, ChevronDown, CheckCircle2,
   AlertCircle, Link2, Check, FileSpreadsheet, Paperclip, Plus, X,
-  Grid, FileText, CheckCheck, CircleDot, FolderOpen, Activity, Database, Terminal
+  Grid, FileText, CheckCheck, CircleDot, FolderOpen, Activity, Database, Terminal,
+  PanelRightClose, PanelRightOpen
 } from 'lucide-react';
 import TransactionInvestigationDrawer from './TransactionInvestigationDrawer';
 import { DataTablePagination } from '../common/DataTablePagination';
@@ -99,6 +100,13 @@ export default function CasesWorkspaceView({
   const [isEscalateModalOpen, setIsEscalateModalOpen] = useState(false);
   const [isStageModalOpen, setIsStageModalOpen] = useState(false);
   const [isLevel2WorkspaceOpen, setIsLevel2WorkspaceOpen] = useState(false);
+  const [isSidePanelCollapsed, setIsSidePanelCollapsed] = useState(false);
+
+  const isAlreadyEscalated = Boolean(
+    currentIssue?.status === 'ESCALATED' ||
+    currentIssue?.escalatedAt ||
+    currentIssue?.escalatedToTeamId
+  );
 
 
   useEffect(() => {
@@ -1053,9 +1061,9 @@ export default function CasesWorkspaceView({
       </div>
 
       {/* 2. Main Workspace: Left (Cards + Table) & Right (Pipeline & Details) */}
-      <div className="grid grid-cols-1 lg:grid-cols-4 gap-4 flex-1 min-h-0">
-        {/* Left 3 Columns: KPI Cards Strip + Table Workspace */}
-        <div className="lg:col-span-3 space-y-3 flex-1 min-h-0 flex flex-col">
+      <div className={`grid grid-cols-1 ${isSidePanelCollapsed ? 'lg:grid-cols-1' : 'lg:grid-cols-4'} gap-4 flex-1 min-h-0`}>
+        {/* Left 3 Columns (or full width if side panel collapsed): KPI Cards Strip + Table Workspace */}
+        <div className={`${isSidePanelCollapsed ? 'col-span-1' : 'lg:col-span-3'} space-y-3 flex-1 min-h-0 flex flex-col`}>
           {/* Compact 4 KPI Metric Cards pushed to left */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
             <div className="px-3.5 py-2.5 bg-white rounded-xl border border-slate-200/90 shadow-2xs flex flex-col justify-between">
@@ -1187,6 +1195,21 @@ export default function CasesWorkspaceView({
                     Showing <strong className="font-mono text-slate-800">{activeColumns.length}</strong> of{' '}
                     <strong className="font-mono text-slate-800">{availableColumns.length}</strong> columns
                   </span>
+
+                  {/* Toggle side contents to maximize table width */}
+                  <button
+                    type="button"
+                    onClick={() => setIsSidePanelCollapsed(prev => !prev)}
+                    className={`flex items-center space-x-1.5 px-2.5 py-1.5 border rounded-lg text-xs font-medium transition-colors cursor-pointer ${
+                      isSidePanelCollapsed
+                        ? 'border-blue-400 bg-blue-50 text-blue-700 shadow-2xs font-semibold'
+                        : 'border-slate-200 text-slate-700 hover:bg-slate-50'
+                    }`}
+                    title={isSidePanelCollapsed ? "Show side panel" : "Collapse side panel to expand table width"}
+                  >
+                    {isSidePanelCollapsed ? <PanelRightOpen size={13} className="text-blue-600" /> : <PanelRightClose size={13} className="text-slate-500" />}
+                    <span>{isSidePanelCollapsed ? "Show details" : "Maximize table"}</span>
+                  </button>
 
                   <div className="relative" ref={columnFilterRef}>
                     <button
@@ -1542,6 +1565,7 @@ export default function CasesWorkspaceView({
       </div>
 
         {/* Right 1 Column: Cards (Workflow, Details, Revert) */}
+        {!isSidePanelCollapsed && (
         <div className="space-y-4 flex-1 min-h-0 flex flex-col overflow-y-auto">
           {/* Card 1: Workflow */}
           <div className="bg-white rounded-xl border border-slate-200/80 p-5 shadow-xs space-y-3.5">
@@ -1689,6 +1713,7 @@ export default function CasesWorkspaceView({
             </button>
           </div>
         </div>
+        )}
       </div>
 
       {/* Workflow Selection Modal */}
@@ -1838,7 +1863,13 @@ export default function CasesWorkspaceView({
           onClose={() => setIsDiscussionDrawerOpen(false)}
           issue={currentIssue}
           currentUser={currentUser}
-          onOpenEscalateModal={() => setIsEscalateModalOpen(true)}
+          onOpenEscalateModal={() => {
+            if (isAlreadyEscalated) {
+              alert('This case has already been escalated and cannot be escalated more than once.');
+              return;
+            }
+            setIsEscalateModalOpen(true);
+          }}
         />
       )}
 

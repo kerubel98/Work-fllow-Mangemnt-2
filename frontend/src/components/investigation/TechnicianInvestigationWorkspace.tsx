@@ -3,12 +3,12 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { 
   ArrowLeft, Shield, Lock, Check, AlertTriangle, 
   FileText, Database, GitBranch, Flag, Play, 
   RotateCcw, CheckCircle2, Clock, ChevronRight, ChevronLeft,
-  MessageSquare
+  MessageSquare, Code, Sparkles, RefreshCw, Terminal, Layers
 } from 'lucide-react';
 import { Issue, User, HashtagPreset } from '../../types';
 import { api } from '../../api/client';
@@ -83,49 +83,232 @@ export function TechnicianInvestigationWorkspace({
   }, [flaggedRows, lvl1Page]);
 
   // -------------------------------------------------------------------------
-  // LEVEL 2 (Step 1): SQL Editor, Query Execution & Results pagination
+  // LEVEL 2 (Step 1): Validation Switching, SQL Extraction & Staged Sandbox
   // -------------------------------------------------------------------------
-  const [sqlQuery, setSqlQuery] = useState(
-    `SELECT s.refnum, s.reqamt, s.conamt, (s.conamt - s.reqamt) AS diff\nFROM sv_fin_tab s\nWHERE s.refnum IN (flagged_rows)\nAND ABS(s.conamt - s.reqamt) > 0;`
-  );
+  const [workflows, setWorkflows] = useState<any[]>([]);
+  const [validationBoxes, setValidationBoxes] = useState<any[]>([]);
+  const [selectedValidationId, setSelectedValidationId] = useState<string>('val-fee-rounding');
+  const [isExecutingQuery, setIsExecutingQuery] = useState(false);
+  const [stagedNotification, setStagedNotification] = useState<string | null>(null);
+
+  // Load registered workflows & validation boxes
+  useEffect(() => {
+    let isMounted = true;
+    Promise.all([
+      api.getWorkflows(currentUser?.teamId).catch(() => []),
+      api.getValidationBoxes(undefined, currentUser?.teamId).catch(() => [])
+    ]).then(([wfs, boxes]) => {
+      if (isMounted) {
+        if (Array.isArray(wfs)) setWorkflows(wfs);
+        if (Array.isArray(boxes)) setValidationBoxes(boxes);
+      }
+    });
+    return () => { isMounted = false; };
+  }, [currentUser?.teamId]);
+
+  // Available Validations Registry
+  const availableValidations = useMemo(() => {
+    const list = [
+      {
+        id: 'val-fee-rounding',
+        name: 'Fee Rounding Tolerance Check',
+        type: 'CONDITION_CHECK',
+        table: 'sv_fin_tab',
+        description: 'Verify difference between requested and confirmed amounts is within operational tolerance (<= 50.00)',
+        sql: `-- Validation: Fee Rounding Tolerance Check
+-- Type: CONDITION_CHECK | Table: sv_fin_tab
+SELECT s.refnum, s.reqamt, s.conamt, (s.conamt - s.reqamt) AS diff,
+       CASE WHEN ABS(s.conamt - s.reqamt) <= 50.00 THEN 'PASS' ELSE 'FLAG_EXCEEDED' END AS verdict
+FROM sv_fin_tab s
+WHERE ABS(s.conamt - s.reqamt) > 0
+ORDER BY ABS(s.conamt - s.reqamt) DESC;`
+      },
+      {
+        id: 'val-duplicate-ref',
+        name: 'Duplicate & Multi-Leg Conflict Check',
+        type: 'GROUPING_CHECK',
+        table: 'sv_fin_tab',
+        description: 'Detect duplicate reference numbers or colliding authorization IDs across batch runs',
+        sql: `-- Validation: Duplicate & Multi-Leg Conflict Check
+-- Type: GROUPING_CHECK | Table: sv_fin_tab
+SELECT s.refnum, COUNT(*) AS occurrences, 
+       MIN(s.conamt) AS min_amt, MAX(s.conamt) AS max_amt,
+       CASE WHEN COUNT(*) > 1 THEN 'DUPLICATE_COLLISION' ELSE 'UNIQUE' END AS verdict
+FROM sv_fin_tab s
+GROUP BY s.refnum
+HAVING COUNT(*) >= 1
+ORDER BY occurrences DESC;`
+      },
+      {
+        id: 'val-ledger-existence',
+        name: 'Core Ledger Existence Verification',
+        type: 'INGESTION_SEARCH',
+        table: 'sv_fin_tab',
+        description: 'Verify all ingested transactions exist in the authoritative external ledger mirror table',
+        sql: `-- Validation: Core Ledger Existence Verification
+-- Type: INGESTION_SEARCH | Table: sv_fin_tab
+SELECT s.refnum, s.reqamt, s.conamt, s.status,
+       CASE WHEN s.refnum IS NOT NULL THEN 'MATCH_FOUND' ELSE 'MISSING_IN_LEDGER' END AS existence_status
+FROM sv_fin_tab s
+LIMIT 24;`
+      },
+      {
+        id: 'val-iso-response',
+        name: 'ISO Response Code & Settlement Verdict',
+        type: 'CONDITION_CHECK',
+        table: 'sv_fin_tab',
+        description: 'Verify card clearing response code matches authorized status (00 / SETTLED)',
+        sql: `-- Validation: ISO Response Code & Settlement Verdict
+-- Type: CONDITION_CHECK | Table: sv_fin_tab
+SELECT s.refnum, s.conamt, s.resp_code,
+       CASE WHEN s.resp_code IN ('00', '000', 'SETTLED', 'SUCCESS') THEN 'PASS' ELSE 'DECLINE_DISCREPANCY' END AS verdict
+FROM sv_fin_tab s
+ORDER BY s.conamt DESC;`
+      }
+    ];
+
+    // Append custom validation boxes from database if available
+    (validationBoxes || []).forEach(box => {
+      list.push({
+        id: `box-${box.id}`,
+        name: box.name || 'Custom Validation Box',
+        type: box.boxType || 'CONDITION_CHECK',
+        table: box.targetTable || 'sv_fin_tab',
+        description: box.description || 'Custom configured validation rule',
+        sql: `-- Validation: ${box.name || 'Custom Validation Box'}
+-- Type: ${box.boxType || 'CONDITION_CHECK'} | Table: ${box.targetTable || 'sv_fin_tab'}
+SELECT * FROM "${box.targetTable || 'sv_fin_tab'}"
+WHERE 1=1
+LIMIT 24;`
+      });
+    });
+
+    return list;
+  }, [validationBoxes]);
+
+  const activeValidationMeta = useMemo(() => {
+    return availableValidations.find(v => v.id === selectedValidationId) || availableValidations[0];
+  }, [availableValidations, selectedValidationId]);
+
+  const [sqlQuery, setSqlQuery] = useState<string>(activeValidationMeta.sql);
   const [whatYouFound, setWhatYouFound] = useState(
     issue.findingsNotes || 'All 24 differences are under 50.00 and match fee rounding on the switch side.'
   );
 
-  const rawQueryResults = useMemo(() => [
-    { refnum: '826415297741', reqamt: '1,500.00', conamt: '1,450.00', diff: '-50.00' },
-    { refnum: '826415297790', reqamt: '820.00', conamt: '800.00', diff: '-20.00' },
-    { refnum: '826415297802', reqamt: '2,010.50', conamt: '2,000.00', diff: '-10.50' },
-    { refnum: '826415297815', reqamt: '640.00', conamt: '600.00', diff: '-40.00' },
-    { refnum: '826415297829', reqamt: '95.00', conamt: '90.00', diff: '-5.00' },
-    { refnum: '826415297833', reqamt: '340.00', conamt: '300.00', diff: '-40.00' },
-    { refnum: '826415297841', reqamt: '1,120.00', conamt: '1,100.00', diff: '-20.00' },
-    { refnum: '826415297855', reqamt: '560.00', conamt: '520.00', diff: '-40.00' },
-    { refnum: '826415297862', reqamt: '780.00', conamt: '750.00', diff: '-30.00' },
-    { refnum: '826415297879', reqamt: '430.00', conamt: '400.00', diff: '-30.00' },
-    { refnum: '826415297884', reqamt: '990.00', conamt: '950.00', diff: '-40.00' },
-    { refnum: '826415297891', reqamt: '1,800.00', conamt: '1,760.00', diff: '-40.00' },
-    { refnum: '826415297902', reqamt: '210.00', conamt: '190.00', diff: '-20.00' },
-    { refnum: '826415297918', reqamt: '670.00', conamt: '640.00', diff: '-30.00' },
-    { refnum: '826415297925', reqamt: '890.00', conamt: '850.00', diff: '-40.00' },
-    { refnum: '826415297939', reqamt: '1,340.00', conamt: '1,300.00', diff: '-40.00' },
-    { refnum: '826415297944', reqamt: '450.00', conamt: '420.00', diff: '-30.00' },
-    { refnum: '826415297951', reqamt: '2,500.00', conamt: '2,460.00', diff: '-40.00' },
-    { refnum: '826415297968', reqamt: '710.00', conamt: '680.00', diff: '-30.00' },
-    { refnum: '826415297972', reqamt: '315.00', conamt: '300.00', diff: '-15.00' },
-    { refnum: '826415297985', reqamt: '840.00', conamt: '800.00', diff: '-40.00' },
-    { refnum: '826415297990', reqamt: '1,650.00', conamt: '1,610.00', diff: '-40.00' },
-    { refnum: '826415298001', reqamt: '590.00', conamt: '550.00', diff: '-40.00' },
-    { refnum: '826415298014', reqamt: '420.00', conamt: '380.00', diff: '-40.00' }
+  const initialQueryResults = useMemo(() => [
+    { refnum: '826415297741', reqamt: '1,500.00', conamt: '1,450.00', diff: '-50.00', verdict: 'PASS' },
+    { refnum: '826415297790', reqamt: '820.00', conamt: '800.00', diff: '-20.00', verdict: 'PASS' },
+    { refnum: '826415297802', reqamt: '2,010.50', conamt: '2,000.00', diff: '-10.50', verdict: 'PASS' },
+    { refnum: '826415297815', reqamt: '640.00', conamt: '600.00', diff: '-40.00', verdict: 'PASS' },
+    { refnum: '826415297829', reqamt: '95.00', conamt: '90.00', diff: '-5.00', verdict: 'PASS' },
+    { refnum: '826415297833', reqamt: '340.00', conamt: '300.00', diff: '-40.00', verdict: 'PASS' },
+    { refnum: '826415297841', reqamt: '1,120.00', conamt: '1,100.00', diff: '-20.00', verdict: 'PASS' },
+    { refnum: '826415297855', reqamt: '560.00', conamt: '520.00', diff: '-40.00', verdict: 'PASS' },
+    { refnum: '826415297862', reqamt: '780.00', conamt: '750.00', diff: '-30.00', verdict: 'PASS' },
+    { refnum: '826415297879', reqamt: '430.00', conamt: '400.00', diff: '-30.00', verdict: 'PASS' },
+    { refnum: '826415297884', reqamt: '990.00', conamt: '950.00', diff: '-40.00', verdict: 'PASS' },
+    { refnum: '826415297891', reqamt: '1,800.00', conamt: '1,760.00', diff: '-40.00', verdict: 'PASS' },
+    { refnum: '826415297902', reqamt: '210.00', conamt: '190.00', diff: '-20.00', verdict: 'PASS' },
+    { refnum: '826415297918', reqamt: '670.00', conamt: '640.00', diff: '-30.00', verdict: 'PASS' },
+    { refnum: '826415297925', reqamt: '890.00', conamt: '850.00', diff: '-40.00', verdict: 'PASS' },
+    { refnum: '826415297939', reqamt: '1,340.00', conamt: '1,300.00', diff: '-40.00', verdict: 'PASS' },
+    { refnum: '826415297944', reqamt: '450.00', conamt: '420.00', diff: '-30.00', verdict: 'PASS' },
+    { refnum: '826415297951', reqamt: '2,500.00', conamt: '2,460.00', diff: '-40.00', verdict: 'PASS' },
+    { refnum: '826415297968', reqamt: '710.00', conamt: '680.00', diff: '-30.00', verdict: 'PASS' },
+    { refnum: '826415297972', reqamt: '315.00', conamt: '300.00', diff: '-15.00', verdict: 'PASS' },
+    { refnum: '826415297985', reqamt: '840.00', conamt: '800.00', diff: '-40.00', verdict: 'PASS' },
+    { refnum: '826415297990', reqamt: '1,650.00', conamt: '1,610.00', diff: '-40.00', verdict: 'PASS' },
+    { refnum: '826415298001', reqamt: '590.00', conamt: '550.00', diff: '-40.00', verdict: 'PASS' },
+    { refnum: '826415298014', reqamt: '420.00', conamt: '380.00', diff: '-40.00', verdict: 'PASS' }
   ], []);
+
+  const [dynamicQueryResults, setDynamicQueryResults] = useState<any[]>(initialQueryResults);
+  const [executionLatency, setExecutionLatency] = useState<number>(21);
 
   const [resPage, setResPage] = useState(1);
   const resPageSize = 4;
-  const resTotalPages = Math.ceil(rawQueryResults.length / resPageSize);
+  const resTotalPages = Math.ceil(dynamicQueryResults.length / resPageSize) || 1;
   const visibleQueryResults = useMemo(() => {
     const start = (resPage - 1) * resPageSize;
-    return rawQueryResults.slice(start, start + resPageSize);
-  }, [rawQueryResults, resPage]);
+    return dynamicQueryResults.slice(start, start + resPageSize);
+  }, [dynamicQueryResults, resPage]);
+
+  // Handler: Switch Validation Rule & Extract SQL
+  const handleSwitchValidation = (validationId: string) => {
+    setSelectedValidationId(validationId);
+    const targetVal = availableValidations.find(v => v.id === validationId);
+    if (targetVal) {
+      setSqlQuery(targetVal.sql);
+      setStagedNotification(`Extracted SQL for ${targetVal.name}`);
+      setTimeout(() => setStagedNotification(null), 3000);
+    }
+  };
+
+  // Handler: Extract SQL from Active Validation
+  const handleExtractValidationSql = () => {
+    if (activeValidationMeta) {
+      setSqlQuery(activeValidationMeta.sql);
+      setStagedNotification(`Extracted SQL for ${activeValidationMeta.name}`);
+      setTimeout(() => setStagedNotification(null), 3000);
+    }
+  };
+
+  // Handler: Stage Sample Data in the Sandbox SQL Query Interface
+  const handleStageSampleData = () => {
+    const sampleRowsList = (flaggedRows || []).slice(0, 12).map((r, i) => {
+      const numStr = (r.database || '100.00').replace(/,/g, '');
+      const reqStr = (r.uploaded || '120.00').replace(/,/g, '');
+      const ref = `82641529${7740 + i * 15}`;
+      return `  SELECT '${ref}' AS refnum, ${reqStr} AS reqamt, ${numStr} AS conamt, '${r.transaction}' AS txn_id, 'SETTLED' AS status`;
+    }).join(' UNION ALL\n');
+
+    const stagedSql = `-- =========================================================================
+-- STAGED SAMPLE DATA FOR CASE #${issueRef}
+-- Staged in Level 2 Sandbox Interface (${flaggedRows.length} Rows Available)
+-- =========================================================================
+WITH staged_sample_data AS (
+${sampleRowsList}
+)
+SELECT s.refnum, s.reqamt, s.conamt, (s.conamt - s.reqamt) AS diff,
+       CASE WHEN ABS(s.conamt - s.reqamt) <= 50.00 THEN 'PASS (WITHIN TOLERANCE)' ELSE 'FLAG (OUT OF TOLERANCE)' END AS verdict
+FROM staged_sample_data s
+ORDER BY ABS(s.conamt - s.reqamt) DESC;`;
+
+    setSqlQuery(stagedSql);
+    setStagedNotification(`✓ ${Math.min(12, flaggedRows.length)} sample records staged into SQL sandbox CTE`);
+    setTimeout(() => setStagedNotification(null), 3500);
+  };
+
+  // Handler: Run Sandbox Query
+  const handleRunQuery = () => {
+    setIsExecutingQuery(true);
+    setTimeout(() => {
+      setIsExecutingQuery(false);
+      setExecutionLatency(Math.floor(Math.random() * 8) + 16);
+      setResPage(1);
+      
+      // Calculate results dynamically according to query structure
+      if (sqlQuery.toLowerCase().includes('duplicate') || sqlQuery.toLowerCase().includes('group by')) {
+        setDynamicQueryResults([
+          { refnum: '826415297741', occurrences: 2, min_amt: '1,450.00', max_amt: '1,500.00', verdict: 'DUPLICATE_COLLISION' },
+          { refnum: '826415297790', occurrences: 1, min_amt: '800.00', max_amt: '820.00', verdict: 'UNIQUE' },
+          { refnum: '826415297802', occurrences: 1, min_amt: '2,000.00', max_amt: '2,010.50', verdict: 'UNIQUE' },
+          { refnum: '826415297815', occurrences: 2, min_amt: '600.00', max_amt: '640.00', verdict: 'DUPLICATE_COLLISION' }
+        ]);
+      } else if (sqlQuery.toLowerCase().includes('match_found') || sqlQuery.toLowerCase().includes('existence')) {
+        setDynamicQueryResults([
+          { refnum: '826415297741', reqamt: '1,500.00', conamt: '1,450.00', status: 'SETTLED', existence_status: 'MATCH_FOUND' },
+          { refnum: '826415297790', reqamt: '820.00', conamt: '800.00', status: 'SETTLED', existence_status: 'MATCH_FOUND' },
+          { refnum: '826415297802', reqamt: '2,010.50', conamt: '2,000.00', status: 'SETTLED', existence_status: 'MATCH_FOUND' },
+          { refnum: '826415297815', reqamt: '640.00', conamt: '600.00', status: 'SETTLED', existence_status: 'MATCH_FOUND' }
+        ]);
+      } else {
+        setDynamicQueryResults(initialQueryResults);
+      }
+      setStagedNotification('✓ Query executed successfully against sandbox copy');
+      setTimeout(() => setStagedNotification(null), 3000);
+    }, 450);
+  };
 
   // -------------------------------------------------------------------------
   // LEVEL 2 (Step 2): Solution Script, Dry-Run & Pagination
@@ -477,8 +660,67 @@ export function TechnicianInvestigationWorkspace({
                   </div>
                 </div>
 
+                {/* Validation Switcher & SQL Extraction Bar */}
+                <div className="bg-slate-50 border border-slate-200/90 rounded-xl p-3 flex flex-col md:flex-row md:items-center justify-between gap-2.5 shrink-0">
+                  <div className="flex items-center gap-2 flex-wrap min-w-0">
+                    <div className="flex items-center gap-1.5 text-xs font-bold text-slate-800 shrink-0">
+                      <GitBranch size={14} className="text-[#F27421]" />
+                      <span>Validation:</span>
+                    </div>
+
+                    <select
+                      value={selectedValidationId}
+                      onChange={(e) => handleSwitchValidation(e.target.value)}
+                      className="bg-white border border-slate-200 text-xs font-semibold text-slate-800 rounded-lg px-2.5 py-1.5 focus:outline-none focus:border-[#F27421] shadow-2xs max-w-[280px] truncate cursor-pointer"
+                    >
+                      <optgroup label="Standard Validation Rules">
+                        {availableValidations.filter(v => !v.id.startsWith('box-') && !v.id.startsWith('wf-')).map(v => (
+                          <option key={v.id} value={v.id}>{v.name}</option>
+                        ))}
+                      </optgroup>
+                      {availableValidations.filter(v => v.id.startsWith('box-')).length > 0 && (
+                        <optgroup label="Validation Boxes">
+                          {availableValidations.filter(v => v.id.startsWith('box-')).map(v => (
+                            <option key={v.id} value={v.id}>{v.name} ({v.type})</option>
+                          ))}
+                        </optgroup>
+                      )}
+                    </select>
+
+                    <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-indigo-50 text-indigo-700 border border-indigo-200 shrink-0">
+                      {activeValidationMeta.type}
+                    </span>
+
+                    <span className="text-[11px] text-slate-500 font-mono shrink-0">
+                      Table: <strong className="text-slate-800">{activeValidationMeta.table}</strong>
+                    </span>
+                  </div>
+
+                  <div className="flex items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={handleExtractValidationSql}
+                      className="px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 rounded-lg text-xs font-semibold flex items-center gap-1.5 shadow-2xs transition cursor-pointer"
+                      title="Extract validation rule definition directly into the SQL query interface"
+                    >
+                      <Code size={13} className="text-[#F27421]" />
+                      <span>Extract SQL</span>
+                    </button>
+                  </div>
+                </div>
+
+                {stagedNotification && (
+                  <div className="p-2.5 bg-emerald-50 border border-emerald-200 rounded-xl text-emerald-800 text-xs flex items-center justify-between gap-2 animate-in fade-in">
+                    <div className="flex items-center gap-2">
+                      <CheckCircle2 size={14} className="text-emerald-600 shrink-0" />
+                      <span className="font-medium">{stagedNotification}</span>
+                    </div>
+                    <button type="button" onClick={() => setStagedNotification(null)} className="text-emerald-600 hover:text-emerald-900 text-xs cursor-pointer">×</button>
+                  </div>
+                )}
+
                 {/* Sub-toolbar row */}
-                <div className="flex items-center justify-between pt-1">
+                <div className="flex items-center justify-between pt-0.5">
                   <div className="flex items-center space-x-2">
                     <span className="px-2 py-0.5 rounded-md text-xs font-medium bg-slate-100 text-slate-700">
                       Sett · MySQL
@@ -491,13 +733,37 @@ export function TechnicianInvestigationWorkspace({
                     </span>
                   </div>
 
-                  <button
-                    type="button"
-                    className="px-3.5 py-1.5 bg-[#0F172B] hover:bg-slate-800 text-white rounded-lg font-semibold text-xs transition cursor-pointer flex items-center space-x-1.5 shadow-2xs"
-                  >
-                    <Play size={12} className="fill-white" />
-                    <span>Run query</span>
-                  </button>
+                  <div className="flex items-center space-x-2">
+                    {/* Stage Sample Data in Query Interface */}
+                    <button
+                      type="button"
+                      onClick={handleStageSampleData}
+                      className="px-3 py-1.5 bg-amber-50 hover:bg-amber-100 text-amber-900 border border-amber-200 rounded-lg font-semibold text-xs transition cursor-pointer flex items-center space-x-1.5 shadow-2xs"
+                      title="Stage sample transaction dataset in the SQL query editor using a CTE sandbox table"
+                    >
+                      <Sparkles size={12} className="text-amber-600" />
+                      <span>Stage Sample Data</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={handleRunQuery}
+                      disabled={isExecutingQuery}
+                      className="px-3.5 py-1.5 bg-[#0F172B] hover:bg-slate-800 text-white rounded-lg font-semibold text-xs transition cursor-pointer flex items-center space-x-1.5 shadow-2xs disabled:opacity-50"
+                    >
+                      {isExecutingQuery ? (
+                        <>
+                          <RefreshCw size={12} className="animate-spin text-white" />
+                          <span>Running...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Play size={12} className="fill-white" />
+                          <span>Run query</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
                 </div>
 
                 {/* Dark Code Editor */}
@@ -523,35 +789,59 @@ export function TechnicianInvestigationWorkspace({
                   <div className="px-4 py-2 bg-slate-50/70 border-b border-slate-200/80 flex items-center justify-between shrink-0">
                     <span className="font-bold text-slate-900 text-xs">Results</span>
                     <span className="font-mono text-[11px] text-slate-400">
-                      {rawQueryResults.length} rows · 21 ms · sandbox
+                      {dynamicQueryResults.length} rows · {executionLatency} ms · sandbox
                     </span>
                   </div>
 
                   <table className="w-full text-left text-xs border-collapse font-mono">
                     <thead>
                       <tr className="border-b border-slate-100 text-slate-400 font-medium text-[11px]">
-                        <th className="py-2 px-4">refnum</th>
-                        <th className="py-2 px-4 text-right">reqamt</th>
-                        <th className="py-2 px-4 text-right">conamt</th>
-                        <th className="py-2 px-4 text-right">diff</th>
+                        {Object.keys(visibleQueryResults[0] || { refnum: '', reqamt: '', conamt: '', diff: '' }).map((colKey, cIdx) => (
+                          <th key={colKey} className={`py-2 px-4 ${cIdx > 0 && typeof visibleQueryResults[0]?.[colKey] === 'number' || (colKey.toLowerCase().includes('amt') || colKey === 'diff') ? 'text-right' : 'text-left'}`}>
+                            {colKey}
+                          </th>
+                        ))}
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100 text-[11px]">
-                      {visibleQueryResults.map((r, idx) => (
-                        <tr key={idx} className="hover:bg-slate-50/50">
-                          <td className="py-2 px-4 text-slate-800">{r.refnum}</td>
-                          <td className="py-2 px-4 text-right text-slate-900">{r.reqamt}</td>
-                          <td className="py-2 px-4 text-right text-slate-900">{r.conamt}</td>
-                          <td className="py-2 px-4 text-right text-rose-600 font-bold">{r.diff}</td>
-                        </tr>
-                      ))}
+                      {visibleQueryResults.map((r, idx) => {
+                        const keys = Object.keys(r);
+                        return (
+                          <tr key={idx} className="hover:bg-slate-50/50">
+                            {keys.map((k, kIdx) => {
+                              const val = r[k];
+                              const isVerdict = k.toLowerCase().includes('verdict') || k.toLowerCase().includes('status');
+                              const isDiff = k.toLowerCase() === 'diff';
+                              return (
+                                <td key={k} className={`py-2 px-4 ${kIdx > 0 && (typeof val === 'number' || k.toLowerCase().includes('amt') || isDiff) ? 'text-right' : 'text-left'}`}>
+                                  {isVerdict ? (
+                                    <span className={`px-2 py-0.5 rounded text-[10px] font-bold border ${
+                                      String(val).includes('PASS') || String(val).includes('MATCH') || String(val).includes('UNIQUE')
+                                        ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                        : 'bg-rose-50 text-rose-700 border-rose-200'
+                                    }`}>
+                                      {String(val)}
+                                    </span>
+                                  ) : isDiff ? (
+                                    <span className="text-rose-600 font-bold">{String(val)}</span>
+                                  ) : kIdx === 0 ? (
+                                    <span className="text-slate-800 font-bold">{String(val)}</span>
+                                  ) : (
+                                    <span className="text-slate-900">{String(val)}</span>
+                                  )}
+                                </td>
+                              );
+                            })}
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
 
                   {/* Clean Pagination Footer */}
                   <div className="px-4 py-2 bg-slate-50 border-t border-slate-100 flex items-center justify-between text-[11px] text-slate-500 mt-auto shrink-0">
                     <span>
-                      Showing {(resPage - 1) * resPageSize + 1}–{Math.min(resPage * resPageSize, rawQueryResults.length)} of {rawQueryResults.length}
+                      Showing {(resPage - 1) * resPageSize + 1}–{Math.min(resPage * resPageSize, dynamicQueryResults.length)} of {dynamicQueryResults.length}
                     </span>
                     <div className="flex items-center space-x-1">
                       <button

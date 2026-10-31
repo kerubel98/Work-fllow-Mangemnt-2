@@ -56,6 +56,13 @@ export const CaseDiscussionDrawer: React.FC<CaseDiscussionDrawerProps> = ({
   const [agreement, setAgreement] = useState<EscalationAgreement | null>(activeAgreement);
   const [isLoadingAgreement, setIsLoadingAgreement] = useState(false);
 
+  const isAlreadyEscalated = Boolean(
+    issue.status === 'ESCALATED' ||
+    issue.escalatedAt ||
+    issue.escalatedToTeamId ||
+    Boolean(agreement)
+  );
+
   useEffect(() => {
     if (activeAgreement) {
       setAgreement(activeAgreement);
@@ -149,6 +156,10 @@ export const CaseDiscussionDrawer: React.FC<CaseDiscussionDrawerProps> = ({
 
   const handleExecuteDirective = (directive: InChatDirectiveType, currentContext: string) => {
     if (directive === 'create-escalate') {
+      if (isAlreadyEscalated) {
+        alert('This case has already been escalated and cannot be escalated more than once.');
+        return;
+      }
       if (onOpenEscalateModal) {
         onOpenEscalateModal();
       } else {

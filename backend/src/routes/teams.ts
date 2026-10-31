@@ -498,6 +498,10 @@ teamsRouter.post('/tasks/:id/escalate', async (req: Request, res: Response) => {
       return res.status(404).json({ error: 'Task not found' });
     }
 
+    if (task.escalatedToTeamId || task.escalatedAt || task.status === 'ESCALATED') {
+      return res.status(400).json({ error: 'This task has already been escalated and cannot be escalated more than once.' });
+    }
+
     if (isPostgresConnected) {
       const matrixRes = await queryPg(
         `SELECT * FROM team_relationships 

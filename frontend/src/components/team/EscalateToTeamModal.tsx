@@ -41,6 +41,12 @@ export const EscalateToTeamModal: React.FC<EscalateToTeamModalProps> = ({
     status: 'OPEN'
   } as unknown as Issue;
 
+  const isAlreadyEscalated = Boolean(
+    currentCase.status === 'ESCALATED' ||
+    currentCase.escalatedAt ||
+    currentCase.escalatedToTeamId
+  );
+
   const [loadedTeams, setLoadedTeams] = useState<Team[]>(availableTeams);
 
   React.useEffect(() => {
@@ -105,6 +111,10 @@ export const EscalateToTeamModal: React.FC<EscalateToTeamModalProps> = ({
   };
 
   const handleSubmit = async () => {
+    if (isAlreadyEscalated) {
+      setError('This case has already been escalated and cannot be escalated more than once.');
+      return;
+    }
     if (!selectedTeamId) {
       setError('Please select a destination team.');
       return;
@@ -184,6 +194,13 @@ export const EscalateToTeamModal: React.FC<EscalateToTeamModalProps> = ({
           <div className="mx-6 mt-3 px-3 py-2 bg-rose-50 border border-rose-200 text-rose-700 rounded-xl text-xs flex items-center space-x-2">
             <AlertTriangle size={14} className="shrink-0" />
             <span>{error}</span>
+          </div>
+        )}
+
+        {isAlreadyEscalated && (
+          <div className="mx-6 mt-3 px-3.5 py-2.5 bg-amber-50 border border-amber-200 text-amber-800 rounded-xl text-xs flex items-center space-x-2 font-medium">
+            <AlertTriangle size={15} className="text-amber-600 shrink-0" />
+            <span>This case has already been escalated and cannot be escalated more than once.</span>
           </div>
         )}
 
@@ -477,11 +494,12 @@ export const EscalateToTeamModal: React.FC<EscalateToTeamModalProps> = ({
           <button
             type="button"
             onClick={handleSubmit}
-            disabled={isSubmitting}
+            disabled={isSubmitting || isAlreadyEscalated}
             className="px-5 py-2 bg-[#F27421] hover:bg-[#e06516] text-white rounded-xl text-xs font-bold transition-all shadow-xs disabled:opacity-50 cursor-pointer"
             id="btn-submit-escalate"
+            title={isAlreadyEscalated ? 'Case has already been escalated and cannot be escalated again' : 'Send to team lead for signature'}
           >
-            {isSubmitting ? 'Sending...' : 'Send to team lead for signature'}
+            {isAlreadyEscalated ? 'Already Escalated' : isSubmitting ? 'Sending...' : 'Send to team lead for signature'}
           </button>
         </div>
       </div>
