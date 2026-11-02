@@ -33,6 +33,7 @@ import { TeamChannelsTab } from './team/TeamChannelsTab';
 import { TeamStagedAssetsConsole } from './team/TeamStagedAssetsConsole';
 import { TeamMailboxTab } from './team/TeamMailboxTab';
 import { TeamHashtagReportsTab } from './team/TeamHashtagReportsTab';
+import { TeamOrgStructureTab } from './team/TeamOrgStructureTab';
 import { StageTaskModal } from './investigation/StageTaskModal';
 import { TechnicianInvestigationWorkspace } from './investigation/TechnicianInvestigationWorkspace';
 import { TaskPreFillFromMessage } from '../types';
@@ -1966,257 +1967,22 @@ export default function TeamWorkspace({
         </div>
       )}
 
-          {/* SUBTAB 4: ORG STRUCTURE & TEAM RELATIONSHIPS */}
+          {/* SUBTAB 4: ORG STRUCTURE & TEAM RELATIONSHIPS matching 58_org_structure.png */}
           {((activeTab === 'team_settings' ? teamSettingsSubTab : activeTab) === 'relationships') && (
-        <div className="space-y-4" id="team-relationships-panel">
-          {/* Header Card */}
-          <div className="bg-blue-50/70 border border-blue-200/80 rounded-2xl p-4 text-slate-800 font-mono text-xs shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-3">
-            <div className="flex items-center space-x-3">
-              <div className="p-2.5 bg-blue-100 text-blue-700 border border-blue-200 rounded-xl">
-                <Network size={20} />
-              </div>
-              <div className="space-y-0.5">
-                <div className="flex items-center space-x-2">
-                  <h3 className="text-sm font-bold text-slate-900 uppercase tracking-wider">
-                    {currentTeam?.name} — Org Structure & Inter-Team Relationships
-                  </h3>
-                  {(currentTeam?.teamType || 'working') === 'permanent' ? (
-                    <span className="text-[9px] bg-purple-100 text-purple-800 border border-purple-200 font-bold px-2 py-0.5 rounded-full font-mono flex items-center space-x-1">
-                      <ShieldCheck size={10} />
-                      <span>Permanent Unit</span>
-                    </span>
-                  ) : (
-                    <span className="text-[9px] bg-emerald-100 text-emerald-800 border border-emerald-200 font-bold px-2 py-0.5 rounded-full font-mono flex items-center space-x-1">
-                      <Briefcase size={10} />
-                      <span>Working Team</span>
-                    </span>
-                  )}
-                </div>
-                <p className="text-[11px] text-slate-600 font-sans">
-                  {(currentTeam?.teamType || 'working') === 'permanent'
-                    ? 'Permanent teams represent core organizational departments. Define hierarchical reporting, subordinate units, escalation targets, and operational data dependencies.'
-                    : 'Working teams represent project-based squads. Define which department you report into, lateral peers, upstream data sources, and settlement consumers.'}
-                </p>
-              </div>
-            </div>
-
-            <button
-              onClick={() => {
-                setTargetTeamIdForRel('');
-                setRelType('PARENT_UNIT');
-                setRelDescription('');
-                setRelError(null);
-                setShowDefineRelModal(true);
-              }}
-              className="px-3.5 py-1.5 bg-[#155DFC] hover:bg-[#155DFC]/90 text-white font-mono font-bold text-xs rounded-lg flex items-center space-x-1.5 transition-all shadow-xs cursor-pointer border border-[#155DFC]/30 shrink-0 self-start md:self-auto"
-              id="define-relationship-btn"
-            >
-              <Plus size={14} />
-              <span>Define Relationship</span>
-            </button>
-          </div>
-
-          {/* Quick Stats Banner */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 font-mono text-xs">
-            {/* Hierarchy Links */}
-            <div className="bg-white border border-slate-200/90 rounded-xl p-3 shadow-2xs space-y-1">
-              <div className="flex items-center justify-between text-slate-500 text-[10px] font-bold uppercase">
-                <span>Hierarchy Links</span>
-                <GitFork size={13} className="text-purple-600" />
-              </div>
-              <div className="text-lg font-bold text-slate-900">
-                {teamRelationships.filter(r => r.relationshipType === 'PARENT_UNIT' || r.relationshipType === 'SUB_UNIT').length}
-              </div>
-              <p className="text-[10px] text-slate-400">Parent & Sub-Units</p>
-            </div>
-
-            {/* Escalations & Audits */}
-            <div className="bg-white border border-slate-200/90 rounded-xl p-3 shadow-2xs space-y-1">
-              <div className="flex items-center justify-between text-slate-500 text-[10px] font-bold uppercase">
-                <span>Escalation / Audit</span>
-                <AlertCircle size={13} className="text-amber-600" />
-              </div>
-              <div className="text-lg font-bold text-slate-900">
-                {teamRelationships.filter(r => r.relationshipType === 'ESCALATION_TARGET' || r.relationshipType === 'AUDIT_COMPLIANCE_REVIEWER').length}
-              </div>
-              <p className="text-[10px] text-slate-400">Disputes & Oversight</p>
-            </div>
-
-            {/* Pipeline Dataflow */}
-            <div className="bg-white border border-slate-200/90 rounded-xl p-3 shadow-2xs space-y-1">
-              <div className="flex items-center justify-between text-slate-500 text-[10px] font-bold uppercase">
-                <span>Data Pipelines</span>
-                <Layers size={13} className="text-teal-600" />
-              </div>
-              <div className="text-lg font-bold text-slate-900">
-                {teamRelationships.filter(r => r.relationshipType === 'UPSTREAM_PROVIDER' || r.relationshipType === 'DOWNSTREAM_CONSUMER').length}
-              </div>
-              <p className="text-[10px] text-slate-400">Upstream / Downstream</p>
-            </div>
-
-            {/* Peer Collaborators */}
-            <div className="bg-white border border-slate-200/90 rounded-xl p-3 shadow-2xs space-y-1">
-              <div className="flex items-center justify-between text-slate-500 text-[10px] font-bold uppercase">
-                <span>Peer Units</span>
-                <Share2 size={13} className="text-blue-600" />
-              </div>
-              <div className="text-lg font-bold text-slate-900">
-                {teamRelationships.filter(r => r.relationshipType === 'PEER_COLLABORATOR').length}
-              </div>
-              <p className="text-[10px] text-slate-400">Lateral Collaborators</p>
-            </div>
-          </div>
-
-          {/* Relationship List */}
-          {isLoadingRelationships ? (
-            <div className="p-12 text-center text-slate-500 font-mono text-xs bg-white rounded-2xl border border-slate-200">
-              Loading team relationships...
-            </div>
-          ) : teamRelationships.length === 0 ? (
-            <div className="bg-white border border-slate-200 rounded-2xl p-10 text-center space-y-3 shadow-sm font-mono">
-              <div className="w-12 h-12 bg-blue-50 text-[#155DFC] rounded-full flex items-center justify-center mx-auto">
-                <Network size={22} />
-              </div>
-              <div className="space-y-1">
-                <h4 className="text-sm font-bold text-slate-800">No Inter-Team Relationships Defined Yet</h4>
-                <p className="text-xs text-slate-500 max-w-md mx-auto font-sans">
-                  Define your team's parent department, subordinate units, escalation targets, or pipeline dataflow links to integrate into the organizational structure.
-                </p>
-              </div>
-              <button
-                onClick={() => {
+            <div className="bg-white border border-slate-200/80 rounded-3xl overflow-hidden shadow-xs flex-1 min-h-0 flex flex-col">
+              <TeamOrgStructureTab
+                currentTeam={currentTeam}
+                currentUser={currentUser}
+                onDefineRelationship={() => {
                   setTargetTeamIdForRel('');
                   setRelType('PARENT_UNIT');
                   setRelDescription('');
                   setRelError(null);
                   setShowDefineRelModal(true);
                 }}
-                className="px-4 py-2 bg-[#155DFC] hover:bg-[#155DFC]/90 text-white font-bold text-xs rounded-xl inline-flex items-center space-x-2 transition-all cursor-pointer shadow-xs"
-              >
-                <Plus size={14} />
-                <span>Define First Relationship</span>
-              </button>
-            </div>
-          ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
-              {teamRelationships.map(rel => {
-                const isSource = rel.sourceTeamId === currentTeamId;
-                const otherTeamId = isSource ? rel.targetTeamId : rel.sourceTeamId;
-                const otherTeamName = isSource ? (rel.targetTeamName || 'Unknown Team') : (rel.sourceTeamName || 'Unknown Team');
-                const otherTeamType = isSource ? rel.targetTeamType : rel.sourceTeamType;
-                const otherTeam = teams.find(t => t.id === otherTeamId);
-
-                // Badge styling & icon per relationship type
-                let typeBadgeBg = 'bg-blue-100 text-blue-800 border-blue-200';
-                let typeLabel = 'Peer Collaborator';
-                let typeIcon = <Share2 size={13} className="text-blue-600" />;
-
-                if (rel.relationshipType === 'PARENT_UNIT') {
-                  typeBadgeBg = 'bg-purple-100 text-purple-900 border-purple-300';
-                  typeLabel = isSource ? 'Parent Department / Unit' : 'Subordinate Child Unit';
-                  typeIcon = <ShieldCheck size={13} className="text-purple-600" />;
-                } else if (rel.relationshipType === 'SUB_UNIT') {
-                  typeBadgeBg = 'bg-indigo-100 text-indigo-900 border-indigo-300';
-                  typeLabel = isSource ? 'Subordinate Sub-Unit' : 'Parent Department';
-                  typeIcon = <GitFork size={13} className="text-indigo-600" />;
-                } else if (rel.relationshipType === 'ESCALATION_TARGET') {
-                  typeBadgeBg = 'bg-amber-100 text-amber-900 border-amber-300';
-                  typeLabel = isSource ? 'Escalation Target' : 'Escalation Source';
-                  typeIcon = <AlertCircle size={13} className="text-amber-600" />;
-                } else if (rel.relationshipType === 'AUDIT_COMPLIANCE_REVIEWER') {
-                  typeBadgeBg = 'bg-violet-100 text-violet-900 border-violet-300';
-                  typeLabel = isSource ? 'Audit & Compliance Reviewer' : 'Audited Unit';
-                  typeIcon = <ShieldCheck size={13} className="text-violet-600" />;
-                } else if (rel.relationshipType === 'UPSTREAM_PROVIDER') {
-                  typeBadgeBg = 'bg-cyan-100 text-cyan-900 border-cyan-300';
-                  typeLabel = isSource ? 'Upstream Batch Provider' : 'Downstream Consumer';
-                  typeIcon = <ArrowUpRight size={13} className="text-cyan-600" />;
-                } else if (rel.relationshipType === 'DOWNSTREAM_CONSUMER') {
-                  typeBadgeBg = 'bg-teal-100 text-teal-900 border-teal-300';
-                  typeLabel = isSource ? 'Downstream Settlement Consumer' : 'Upstream Provider';
-                  typeIcon = <ArrowDownLeft size={13} className="text-teal-600" />;
-                }
-
-                return (
-                  <div
-                    key={rel.id}
-                    className="bg-white border border-slate-200/90 hover:border-blue-300 rounded-2xl p-4 shadow-2xs hover:shadow-xs transition-all space-y-3 flex flex-col justify-between"
-                  >
-                    <div className="space-y-2.5">
-                      {/* Top Row: Type Badge & Direction */}
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="flex items-center space-x-1.5 flex-wrap gap-y-1">
-                          <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full border font-mono flex items-center space-x-1 ${typeBadgeBg}`}>
-                            {typeIcon}
-                            <span>{typeLabel}</span>
-                          </span>
-                          <span className="text-[9px] font-mono text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded">
-                            {isSource ? 'Outgoing Link' : 'Incoming Link'}
-                          </span>
-                        </div>
-
-                        {/* Delete Button */}
-                        <button
-                          onClick={() => handleDeleteRelationship(rel.id)}
-                          className="text-slate-400 hover:text-rose-600 p-1 rounded-md hover:bg-rose-50 transition-colors cursor-pointer"
-                          title="Remove relationship"
-                        >
-                          <Trash2 size={14} />
-                        </button>
-                      </div>
-
-                      {/* Connected Team Info */}
-                      <div className="flex items-center justify-between gap-2">
-                        <div>
-                          <button
-                            onClick={() => setSelectedTeamId(otherTeamId)}
-                            className="font-bold text-sm text-slate-900 hover:text-[#155DFC] font-mono transition-colors flex items-center space-x-1 text-left"
-                          >
-                            <span>{otherTeamName}</span>
-                            <ChevronRight size={14} className="text-slate-400" />
-                          </button>
-                          <span className="text-[10px] text-slate-500 font-mono block">
-                            {otherTeam ? `Lead: @${otherTeam.managerName} • ${otherTeam.memberIds?.length || 0} members` : 'Connected Team'}
-                          </span>
-                        </div>
-
-                        {(otherTeamType || otherTeam?.teamType || 'working') === 'permanent' ? (
-                          <span className="text-[9px] bg-purple-100 text-purple-800 border border-purple-200 font-bold px-2 py-0.5 rounded-full font-mono flex items-center space-x-1 shrink-0">
-                            <ShieldCheck size={10} />
-                            <span>Permanent Unit</span>
-                          </span>
-                        ) : (
-                          <span className="text-[9px] bg-emerald-100 text-emerald-800 border border-emerald-200 font-bold px-2 py-0.5 rounded-full font-mono flex items-center space-x-1 shrink-0">
-                            <Briefcase size={10} />
-                            <span>Working Team</span>
-                          </span>
-                        )}
-                      </div>
-
-                      {/* Description */}
-                      {rel.description ? (
-                        <p className="text-xs text-slate-600 font-sans leading-relaxed bg-slate-50 p-2.5 rounded-lg border border-slate-100">
-                          {rel.description}
-                        </p>
-                      ) : (
-                        <p className="text-[11px] text-slate-400 italic font-sans">
-                          No specific SLA or context notes provided.
-                        </p>
-                      )}
-                    </div>
-
-                    {/* Footer / Meta */}
-                    <div className="pt-2 border-t border-slate-100 flex items-center justify-between text-[10px] font-mono text-slate-400">
-                      <span>By @{rel.createdBy || 'system'}</span>
-                      <span>{new Date(rel.createdAt).toLocaleDateString()}</span>
-                    </div>
-                  </div>
-                );
-              })}
+              />
             </div>
           )}
-        </div>
-      )}
 
           {/* SUBTAB 5: ACCESS & PERMISSIONS (Matching 20_team_settings.png) */}
           {((activeTab === 'team_settings' ? teamSettingsSubTab : activeTab) === 'db-access') && (

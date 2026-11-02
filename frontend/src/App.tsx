@@ -48,6 +48,7 @@ const QuerySandboxStandaloneView = lazyWithRetry(() => import('./components/sand
 const OperationalAuthorityCenter = lazyWithRetry(() => import('./components/authority/OperationalAuthorityCenter'));
 const NotificationCenterView = lazyWithRetry(() => import('./components/notifications/NotificationCenterView'));
 const NotificationPreferencesView = lazyWithRetry(() => import('./components/notifications/NotificationPreferencesView'));
+const DataSetupLandingView = lazyWithRetry(() => import('./components/datasetup/DataSetupLandingView'));
 import TopBar from './components/TopBar';
 import NotificationToastsAndBanner from './components/notifications/NotificationToastsAndBanner';
 import NotificationViewerDrawer from './components/common/NotificationViewerDrawer';
@@ -1357,7 +1358,23 @@ export default function App() {
                   </ErrorBoundary>
                 )}
 
-                {(activeNavigation === 'system_settings' || activeNavigation === 'data_setup' || activeNavigation === 'txn_settings') && isAuthorizedTab(activeNavigation) && (
+                {activeNavigation === 'data_setup' && isAuthorizedTab('data_setup') && (
+                  <ErrorBoundary fallbackTitle="Data Setup Error" fallbackMessage="Could not display Data Setup. You can retry or return to workspace.">
+                    <DataSetupLandingView
+                      currentUser={effectiveUser || currentUser!}
+                      onOpenMappingDictionary={() => {
+                        setSystemSettingsTab('dictionary');
+                        setActiveNavigation('system_settings');
+                      }}
+                      onOpenValueDictionaries={() => {
+                        setSystemSettingsTab('dictionary');
+                        setActiveNavigation('system_settings');
+                      }}
+                    />
+                  </ErrorBoundary>
+                )}
+
+                {(activeNavigation === 'system_settings' || activeNavigation === 'txn_settings') && isAuthorizedTab(activeNavigation) && (
                   <ErrorBoundary fallbackTitle="Data Setup Error" fallbackMessage="Could not display Data Setup. You can retry or return to workspace.">
                     <div className="flex-1 min-h-0 overflow-y-auto p-6" id="data-setup-scroll-container">
                       <SystemSettings

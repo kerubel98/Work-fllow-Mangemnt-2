@@ -3,8 +3,9 @@ import { User, UserRole, Team, DatabaseConnection } from '../../types';
 import { api } from '../../api/client';
 import { 
   Users, UserPlus, Search, MoreHorizontal, Check, X, Shield, 
-  Trash2, AlertCircle, CheckCircle2, UserCheck, ChevronDown, Plus, Layers
+  Trash2, AlertCircle, CheckCircle2, UserCheck, ChevronDown, Plus, Layers, ShieldCheck
 } from 'lucide-react';
+import { RolePermissionsMatrixView } from './RolePermissionsMatrixView';
 
 interface PeopleAccessViewProps {
   currentUser: User;
@@ -39,7 +40,7 @@ export default function PeopleAccessView({
   onUpdateTeam,
   onDeleteTeam
 }: PeopleAccessViewProps) {
-  const [activeTab, setActiveTab] = useState<'users' | 'teams'>('users');
+  const [activeTab, setActiveTab] = useState<'users' | 'teams' | 'roles'>('users');
   const [searchTerm, setSearchTerm] = useState('');
   const [filterRole, setFilterRole] = useState<string>('ALL');
   const [activeMenuUserId, setActiveMenuUserId] = useState<string | null>(null);
@@ -197,6 +198,21 @@ export default function PeopleAccessView({
             activeTab === 'teams' ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-600'
           }`}>
             {teams.length || 2}
+          </span>
+        </button>
+
+        <button
+          type="button"
+          onClick={() => setActiveTab('roles')}
+          className={`pb-2.5 font-medium transition flex items-center gap-2 cursor-pointer border-b-2 ${
+            activeTab === 'roles'
+              ? 'border-slate-900 text-slate-900 font-bold'
+              : 'border-transparent text-slate-500 hover:text-slate-800'
+          }`}
+        >
+          <span>Roles & permissions</span>
+          <span className="px-2 py-0.5 text-[11px] font-mono font-bold rounded-full bg-slate-100 text-slate-600">
+            4
           </span>
         </button>
       </div>
@@ -475,6 +491,13 @@ export default function PeopleAccessView({
               </div>
             ))}
           </div>
+        </div>
+      )}
+
+      {/* ROLES & PERMISSIONS TAB CONTENT matching 60_roles_and_navigation.png */}
+      {activeTab === 'roles' && (
+        <div className="bg-white border border-slate-200/80 rounded-2xl overflow-hidden shadow-xs">
+          <RolePermissionsMatrixView />
         </div>
       )}
 

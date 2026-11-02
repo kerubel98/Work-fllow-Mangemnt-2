@@ -277,34 +277,25 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({
         className="w-full max-w-3xl bg-white border border-slate-200 rounded-2xl shadow-[0_20px_50px_rgba(15,23,42,0.18)] overflow-hidden flex flex-col max-h-[92vh] text-slate-800"
         onClick={e => e.stopPropagation()}
       >
-        {/* Modal Header */}
-        <div className="p-4 sm:p-5 border-b border-slate-200 bg-slate-50/90 flex items-center justify-between shrink-0">
-          <div className="flex items-center space-x-3">
-            <div className="w-10 h-10 rounded-xl bg-blue-50 border border-blue-200 flex items-center justify-center text-blue-600 font-bold shadow-xs">
-              <User size={20} />
+        {/* Modal Header matching 57_profile_modal.png */}
+        <div className="p-4 sm:p-5 border-b border-slate-200/80 bg-white flex items-center justify-between shrink-0">
+          <div className="flex items-center space-x-3.5">
+            <div className="w-10 h-10 rounded-2xl bg-orange-50 border border-orange-100 flex items-center justify-center text-orange-600 font-bold shadow-xs">
+              <span className="font-mono text-sm">{getInitials()}</span>
             </div>
             <div>
               <div className="flex items-center space-x-2">
-                <h2 className="text-base font-bold text-slate-900 tracking-tight">User Account & Profile Settings</h2>
-                <span className={`px-2 py-0.5 text-[10px] font-mono font-bold rounded-full border ${
-                  currentUser.role === 'admin'
-                    ? 'bg-rose-50 text-rose-700 border-rose-200'
-                    : currentUser.role === 'technical'
-                    ? 'bg-indigo-50 text-indigo-700 border-indigo-200'
-                    : 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                }`}>
-                  {currentUser.role.toUpperCase()}
-                </span>
+                <h2 className="text-lg font-bold text-slate-900 tracking-tight">Your profile</h2>
               </div>
               <p className="text-xs text-slate-500 mt-0.5">
-                Manage personal profile, avatar picture, and message provider settings
+                Personal details, mailbox and display preferences
               </p>
             </div>
           </div>
 
           <button
             onClick={onClose}
-            className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-200 rounded-lg transition-colors cursor-pointer"
+            className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded-lg transition-colors cursor-pointer"
             title="Close"
           >
             <X size={18} />
@@ -312,44 +303,41 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({
         </div>
 
         {/* Modal Navigation Tabs */}
-        <div className="flex border-b border-slate-200 bg-slate-100/70 px-4 shrink-0 overflow-x-auto no-scrollbar gap-1 pt-2">
+        <div className="flex border-b border-slate-200 bg-white px-6 shrink-0 overflow-x-auto no-scrollbar gap-6 pt-2">
           <button
             onClick={() => setActiveTab('profile')}
-            className={`px-3.5 py-2 text-xs font-semibold rounded-t-lg transition-all flex items-center space-x-2 cursor-pointer border-b-2 ${
+            className={`pb-3 text-xs font-semibold transition-all flex items-center space-x-2 cursor-pointer border-b-2 ${
               activeTab === 'profile'
-                ? 'text-blue-600 border-blue-600 bg-white shadow-2xs font-bold'
-                : 'text-slate-600 border-transparent hover:text-slate-900 hover:bg-slate-200/50'
+                ? 'text-orange-600 border-orange-500 font-bold'
+                : 'text-slate-600 border-transparent hover:text-slate-900'
             }`}
           >
-            <User size={14} />
-            <span>Profile & Identity</span>
+            <span>Profile & identity</span>
           </button>
 
           <button
             onClick={() => setActiveTab('messaging')}
-            className={`px-3.5 py-2 text-xs font-semibold rounded-t-lg transition-all flex items-center space-x-2 cursor-pointer border-b-2 ${
+            className={`pb-3 text-xs font-semibold transition-all flex items-center space-x-2 cursor-pointer border-b-2 ${
               activeTab === 'messaging'
-                ? 'text-blue-600 border-blue-600 bg-white shadow-2xs font-bold'
-                : 'text-slate-600 border-transparent hover:text-slate-900 hover:bg-slate-200/50'
+                ? 'text-orange-600 border-orange-500 font-bold'
+                : 'text-slate-600 border-transparent hover:text-slate-900'
             }`}
           >
-            <Mail size={14} />
-            <span>Personal Mailbox (OAuth 2.0)</span>
-            {providerSettings.status === 'ACTIVE' && (
-              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-            )}
+            <span>Personal mailbox</span>
+            <span className="px-1.5 py-0.5 text-[10px] font-medium bg-emerald-50 text-emerald-700 border border-emerald-200/60 rounded-full">
+              Connected
+            </span>
           </button>
 
           <button
             onClick={() => setActiveTab('preferences')}
-            className={`px-3.5 py-2 text-xs font-semibold rounded-t-lg transition-all flex items-center space-x-2 cursor-pointer border-b-2 ${
+            className={`pb-3 text-xs font-semibold transition-all flex items-center space-x-2 cursor-pointer border-b-2 ${
               activeTab === 'preferences'
-                ? 'text-blue-600 border-blue-600 bg-white shadow-2xs font-bold'
-                : 'text-slate-600 border-transparent hover:text-slate-900 hover:bg-slate-200/50'
+                ? 'text-orange-600 border-orange-500 font-bold'
+                : 'text-slate-600 border-transparent hover:text-slate-900'
             }`}
           >
-            <Sliders size={14} />
-            <span>Preferences & UI</span>
+            <span>Display</span>
           </button>
         </div>
 
@@ -992,10 +980,10 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({
 
         </div>
 
-        {/* Modal Footer Actions */}
+        {/* Modal Footer Actions matching 57_profile_modal.png */}
         <div className="p-4 sm:p-5 border-t border-slate-200 bg-slate-50/90 flex items-center justify-between shrink-0">
-          <div className="text-[11px] font-mono text-slate-500">
-            PostgreSQL Persisted (User: <span className="text-blue-600 font-bold">{currentUser.username}</span>)
+          <div className="text-[11px] text-slate-400">
+            Saved to your account ({currentUser.username || 'admin'})
           </div>
 
           <div className="flex items-center space-x-2.5">
@@ -1015,7 +1003,7 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({
               type="button"
               onClick={onClose}
               disabled={isSaving}
-              className="px-4 py-2 bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 rounded-xl text-xs font-semibold transition-colors cursor-pointer disabled:opacity-50 shadow-2xs"
+              className="px-4 py-2 bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 rounded-xl text-xs font-semibold transition-colors cursor-pointer disabled:opacity-50"
             >
               Cancel
             </button>
@@ -1024,18 +1012,15 @@ export const UserProfileModal: React.FC<UserProfileModalProps> = ({
               type="button"
               onClick={handleSave}
               disabled={isSaving}
-              className="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-xs font-bold shadow-md shadow-blue-500/20 flex items-center space-x-1.5 transition-all cursor-pointer disabled:opacity-50"
+              className="px-5 py-2 bg-[#F97316] hover:bg-orange-600 text-white rounded-xl text-xs font-bold shadow-xs flex items-center space-x-1.5 transition-all cursor-pointer disabled:opacity-50"
             >
               {isSaving ? (
                 <>
                   <RefreshCw size={14} className="animate-spin" />
-                  <span>Saving to DB...</span>
+                  <span>Saving...</span>
                 </>
               ) : (
-                <>
-                  <Save size={14} />
-                  <span>Save Changes</span>
-                </>
+                <span>Save changes</span>
               )}
             </button>
           </div>
