@@ -103,7 +103,6 @@ export default function TopBar({
       case 'connections':
       case 'db_explorer':
       case 'admin_team_resources':
-        return { section: 'Admin', page: 'Connections' };
       case 'data_setup':
       case 'txn_settings':
         return { section: 'Admin', page: 'Data setup' };

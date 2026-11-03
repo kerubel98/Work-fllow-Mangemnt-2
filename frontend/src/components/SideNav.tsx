@@ -360,18 +360,9 @@ export default function SideNav({
               undefined,
               'user_admin'
             )}
-          {checkAuthorized('admin_panel') &&
-            navButton(
-              ['connections', 'db_explorer', 'admin_team_resources'],
-              'connections',
-              'Connections',
-              <Database size={15} />,
-              undefined,
-              'connection_settings'
-            )}
           {checkAuthorized('system_settings') &&
             navButton(
-              ['data_setup', 'txn_settings'],
+              ['data_setup', 'txn_settings', 'connections', 'db_explorer', 'admin_team_resources'],
               'data_setup',
               'Data setup',
               <Sliders size={15} />

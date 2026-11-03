@@ -42,7 +42,6 @@ const ValidationBoxManager = lazyWithRetry(() => import('./components/settings/V
 const AutomationsView = lazyWithRetry(() => import('./components/automations/AutomationsView'));
 const IntakeView = lazyWithRetry(() => import('./components/intake/IntakeView').then(m => ({ default: m.IntakeView })));
 const PeopleAccessView = lazyWithRetry(() => import('./components/admin/PeopleAccessView'));
-const ConnectionsView = lazyWithRetry(() => import('./components/admin/ConnectionsView'));
 const ApprovalsInboxView = lazyWithRetry(() => import('./components/admin/ApprovalsInboxView'));
 const QuerySandboxStandaloneView = lazyWithRetry(() => import('./components/sandbox/QuerySandboxStandaloneView'));
 const OperationalAuthorityCenter = lazyWithRetry(() => import('./components/authority/OperationalAuthorityCenter'));
@@ -1477,15 +1476,17 @@ export default function App() {
                 )}
 
                 {activeNavigation === 'connections' && (
-                  <ErrorBoundary fallbackTitle="Connections Error">
-                    <ConnectionsView
+                  <ErrorBoundary fallbackTitle="Data Setup Error">
+                    <DataSetupLandingView
                       currentUser={effectiveUser || currentUser!}
-                      databases={databases}
-                      teams={teams}
-                      onAddDatabase={handleAddDatabase}
-                      onUpdateDb={handleUpdateDatabase}
-                      onDeleteDb={handleDeleteDb}
-                      onToggleDbStatus={handleToggleDbStatus}
+                      onOpenMappingDictionary={() => {
+                        setSystemSettingsTab('dictionary');
+                        setActiveNavigation('system_settings');
+                      }}
+                      onOpenValueDictionaries={() => {
+                        setSystemSettingsTab('dictionary');
+                        setActiveNavigation('system_settings');
+                      }}
                     />
                   </ErrorBoundary>
                 )}
