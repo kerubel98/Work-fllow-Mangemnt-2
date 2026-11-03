@@ -3,17 +3,17 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
-  Database, Folder, Plus, AlertTriangle, ArrowRight, CheckCircle2,
-  ExternalLink, Layers, Search, RefreshCw, ChevronRight, Settings,
-  BookOpen, Filter, ArrowUpRight
+  Database, Folder, Plus, AlertTriangle, RefreshCw
 } from 'lucide-react';
-import { DatabaseConnection, User } from '../../types';
+import { User } from '../../types';
 import { api } from '../../api/client';
 import { globalMappingService } from '../../services/globalMappingService';
 import { DataSetupWizardModal } from './wizard/DataSetupWizardModal';
-import ValueDictionaryWorkbench from '../settings/ValueDictionaryWorkbench';
+import { ResourceDetailView } from './ResourceDetailView';
+import { MappingDictionaryView } from './MappingDictionaryView';
+import { ValueDictionariesView } from './ValueDictionariesView';
 
 export interface DataSetupLandingViewProps {
   currentUser?: User;
@@ -31,9 +31,8 @@ export function DataSetupLandingView({
   const [wizardTargetResource, setWizardTargetResource] = useState<any | null>(null);
   const [wizardInitialStep, setWizardInitialStep] = useState<1 | 2 | 3 | 4 | 5>(1);
 
-  // Search & Filter for Mapping Dictionary Tab
-  const [mappingSearch, setMappingSearch] = useState('');
-  const [mappingCategory, setMappingCategory] = useState('ALL');
+  // Active Resource for Resource Detail View (Screens 69 & 70)
+  const [selectedResourceDetail, setSelectedResourceDetail] = useState<any | null>(null);
 
   // Initial resources matching 61_resources_list.png
   const [resources, setResources] = useState<any[]>([
@@ -115,10 +114,10 @@ export function DataSetupLandingView({
         setResources(prev => {
           const list = [...prev];
           loadedDbs.forEach(db => {
-            if (!list.some(r => r.id === db.id || r.name.toLowerCase() === db.name.toLowerCase())) {
+            if (!list.some(r => r.id === db.id || r.name?.toLowerCase() === db.name?.toLowerCase())) {
               list.push({
                 id: db.id,
-                name: db.name,
+                name: db.name || db.database,
                 type: db.type?.toUpperCase() || 'POSTGRESQL',
                 host: `${db.host || '127.0.0.1'}:${db.port || 5432}`,
                 contents: `${(db.availableTables || db.allowedTables || []).length} tables`,
@@ -138,25 +137,6 @@ export function DataSetupLandingView({
     return () => { isMounted = false; };
   }, []);
 
-  // Standard fields from Global Schema
-  const allStandardFields = useMemo(() => globalMappingService.getStandardFields(), []);
-
-  const categories = useMemo(() => {
-    const set = new Set(allStandardFields.map(f => f.category || 'Unclassified'));
-    return ['ALL', ...Array.from(set)];
-  }, [allStandardFields]);
-
-  const filteredFields = useMemo(() => {
-    return allStandardFields.filter(f => {
-      const matchesSearch = mappingSearch.trim() === '' ||
-        f.key.toLowerCase().includes(mappingSearch.toLowerCase()) ||
-        f.label.toLowerCase().includes(mappingSearch.toLowerCase()) ||
-        (f.description && f.description.toLowerCase().includes(mappingSearch.toLowerCase()));
-      const matchesCategory = mappingCategory === 'ALL' || f.category === mappingCategory;
-      return matchesSearch && matchesCategory;
-    });
-  }, [allStandardFields, mappingSearch, mappingCategory]);
-
   const handleOpenAddResource = () => {
     setWizardTargetResource(null);
     setWizardInitialStep(1);
@@ -170,44 +150,68 @@ export function DataSetupLandingView({
   };
 
   const handleOpenResource = (res: any) => {
-    setWizardTargetResource(res);
-    setWizardInitialStep(5);
-    setIsWizardOpen(true);
+    setSelectedResourceDetail(res);
   };
 
   const hasIncompleteCoreLedger = resources.some(r => r.name === 'Core Ledger' && r.status !== 'READY');
 
+  // If viewing a specific resource's detail page (Screen 69 or 70)
+  if (selectedResourceDetail) {
+    return (
+      <ResourceDetailView
+        resource={selectedResourceDetail}
+        onBack={() => setSelectedResourceDetail(null)}
+        onEditSetup={(step) => {
+          setWizardTargetResource(selectedResourceDetail);
+          setWizardInitialStep(step || 1);
+          setIsWizardOpen(true);
+        }}
+        onEditTableMapping={(tableName) => {
+          setWizardTargetResource(selectedResourceDetail);
+          setWizardInitialStep(3);
+          setIsWizardOpen(true);
+        }}
+        currentUser={currentUser}
+      />
+    );
+  }
+
   return (
     <div className="flex-1 flex flex-col h-full bg-slate-50 overflow-y-auto text-slate-800 text-xs p-8" style={{ zoom: 0.9 }}>
-      {/* Top Header matching 61_resources_list.png */}
+      {/* Top Header matching 61, 71 & 72 */}
       <div className="flex items-center justify-between">
         <div>
           <div className="text-[11px] font-semibold text-slate-400">Admin / Data setup</div>
           <h1 className="text-2xl font-bold text-slate-900 tracking-tight mt-1">Data setup</h1>
           <p className="text-xs text-slate-500 mt-1">
-            Connect an outside system, choose what to read, and map it. All in one guided flow.
+            {activeTab === 'resources'
+              ? 'Connect an outside system, choose what to read, and map it. All in one guided flow.'
+              : 'Resources, the field dictionary, and value translations.'}
           </p>
         </div>
 
-        <button
-          type="button"
-          onClick={handleOpenAddResource}
-          className="px-4 py-2.5 bg-[#F97316] hover:bg-orange-600 text-white rounded-xl font-semibold text-xs shadow-xs transition cursor-pointer flex items-center space-x-1.5"
-        >
-          <Plus size={15} />
-          <span>Add resource</span>
-        </button>
+        {activeTab === 'resources' && (
+          <button
+            type="button"
+            onClick={handleOpenAddResource}
+            className="px-4 py-2.5 bg-[#F97316] hover:bg-orange-600 text-white rounded-xl font-semibold text-xs shadow-xs transition cursor-pointer flex items-center space-x-1.5"
+          >
+            <Plus size={15} />
+            <span>Add resource</span>
+          </button>
+        )}
       </div>
 
-      {/* Tabs matching 61_resources_list.png */}
+      {/* 3 Tabs matching 73_data_setup_structure.png */}
       <div className="flex border-b border-slate-200 mt-6 gap-6 text-xs font-semibold shrink-0">
         <button
           type="button"
           onClick={() => setActiveTab('resources')}
-          className={`pb-3 border-b-2 transition cursor-pointer ${activeTab === 'resources'
+          className={`pb-3 border-b-2 transition cursor-pointer ${
+            activeTab === 'resources'
               ? 'border-orange-500 text-orange-600 font-bold'
               : 'border-transparent text-slate-500 hover:text-slate-800'
-            }`}
+          }`}
         >
           Resources <span className="ml-1 px-1.5 py-0.2 bg-slate-100 rounded text-slate-600">{resources.length}</span>
         </button>
@@ -215,21 +219,23 @@ export function DataSetupLandingView({
         <button
           type="button"
           onClick={() => setActiveTab('mapping')}
-          className={`pb-3 border-b-2 transition cursor-pointer ${activeTab === 'mapping'
+          className={`pb-3 border-b-2 transition cursor-pointer ${
+            activeTab === 'mapping'
               ? 'border-orange-500 text-orange-600 font-bold'
               : 'border-transparent text-slate-500 hover:text-slate-800'
-            }`}
+          }`}
         >
-          Mapping dictionary <span className="ml-1 px-1.5 py-0.2 bg-slate-100 rounded text-slate-600">{allStandardFields.length}</span>
+          Mapping dictionary <span className="ml-1 px-1.5 py-0.2 bg-slate-100 rounded text-slate-600">499</span>
         </button>
 
         <button
           type="button"
           onClick={() => setActiveTab('values')}
-          className={`pb-3 border-b-2 transition cursor-pointer ${activeTab === 'values'
+          className={`pb-3 border-b-2 transition cursor-pointer ${
+            activeTab === 'values'
               ? 'border-orange-500 text-orange-600 font-bold'
               : 'border-transparent text-slate-500 hover:text-slate-800'
-            }`}
+          }`}
         >
           Value dictionaries <span className="ml-1 px-1.5 py-0.2 bg-slate-100 rounded text-slate-600">6</span>
         </button>
@@ -359,7 +365,7 @@ export function DataSetupLandingView({
                         <button
                           type="button"
                           onClick={() => handleOpenResource(res)}
-                          className="px-3 py-1.5 bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 rounded-xl font-medium text-xs transition cursor-pointer"
+                          className="px-3.5 py-1.5 bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 rounded-xl font-medium text-xs transition cursor-pointer shadow-2xs"
                         >
                           Open
                         </button>
@@ -397,87 +403,17 @@ export function DataSetupLandingView({
         </div>
       )}
 
-      {/* TAB 2: MAPPING DICTIONARY BROWSER */}
+      {/* TAB 2: MAPPING DICTIONARY (Screen 71) */}
       {activeTab === 'mapping' && (
-        <div className="mt-5 space-y-4">
-          {/* Controls Bar */}
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white p-4 rounded-2xl border border-slate-200/80 shadow-xs">
-            <div className="flex items-center space-x-3 flex-1">
-              <div className="relative flex-1 max-w-sm">
-                <Search size={14} className="absolute left-3 top-2.5 text-slate-400" />
-                <input
-                  type="text"
-                  placeholder="Search standard mapping fields..."
-                  value={mappingSearch}
-                  onChange={(e) => setMappingSearch(e.target.value)}
-                  className="pl-8 pr-3 py-1.5 border border-slate-200 rounded-xl text-xs w-full focus:outline-none"
-                />
-              </div>
-
-              <select
-                value={mappingCategory}
-                onChange={(e) => setMappingCategory(e.target.value)}
-                className="px-3 py-1.5 border border-slate-200 rounded-xl text-xs bg-white text-slate-700 focus:outline-none cursor-pointer"
-              >
-                {categories.map(c => (
-                  <option key={c} value={c}>{c === 'ALL' ? 'All categories' : c}</option>
-                ))}
-              </select>
-            </div>
-
-            <div className="text-slate-500 text-xs font-mono">
-              Showing {filteredFields.length} of {allStandardFields.length} standard fields
-            </div>
-          </div>
-
-          {/* Mapping Dictionary Table */}
-          <div className="bg-white border border-slate-200/80 rounded-2xl overflow-hidden shadow-xs">
-            <table className="w-full text-left text-xs border-collapse">
-              <thead>
-                <tr className="border-b border-slate-100 text-slate-400 font-medium text-[11px] bg-slate-50/50">
-                  <th className="py-3 px-5">Standard Key</th>
-                  <th className="py-3 px-5">Display Label</th>
-                  <th className="py-3 px-5">Data Type</th>
-                  <th className="py-3 px-5">Category</th>
-                  <th className="py-3 px-5">Description & Origin</th>
-                  <th className="py-3 px-5 text-right">Requirement</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100 text-xs">
-                {filteredFields.map(field => (
-                  <tr key={field.key} className="hover:bg-slate-50/60 transition">
-                    <td className="py-3 px-5 font-mono font-bold text-slate-900">{field.key}</td>
-                    <td className="py-3 px-5 font-semibold text-slate-700">{field.label}</td>
-                    <td className="py-3 px-5">
-                      <span className="px-2 py-0.5 bg-slate-100 rounded text-[11px] font-mono text-slate-600">
-                        {field.dataType}
-                      </span>
-                    </td>
-                    <td className="py-3 px-5 text-slate-600">{field.category || 'General'}</td>
-                    <td className="py-3 px-5 text-slate-500 text-[11px] max-w-xs truncate" title={field.description || field.notes}>
-                      {field.description || field.notes || 'Global canonical mapping field'}
-                    </td>
-                    <td className="py-3 px-5 text-right">
-                      {field.required ? (
-                        <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-rose-50 text-rose-600 border border-rose-200/60">
-                          Required
-                        </span>
-                      ) : (
-                        <span className="text-[11px] text-slate-400 font-medium">Optional</span>
-                      )}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+        <div className="mt-5">
+          <MappingDictionaryView />
         </div>
       )}
 
-      {/* TAB 3: VALUE DICTIONARIES WORKBENCH */}
+      {/* TAB 3: VALUE DICTIONARIES (Screen 72) */}
       {activeTab === 'values' && (
-        <div className="mt-5 bg-white border border-slate-200/80 rounded-2xl p-6 shadow-xs">
-          <ValueDictionaryWorkbench currentUser={currentUser} />
+        <div className="mt-5">
+          <ValueDictionariesView />
         </div>
       )}
 
@@ -500,6 +436,9 @@ export function DataSetupLandingView({
               }
               return [...prev, updatedResource];
             });
+            if (selectedResourceDetail && selectedResourceDetail.id === updatedResource.id) {
+              setSelectedResourceDetail(updatedResource);
+            }
           }
         }}
       />
