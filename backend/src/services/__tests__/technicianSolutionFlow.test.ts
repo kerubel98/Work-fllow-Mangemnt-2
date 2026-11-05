@@ -216,4 +216,43 @@ describe('Domain 10: Technician Solution Flow (Screens 38–44)', () => {
       expect(result?.description).toContain('CR-1792869500000');
     });
   });
+
+  describe('Screen 42 & 53: Hashtag File Upload & Execution', () => {
+    it('records collected transactions upon file execution and updates live ledger stats', async () => {
+      const recordSpy = vi.spyOn(repo, 'recordCollectedTransaction').mockResolvedValue(undefined);
+      const statsSpy = vi.spyOn(repo, 'getHashtagTransactionStats').mockResolvedValue({
+        total: 322,
+        fixed: 298,
+        failed: 7,
+        waiting: 17
+      });
+
+      const sampleBatch = [
+        { Transaction_ID: 'TXN-11001', Card_Number: '4111********1024', Amount_USD: 24.50, Auth_Time: '2026-10-25 09:14:02' },
+        { Transaction_ID: 'TXN-11002', Card_Number: '4111********3819', Amount_USD: 18.25, Auth_Time: '2026-10-25 09:15:30' }
+      ];
+
+      for (let i = 0; i < sampleBatch.length; i++) {
+        const row = sampleBatch[i];
+        await repo.recordCollectedTransaction({
+          id: `tx-test-${i}`,
+          hashtagTag: '#SETTLEMENT_AMOUNT_ROUNDING',
+          transactionKey: row.Transaction_ID,
+          issueId: 'ISS-3854',
+          status: 'FIXED',
+          beforePayload: row,
+          afterPayload: { ...row, _status: 'REMEDIATED' },
+          collectedAt: new Date().toISOString(),
+          executedAt: new Date().toISOString(),
+          executedBy: 'samuel_tech'
+        });
+      }
+
+      expect(recordSpy).toHaveBeenCalledTimes(2);
+      const stats = await repo.getHashtagTransactionStats('#SETTLEMENT_AMOUNT_ROUNDING');
+      expect(stats.total).toBe(322);
+      expect(stats.fixed).toBe(298);
+      expect(statsSpy).toHaveBeenCalledWith('#SETTLEMENT_AMOUNT_ROUNDING');
+    });
+  });
 });

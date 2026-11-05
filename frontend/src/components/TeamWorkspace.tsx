@@ -1507,10 +1507,13 @@ export default function TeamWorkspace({
                     teamTasks={teamTasks}
                     teamMessages={teamMessages}
                     teamDatabases={allTeamDbs}
+                    issues={issues}
                     currentUser={currentUser}
                     onNavigateTab={(tab) => setActiveTab(tab as any)}
                     onOpenPersonalChat={onOpenPersonalChat}
                     onUpdateTaskStatus={onUpdateTaskStatus}
+                    onOpenIssueInWorkspace={onOpenIssueInWorkspace}
+                    onAddTaskClick={() => setShowAddTaskModal(true)}
                   />
                 )}
 
