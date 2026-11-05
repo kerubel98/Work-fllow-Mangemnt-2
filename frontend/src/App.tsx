@@ -511,7 +511,11 @@ export default function App() {
   }, [currentUser?.id]);
 
   // Direct Personal Chat Handlers
-  const handleSendDirectMessage = (receiverId: string, content: string) => {
+  const handleSendDirectMessage = (
+    receiverId: string, 
+    content: string, 
+    options?: { replyTo?: MessageReplyInfo; forwardedFrom?: MessageForwardInfo }
+  ) => {
     if (!currentUser) return;
     const receiver = users.find(u => u.id === receiverId);
     if (!receiver) return;
@@ -525,11 +529,19 @@ export default function App() {
       receiverName: receiver.username,
       content,
       timestamp: new Date().toISOString(),
-      isRead: false
+      isRead: false,
+      replyTo: options?.replyTo,
+      forwardedFrom: options?.forwardedFrom
     };
 
     setDirectMessages(prev => [...prev, freshDM]);
-    api.sendDirectMessage({ senderId: currentUser.id, receiverId: receiver.id, content }).catch(err => console.warn('Could not persist DM to API:', err));
+    api.sendDirectMessage({ 
+      senderId: currentUser.id, 
+      receiverId: receiver.id, 
+      content,
+      replyTo: options?.replyTo,
+      forwardedFrom: options?.forwardedFrom
+    } as any).catch(err => console.warn('Could not persist DM to API:', err));
 
     // Send direct notification to recipient
     handleAddNotification({
@@ -1031,7 +1043,11 @@ export default function App() {
     api.deleteHashtag(tag).catch(err => console.warn('Could not delete hashtag in API:', err));
   };
 
-  const handleSendChatMessage = (issueId: string, messageText: string) => {
+  const handleSendChatMessage = (
+    issueId: string, 
+    messageText: string, 
+    options?: { replyTo?: MessageReplyInfo; forwardedFrom?: MessageForwardInfo }
+  ) => {
     if (!currentUser) return;
     const newMessage: ChatMessage = {
       id: `msg-${Date.now()}`,
@@ -1039,7 +1055,9 @@ export default function App() {
       senderName: currentUser.username,
       senderRole: currentUser.role,
       text: messageText,
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
+      replyTo: options?.replyTo,
+      forwardedFrom: options?.forwardedFrom
     };
 
     setIssues(prev => prev.map(issue => {

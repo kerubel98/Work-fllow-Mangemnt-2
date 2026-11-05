@@ -27,6 +27,11 @@ import { ErrorBoundary } from '../ErrorBoundary';
 import UnifiedChatInput, { InChatDirectiveType } from '../chat/UnifiedChatInput';
 import CasesWorkspaceView from './CasesWorkspaceView';
 import { CaseDiscussionDrawer } from './CaseDiscussionDrawer';
+import { 
+  MessageActionBar, MessageReactionsRow, MessageQuotedReply, MessageForwardedHeader 
+} from '../chat/MessageChatActions';
+import { ForwardMessageModal, ForwardDestination } from '../chat/ForwardMessageModal';
+import { MessageReplyInfo, MessageForwardInfo } from '../../types';
 import { EscalateToTeamModal } from '../team/EscalateToTeamModal';
 
 export interface StepExecutionResult {
@@ -1471,6 +1476,70 @@ export default function ValidationOrchestratorWorkspace({
   const [proposedScriptProcessType, setProposedScriptProcessType] = useState<SolutionProcessType>('INTERNAL_STAGED_FIX');
   const [acceptingProposalId, setAcceptingProposalId] = useState<string | null>(null);
 
+  // Reply, Forward, and Reactions state for Investigation Drawer Chat
+  const [replyingToMessage, setReplyingToMessage] = useState<any | null>(null);
+  const [forwardingMessage, setForwardingMessage] = useState<any | null>(null);
+  const [localChatReactions, setLocalChatReactions] = useState<Record<string, Record<string, string[]>>>({});
+
+  const handleToggleChatReaction = (msgId: string, emoji: string) => {
+    setLocalChatReactions(prev => {
+      const existing = prev[msgId] || selectedIssue?.chat?.find((m: any) => m.id === msgId)?.reactions || {};
+      const usersList = existing[emoji] || [];
+      const currentId = currentUser?.id || 'curr-user';
+      const hasReacted = usersList.includes(currentId);
+      const updated = hasReacted ? usersList.filter((u: string) => u !== currentId) : [...usersList, currentId];
+      const next = { ...existing };
+      if (updated.length > 0) {
+        next[emoji] = updated;
+      } else {
+        delete next[emoji];
+      }
+      return { ...prev, [msgId]: next };
+    });
+  };
+
+  const handleConfirmChatForward = async (destination: ForwardDestination, optionalComment: string) => {
+    if (!forwardingMessage) return;
+    const forwardInfo: MessageForwardInfo = {
+      senderName: forwardingMessage.senderName,
+      sourceTitle: `Case #${selectedIssue?.id}`
+    };
+    const payloadText = optionalComment 
+      ? `${optionalComment}\n\n[Forwarded: "${forwardingMessage.text}"]`
+      : forwardingMessage.text;
+
+    if (destination.type === 'team') {
+      try {
+        await api.sendTeamMessage({
+          teamId: destination.id,
+          senderId: currentUser?.id || 'curr-user',
+          senderName: currentUser?.username || 'operator',
+          content: payloadText,
+          forwardedFrom: forwardInfo
+        });
+      } catch (e) {
+        console.warn('Failed to forward to team:', e);
+      }
+    } else if (destination.type === 'case') {
+      try {
+        onSendChatMessage(destination.id, payloadText);
+      } catch (e) {
+        console.warn('Failed to forward to case:', e);
+      }
+    } else if (destination.type === 'user') {
+      try {
+        await api.sendDirectMessage({
+          senderId: currentUser?.id || 'curr-user',
+          receiverId: destination.id,
+          content: payloadText
+        });
+      } catch (e) {
+        console.warn('Failed to forward to user DM:', e);
+      }
+    }
+    setForwardingMessage(null);
+  };
+
   const handleExecuteInvestigationDirective = (directive: InChatDirectiveType, contextText?: string) => {
     let confirmationEvent = '';
     if (directive === 'create-task') {
@@ -1596,8 +1665,14 @@ export default function ValidationOrchestratorWorkspace({
           proposedByName: currentUser.username,
           proposedAt: new Date().toISOString(),
           accepted: false
+        } : undefined,
+        replyTo: replyingToMessage ? {
+          id: replyingToMessage.id,
+          senderName: replyingToMessage.senderName,
+          snippet: (replyingToMessage.text || '').slice(0, 100)
         } : undefined
       };
+      setReplyingToMessage(null);
 
       // Optimistically update chat in UI
       const currentChat = selectedIssue.chat || [];
@@ -8506,8 +8581,19 @@ export default function ValidationOrchestratorWorkspace({
             ) : (
               (selectedIssue.chat || []).map((msg: any) => {
                 const isMe = msg.senderId === currentUser.id;
+                const reactionsForMsg = localChatReactions[msg.id] || msg.reactions || {};
                 return (
-                  <div key={msg.id} className="space-y-1.5">
+                  <div key={msg.id} className="group relative space-y-1.5">
+                    {/* Micro Action Bar on Hover */}
+                    <div className={`absolute -top-3 ${isMe ? 'right-2' : 'left-2'} opacity-0 group-hover:opacity-100 transition-opacity z-20`}>
+                      <MessageActionBar
+                        onReply={() => setReplyingToMessage(msg)}
+                        onForward={() => setForwardingMessage(msg)}
+                        onToggleReaction={(emoji) => handleToggleChatReaction(msg.id, emoji)}
+                        isSelf={isMe}
+                      />
+                    </div>
+
                     <div className="flex items-center justify-between text-[10px] text-slate-500 font-mono px-1">
                       <span className="font-bold text-slate-800">
                         {msg.senderName} ({msg.senderRole || 'operator'})
@@ -8518,6 +8604,11 @@ export default function ValidationOrchestratorWorkspace({
                     <div className={`p-3 rounded-2xl text-xs space-y-2 border ${
                       isMe ? 'bg-blue-50/80 border-blue-200 text-slate-800' : 'bg-white border-slate-200 text-slate-800'
                     }`}>
+                      {/* Forwarded Header */}
+                      <MessageForwardedHeader forwardedFrom={msg.forwardedFrom} isSelf={isMe} />
+
+                      {/* Quoted Reply */}
+                      <MessageQuotedReply replyTo={msg.replyTo} isSelf={isMe} />
                       {/* Mentions badges */}
                       {Array.isArray(msg.mentions) && msg.mentions.length > 0 && (
                         <div className="flex flex-wrap gap-1">
@@ -8684,6 +8775,8 @@ export default function ValidationOrchestratorWorkspace({
                 placeholder="Discuss investigation, @user, @@team, #hashtag, / directives..."
                 value={chatInputText}
                 onChange={setChatInputText}
+                replyingTo={replyingToMessage ? { id: replyingToMessage.id, senderName: replyingToMessage.senderName, text: replyingToMessage.text } : null}
+                onCancelReply={() => setReplyingToMessage(null)}
                 onSendMessage={(text) => handleSendChat(undefined, text)}
                 onExecuteDirective={handleExecuteInvestigationDirective}
                 disabled={isSendingChat}
@@ -8729,6 +8822,22 @@ export default function ValidationOrchestratorWorkspace({
           </div>
         </div>
       )}
+
+      {/* Forward Message Modal for Investigation Drawer */}
+      <ForwardMessageModal
+        isOpen={Boolean(forwardingMessage)}
+        onClose={() => setForwardingMessage(null)}
+        messageToForward={forwardingMessage ? {
+          senderName: forwardingMessage.senderName,
+          text: forwardingMessage.text,
+          sourceTitle: `Case #${selectedIssue?.id}`
+        } : null}
+        availableTeams={teams}
+        availableIssues={issues}
+        availableUsers={users}
+        currentUserId={currentUser?.id}
+        onConfirmForward={handleConfirmChatForward}
+      />
 
       {/* Universal Hashtags Result Diff Modal Drawer (GAP-10) */}
       {showHashtagDiffModal && hashtagDiffResult && (

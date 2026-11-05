@@ -17,6 +17,11 @@ import { api } from '../api/client';
 import { SharedAssetChatCard } from './chat/SharedAssetChatCard';
 import UnifiedChatInput, { InChatDirectiveType } from './chat/UnifiedChatInput';
 import { ProviderLogo } from './common/ProviderLogo';
+import { 
+  MessageActionBar, MessageReactionsRow, MessageQuotedReply, MessageForwardedHeader 
+} from './chat/MessageChatActions';
+import { ForwardMessageModal, ForwardDestination } from './chat/ForwardMessageModal';
+import { MessageReplyInfo, MessageForwardInfo } from '../types';
 
 interface PersonalChatProps {
   currentUser: User;
@@ -25,7 +30,7 @@ interface PersonalChatProps {
   hashtags?: HashtagPreset[];
   directMessages: DirectMessage[];
   initialSelectedUserId?: string | null;
-  onSendDirectMessage: (receiverId: string, content: string) => void;
+  onSendDirectMessage: (receiverId: string, content: string, options?: { replyTo?: MessageReplyInfo; forwardedFrom?: MessageForwardInfo }) => void;
   onMarkDirectMessagesRead: (senderId: string) => void;
   onNavigateToTeamWorkspace?: () => void;
   onNavigateToTaskCreation?: (initialData?: any) => void;
@@ -60,6 +65,68 @@ export default function PersonalChat({
   const [searchTerm, setSearchTerm] = useState('');
   const [roleFilter, setRoleFilter] = useState<'ALL' | UserRole>('ALL');
   const [messageInput, setMessageInput] = useState('');
+
+  // Reply, Forward, and Reactions state for Personal Direct Chat
+  const [replyingToMessage, setReplyingToMessage] = useState<DirectMessage | null>(null);
+  const [forwardingMessage, setForwardingMessage] = useState<DirectMessage | null>(null);
+  const [localReactions, setLocalReactions] = useState<Record<string, Record<string, string[]>>>({});
+
+  const handleToggleReaction = (msgId: string, emoji: string) => {
+    setLocalReactions(prev => {
+      const existing = prev[msgId] || directMessages.find(m => m.id === msgId)?.reactions || {};
+      const usersList = existing[emoji] || [];
+      const currentId = currentUser?.id || 'curr-user';
+      const hasReacted = usersList.includes(currentId);
+      const updated = hasReacted ? usersList.filter(u => u !== currentId) : [...usersList, currentId];
+      const next = { ...existing };
+      if (updated.length > 0) {
+        next[emoji] = updated;
+      } else {
+        delete next[emoji];
+      }
+      return { ...prev, [msgId]: next };
+    });
+  };
+
+  const handleConfirmForward = async (destination: ForwardDestination, optionalComment: string) => {
+    if (!forwardingMessage) return;
+    const forwardInfo: MessageForwardInfo = {
+      senderName: forwardingMessage.senderName,
+      sourceTitle: 'Direct Message'
+    };
+    const payloadText = optionalComment 
+      ? `${optionalComment}\n\n[Forwarded: "${forwardingMessage.content}"]`
+      : forwardingMessage.content;
+
+    if (destination.type === 'team') {
+      try {
+        await api.sendTeamMessage({
+          teamId: destination.id,
+          senderId: currentUser.id,
+          senderName: currentUser.username,
+          senderRole: currentUser.role,
+          content: payloadText,
+          forwardedFrom: forwardInfo
+        });
+      } catch (e) {
+        console.warn('Failed to forward DM to team:', e);
+      }
+    } else if (destination.type === 'case') {
+      try {
+        await api.postIssueChat(destination.id, {
+          senderId: currentUser.id,
+          senderName: currentUser.username,
+          senderRole: currentUser.role,
+          text: payloadText
+        });
+      } catch (e) {
+        console.warn('Failed to forward DM to case:', e);
+      }
+    } else if (destination.type === 'user') {
+      onSendDirectMessage(destination.id, payloadText, { forwardedFrom: forwardInfo });
+    }
+    setForwardingMessage(null);
+  };
   const [directShares, setDirectShares] = useState<any[]>([]);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -542,12 +609,20 @@ export default function PersonalChat({
     }
   }, [currentConversation.length, selectedUserId, selectedConversationType]);
 
-  const handleSendMessage = (e?: React.FormEvent) => {
-    if (e) e.preventDefault();
-    if (!messageInput.trim() || !selectedUserId) return;
+  const handleSendMessage = (e?: React.FormEvent, explicitContent?: string) => {
+    if (e && e.preventDefault) e.preventDefault();
+    const textToSend = (explicitContent !== undefined ? explicitContent : messageInput).trim();
+    if (!textToSend || !selectedUserId) return;
 
-    onSendDirectMessage(selectedUserId, messageInput.trim());
+    onSendDirectMessage(selectedUserId, textToSend, {
+      replyTo: replyingToMessage ? {
+        id: replyingToMessage.id,
+        senderName: replyingToMessage.senderName,
+        snippet: replyingToMessage.content.slice(0, 100)
+      } : undefined
+    });
     setMessageInput('');
+    setReplyingToMessage(null);
     setTimeout(() => {
       inputRef.current?.focus();
     }, 50);
@@ -1278,11 +1353,22 @@ export default function PersonalChat({
                       const isSelf = msg.senderId === currentUser.id;
                       const sender = isSelf ? currentUser : selectedContact;
 
+                      const reactionsForMsg = localReactions[msg.id] || msg.reactions || {};
                       return (
                         <div
                           key={msg.id}
-                          className={`flex items-start gap-2.5 ${isSelf ? 'flex-row-reverse' : 'flex-row'}`}
+                          className={`group relative flex items-start gap-2.5 ${isSelf ? 'flex-row-reverse' : 'flex-row'}`}
                         >
+                          {/* Micro Action Bar on Hover */}
+                          <div className={`absolute -top-3.5 ${isSelf ? 'right-10' : 'left-10'} opacity-0 group-hover:opacity-100 transition-opacity z-20`}>
+                            <MessageActionBar
+                              onReply={() => setReplyingToMessage(msg)}
+                              onForward={() => setForwardingMessage(msg)}
+                              onToggleReaction={(emoji) => handleToggleReaction(msg.id, emoji)}
+                              isSelf={isSelf}
+                            />
+                          </div>
+
                           <div className="shrink-0 mt-0.5">
                             {renderCircularAvatar(sender.avatarUrl, sender.displayName || sender.username, 'w-7 h-7')}
                           </div>
@@ -1309,8 +1395,22 @@ export default function PersonalChat({
                                   : 'bg-white text-slate-800 border border-slate-200/90 rounded-tl-xs'
                               }`}
                             >
+                              {/* Forwarded Header */}
+                              <MessageForwardedHeader forwardedFrom={msg.forwardedFrom} isSelf={isSelf} />
+
+                              {/* Quoted Reply */}
+                              <MessageQuotedReply replyTo={msg.replyTo} isSelf={isSelf} />
+
                               <p className="whitespace-pre-wrap break-words">{msg.content}</p>
                             </div>
+
+                            {/* Emoji Reactions Row */}
+                            <MessageReactionsRow
+                              reactions={reactionsForMsg}
+                              currentUserId={currentUser.id}
+                              onToggleReaction={(emoji) => handleToggleReaction(msg.id, emoji)}
+                              isSelf={isSelf}
+                            />
 
                             <div className="flex items-center gap-2 mt-1">
                               {isSelf && (
@@ -1404,11 +1504,9 @@ export default function PersonalChat({
                     placeholder={`Message @${selectedContact.username}...`}
                     value={messageInput}
                     onChange={setMessageInput}
-                    onSendMessage={() => {
-                      if (!messageInput.trim()) return;
-                      onSendDirectMessage(selectedUserId, messageInput.trim());
-                      setMessageInput('');
-                    }}
+                    replyingTo={replyingToMessage ? { id: replyingToMessage.id, senderName: replyingToMessage.senderName, text: replyingToMessage.content } : null}
+                    onCancelReply={() => setReplyingToMessage(null)}
+                    onSendMessage={(text) => handleSendMessage(undefined, text)}
                     onExecuteDirective={handleExecuteChatDirective}
                     quickPrompts={[
                       'Task review?',

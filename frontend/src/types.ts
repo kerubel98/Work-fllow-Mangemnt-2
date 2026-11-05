@@ -148,6 +148,9 @@ export interface DirectMessage {
   content: string;
   timestamp: string;
   isRead: boolean;
+  replyTo?: MessageReplyInfo;
+  forwardedFrom?: MessageForwardInfo;
+  reactions?: Record<string, string[]>;
 }
 
 export type AllowedQueryType = 'SELECT' | 'UPDATE' | 'INSERT' | 'DELETE' | 'ALTER' | 'CREATE' | 'DROP';
@@ -261,14 +264,31 @@ export interface TeamInsight {
   createdAt: string;
 }
 
+export interface MessageReplyInfo {
+  id: string;
+  senderName: string;
+  snippet: string;
+}
+
+export interface MessageForwardInfo {
+  senderName: string;
+  sourceTitle?: string;
+  timestamp?: string;
+}
+
 export interface TeamDiscussionMessage {
   id: string;
   teamId: string;
   senderId: string;
   senderName: string;
-  senderRole: UserRole;
+  senderRole?: UserRole;
   content: string;
   timestamp: string;
+  tags?: string[];
+  agreementId?: string;
+  replyTo?: MessageReplyInfo;
+  forwardedFrom?: MessageForwardInfo;
+  reactions?: Record<string, string[]>;
 }
 
 export type SolutionProcessType = 'READ_ONLY_AUDIT' | 'INTERNAL_STAGED_FIX' | 'CAUTIOUS_PROCESS';
@@ -312,6 +332,9 @@ export interface ChatMessage {
   mentions?: ChatMention[];
   attachedSummary?: ChatInvestigationSummary;
   solutionProposal?: ChatSolutionProposal;
+  replyTo?: MessageReplyInfo;
+  forwardedFrom?: MessageForwardInfo;
+  reactions?: Record<string, string[]>;
 }
 
 export type IssueStatus = 

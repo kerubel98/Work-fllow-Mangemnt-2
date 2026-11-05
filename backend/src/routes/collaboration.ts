@@ -35,7 +35,10 @@ collaborationRouter.post('/messages/direct', async (req: Request, res: Response)
       receiverName: data.receiverName || receiver?.username || 'User',
       content: data.content,
       timestamp: new Date().toISOString(),
-      isRead: false
+      isRead: false,
+      replyTo: data.replyTo,
+      forwardedFrom: data.forwardedFrom,
+      reactions: data.reactions
     };
     const saved = await repo.createDirectMessage(newMsg);
 

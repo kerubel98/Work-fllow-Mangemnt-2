@@ -1,7 +1,12 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { ChatMessage, User, Issue, Team, HashtagPreset } from '../../types';
-import { MessageSquare, Send, Sparkles, UserCheck, ShieldCheck, User as UserIcon } from 'lucide-react';
+import { ChatMessage, User, Issue, Team, HashtagPreset, MessageReplyInfo, MessageForwardInfo } from '../../types';
+import { MessageSquare, Send, Sparkles, UserCheck, ShieldCheck, User as UserIcon, Forward } from 'lucide-react';
 import UnifiedChatInput, { InChatDirectiveType } from '../chat/UnifiedChatInput';
+import { 
+  MessageActionBar, MessageReactionsRow, MessageQuotedReply, MessageForwardedHeader 
+} from '../chat/MessageChatActions';
+import { ForwardMessageModal, ForwardDestination } from '../chat/ForwardMessageModal';
+import { api } from '../../api/client';
 
 interface IssueChatPanelProps {
   issue: Issue;
@@ -9,7 +14,8 @@ interface IssueChatPanelProps {
   users?: User[];
   teams?: Team[];
   hashtags?: HashtagPreset[];
-  onSendMessage: (issueId: string, text: string) => void;
+  availableIssues?: Issue[];
+  onSendMessage: (issueId: string, text: string, options?: { replyTo?: MessageReplyInfo; forwardedFrom?: MessageForwardInfo }) => void;
   onExecuteDirective?: (directive: InChatDirectiveType, context: string) => void;
 }
 
@@ -19,11 +25,72 @@ export default function IssueChatPanel({
   users = [],
   teams = [],
   hashtags = [],
+  availableIssues = [],
   onSendMessage,
   onExecuteDirective
 }: IssueChatPanelProps) {
   const [inputText, setInputText] = useState('');
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  // Reply, Forward, and Reactions state
+  const [replyingToMessage, setReplyingToMessage] = useState<ChatMessage | null>(null);
+  const [forwardingMessage, setForwardingMessage] = useState<ChatMessage | null>(null);
+  const [localReactions, setLocalReactions] = useState<Record<string, Record<string, string[]>>>({});
+
+  const handleToggleReaction = (msgId: string, emoji: string) => {
+    setLocalReactions(prev => {
+      const existing = prev[msgId] || issue.chat?.find(m => m.id === msgId)?.reactions || {};
+      const usersList = existing[emoji] || [];
+      const hasReacted = usersList.includes(currentUser.id);
+      const updated = hasReacted ? usersList.filter(u => u !== currentUser.id) : [...usersList, currentUser.id];
+      const next = { ...existing };
+      if (updated.length > 0) {
+        next[emoji] = updated;
+      } else {
+        delete next[emoji];
+      }
+      return { ...prev, [msgId]: next };
+    });
+  };
+
+  const handleConfirmForward = async (destination: ForwardDestination, optionalComment: string) => {
+    if (!forwardingMessage) return;
+    const forwardInfo: MessageForwardInfo = {
+      senderName: forwardingMessage.senderName,
+      sourceTitle: `Case #${issue.id}`
+    };
+    const payloadText = optionalComment 
+      ? `${optionalComment}\n\n[Forwarded: "${forwardingMessage.text}"]`
+      : forwardingMessage.text;
+
+    if (destination.type === 'team') {
+      try {
+        await api.sendTeamMessage({
+          teamId: destination.id,
+          senderId: currentUser.id,
+          senderName: currentUser.username,
+          senderRole: currentUser.role,
+          content: payloadText,
+          forwardedFrom: forwardInfo
+        });
+      } catch (e) {
+        console.warn('Failed to forward to team:', e);
+      }
+    } else if (destination.type === 'case') {
+      onSendMessage(destination.id, payloadText, { forwardedFrom: forwardInfo });
+    } else if (destination.type === 'user') {
+      try {
+        await api.sendDirectMessage({
+          senderId: currentUser.id,
+          receiverId: destination.id,
+          content: payloadText
+        });
+      } catch (e) {
+        console.warn('Failed to forward to user DM:', e);
+      }
+    }
+    setForwardingMessage(null);
+  };
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -95,11 +162,22 @@ export default function IssueChatPanel({
         ) : (
           issue.chat.map((msg: ChatMessage) => {
             const isMe = msg.senderId === currentUser.id;
+            const reactionsForMsg = localReactions[msg.id] || msg.reactions || {};
             return (
               <div
                 key={msg.id}
-                className={`flex flex-col ${isMe ? 'items-end' : 'items-start'}`}
+                className={`group relative flex flex-col ${isMe ? 'items-end' : 'items-start'}`}
               >
+                {/* Micro Action Bar on Hover */}
+                <div className={`absolute -top-3 ${isMe ? 'right-2' : 'left-2'} opacity-0 group-hover:opacity-100 transition-opacity z-20`}>
+                  <MessageActionBar
+                    onReply={() => setReplyingToMessage(msg)}
+                    onForward={() => setForwardingMessage(msg)}
+                    onToggleReaction={(emoji) => handleToggleReaction(msg.id, emoji)}
+                    isSelf={isMe}
+                  />
+                </div>
+
                 <div className="flex items-center gap-1.5 mb-1 px-1">
                   <span className="text-xs font-semibold text-slate-700">
                     {msg.senderName} {isMe && '(You)'}
@@ -116,8 +194,22 @@ export default function IssueChatPanel({
                       : 'bg-white text-slate-800 border border-slate-200 rounded-bl-none shadow-sm'
                   }`}
                 >
+                  {/* Forwarded Header if present */}
+                  <MessageForwardedHeader forwardedFrom={msg.forwardedFrom} isSelf={isMe} />
+
+                  {/* Quoted Reply if present */}
+                  <MessageQuotedReply replyTo={msg.replyTo} isSelf={isMe} />
+
                   <p className="whitespace-pre-wrap">{msg.text}</p>
                 </div>
+
+                {/* Interactive Reactions Row */}
+                <MessageReactionsRow
+                  reactions={reactionsForMsg}
+                  currentUserId={currentUser.id}
+                  onToggleReaction={(emoji) => handleToggleReaction(msg.id, emoji)}
+                  isSelf={isMe}
+                />
               </div>
             );
           })
@@ -152,14 +244,39 @@ export default function IssueChatPanel({
           placeholder={`Add a note, @ to mention, @@ for team, / for directives...`}
           value={inputText}
           onChange={setInputText}
+          replyingTo={replyingToMessage ? { id: replyingToMessage.id, senderName: replyingToMessage.senderName, text: replyingToMessage.text } : null}
+          onCancelReply={() => setReplyingToMessage(null)}
           onSendMessage={(content) => {
-            onSendMessage(issue.id, content);
+            onSendMessage(issue.id, content, {
+              replyTo: replyingToMessage ? {
+                id: replyingToMessage.id,
+                senderName: replyingToMessage.senderName,
+                snippet: replyingToMessage.text.slice(0, 100)
+              } : undefined
+            });
             setInputText('');
+            setReplyingToMessage(null);
           }}
           onExecuteDirective={onExecuteDirective}
           inputId={`input-issue-${issue.id}-chat`}
         />
       </div>
+
+      {/* Forward Message Modal */}
+      <ForwardMessageModal
+        isOpen={Boolean(forwardingMessage)}
+        onClose={() => setForwardingMessage(null)}
+        messageToForward={forwardingMessage ? {
+          senderName: forwardingMessage.senderName,
+          text: forwardingMessage.text,
+          sourceTitle: `Case #${issue.id}`
+        } : null}
+        availableTeams={teams}
+        availableIssues={availableIssues.length > 0 ? availableIssues : [issue]}
+        availableUsers={users}
+        currentUserId={currentUser?.id}
+        onConfirmForward={handleConfirmForward}
+      />
     </div>
   );
 }

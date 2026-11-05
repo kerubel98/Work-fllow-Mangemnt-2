@@ -8,7 +8,12 @@ import {
   X, MessageSquare, Flag, Paperclip, FileText, Send, 
   Link2, CheckCircle2, Clock, ShieldAlert, ArrowRight, CornerDownLeft
 } from 'lucide-react';
-import { Issue, User, Team, EscalationAgreement, HashtagPreset } from '../../types';
+import { Issue, User, Team, EscalationAgreement, HashtagPreset, MessageReplyInfo, MessageForwardInfo } from '../../types';
+import { 
+  MessageActionBar, MessageReactionsRow, MessageQuotedReply, MessageForwardedHeader 
+} from '../chat/MessageChatActions';
+import { ForwardMessageModal, ForwardDestination } from '../chat/ForwardMessageModal';
+import { api } from '../../api/client';
 import { api } from '../../api/client';
 import { EscalateToTeamModal } from '../team/EscalateToTeamModal';
 import UnifiedChatInput, { InChatDirectiveType } from '../chat/UnifiedChatInput';
@@ -36,6 +41,9 @@ interface ThreadMessage {
     flaggedCount: number;
     rulesCount: number;
   };
+  replyTo?: MessageReplyInfo;
+  forwardedFrom?: MessageForwardInfo;
+  reactions?: Record<string, string[]>;
 }
 
 export const CaseDiscussionDrawer: React.FC<CaseDiscussionDrawerProps> = ({
@@ -53,6 +61,74 @@ export const CaseDiscussionDrawer: React.FC<CaseDiscussionDrawerProps> = ({
 
   const [inputText, setInputText] = useState('');
   const [showEscalateModal, setShowEscalateModal] = useState(false);
+
+  // Reply, Forward, and Reactions state
+  const [replyingToMessage, setReplyingToMessage] = useState<ThreadMessage | null>(null);
+  const [forwardingMessage, setForwardingMessage] = useState<ThreadMessage | null>(null);
+  const [localReactions, setLocalReactions] = useState<Record<string, Record<string, string[]>>>({});
+
+  const handleToggleReaction = (msgId: string, emoji: string) => {
+    setLocalReactions(prev => {
+      const existing = prev[msgId] || messages.find(m => m.id === msgId)?.reactions || {};
+      const usersList = existing[emoji] || [];
+      const currentId = currentUser?.id || 'curr-user';
+      const hasReacted = usersList.includes(currentId);
+      const updated = hasReacted ? usersList.filter(u => u !== currentId) : [...usersList, currentId];
+      const next = { ...existing };
+      if (updated.length > 0) {
+        next[emoji] = updated;
+      } else {
+        delete next[emoji];
+      }
+      return { ...prev, [msgId]: next };
+    });
+  };
+
+  const handleConfirmForward = async (destination: ForwardDestination, optionalComment: string) => {
+    if (!forwardingMessage) return;
+    const forwardInfo: MessageForwardInfo = {
+      senderName: forwardingMessage.senderName,
+      sourceTitle: `Case #${issue.id}`
+    };
+    const payloadText = optionalComment 
+      ? `${optionalComment}\n\n[Forwarded: "${forwardingMessage.content}"]`
+      : forwardingMessage.content;
+
+    if (destination.type === 'team') {
+      try {
+        await api.sendTeamMessage({
+          teamId: destination.id,
+          senderId: currentUser?.id || 'curr-user',
+          senderName: currentUser?.username || 'operator',
+          content: payloadText,
+          forwardedFrom: forwardInfo
+        });
+      } catch (e) {
+        console.warn('Failed to forward to team:', e);
+      }
+    } else if (destination.type === 'case') {
+      try {
+        await api.postIssueChat(destination.id, {
+          senderId: currentUser?.id || 'curr-user',
+          senderName: currentUser?.username || 'operator',
+          text: payloadText
+        });
+      } catch (e) {
+        console.warn('Failed to forward to case:', e);
+      }
+    } else if (destination.type === 'user') {
+      try {
+        await api.sendDirectMessage({
+          senderId: currentUser?.id || 'curr-user',
+          receiverId: destination.id,
+          content: payloadText
+        });
+      } catch (e) {
+        console.warn('Failed to forward to user DM:', e);
+      }
+    }
+    setForwardingMessage(null);
+  };
   const [agreement, setAgreement] = useState<EscalationAgreement | null>(activeAgreement);
   const [isLoadingAgreement, setIsLoadingAgreement] = useState(false);
 
@@ -306,32 +382,60 @@ export const CaseDiscussionDrawer: React.FC<CaseDiscussionDrawerProps> = ({
           </div>
 
           {/* User Messages */}
-          {messages.map(msg => (
-            <div key={msg.id} className="flex items-start space-x-3">
-              <div className="w-8 h-8 rounded-full bg-[#0F142A] text-white flex items-center justify-center text-xs font-mono font-bold shrink-0">
-                {msg.avatarText}
-              </div>
-              <div className="flex-1 space-y-1.5">
-                <div className="flex items-center space-x-2 text-xs">
-                  <span className="font-bold text-slate-900 font-sans">@{msg.senderName}</span>
-                  <span className="text-slate-400 font-mono text-[10px]">{msg.timestamp}</span>
-                </div>
-                <div className="p-3 bg-slate-50 border border-slate-100 rounded-2xl rounded-tl-xs text-xs text-slate-800 leading-relaxed font-sans">
-                  {renderFormattedMessage(msg.content)}
+          {messages.map(msg => {
+            const isMe = currentUser && (msg.senderId === currentUser.id || msg.senderName === currentUser.username);
+            const reactionsForMsg = localReactions[msg.id] || msg.reactions || {};
+            return (
+              <div key={msg.id} className="group relative flex items-start space-x-3">
+                {/* Micro Action Bar on Hover */}
+                <div className="absolute -top-3 right-4 opacity-0 group-hover:opacity-100 transition-opacity z-20">
+                  <MessageActionBar
+                    onReply={() => setReplyingToMessage(msg)}
+                    onForward={() => setForwardingMessage(msg)}
+                    onToggleReaction={(emoji) => handleToggleReaction(msg.id, emoji)}
+                    isSelf={Boolean(isMe)}
+                  />
                 </div>
 
-                {msg.attachedSummary && (
-                  <div className="inline-flex items-center space-x-2 px-3 py-1.5 bg-emerald-50/70 border border-emerald-200 rounded-xl text-xs text-emerald-800 font-mono">
-                    <FileText size={14} className="text-emerald-600" />
-                    <span className="font-bold">Investigation summary</span>
-                    <span className="text-emerald-600">
-                      {msg.attachedSummary.flaggedCount} flagged · {msg.attachedSummary.rulesCount} rules
-                    </span>
+                <div className="w-8 h-8 rounded-full bg-[#0F142A] text-white flex items-center justify-center text-xs font-mono font-bold shrink-0">
+                  {msg.avatarText}
+                </div>
+                <div className="flex-1 space-y-1.5">
+                  <div className="flex items-center space-x-2 text-xs">
+                    <span className="font-bold text-slate-900 font-sans">@{msg.senderName}</span>
+                    <span className="text-slate-400 font-mono text-[10px]">{msg.timestamp}</span>
                   </div>
-                )}
+                  <div className="p-3 bg-slate-50 border border-slate-100 rounded-2xl rounded-tl-xs text-xs text-slate-800 leading-relaxed font-sans">
+                    {/* Forwarded Header */}
+                    <MessageForwardedHeader forwardedFrom={msg.forwardedFrom} isSelf={false} />
+
+                    {/* Quoted Reply */}
+                    <MessageQuotedReply replyTo={msg.replyTo} isSelf={false} />
+
+                    {renderFormattedMessage(msg.content)}
+                  </div>
+
+                  {/* Emoji Reactions Row */}
+                  <MessageReactionsRow
+                    reactions={reactionsForMsg}
+                    currentUserId={currentUser?.id || 'curr-user'}
+                    onToggleReaction={(emoji) => handleToggleReaction(msg.id, emoji)}
+                    isSelf={false}
+                  />
+
+                  {msg.attachedSummary && (
+                    <div className="inline-flex items-center space-x-2 px-3 py-1.5 bg-emerald-50/70 border border-emerald-200 rounded-xl text-xs text-emerald-800 font-mono">
+                      <FileText size={14} className="text-emerald-600" />
+                      <span className="font-bold">Investigation summary</span>
+                      <span className="text-emerald-600">
+                        {msg.attachedSummary.flaggedCount} flagged · {msg.attachedSummary.rulesCount} rules
+                      </span>
+                    </div>
+                  )}
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
 
           {/* Distinct Orange Escalated Callout Card (Screen 27) */}
           {agreement && (
@@ -447,6 +551,8 @@ export const CaseDiscussionDrawer: React.FC<CaseDiscussionDrawerProps> = ({
             placeholder="Discuss, @person, @@team, #automation, / commands..."
             value={inputText}
             onChange={setInputText}
+            replyingTo={replyingToMessage ? { id: replyingToMessage.id, senderName: replyingToMessage.senderName, text: replyingToMessage.content } : null}
+            onCancelReply={() => setReplyingToMessage(null)}
             onSendMessage={(content) => handleSendMessage(content)}
             onExecuteDirective={handleExecuteDirective}
             quickPrompts={[

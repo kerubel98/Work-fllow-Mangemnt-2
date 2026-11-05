@@ -44,6 +44,8 @@ export interface UnifiedChatInputProps {
   buttonLabel?: string;
   showAttachmentButton?: boolean;
   onAttachmentClick?: () => void;
+  replyingTo?: { id: string; senderName: string; text: string } | null;
+  onCancelReply?: () => void;
 }
 
 export const STANDARD_DIRECTIVES: InChatDirectiveItem[] = [
@@ -114,7 +116,9 @@ export const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
   className = '',
   buttonLabel = 'Send',
   showAttachmentButton = false,
-  onAttachmentClick
+  onAttachmentClick,
+  replyingTo = null,
+  onCancelReply
 }) => {
   const [internalText, setInternalText] = useState('');
   const text = controlledValue !== undefined ? controlledValue : internalText;
@@ -617,6 +621,33 @@ export const UnifiedChatInput: React.FC<UnifiedChatInputProps> = ({
               {prompt}
             </button>
           ))}
+        </div>
+      )}
+
+      {/* ================= REPLY PREVIEW BANNER ================= */}
+      {replyingTo && (
+        <div className="mb-2 px-3 py-1.5 bg-blue-50/90 border border-blue-200/80 rounded-xl flex items-center justify-between text-xs animate-in fade-in duration-150">
+          <div className="flex items-center space-x-2 min-w-0">
+            <CornerDownLeft size={13} className="text-blue-600 shrink-0" />
+            <div className="min-w-0">
+              <span className="font-bold text-blue-900 font-mono text-[11px]">
+                Replying to @{replyingTo.senderName}
+              </span>
+              <p className="text-[11px] text-slate-600 truncate font-mono">
+                {replyingTo.text}
+              </p>
+            </div>
+          </div>
+          {onCancelReply && (
+            <button
+              type="button"
+              onClick={onCancelReply}
+              className="p-1 text-slate-400 hover:text-slate-600 hover:bg-blue-100 rounded-lg transition-colors cursor-pointer"
+              title="Cancel reply"
+            >
+              <X size={14} />
+            </button>
+          )}
         </div>
       )}
 

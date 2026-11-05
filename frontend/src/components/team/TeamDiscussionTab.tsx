@@ -3,8 +3,12 @@ import { Team, TeamDiscussionMessage, User, Issue, HashtagPreset, EscalationAgre
 import { 
   MessageSquare, Send, Pin, Tag, Sparkles, 
   CornerDownRight, CheckCheck, Smile, ShieldAlert, ChevronDown,
-  Flag, FileText, Plus, CheckCircle2, Clock
+  Flag, FileText, Plus, CheckCircle2, Clock, Forward
 } from 'lucide-react';
+import { 
+  MessageActionBar, MessageReactionsRow, MessageQuotedReply, MessageForwardedHeader 
+} from '../chat/MessageChatActions';
+import { ForwardMessageModal, ForwardDestination } from '../chat/ForwardMessageModal';
 import { NoDiscussionEmptyState } from './TeamEmptyStates';
 import { EscalationRoomModal } from './EscalationRoomModal';
 import { EscalateToTeamModal } from './EscalateToTeamModal';
@@ -50,6 +54,71 @@ export const TeamDiscussionTab: React.FC<TeamDiscussionTabProps> = ({
   const [issuesList, setIssuesList] = useState<Issue[]>([]);
   const [selectedIssue, setSelectedIssue] = useState<Issue | null>(null);
   const [isLoadingIssues, setIsLoadingIssues] = useState(false);
+
+  // Reply, Forward, and Reactions state
+  const [replyingToMessage, setReplyingToMessage] = useState<TeamDiscussionMessage | null>(null);
+  const [forwardingMessage, setForwardingMessage] = useState<TeamDiscussionMessage | null>(null);
+  const [localReactions, setLocalReactions] = useState<Record<string, Record<string, string[]>>>({});
+
+  const handleToggleReaction = (msgId: string, emoji: string) => {
+    setLocalReactions(prev => {
+      const existing = prev[msgId] || safeMessages.find(m => m.id === msgId)?.reactions || {};
+      const users = existing[emoji] || [];
+      const hasReacted = users.includes(currentUser.id);
+      const updated = hasReacted ? users.filter(u => u !== currentUser.id) : [...users, currentUser.id];
+      const next = { ...existing };
+      if (updated.length > 0) {
+        next[emoji] = updated;
+      } else {
+        delete next[emoji];
+      }
+      return { ...prev, [msgId]: next };
+    });
+  };
+
+  const handleConfirmForward = async (destination: ForwardDestination, optionalComment: string) => {
+    if (!forwardingMessage) return;
+    const forwardInfo = {
+      senderName: forwardingMessage.senderName,
+      sourceTitle: `#${currentTeam?.name ? currentTeam.name.toLowerCase().replace(/\s+/g, '-') : 'general'}`
+    };
+    const payloadText = optionalComment 
+      ? `${optionalComment}\n\n[Forwarded: "${forwardingMessage.content}"]`
+      : forwardingMessage.content;
+
+    if (destination.type === 'team') {
+      onSendMessage({
+        teamId: destination.id,
+        senderId: currentUser.id,
+        senderName: currentUser.username,
+        senderRole: currentUser.role,
+        content: payloadText,
+        forwardedFrom: forwardInfo
+      });
+    } else if (destination.type === 'case') {
+      try {
+        await api.postIssueChat(destination.id, {
+          senderId: currentUser.id,
+          senderName: currentUser.username,
+          senderRole: currentUser.role,
+          text: payloadText
+        });
+      } catch (e) {
+        console.warn('Failed to forward to case:', e);
+      }
+    } else if (destination.type === 'user') {
+      try {
+        await api.sendDirectMessage({
+          senderId: currentUser.id,
+          receiverId: destination.id,
+          content: payloadText
+        });
+      } catch (e) {
+        console.warn('Failed to forward to user DM:', e);
+      }
+    }
+    setForwardingMessage(null);
+  };
 
   // Load active issues when user opens escalation selector
   useEffect(() => {
@@ -98,17 +167,24 @@ export const TeamDiscussionTab: React.FC<TeamDiscussionTabProps> = ({
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [safeMessages]);
 
-  const handleSend = (e?: React.FormEvent) => {
-    if (e) e.preventDefault();
-    if (!inputText.trim() || !currentTeam || !currentUser) return;
+  const handleSend = (contentToSend?: string) => {
+    const text = typeof contentToSend === 'string' ? contentToSend : inputText;
+    if (!text.trim() || !currentTeam || !currentUser) return;
 
     onSendMessage({
       teamId: currentTeam.id,
       senderId: currentUser.id,
       senderName: currentUser.username,
-      content: inputText.trim()
+      senderRole: currentUser.role,
+      content: text.trim(),
+      replyTo: replyingToMessage ? {
+        id: replyingToMessage.id,
+        senderName: replyingToMessage.senderName,
+        snippet: replyingToMessage.content.slice(0, 100)
+      } : undefined
     });
     setInputText('');
+    setReplyingToMessage(null);
   };
 
   const activeAgreement = agreements.find(a => a.id === selectedRoom);
@@ -278,11 +354,22 @@ export const TeamDiscussionTab: React.FC<TeamDiscussionTabProps> = ({
                   const initials = msg.senderName?.substring(0, 2).toUpperCase() || 'TM';
                   const timestamp = new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
+                  const reactionsForMsg = localReactions[msg.id] || msg.reactions || {};
                   return (
                     <div 
                       key={msg.id}
-                      className={`flex items-start space-x-2.5 ${isSelf ? 'flex-row-reverse space-x-reverse' : ''}`}
+                      className={`group relative flex items-start space-x-2.5 ${isSelf ? 'flex-row-reverse space-x-reverse' : ''}`}
                     >
+                      {/* Floating Micro-Action Toolbar (Reply, Forward, Emoji Reactions) */}
+                      <div className={`absolute -top-3.5 ${isSelf ? 'right-10' : 'left-10'} opacity-0 group-hover:opacity-100 transition-opacity z-20`}>
+                        <MessageActionBar
+                          onReply={() => setReplyingToMessage(msg)}
+                          onForward={() => setForwardingMessage(msg)}
+                          onToggleReaction={(emoji) => handleToggleReaction(msg.id, emoji)}
+                          isSelf={isSelf}
+                        />
+                      </div>
+
                       <div className={`w-8 h-8 rounded-xl flex items-center justify-center font-mono font-bold text-xs shrink-0 ${
                         isSelf 
                           ? 'bg-blue-600 text-white shadow-2xs' 
@@ -304,8 +391,22 @@ export const TeamDiscussionTab: React.FC<TeamDiscussionTabProps> = ({
                             ? 'bg-[#155DFC] text-white rounded-tr-xs shadow-xs' 
                             : 'bg-slate-100 text-slate-800 rounded-tl-xs'
                         }`}>
-                          {msg.content}
+                          {/* Forwarded Header if present */}
+                          <MessageForwardedHeader forwardedFrom={msg.forwardedFrom} isSelf={isSelf} />
+
+                          {/* Quoted Reply if present */}
+                          <MessageQuotedReply replyTo={msg.replyTo} isSelf={isSelf} />
+
+                          <p className="whitespace-pre-wrap">{msg.content}</p>
                         </div>
+
+                        {/* Interactive Emoji Reactions Pill Row */}
+                        <MessageReactionsRow
+                          reactions={reactionsForMsg}
+                          currentUserId={currentUser.id}
+                          onToggleReaction={(emoji) => handleToggleReaction(msg.id, emoji)}
+                          isSelf={isSelf}
+                        />
 
                         {/* Inline Stage task chip if message references an issue or case */}
                         {onStageTask && (msg.content.includes('ISS-') || msg.content.toLowerCase().includes('escalat') || msg.content.toLowerCase().includes('trn test')) && (
@@ -358,15 +459,9 @@ export const TeamDiscussionTab: React.FC<TeamDiscussionTabProps> = ({
                 placeholder="Type a message, @ to mention, @@ for team, / for directives..."
                 value={inputText}
                 onChange={setInputText}
-                onSendMessage={(content) => {
-                  onSendMessage({
-                    teamId: currentTeam.id,
-                    senderId: currentUser.id,
-                    senderName: currentUser.username,
-                    content
-                  });
-                  setInputText('');
-                }}
+                replyingTo={replyingToMessage ? { id: replyingToMessage.id, senderName: replyingToMessage.senderName, text: replyingToMessage.content } : null}
+                onCancelReply={() => setReplyingToMessage(null)}
+                onSendMessage={(content) => handleSend(content)}
                 onExecuteDirective={(directive, context) => {
                   if (directive === 'create-escalate') {
                     setShowEscalateToTeamModal(true);

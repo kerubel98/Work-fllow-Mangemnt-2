@@ -650,7 +650,10 @@ teamsRouter.post('/messages', async (req: Request, res: Response) => {
       senderName: data.senderName || 'admin',
       senderRole: data.senderRole || 'operational',
       content: data.content,
-      timestamp: new Date().toISOString()
+      timestamp: new Date().toISOString(),
+      replyTo: data.replyTo,
+      forwardedFrom: data.forwardedFrom,
+      reactions: data.reactions
     };
     const saved = await repo.createTeamMessage(newMsg);
     eventService.broadcastEvent('team_message:new', saved);

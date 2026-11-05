@@ -8,9 +8,13 @@ import {
   Lock, Flag, Link2, Send, ShieldCheck, Check, 
   X, ArrowRight, ShieldAlert, Clock, Users, AlertCircle, FileText
 } from 'lucide-react';
-import { EscalationAgreement, User, Team, Issue, HashtagPreset } from '../../types';
+import { EscalationAgreement, User, Team, Issue, HashtagPreset, MessageReplyInfo, MessageForwardInfo } from '../../types';
 import { api } from '../../api/client';
 import UnifiedChatInput, { InChatDirectiveType } from '../chat/UnifiedChatInput';
+import { 
+  MessageActionBar, MessageReactionsRow, MessageQuotedReply, MessageForwardedHeader 
+} from '../chat/MessageChatActions';
+import { ForwardMessageModal, ForwardDestination } from '../chat/ForwardMessageModal';
 
 interface EscalationRoomViewProps {
   agreement: EscalationAgreement;
@@ -35,8 +39,85 @@ export const EscalationRoomView: React.FC<EscalationRoomViewProps> = ({
   onAgreementUpdated,
   onStageTask
 }) => {
-  const [messages, setMessages] = useState<{ id: string; sender: string; time: string; text: string; role?: string }[]>([]);
+  const [messages, setMessages] = useState<{ 
+    id: string; 
+    sender: string; 
+    time: string; 
+    text: string; 
+    role?: string;
+    replyTo?: MessageReplyInfo;
+    forwardedFrom?: MessageForwardInfo;
+    reactions?: Record<string, string[]>;
+  }[]>([]);
   const [inputText, setInputText] = useState('');
+
+  // Reply, Forward, and Reactions state
+  const [replyingToMessage, setReplyingToMessage] = useState<any | null>(null);
+  const [forwardingMessage, setForwardingMessage] = useState<any | null>(null);
+  const [localReactions, setLocalReactions] = useState<Record<string, Record<string, string[]>>>({});
+
+  const handleToggleReaction = (msgId: string, emoji: string) => {
+    setLocalReactions(prev => {
+      const existing = prev[msgId] || messages.find(m => m.id === msgId)?.reactions || {};
+      const usersList = existing[emoji] || [];
+      const currentId = currentUser?.id || 'curr-user';
+      const hasReacted = usersList.includes(currentId);
+      const updated = hasReacted ? usersList.filter(u => u !== currentId) : [...usersList, currentId];
+      const next = { ...existing };
+      if (updated.length > 0) {
+        next[emoji] = updated;
+      } else {
+        delete next[emoji];
+      }
+      return { ...prev, [msgId]: next };
+    });
+  };
+
+  const handleConfirmForward = async (destination: ForwardDestination, optionalComment: string) => {
+    if (!forwardingMessage) return;
+    const forwardInfo: MessageForwardInfo = {
+      senderName: forwardingMessage.sender,
+      sourceTitle: `Escalation #${agreement.issueKey || agreement.id}`
+    };
+    const payloadText = optionalComment 
+      ? `${optionalComment}\n\n[Forwarded: "${forwardingMessage.text}"]`
+      : forwardingMessage.text;
+
+    if (destination.type === 'team') {
+      try {
+        await api.sendTeamMessage({
+          teamId: destination.id,
+          senderId: currentUser?.id || 'curr-user',
+          senderName: currentUser?.username || 'operator',
+          content: payloadText,
+          forwardedFrom: forwardInfo
+        });
+      } catch (e) {
+        console.warn('Failed to forward to team:', e);
+      }
+    } else if (destination.type === 'case') {
+      try {
+        await api.postIssueChat(destination.id, {
+          senderId: currentUser?.id || 'curr-user',
+          senderName: currentUser?.username || 'operator',
+          text: payloadText
+        });
+      } catch (e) {
+        console.warn('Failed to forward to case:', e);
+      }
+    } else if (destination.type === 'user') {
+      try {
+        await api.sendDirectMessage({
+          senderId: currentUser?.id || 'curr-user',
+          receiverId: destination.id,
+          content: payloadText
+        });
+      } catch (e) {
+        console.warn('Failed to forward to user DM:', e);
+      }
+    }
+    setForwardingMessage(null);
+  };
   const [selectedChecker, setSelectedChecker] = useState('checker_ops_2');
   const [selectedTechnician, setSelectedTechnician] = useState('samuel_tech');
   const [isProcessing, setIsProcessing] = useState(false);
@@ -146,11 +227,17 @@ export const EscalationRoomView: React.FC<EscalationRoomViewProps> = ({
       id: `room-msg-${Date.now()}`,
       sender: currentUser.username,
       time: timeStr,
-      text: textContent
+      text: textContent,
+      replyTo: replyingToMessage ? {
+        id: replyingToMessage.id,
+        senderName: replyingToMessage.sender,
+        snippet: replyingToMessage.text.slice(0, 100)
+      } : undefined
     };
 
     setMessages(prev => [...prev, newMsg]);
     setInputText('');
+    setReplyingToMessage(null);
 
     try {
       await api.appendEscalationLedgerEvent(agreement.id, {
@@ -389,34 +476,63 @@ export const EscalationRoomView: React.FC<EscalationRoomViewProps> = ({
           )}
 
           {/* Chat Messages */}
-          {messages.map(m => (
-            <div key={m.id} className="flex items-start space-x-3">
-              <div className="w-8 h-8 rounded-full bg-[#0F142A] text-white flex items-center justify-center text-xs font-mono font-bold shrink-0">
-                {m.sender.slice(0, 2).toUpperCase()}
-              </div>
-              <div className="space-y-1 max-w-[85%]">
-                <div className="flex items-center space-x-2 text-xs">
-                  <span className="font-bold text-slate-900 font-sans">@{m.sender}</span>
-                  <span className="text-slate-400 font-mono text-[10px]">{m.time}</span>
+          {messages.map(m => {
+            const isMe = m.sender === currentUser.username;
+            const reactionsForMsg = localReactions[m.id] || m.reactions || {};
+            return (
+              <div key={m.id} className="group relative flex items-start space-x-3">
+                {/* Micro Action Bar on Hover */}
+                <div className="absolute -top-3 right-4 opacity-0 group-hover:opacity-100 transition-opacity z-20">
+                  <MessageActionBar
+                    onReply={() => setReplyingToMessage(m)}
+                    onForward={() => setForwardingMessage(m)}
+                    onToggleReaction={(emoji) => handleToggleReaction(m.id, emoji)}
+                    isSelf={isMe}
+                  />
                 </div>
-                <div className="p-3 bg-slate-50 border border-slate-100 rounded-2xl rounded-tl-xs text-xs text-slate-800 leading-relaxed font-sans">
-                  {renderFormattedMessage(m.text)}
+
+                <div className="w-8 h-8 rounded-full bg-[#0F142A] text-white flex items-center justify-center text-xs font-mono font-bold shrink-0">
+                  {m.sender.slice(0, 2).toUpperCase()}
                 </div>
-                {onStageTask && (m.text.includes('ISS-') || m.text.toLowerCase().includes('stage')) && (
-                  <div className="pt-0.5">
-                    <button
-                      type="button"
-                      onClick={() => onStageTask(targetIssue)}
-                      className="px-2.5 py-1 rounded-lg bg-orange-50 hover:bg-[#F27421] text-orange-700 hover:text-white border border-orange-200 text-[10px] font-mono font-bold transition-all flex items-center space-x-1.5 cursor-pointer shadow-2xs"
-                    >
-                      <Flag size={11} />
-                      <span>Stage task ({targetIssue.id}) →</span>
-                    </button>
+                <div className="space-y-1 max-w-[85%]">
+                  <div className="flex items-center space-x-2 text-xs">
+                    <span className="font-bold text-slate-900 font-sans">@{m.sender}</span>
+                    <span className="text-slate-400 font-mono text-[10px]">{m.time}</span>
                   </div>
-                )}
+                  <div className="p-3 bg-slate-50 border border-slate-100 rounded-2xl rounded-tl-xs text-xs text-slate-800 leading-relaxed font-sans">
+                    {/* Forwarded Header */}
+                    <MessageForwardedHeader forwardedFrom={m.forwardedFrom} isSelf={false} />
+
+                    {/* Quoted Reply */}
+                    <MessageQuotedReply replyTo={m.replyTo} isSelf={false} />
+
+                    {renderFormattedMessage(m.text)}
+                  </div>
+
+                  {/* Emoji Reactions Row */}
+                  <MessageReactionsRow
+                    reactions={reactionsForMsg}
+                    currentUserId={currentUser?.id || 'curr-user'}
+                    onToggleReaction={(emoji) => handleToggleReaction(m.id, emoji)}
+                    isSelf={false}
+                  />
+
+                  {onStageTask && (m.text.includes('ISS-') || m.text.toLowerCase().includes('stage')) && (
+                    <div className="pt-0.5">
+                      <button
+                        type="button"
+                        onClick={() => onStageTask(targetIssue)}
+                        className="px-2.5 py-1 rounded-lg bg-orange-50 hover:bg-[#F27421] text-orange-700 hover:text-white border border-orange-200 text-[10px] font-mono font-bold transition-all flex items-center space-x-1.5 cursor-pointer shadow-2xs"
+                      >
+                        <Flag size={11} />
+                        <span>Stage task ({targetIssue.id}) →</span>
+                      </button>
+                    </div>
+                  )}
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
 
           {/* Status System Chip */}
           <div className="flex justify-center pt-2">
@@ -461,6 +577,8 @@ export const EscalationRoomView: React.FC<EscalationRoomViewProps> = ({
             placeholder="Type a message, @ to mention user, @@ for team, / for directives..."
             value={inputText}
             onChange={setInputText}
+            replyingTo={replyingToMessage ? { id: replyingToMessage.id, senderName: replyingToMessage.sender, text: replyingToMessage.text } : null}
+            onCancelReply={() => setReplyingToMessage(null)}
             onSendMessage={handleSendRoomMessage}
             onExecuteDirective={handleExecuteDirective}
             quickPrompts={[
