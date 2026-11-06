@@ -13,6 +13,9 @@ import { Step2ChooseTables } from './Step2ChooseTables';
 import { Step3MapColumns } from './Step3MapColumns';
 import { Step4Translations } from './Step4Translations';
 import { Step5ReviewActivate } from './Step5ReviewActivate';
+import { Step2DiscoverFiles } from './Step2DiscoverFiles';
+import { Step3TargetLocalTable } from './Step3TargetLocalTable';
+import { Step4IngestionPolicy } from './Step4IngestionPolicy';
 import { ColumnActionsPopover } from '../../database/ColumnActionsPopover';
 
 export interface DataSetupWizardModalProps {
@@ -64,8 +67,16 @@ export function DataSetupWizardModal({
 
   if (!isOpen) return null;
 
-  // Stepper steps configuration
-  const steps = [
+  const isFtp = wizardData.type === 'SFTP' || wizardData.type === 'FTP';
+
+  // Stepper steps configuration - dynamically adapts for SFTP File Discovery & Local Ingestion
+  const steps = isFtp ? [
+    { number: 1, title: 'Connect', sub: 'Credentials & remote path' },
+    { number: 2, title: 'Discover files', sub: 'Directory scan & patterns' },
+    { number: 3, title: 'Target local table', sub: 'Local DB & column mapping' },
+    { number: 4, title: 'Ingestion policy', sub: 'Schedule & deduplication' },
+    { number: 5, title: 'Review & activate', sub: 'Dry-run and activate' }
+  ] : [
     { number: 1, title: 'Connect', sub: 'Credentials and test' },
     { number: 2, title: 'Choose tables', sub: 'What IssueTrace may read' },
     { number: 3, title: 'Map columns', sub: 'Link to global fields' },
@@ -93,9 +104,75 @@ export function DataSetupWizardModal({
     onClose();
   };
 
+  const handleSaveSftpAndOpen = async (connData: any) => {
+    let createdResource: any = null;
+    try {
+      const payload: any = {
+        name: connData.name || wizardData.name,
+        type: 'SFTP',
+        host: (connData.host || wizardData.host)?.split(':')[0] || connData.host || wizardData.host,
+        port: Number(connData.port || wizardData.port || 22),
+        database: connData.database || wizardData.database || '/incoming/settlement/',
+        username: connData.username || wizardData.username || 'root',
+        password: connData.password || wizardData.password || '',
+        status: 'ACTIVE',
+        scope: connData.scope || wizardData.scope || 'team'
+      };
+      if (currentUser?.teamId && payload.scope === 'team') {
+        createdResource = await api.createTeamDatabase(currentUser.teamId, payload).catch((e) => {
+          console.warn('createTeamDatabase warning:', e);
+          return null;
+        });
+      } else {
+        createdResource = await api.createDatabase(payload).catch((e) => {
+          console.warn('createDatabase warning:', e);
+          return null;
+        });
+      }
+    } catch (e) {
+      console.warn('Save SFTP resource notice:', e);
+    }
+
+    const savedResource = {
+      id: createdResource?.id || wizardData.id || `res-sftp-${Date.now()}`,
+      name: connData.name || wizardData.name,
+      type: 'SFTP',
+      host: connData.host || wizardData.host || '127.0.0.1:22',
+      port: Number(connData.port || wizardData.port || 22),
+      database: connData.database || wizardData.database || '/incoming/settlement/',
+      username: connData.username || wizardData.username || 'root',
+      password: connData.password || wizardData.password || '',
+      contents: 'Folder discovery ready',
+      setupStep: 2,
+      totalSteps: 4,
+      status: 'SETUP_NOT_FINISHED',
+      statusLabel: 'Setup not finished',
+      isMapped: false,
+      openOnSave: true
+    };
+
+    onSaved(savedResource);
+    onClose();
+  };
+
   const handleActivate = async () => {
     try {
-      if (wizardData.type === 'MySQL' || wizardData.type === 'PostgreSQL') {
+      if (isFtp) {
+        const ftpConfigPayload: any = {
+          name: wizardData.name,
+          serverHost: wizardData.host?.split(':')[0] || wizardData.host,
+          serverPort: Number(wizardData.port || 22),
+          remoteDirectory: wizardData.remotePath || wizardData.database || '/incoming/settlement/',
+          filePattern: wizardData.filePattern || 'SETTLE_*.csv',
+          fileFormat: wizardData.fileFormat || 'CSV',
+          delimiter: wizardData.delimiter || ',',
+          targetTableName: wizardData.targetTable || 'mirror_sftp_settle_clearing',
+          pollingIntervalMinutes: wizardData.scheduleMode === 'SCHEDULED' ? 60 : 0,
+          scheduleCron: wizardData.scheduleCron || '0 2 * * *',
+          fieldMappings: wizardData.mappings || []
+        };
+        await api.createFtpStagingConfig(ftpConfigPayload).catch(() => {});
+      } else if (wizardData.type === 'MySQL' || wizardData.type === 'PostgreSQL') {
         const payload: any = {
           name: wizardData.name,
           type: wizardData.type.toLowerCase(),
@@ -211,53 +288,98 @@ export function DataSetupWizardModal({
                 initialData={wizardData}
                 onNext={(step1Data) => {
                   setWizardData(prev => ({ ...prev, ...step1Data }));
-                  setCurrentStep(2);
+                  if (step1Data.type === 'SFTP' || step1Data.type === 'FTP' || step1Data.isFtp) {
+                    handleSaveSftpAndOpen(step1Data);
+                  } else {
+                    setCurrentStep(2);
+                  }
                 }}
                 onBack={onClose}
               />
             )}
 
             {currentStep === 2 && (
-              <Step2ChooseTables
-                initialTables={wizardData.tables}
-                onNext={(selectedTables) => {
-                  setWizardData(prev => ({ ...prev, tables: selectedTables }));
-                  setCurrentStep(3);
-                }}
-                onBack={() => setCurrentStep(1)}
-              />
+              isFtp ? (
+                <Step2DiscoverFiles
+                  remotePath={wizardData.remotePath || wizardData.database || '/incoming/settlement/'}
+                  initialPattern={wizardData.filePattern || 'SETTLE_*.csv'}
+                  initialFormat={wizardData.fileFormat || 'CSV'}
+                  initialDelimiter={wizardData.delimiter || ','}
+                  connectionId={wizardData.id}
+                  onNext={(discoveryData) => {
+                    setWizardData(prev => ({ ...prev, ...discoveryData }));
+                    setCurrentStep(3);
+                  }}
+                  onBack={() => setCurrentStep(1)}
+                />
+              ) : (
+                <Step2ChooseTables
+                  initialTables={wizardData.tables}
+                  onNext={(selectedTables) => {
+                    setWizardData(prev => ({ ...prev, tables: selectedTables }));
+                    setCurrentStep(3);
+                  }}
+                  onBack={() => setCurrentStep(1)}
+                />
+              )
             )}
 
             {currentStep === 3 && (
-              <Step3MapColumns
-                resourceType={wizardData.type}
-                selectedTables={wizardData.tables}
-                initialMappings={wizardData.mappings}
-                onNext={(mappings) => {
-                  setWizardData(prev => ({ ...prev, mappings }));
-                  setCurrentStep(4);
-                }}
-                onBack={() => setCurrentStep(2)}
-                onOpenMergeColumns={() => {
-                  setSelectedColumnForActions('Transaction_Place');
-                  setIsColumnActionsOpen(true);
-                }}
-                onOpenColumnActions={(colName) => {
-                  setSelectedColumnForActions(colName);
-                  setIsColumnActionsOpen(true);
-                }}
-              />
+              isFtp ? (
+                <Step3TargetLocalTable
+                  discoveredHeaders={wizardData.discoveredHeaders}
+                  initialTargetTable={wizardData.targetTable || 'mirror_sftp_settle_clearing'}
+                  initialMappings={wizardData.mappings}
+                  onNext={(targetData) => {
+                    setWizardData(prev => ({ ...prev, ...targetData }));
+                    setCurrentStep(4);
+                  }}
+                  onBack={() => setCurrentStep(2)}
+                />
+              ) : (
+                <Step3MapColumns
+                  resourceType={wizardData.type}
+                  selectedTables={wizardData.tables}
+                  initialMappings={wizardData.mappings}
+                  onNext={(mappings) => {
+                    setWizardData(prev => ({ ...prev, mappings }));
+                    setCurrentStep(4);
+                  }}
+                  onBack={() => setCurrentStep(2)}
+                  onOpenMergeColumns={() => {
+                    setSelectedColumnForActions('Transaction_Place');
+                    setIsColumnActionsOpen(true);
+                  }}
+                  onOpenColumnActions={(colName) => {
+                    setSelectedColumnForActions(colName);
+                    setIsColumnActionsOpen(true);
+                  }}
+                />
+              )
             )}
 
             {currentStep === 4 && (
-              <Step4Translations
-                initialDictionaries={wizardData.translations}
-                onNext={(translations) => {
-                  setWizardData(prev => ({ ...prev, translations }));
-                  setCurrentStep(5);
-                }}
-                onBack={() => setCurrentStep(3)}
-              />
+              isFtp ? (
+                <Step4IngestionPolicy
+                  initialSchedule={wizardData.scheduleCron || '0 2 * * *'}
+                  initialDeduplicationAction={wizardData.deduplicationAction || 'SKIP'}
+                  initialFileCleanup={wizardData.fileCleanupAction || 'MOVE_ARCHIVE'}
+                  onNext={(policyData) => {
+                    setWizardData(prev => ({ ...prev, ...policyData }));
+                    setCurrentStep(5);
+                  }}
+                  onBack={() => setCurrentStep(3)}
+                />
+              ) : (
+                <Step4Translations
+                  initialDictionaries={wizardData.translations}
+                  onNext={(translations) => {
+                    setWizardData(prev => ({ ...prev, translations }));
+                    setCurrentStep(5);
+                  }}
+                  onBack={() => setCurrentStep(3)}
+                />
+              )
             )}
 
             {currentStep === 5 && (

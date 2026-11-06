@@ -103,6 +103,52 @@ async function testSocketPing(host: string, port: number, timeoutMs = 3000): Pro
 }
 
 /**
+ * Builds standard ssh2 connection options with support for passwords,
+ * PEM/OpenSSH private keys, keyboard-interactive (PAM), and modern host-key algorithms.
+ */
+function buildSshConnectConfig(config: FtpConnectionConfig, timeoutMs = 10000): any {
+  const connOpts: any = {
+    host: config.host,
+    port: config.port,
+    username: config.user,
+    readyTimeout: timeoutMs,
+    tryKeyboard: true,
+    keepaliveInterval: 5000,
+    algorithms: {
+      serverHostKey: [
+        'ssh-ed25519',
+        'ecdsa-sha2-nistp256',
+        'ecdsa-sha2-nistp384',
+        'ecdsa-sha2-nistp521',
+        'rsa-sha2-512',
+        'rsa-sha2-256',
+        'ssh-rsa'
+      ]
+    }
+  };
+
+  const rawSecret = (config.password || '').trim();
+  if (rawSecret.startsWith('-----BEGIN')) {
+    connOpts.privateKey = rawSecret;
+  } else if (rawSecret) {
+    connOpts.password = rawSecret;
+  }
+
+  return connOpts;
+}
+
+/**
+ * Attaches keyboard-interactive handler so SSH PAM/challenge-response
+ * receives the configured password without emitting 'All configured authentication methods failed'.
+ */
+function attachKeyboardInteractive(conn: SshClient, password?: string): void {
+  conn.on('keyboard-interactive', (_name, _instructions, _lang, prompts, finish) => {
+    const pass = password || '';
+    finish(prompts.map(() => pass));
+  });
+}
+
+/**
  * Tests SFTP connectivity via ssh2 with SSH handshake and SFTP subsystem verification.
  */
 async function testSftpConnection(config: FtpConnectionConfig): Promise<{ success: boolean; message: string; latencyMs?: number }> {
@@ -120,12 +166,18 @@ async function testSftpConnection(config: FtpConnectionConfig): Promise<{ succes
     };
 
     conn.on('error', (err: any) => {
+      let extraHint = '';
+      if (err.message && err.message.includes('All configured authentication methods failed')) {
+        extraHint = ` - Authentication failed for user '${config.user}'. Check your password or private key.`;
+      }
       safeResolve({
         success: false,
-        message: `SFTP connection error to ${config.host}:${config.port}: ${err.message}`,
+        message: `SFTP connection error to ${config.host}:${config.port}: ${err.message}${extraHint}`,
         latencyMs: Date.now() - start
       });
     });
+
+    attachKeyboardInteractive(conn, config.password);
 
     conn.on('ready', () => {
       conn.sftp((err, sftp) => {
@@ -157,13 +209,8 @@ async function testSftpConnection(config: FtpConnectionConfig): Promise<{ succes
     });
 
     try {
-      conn.connect({
-        host: config.host,
-        port: config.port,
-        username: config.user,
-        password: config.password,
-        readyTimeout: 7000
-      });
+      const connOpts = buildSshConnectConfig(config, 7000);
+      conn.connect(connOpts);
     } catch (e: any) {
       safeResolve({
         success: false,
@@ -349,14 +396,11 @@ async function fetchSftpFilesRecursive(
       });
     });
 
+    attachKeyboardInteractive(conn, config.password);
+
     try {
-      conn.connect({
-        host: config.host,
-        port: config.port,
-        username: config.user,
-        password: config.password,
-        readyTimeout: 10000
-      });
+      const connOpts = buildSshConnectConfig(config, 10000);
+      conn.connect(connOpts);
     } catch (e) {
       finish([], e);
     }
@@ -436,14 +480,11 @@ async function fetchSftpFileBuffer(
       });
     });
 
+    attachKeyboardInteractive(conn, config.password);
+
     try {
-      conn.connect({
-        host: config.host,
-        port: config.port,
-        username: config.user,
-        password: config.password,
-        readyTimeout: 10000
-      });
+      const connOpts = buildSshConnectConfig(config, 10000);
+      conn.connect(connOpts);
     } catch (e: any) {
       finishErr(new Error(`SFTP connection initialization failed: ${e.message}`));
     }

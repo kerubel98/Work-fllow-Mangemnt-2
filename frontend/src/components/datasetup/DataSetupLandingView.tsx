@@ -436,7 +436,9 @@ export function DataSetupLandingView({
               }
               return [...prev, updatedResource];
             });
-            if (selectedResourceDetail && selectedResourceDetail.id === updatedResource.id) {
+            if (updatedResource.openOnSave) {
+              setSelectedResourceDetail(updatedResource);
+            } else if (selectedResourceDetail && selectedResourceDetail.id === updatedResource.id) {
               setSelectedResourceDetail(updatedResource);
             }
           }

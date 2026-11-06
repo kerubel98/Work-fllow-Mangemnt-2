@@ -245,10 +245,10 @@ databaseRouter.post('/test-connection', async (req: Request, res: Response) => {
   let targetHost = reqHost || '';
   let targetPort = Number(reqPort) || (
     targetType === 'MySQL' ? 3306 :
-    targetType === 'Oracle' ? 1521 :
-    targetType === 'MongoDB' ? 27017 :
-    targetType === 'FTP' ? 21 :
-    targetType === 'SFTP' ? 22 : 5432
+      targetType === 'Oracle' ? 1521 :
+        targetType === 'MongoDB' ? 27017 :
+          targetType === 'FTP' ? 21 :
+            targetType === 'SFTP' ? 22 : 5432
   );
   let targetDbName = databaseName || '';
   let targetUser = username || '';
@@ -287,7 +287,9 @@ databaseRouter.post('/test-connection', async (req: Request, res: Response) => {
   }
 
   const timestamp = new Date().toISOString();
-  const effectivePassword = req.body.password || dbRecord?.password;
+  const rawReqPassword = req.body.password || req.body.privateKey;
+  const isMaskedPassword = rawReqPassword === '••••••••' || rawReqPassword === '********';
+  const effectivePassword = (rawReqPassword && !isMaskedPassword) ? rawReqPassword : (dbRecord?.password || '');
 
   // Special FTP/SFTP connection test
   if (targetType === 'FTP' || targetType === 'SFTP') {
@@ -331,7 +333,7 @@ databaseRouter.post('/test-connection', async (req: Request, res: Response) => {
         lastTestMessage: ftpRes.message,
         pingMs: ftpRes.latencyMs || 0,
         status: ftpRes.success ? 'online' : 'offline'
-      }).catch(() => {});
+      }).catch(() => { });
     }
 
     return res.json(responsePayload);
@@ -742,7 +744,7 @@ databaseRouter.get('/databases/:id/tables', async (req: Request, res: Response) 
         return res.status(403).json({ error: `Access Denied: Database "${db.name}" is private to its designated team.` });
       }
     }
-    
+
     let discovered: string[] = [];
     if (db.type !== 'FTP' && db.type !== 'SFTP') {
       if (!db.availableTables || db.availableTables.length === 0) {
@@ -750,7 +752,7 @@ databaseRouter.get('/databases/:id/tables', async (req: Request, res: Response) 
           discovered = await discoverTablesForDb(db);
           if (discovered.length > 0) {
             db.availableTables = discovered;
-            await repo.updateDatabase(db.id, { availableTables: discovered }).catch(() => {});
+            await repo.updateDatabase(db.id, { availableTables: discovered }).catch(() => { });
           }
         } catch (discErr: any) {
           console.warn(`[database.ts] Auto-discovery for ${db.name}:`, discErr.message);
@@ -773,7 +775,7 @@ databaseRouter.get('/databases/:id/tables', async (req: Request, res: Response) 
           if (c.stagingTableName) combined.push(c.stagingTableName);
           if (c.fileNamePattern) combined.push(c.fileNamePattern);
         });
-      } catch {}
+      } catch { }
     }
 
     // Also check for PostgreSQL UNLOGGED mirror tables for this database
@@ -791,7 +793,7 @@ databaseRouter.get('/databases/:id/tables', async (req: Request, res: Response) 
           if (rawTable) combined.push(rawTable);
         }
       }
-    } catch {}
+    } catch { }
 
     const allTables = Array.from(new Set(combined.map(t => String(t).trim()))).filter(Boolean);
 
@@ -1038,7 +1040,7 @@ databaseRouter.get('/databases/:id/tables/:tableName/preview', async (req: Reque
     let columns: any[] = [];
     try {
       columns = await getTableColumnsForDb(db, tableName);
-    } catch {}
+    } catch { }
     const colNames = (columns && columns.length > 0) ? columns.map(c => c.name || c) : ['id', 'created_at', 'status'];
 
     return res.json({
@@ -1074,7 +1076,7 @@ databaseRouter.get('/column-configurations', async (req: Request, res: Response)
     if (!isAdmin && (userId || teamId)) {
       const allDbs = await repo.getDatabases();
       const allowedDbIds = new Set(
-        allDbs.filter(d => 
+        allDbs.filter(d =>
           (userId && d.createdByUserId === userId) ||
           (teamId && d.teamId === teamId)
         ).map(d => d.id)
@@ -1151,7 +1153,7 @@ databaseRouter.post('/column-configurations', async (req: Request, res: Response
 
       const targetDb = await repo.getDatabaseById(dbId);
       if (targetDb) {
-        const isOwner = targetDb.createdByUserId === callerId || 
+        const isOwner = targetDb.createdByUserId === callerId ||
           (targetDb.teamId && teamId && targetDb.teamId === teamId);
         const allTeams = await repo.getTeams();
         const userTeams = allTeams.filter(t => t.managerId === callerId || (t.memberIds && t.memberIds.includes(callerId)));
@@ -1216,7 +1218,7 @@ databaseRouter.put('/column-configurations/:id', async (req: Request, res: Respo
 
       const targetDb = await repo.getDatabaseById(existing.dbId);
       if (targetDb) {
-        const isOwner = targetDb.createdByUserId === callerId || 
+        const isOwner = targetDb.createdByUserId === callerId ||
           (targetDb.teamId && req.body.teamId && targetDb.teamId === req.body.teamId);
         const allTeams = await repo.getTeams();
         const userTeams = allTeams.filter(t => t.managerId === callerId || (t.memberIds && t.memberIds.includes(callerId)));
@@ -1253,7 +1255,7 @@ databaseRouter.delete('/column-configurations/:id', async (req: Request, res: Re
 
       const targetDb = await repo.getDatabaseById(existing.dbId);
       if (targetDb) {
-        const isOwner = targetDb.createdByUserId === callerId || 
+        const isOwner = targetDb.createdByUserId === callerId ||
           (targetDb.teamId && req.query.teamId && targetDb.teamId === req.query.teamId);
         const allTeams = await repo.getTeams();
         const userTeams = allTeams.filter(t => t.managerId === callerId || (t.memberIds && t.memberIds.includes(callerId)));
@@ -1293,7 +1295,7 @@ databaseRouter.post('/column-configurations/test', async (req: Request, res: Res
           try {
             const mRes = await queryPg(`SELECT * FROM ${mirrorName} LIMIT 50`);
             if (mRes && mRes.rows) rows = mRes.rows;
-          } catch {}
+          } catch { }
         }
       }
     }
@@ -1880,7 +1882,7 @@ databaseRouter.post('/column-configurations/test', async (req: Request, res: Res
                     matchedPriorityValues: { column: c.columnName, value: val, pattern: pat }
                   });
                 }
-              } catch {}
+              } catch { }
             }
           }
         });

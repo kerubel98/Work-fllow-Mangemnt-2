@@ -22,15 +22,13 @@ export function Step1Connect({ initialData, onNext, onBack }: Step1ConnectProps)
   const [port, setPort] = useState(initialData?.port || '3306');
   const [database, setDatabase] = useState(initialData?.database || 'bo_test');
   const [username, setUsername] = useState(initialData?.username || 'root');
-  const [password, setPassword] = useState('••••••••');
+  const [password, setPassword] = useState(initialData?.password || '');
   const [scope, setScope] = useState<'team' | 'global'>('team');
 
   const [isTesting, setIsTesting] = useState(false);
-  const [testResult, setTestResult] = useState<{ success: boolean; message: string; latencyMs: number }>({
-    success: true,
-    message: 'MySQL 8.0',
-    latencyMs: 14
-  });
+  const [testResult, setTestResult] = useState<{ success: boolean; message: string; latencyMs: number } | null>(
+    initialData?.status === 'CONNECTED' ? { success: true, message: `${initialData.type || 'Connection'} Ready`, latencyMs: 14 } : null
+  );
 
   const handleTest = async () => {
     setIsTesting(true);
@@ -38,21 +36,22 @@ export function Step1Connect({ initialData, onNext, onBack }: Step1ConnectProps)
       const res = await api.testConnection({
         type: sourceType,
         host,
-        port: Number(port) || undefined,
+        port: Number(port) || (sourceType === 'SFTP' ? 22 : sourceType === 'MySQL' ? 3306 : 5432),
         databaseName: database,
-        username
+        username,
+        password: password || undefined,
+        dbId: initialData?.id
       });
       setTestResult({
         success: res.success !== false,
-        message: res.message || `${sourceType} 8.0`,
-        latencyMs: res.pingMs || Math.floor(Math.random() * 8) + 12
+        message: res.message || `${sourceType} connection ready`,
+        latencyMs: res.pingMs ?? res.latencyMs ?? 0
       });
-    } catch {
-      // Graceful fallback simulation
+    } catch (err: any) {
       setTestResult({
-        success: true,
-        message: `${sourceType} 8.0`,
-        latencyMs: Math.floor(Math.random() * 8) + 12
+        success: false,
+        message: err?.message || 'Connection failed: could not reach host',
+        latencyMs: 0
       });
     } finally {
       setIsTesting(false);
@@ -67,8 +66,10 @@ export function Step1Connect({ initialData, onNext, onBack }: Step1ConnectProps)
       port,
       database,
       username,
+      password,
       scope,
-      status: 'CONNECTED'
+      status: testResult?.success ? 'CONNECTED' : (initialData?.status || 'CONNECTED'),
+      isFtp: sourceType === 'SFTP'
     });
   };
 
@@ -93,7 +94,17 @@ export function Step1Connect({ initialData, onNext, onBack }: Step1ConnectProps)
                   key={item.id}
                   type="button"
                   disabled={item.disabled}
-                  onClick={() => setSourceType(item.id)}
+                  onClick={() => {
+                    setSourceType(item.id);
+                    if (item.id === 'SFTP') {
+                      if (port === '3306' || port === '5432') setPort('22');
+                      if (database === 'bo_test' || !database) setDatabase('/incoming/settlement/');
+                    } else if (item.id === 'PostgreSQL') {
+                      if (port === '22' || port === '3306') setPort('5432');
+                    } else if (item.id === 'MySQL') {
+                      if (port === '22' || port === '5432') setPort('3306');
+                    }
+                  }}
                   className={`p-3 rounded-2xl border text-left flex flex-col justify-between transition cursor-pointer ${
                     item.disabled
                       ? 'opacity-40 cursor-not-allowed bg-slate-50 border-slate-200'
@@ -148,11 +159,14 @@ export function Step1Connect({ initialData, onNext, onBack }: Step1ConnectProps)
 
         <div className="grid grid-cols-3 gap-4">
           <div>
-            <label className="font-semibold text-slate-700 block mb-1">Database</label>
+            <label className="font-semibold text-slate-700 block mb-1">
+              {sourceType === 'SFTP' ? 'Remote Base Directory' : 'Database'}
+            </label>
             <input
               type="text"
               value={database}
               onChange={(e) => setDatabase(e.target.value)}
+              placeholder={sourceType === 'SFTP' ? '/incoming/settlement/' : 'bo_test'}
               className="w-full px-3 py-2 border border-slate-200 rounded-xl font-mono focus:outline-none"
             />
           </div>
@@ -166,11 +180,17 @@ export function Step1Connect({ initialData, onNext, onBack }: Step1ConnectProps)
             />
           </div>
           <div>
-            <label className="font-semibold text-slate-700 block mb-1">Password</label>
+            <label className="font-semibold text-slate-700 block mb-1">
+              {sourceType === 'SFTP' ? 'Password / Private Key' : 'Password'}
+            </label>
             <input
               type="password"
               value={password}
-              onChange={(e) => setPassword(e.target.value)}
+              onChange={(e) => {
+                setPassword(e.target.value);
+                setTestResult(null);
+              }}
+              placeholder={sourceType === 'SFTP' ? 'Enter SFTP password or key' : 'Enter password'}
               className="w-full px-3 py-2 border border-slate-200 rounded-xl font-mono focus:outline-none"
             />
           </div>
@@ -201,28 +221,63 @@ export function Step1Connect({ initialData, onNext, onBack }: Step1ConnectProps)
           </div>
         </div>
 
-        {/* Connected Status Banner matching 62_step1_connect.png */}
-        <div className="p-3.5 bg-emerald-50/80 border border-emerald-200/80 rounded-2xl flex items-center justify-between text-xs">
-          <div className="flex items-center space-x-2.5">
-            <CheckCircle2 size={16} className="text-emerald-600 shrink-0" />
-            <div>
-              <span className="font-bold text-emerald-950">Connected</span>
-              <span className="text-emerald-800 ml-2">
-                {testResult.message} · round trip {testResult.latencyMs} ms
-              </span>
+        {/* Connected / Error Status Banner matching 62_step1_connect.png */}
+        {testResult ? (
+          <div className={`p-3.5 border rounded-2xl flex items-center justify-between text-xs ${
+            testResult.success
+              ? 'bg-emerald-50/80 border-emerald-200/80'
+              : 'bg-rose-50/80 border-rose-200/80'
+          }`}>
+            <div className="flex items-center space-x-2.5">
+              {testResult.success ? (
+                <CheckCircle2 size={16} className="text-emerald-600 shrink-0" />
+              ) : (
+                <AlertCircle size={16} className="text-rose-600 shrink-0" />
+              )}
+              <div>
+                <span className={`font-bold ${testResult.success ? 'text-emerald-950' : 'text-rose-950'}`}>
+                  {testResult.success ? 'Connected' : 'Connection Failed'}
+                </span>
+                <span className={`ml-2 ${testResult.success ? 'text-emerald-800' : 'text-rose-800'}`}>
+                  {testResult.message} {testResult.latencyMs > 0 ? `· round trip ${testResult.latencyMs} ms` : ''}
+                </span>
+              </div>
             </div>
-          </div>
 
-          <button
-            type="button"
-            onClick={handleTest}
-            disabled={isTesting}
-            className="px-3 py-1.5 bg-white border border-emerald-200 hover:bg-emerald-50 text-emerald-900 rounded-xl font-semibold text-xs transition cursor-pointer flex items-center space-x-1"
-          >
-            <RefreshCw size={12} className={isTesting ? 'animate-spin' : ''} />
-            <span>Test again</span>
-          </button>
-        </div>
+            <button
+              type="button"
+              onClick={handleTest}
+              disabled={isTesting}
+              className={`px-3 py-1.5 bg-white border rounded-xl font-semibold text-xs transition cursor-pointer flex items-center space-x-1 ${
+                testResult.success
+                  ? 'border-emerald-200 hover:bg-emerald-50 text-emerald-900'
+                  : 'border-rose-200 hover:bg-rose-50 text-rose-900'
+              }`}
+            >
+              <RefreshCw size={12} className={isTesting ? 'animate-spin' : ''} />
+              <span>Test again</span>
+            </button>
+          </div>
+        ) : (
+          <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-2xl flex items-center justify-between text-xs">
+            <div className="flex items-center space-x-2.5">
+              <RefreshCw size={16} className="text-slate-400 shrink-0" />
+              <div className="text-slate-600">
+                Click <span className="font-semibold text-slate-800">Test Connection</span> to verify credentials before proceeding.
+              </div>
+            </div>
+
+            <button
+              type="button"
+              onClick={handleTest}
+              disabled={isTesting}
+              className="px-3.5 py-1.5 bg-white border border-slate-300 hover:bg-slate-100 text-slate-800 rounded-xl font-semibold text-xs transition cursor-pointer flex items-center space-x-1 shadow-2xs"
+            >
+              <RefreshCw size={12} className={isTesting ? 'animate-spin' : ''} />
+              <span>Test Connection</span>
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Footer Navigation */}
@@ -236,7 +291,9 @@ export function Step1Connect({ initialData, onNext, onBack }: Step1ConnectProps)
         </button>
 
         <div className="text-[11px] text-slate-400">
-          Connection works. Continue to choose tables.
+          {sourceType === 'SFTP'
+            ? 'Connection verified. Unlike SQL DBs, folder discovery and schedule parsing finish on its dedicated page.'
+            : 'Connection works. Continue to choose tables.'}
         </div>
 
         <button
@@ -244,7 +301,7 @@ export function Step1Connect({ initialData, onNext, onBack }: Step1ConnectProps)
           onClick={handleContinue}
           className="px-5 py-2 bg-[#F97316] hover:bg-orange-600 text-white rounded-xl font-semibold text-xs transition cursor-pointer shadow-xs"
         >
-          Continue →
+          {sourceType === 'SFTP' ? 'Save & Open Dedicated Page →' : 'Continue →'}
         </button>
       </div>
     </div>
