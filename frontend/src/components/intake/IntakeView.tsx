@@ -49,7 +49,24 @@ const DEFAULT_INTAKE_ITEMS = [
     category: 'Reconciliation exception',
     urgency: 'normal',
     confidence_score: 0.80,
-    attachments: [{ filename: 'sinqee_t1_clearing_feed.xlsx', size: '245 KB' }],
+    attachments: [
+      {
+        id: 'att-sinqee-01',
+        filename: 'sinqee_t1_clearing_feed.xlsx',
+        size: '245 KB',
+        contentType: 'spreadsheet',
+        parsedData: {
+          sampleHeaders: ['Txn_Ref', 'Card_Pan', 'Settlement_Date', 'Amount_ETB', 'Terminal_Id', 'Response_Code', 'Settlement_Status'],
+          sampleRows: [
+            { Txn_Ref: 'TXN-SINQ-1001', Card_Pan: '5061********4412', Settlement_Date: '2026-10-21', Amount_ETB: 125000.00, Terminal_Id: 'ATM-AA-09', Response_Code: '00', Settlement_Status: 'SETTLED' },
+            { Txn_Ref: 'TXN-SINQ-1002', Card_Pan: '5061********8831', Settlement_Date: '2026-10-21', Amount_ETB: 45000.00, Terminal_Id: 'POS-BOLE-01', Response_Code: '00', Settlement_Status: 'SETTLED' },
+            { Txn_Ref: 'TXN-SINQ-1003', Card_Pan: '5061********1190', Settlement_Date: '2026-10-21', Amount_ETB: 320000.50, Terminal_Id: 'ATM-HAWASSA-02', Response_Code: '05', Settlement_Status: 'DISCREPANCY' },
+            { Txn_Ref: 'TXN-SINQ-1004', Card_Pan: '5061********7724', Settlement_Date: '2026-10-21', Amount_ETB: 15400.00, Terminal_Id: 'POS-PIASSA-03', Response_Code: '00', Settlement_Status: 'SETTLED' },
+            { Txn_Ref: 'TXN-SINQ-1005', Card_Pan: '5061********9025', Settlement_Date: '2026-10-21', Amount_ETB: 89000.00, Terminal_Id: 'ATM-ADAMA-01', Response_Code: '00', Settlement_Status: 'SETTLED' }
+          ]
+        }
+      }
+    ],
     status: 'READY_FOR_TASK_CREATION',
     created_at: new Date(Date.now() - 3600000 * 2).toISOString(),
     raw_payload: JSON.stringify({
@@ -74,7 +91,23 @@ const DEFAULT_INTAKE_ITEMS = [
     category: 'Payment failure',
     urgency: 'normal',
     confidence_score: 0.60,
-    attachments: new Array(10).fill({ filename: 'decline_report.csv' }),
+    attachments: [
+      {
+        id: 'att-decline-01',
+        filename: 'decline_report.csv',
+        size: '180 KB',
+        contentType: 'spreadsheet',
+        parsedData: {
+          sampleHeaders: ['Txn_Ref', 'Card_Pan', 'Decline_Reason', 'Amount', 'Currency', 'ISO_Code', 'Timestamp'],
+          sampleRows: [
+            { Txn_Ref: 'DEC-2026-001', Card_Pan: '6221********9901', Decline_Reason: 'Insufficient Funds', Amount: 5400.00, Currency: 'ETB', ISO_Code: 'ISO-51', Timestamp: '2026-10-22 09:12:14' },
+            { Txn_Ref: 'DEC-2026-002', Card_Pan: '6221********4418', Decline_Reason: 'Do Not Honor', Amount: 18200.00, Currency: 'ETB', ISO_Code: 'ISO-05', Timestamp: '2026-10-22 09:14:50' },
+            { Txn_Ref: 'DEC-2026-003', Card_Pan: '6221********3310', Decline_Reason: 'Expired Card', Amount: 2100.00, Currency: 'ETB', ISO_Code: 'ISO-54', Timestamp: '2026-10-22 09:20:11' },
+            { Txn_Ref: 'DEC-2026-004', Card_Pan: '6221********7762', Decline_Reason: 'Exceeds Withdrawal Limit', Amount: 50000.00, Currency: 'ETB', ISO_Code: 'ISO-61', Timestamp: '2026-10-22 09:25:33' }
+          ]
+        }
+      }
+    ],
     status: 'NEW',
     created_at: new Date(Date.now() - 3600000 * 4).toISOString(),
     raw_payload: JSON.stringify({
@@ -927,14 +960,35 @@ const IntakeViewContent: React.FC<IntakeViewProps> = ({
                             )}
                           </td>
 
-                          {/* Review Action */}
+                          {/* Review & Create Case Action */}
                           <td className="py-3.5 px-4 text-right">
-                            <button
-                              onClick={() => handleOpenReview(msg)}
-                              className="px-3 py-1 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 rounded-lg text-xs font-medium font-sans shadow-2xs transition-colors cursor-pointer"
-                            >
-                              Review
-                            </button>
+                            <div className="flex items-center justify-end gap-1.5">
+                              <button
+                                onClick={() => handleOpenReview(msg)}
+                                className="px-2.5 py-1 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 rounded-lg text-xs font-medium font-sans shadow-2xs transition-colors cursor-pointer"
+                              >
+                                Review
+                              </button>
+                              {onNavigateToCreateTask && (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    onNavigateToCreateTask({
+                                      title: msg.subject || 'Intake Case',
+                                      description: `Ingested from ${msg.channel || 'Intake'} (${msg.sender_address || msg.senderAddress || ''})\nCategory: ${msg.category || 'Reconciliation exception'}`,
+                                      priority: msg.parsed_fields?.priority || (msg.urgency === 'critical' ? 'Critical' : msg.urgency === 'high' ? 'High' : 'Medium'),
+                                      sourceMessageId: msg.id,
+                                      attachments: msg.attachments || []
+                                    });
+                                  }}
+                                  className="px-2.5 py-1 bg-[#F27421]/10 hover:bg-[#F27421] text-[#F27421] hover:text-white rounded-lg text-xs font-semibold font-sans transition-colors cursor-pointer flex items-center gap-1 shadow-2xs"
+                                  title="Create case directly from this intake request with attached files"
+                                >
+                                  <Plus size={12} />
+                                  <span>Create Case</span>
+                                </button>
+                              )}
+                            </div>
                           </td>
                         </tr>
                       );
@@ -1207,7 +1261,8 @@ const IntakeViewContent: React.FC<IntakeViewProps> = ({
                       title: selectedStaged.subject,
                       description: `Ingested from ${selectedStaged.channel || 'Intake'} (${selectedStaged.sender_address || ''})\nCategory: ${selectedStaged.category || 'Reconciliation'}\nNotes: ${actionNotes}`,
                       priority: selectedStaged.parsed_fields?.priority || (selectedStaged.urgency === 'high' ? 'High' : 'Medium'),
-                      sourceMessageId: selectedStaged.id
+                      sourceMessageId: selectedStaged.id,
+                      attachments: selectedStaged.attachments || []
                     });
                   } else {
                     setQuickTaskTitle(selectedStaged.subject || '');

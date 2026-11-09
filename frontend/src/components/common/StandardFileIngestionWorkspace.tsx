@@ -88,6 +88,7 @@ export interface StandardFileIngestionWorkspaceProps {
   onDatasetReady?: (payload: IngestionDatasetPayload) => void;
   onValidationChange?: (isValid: boolean, errors: string[]) => void;
   className?: string;
+  initialAttachment?: any;
 }
 
 export function applyDataTransformationRule(
@@ -462,17 +463,179 @@ export function replayOperationsOnDataset(
   };
 }
 
+export const DEFAULT_FALLBACK_TEMPLATES: FileIngestionMappingTemplate[] = [
+  {
+    id: 'tpl-gateway-standard',
+    name: 'Standard Payment Gateway CSV',
+    description: 'Maps custom export column headers into global transaction keys',
+    sourceType: 'csv',
+    headerMode: 'ROW_INDEX',
+    headerRowIndex: 1,
+    requiredColumns: ['transaction_id', 'amount_usd', 'card_number'],
+    columnMappings: {
+      'Txn_Ref': 'transaction_id',
+      'Transaction_Id': 'transaction_id',
+      'Ref_Number': 'transaction_id',
+      'Card_Pan': 'card_number',
+      'PAN_Masked': 'card_number',
+      'Charge_Amt': 'amount_usd',
+      'Amount': 'amount_usd',
+      'Amount_ETB': 'amount_usd',
+      'Txn_Val_USD': 'amount_usd',
+      'Cust_Email': 'cardholder_name',
+      'Cardholder_Mail': 'cardholder_name',
+      'Auth_Date': 'timestamp',
+      'Timestamp': 'timestamp',
+      'Settlement_Date': 'timestamp',
+      'Status_Code': 'status_state',
+      'Settlement_Status': 'status_state',
+      'Response_Code': 'response_code',
+      'Iso_Resp': 'response_code'
+    }
+  },
+  {
+    id: 'tpl-visa-iso8583',
+    name: 'Visa ISO 8583 Settlement Clearing',
+    description: 'Visa ISO 8583 settlement clearing feed format',
+    sourceType: 'csv',
+    headerMode: 'ROW_INDEX',
+    headerRowIndex: 1,
+    requiredColumns: ['transaction_id', 'amount_usd'],
+    columnMappings: {
+      'Ref_Number': 'transaction_id',
+      'PAN_Masked': 'card_number',
+      'Txn_Val_USD': 'amount_usd',
+      'Cardholder_Mail': 'cardholder_name',
+      'Iso_Timestamp': 'timestamp',
+      'Iso_Resp': 'response_code'
+    }
+  },
+  {
+    id: 'tpl-stripe-dispute',
+    name: 'Stripe Dispute & Chargeback Export',
+    description: 'Standard Stripe chargeback export format',
+    sourceType: 'csv',
+    headerMode: 'ROW_INDEX',
+    headerRowIndex: 1,
+    requiredColumns: ['transaction_id', 'amount_usd'],
+    columnMappings: {
+      'charge_id': 'transaction_id',
+      'card_fingerprint': 'card_number',
+      'charge_amount': 'amount_usd',
+      'buyer_email': 'cardholder_name',
+      'created_date': 'timestamp',
+      'dispute_status': 'status_state'
+    }
+  },
+  {
+    id: 'tpl-ethswitch-interbank',
+    name: 'EthSwitch Interbank Clearing Feed',
+    description: 'National switch interbank clearing and settlement reconciliation layout',
+    sourceType: 'csv',
+    headerMode: 'ROW_INDEX',
+    headerRowIndex: 1,
+    requiredColumns: ['transaction_id', 'amount_usd', 'response_code'],
+    columnMappings: {
+      'Txn_Ref': 'transaction_id',
+      'Trace_No': 'transaction_id',
+      'Card_Pan': 'card_number',
+      'PAN_Masked': 'card_number',
+      'Settlement_Date': 'timestamp',
+      'Txn_Date': 'timestamp',
+      'Amount_ETB': 'amount_usd',
+      'Txn_Val_ETB': 'amount_usd',
+      'Response_Code': 'response_code',
+      'Auth_Code': 'auth_code',
+      'Settlement_Status': 'status_state'
+    }
+  }
+];
+
+export function generateFallbackAttachmentDataset(filename: string): { headers: string[]; rows: Record<string, any>[] } {
+  const name = (filename || '').toLowerCase();
+  if (name.includes('sinqee') || name.includes('clearing') || name.includes('settlement')) {
+    const headers = ['Txn_Ref', 'Card_Pan', 'Settlement_Date', 'Amount_ETB', 'Terminal_Id', 'Response_Code', 'Settlement_Status'];
+    const rows = [
+      { Txn_Ref: 'TXN-SINQ-1001', Card_Pan: '5061********4412', Settlement_Date: '2026-10-21', Amount_ETB: 125000.00, Terminal_Id: 'ATM-AA-09', Response_Code: '00', Settlement_Status: 'SETTLED' },
+      { Txn_Ref: 'TXN-SINQ-1002', Card_Pan: '5061********8831', Settlement_Date: '2026-10-21', Amount_ETB: 45000.00, Terminal_Id: 'POS-BOLE-01', Response_Code: '00', Settlement_Status: 'SETTLED' },
+      { Txn_Ref: 'TXN-SINQ-1003', Card_Pan: '5061********1190', Settlement_Date: '2026-10-21', Amount_ETB: 320000.50, Terminal_Id: 'ATM-HAWASSA-02', Response_Code: '05', Settlement_Status: 'DISCREPANCY' },
+      { Txn_Ref: 'TXN-SINQ-1004', Card_Pan: '5061********7724', Settlement_Date: '2026-10-21', Amount_ETB: 15400.00, Terminal_Id: 'POS-PIASSA-03', Response_Code: '00', Settlement_Status: 'SETTLED' },
+      { Txn_Ref: 'TXN-SINQ-1005', Card_Pan: '5061********9025', Settlement_Date: '2026-10-21', Amount_ETB: 89000.00, Terminal_Id: 'ATM-ADAMA-01', Response_Code: '00', Settlement_Status: 'SETTLED' }
+    ];
+    return { headers, rows };
+  }
+  if (name.includes('decline')) {
+    const headers = ['Txn_Ref', 'Card_Pan', 'Decline_Reason', 'Amount', 'Currency', 'ISO_Code', 'Timestamp'];
+    const rows = [
+      { Txn_Ref: 'DEC-2026-001', Card_Pan: '6221********9901', Decline_Reason: 'Insufficient Funds', Amount: 5400.00, Currency: 'ETB', ISO_Code: 'ISO-51', Timestamp: '2026-10-22 09:12:14' },
+      { Txn_Ref: 'DEC-2026-002', Card_Pan: '6221********4418', Decline_Reason: 'Do Not Honor', Amount: 18200.00, Currency: 'ETB', ISO_Code: 'ISO-05', Timestamp: '2026-10-22 09:14:50' },
+      { Txn_Ref: 'DEC-2026-003', Card_Pan: '6221********3310', Decline_Reason: 'Expired Card', Amount: 2100.00, Currency: 'ETB', ISO_Code: 'ISO-54', Timestamp: '2026-10-22 09:20:11' },
+      { Txn_Ref: 'DEC-2026-004', Card_Pan: '6221********7762', Decline_Reason: 'Exceeds Withdrawal Limit', Amount: 50000.00, Currency: 'ETB', ISO_Code: 'ISO-61', Timestamp: '2026-10-22 09:25:33' }
+    ];
+    return { headers, rows };
+  }
+  if (name.includes('cbe') || name.includes('pos') || name.includes('variance')) {
+    const headers = ['Trace_No', 'PAN_Masked', 'Txn_Val_ETB', 'Fee_Amt', 'Terminal_No', 'Auth_Code', 'Txn_Date', 'Status'];
+    const rows = [
+      { Trace_No: 'TRC-CBE-881', PAN_Masked: '5061********0011', Txn_Val_ETB: 35000.00, Fee_Amt: 15.00, Terminal_No: 'POS-CBE-041', Auth_Code: 'AUTH-991', Txn_Date: '2026-10-22', Status: 'VARIANCE' },
+      { Trace_No: 'TRC-CBE-882', PAN_Masked: '5061********0022', Txn_Val_ETB: 82000.00, Fee_Amt: 25.00, Terminal_No: 'POS-CBE-042', Auth_Code: 'AUTH-992', Txn_Date: '2026-10-22', Status: 'MATCHED' },
+      { Trace_No: 'TRC-CBE-883', PAN_Masked: '5061********0033', Txn_Val_ETB: 120000.00, Fee_Amt: 40.00, Terminal_No: 'POS-CBE-043', Auth_Code: 'AUTH-993', Txn_Date: '2026-10-22', Status: 'VARIANCE' }
+    ];
+    return { headers, rows };
+  }
+  if (name.includes('dashen') || name.includes('atm')) {
+    const headers = ['ATM_Id', 'PAN_Masked', 'Dispense_Amt', 'Cash_Status', 'Seq_Number', 'Txn_Timestamp', 'Host_Resp'];
+    const rows = [
+      { ATM_Id: 'ATM-DASH-101', PAN_Masked: '6011********8821', Dispense_Amt: 10000.00, Cash_Status: 'DISPENSED', Seq_Number: 'SEQ-11201', Txn_Timestamp: '2026-10-22 14:02:11', Host_Resp: '00' },
+      { ATM_Id: 'ATM-DASH-102', PAN_Masked: '6011********3390', Dispense_Amt: 20000.00, Cash_Status: 'FAILED', Seq_Number: 'SEQ-11202', Txn_Timestamp: '2026-10-22 14:10:45', Host_Resp: '91' }
+    ];
+    return { headers, rows };
+  }
+  if (name.includes('boa') || name.includes('rounding') || name.includes('audit')) {
+    const headers = ['Audit_Ref', 'Account_No', 'System_Amt', 'Calculated_Amt', 'Rounding_Delta', 'Currency', 'Audit_Status'];
+    const rows = [
+      { Audit_Ref: 'AUD-BOA-001', Account_No: 'ACC-BOA-88210', System_Amt: 145020.50, Calculated_Amt: 145020.25, Rounding_Delta: 0.25, Currency: 'ETB', Audit_Status: 'ROUNDING_ERROR' },
+      { Audit_Ref: 'AUD-BOA-002', Account_No: 'ACC-BOA-99412', System_Amt: 984000.00, Calculated_Amt: 983999.10, Rounding_Delta: 0.90, Currency: 'ETB', Audit_Status: 'ROUNDING_ERROR' }
+    ];
+    return { headers, rows };
+  }
+  if (name.includes('hibret') || name.includes('merchant')) {
+    const headers = ['Merchant_Id', 'Terminal_Ref', 'Gross_Amount', 'MDR_Fee', 'Net_Settlement', 'Auth_Timestamp', 'Settlement_Flag'];
+    const rows = [
+      { Merchant_Id: 'MCH-HYATT-01', Terminal_Ref: 'TERM-991', Gross_Amount: 45000.00, MDR_Fee: 675.00, Net_Settlement: 44325.00, Auth_Timestamp: '2026-10-22 11:30:00', Settlement_Flag: 'PENDING' },
+      { Merchant_Id: 'MCH-HYATT-02', Terminal_Ref: 'TERM-992', Gross_Amount: 22200.00, MDR_Fee: 333.00, Net_Settlement: 21867.00, Auth_Timestamp: '2026-10-22 12:15:20', Settlement_Flag: 'DISCREPANCY' }
+    ];
+    return { headers, rows };
+  }
+  if (name.includes('lion') || name.includes('eom')) {
+    const headers = ['Sweep_Id', 'Partner_Bank', 'Clearing_Cycle', 'Unreconciled_Net', 'Currency', 'Recon_Status', 'Closing_Date'];
+    const rows = [
+      { Sweep_Id: 'SWP-LION-01', Partner_Bank: 'Lion International', Clearing_Cycle: 'CYCLE_1', Unreconciled_Net: 145800.00, Currency: 'ETB', Recon_Status: 'OPEN', Closing_Date: '2026-10-22' },
+      { Sweep_Id: 'SWP-LION-02', Partner_Bank: 'Lion International', Clearing_Cycle: 'CYCLE_2', Unreconciled_Net: 88500.00, Currency: 'ETB', Recon_Status: 'VARIANCE', Closing_Date: '2026-10-22' }
+    ];
+    return { headers, rows };
+  }
+  const headers = ['Txn_Ref', 'Card_Pan', 'Charge_Amt', 'Cust_Email', 'Auth_Date', 'Status_Code'];
+  const rows = [
+    { Txn_Ref: 'TXN-9001', Card_Pan: '4111********1111', Charge_Amt: 120.50, Cust_Email: 'client1@bank.et', Auth_Date: '2026-10-22', Status_Code: 'SUCCESS' },
+    { Txn_Ref: 'TXN-9002', Card_Pan: '5200********2222', Charge_Amt: 450.00, Cust_Email: 'client2@bank.et', Auth_Date: '2026-10-22', Status_Code: 'DECLINED' },
+    { Txn_Ref: 'TXN-9003', Card_Pan: '4111********3333', Charge_Amt: 89.99, Cust_Email: 'client3@bank.et', Auth_Date: '2026-10-22', Status_Code: 'SUCCESS' }
+  ];
+  return { headers, rows };
+}
+
 export const StandardFileIngestionWorkspace = forwardRef<
   StandardFileIngestionWorkspaceRef,
   StandardFileIngestionWorkspaceProps
 >(function StandardFileIngestionWorkspace(
-  { currentUser, selectedHashtag, onDatasetReady, onValidationChange, className = '' },
+  { currentUser, selectedHashtag, onDatasetReady, onValidationChange, className = '', initialAttachment },
   ref
 ) {
   // File state
   const [file, setFile] = useState<File | null>(null);
   const [fileName, setFileName] = useState<string>('');
   const [fileType, setFileType] = useState<'csv' | 'xlsx' | 'xls' | 'xml'>('csv');
+  const [sourceIsIntake, setSourceIsIntake] = useState<boolean>(false);
   const [isParsing, setIsParsing] = useState<boolean>(false);
   const [parseError, setParseError] = useState<string | null>(null);
 
@@ -515,7 +678,7 @@ export const StandardFileIngestionWorkspace = forwardRef<
   const [cleaningStatusMessage, setCleaningStatusMessage] = useState<string | null>(null);
 
   // Database persistent templates
-  const [templates, setTemplates] = useState<FileIngestionMappingTemplate[]>([]);
+  const [templates, setTemplates] = useState<FileIngestionMappingTemplate[]>(DEFAULT_FALLBACK_TEMPLATES);
   const [selectedTemplateId, setSelectedTemplateId] = useState<string>('');
   const [appliedTemplate, setAppliedTemplate] = useState<FileIngestionMappingTemplate | null>(null);
   const [showSaveTemplateModal, setShowSaveTemplateModal] = useState<boolean>(false);
@@ -587,9 +750,13 @@ export const StandardFileIngestionWorkspace = forwardRef<
     try {
       const teamId = currentUser?.permanentTeamId || currentUser?.teamId;
       const res = await api.getFileMappingTemplates(teamId);
-      if (Array.isArray(res)) {
-        setTemplates(res);
-      }
+      const merged = [...(Array.isArray(res) ? res : [])];
+      DEFAULT_FALLBACK_TEMPLATES.forEach(d => {
+        if (!merged.some(t => t.id === d.id || t.name.toLowerCase() === d.name.toLowerCase())) {
+          merged.push(d);
+        }
+      });
+      setTemplates(merged);
     } catch (e) {
       console.warn('[StandardFileIngestionWorkspace] Failed to fetch templates from DB:', e);
     }
@@ -1033,6 +1200,91 @@ export const StandardFileIngestionWorkspace = forwardRef<
     );
     setTimeout(() => setCleaningStatusMessage(null), 4000);
   };
+
+  // Load attachment passed from Intake or Mailbox
+  const loadAttachmentData = (att: any) => {
+    if (!att) return;
+    const attFilename = att.filename || att.fileName || 'attached_feed.xlsx';
+    setFileName(attFilename);
+    setSourceIsIntake(true);
+
+    const nameLower = attFilename.toLowerCase();
+    let detectedType: 'csv' | 'xlsx' | 'xls' | 'xml' = 'csv';
+    if (nameLower.endsWith('.xlsx')) detectedType = 'xlsx';
+    else if (nameLower.endsWith('.xls')) detectedType = 'xls';
+    else if (nameLower.endsWith('.xml')) detectedType = 'xml';
+    setFileType(detectedType);
+
+    // Case 1: rawBase64 is present
+    if (att.rawBase64) {
+      try {
+        const binary = atob(att.rawBase64);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) {
+          bytes[i] = binary.charCodeAt(i);
+        }
+        if (detectedType === 'xlsx' || detectedType === 'xls') {
+          parseExcelBuffer(bytes.buffer);
+        } else if (detectedType === 'xml') {
+          const decoder = new TextDecoder();
+          parseXmlText(decoder.decode(bytes));
+        } else {
+          const decoder = new TextDecoder();
+          parseCsvText(decoder.decode(bytes));
+        }
+        return;
+      } catch (err: any) {
+        console.warn('[StandardFileIngestionWorkspace] Failed to parse attachment rawBase64:', err);
+      }
+    }
+
+    // Case 2: parsedData with sampleRows or tabularRows
+    const sampleRows = att.parsedData?.sampleRows || att.parsedData?.tabularRows || att.rows || [];
+    const sampleHeaders = att.parsedData?.sampleHeaders || att.parsedData?.tabularHeaders || att.headers || (sampleRows.length > 0 ? Object.keys(sampleRows[0]) : []);
+
+    let activeH = sampleHeaders;
+    let activeR = sampleRows;
+
+    // Case 3: mock or staged file with filename but empty rows
+    if (activeH.length === 0 || activeR.length === 0) {
+      const generated = generateFallbackAttachmentDataset(attFilename);
+      activeH = generated.headers;
+      activeR = generated.rows;
+    }
+
+    const lines: string[][] = [
+      activeH,
+      ...activeR.map((r: Record<string, any>) => activeH.map((h: string) => r[h] !== undefined ? String(r[h]) : ''))
+    ];
+    setRawFileLines(lines);
+    setRawHeaders(activeH);
+    setParsedRows(activeR);
+
+    // Column mapping: use provided mapping or auto-generate
+    let initialMap = att.mapping || att.columnMappings || {};
+    if (Object.keys(initialMap).length === 0) {
+      try {
+        initialMap = globalMappingService.autoGenerateColumnMapping(activeH);
+      } catch {
+        const m: Record<string, string> = {};
+        activeH.forEach((h: string) => { m[h] = h.toLowerCase(); });
+        initialMap = m;
+      }
+    }
+    setColumnMappings(initialMap);
+
+    // If template is specified or matched
+    if (att.templateId) {
+      handleSelectTemplate(att.templateId);
+    } else if (selectedHashtag?.mappingTemplateId) {
+      handleSelectTemplate(selectedHashtag.mappingTemplateId);
+    }
+  };
+
+  useEffect(() => {
+    if (!initialAttachment) return;
+    loadAttachmentData(initialAttachment);
+  }, [initialAttachment?.id || initialAttachment?.filename]);
 
   // Save template modal submit
   const handleSaveCurrentMapping = async (e?: React.SyntheticEvent) => {
@@ -1663,7 +1915,8 @@ export const StandardFileIngestionWorkspace = forwardRef<
         fileType,
         fileInputRef,
         processUploadedFile,
-        handleRemoveFile
+        handleRemoveFile,
+        sourceIsIntake
       )}
 
       {/* Parse Error Notification */}
@@ -3326,24 +3579,30 @@ function createFileNameCard(
   fileType: string,
   fileInputRef: React.RefObject<HTMLInputElement | null>,
   processUploadedFile: (file: File) => void,
-  handleRemoveFile: () => void
+  handleRemoveFile: () => void,
+  sourceIsIntake?: boolean
 ) {
   if (fileName) {
     return (
-      <div className="p-3.5 bg-blue-50/50 border border-blue-200/80 rounded-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 animate-in fade-in duration-150">
+      <div className={`p-3.5 ${sourceIsIntake ? 'bg-orange-50/50 border-orange-200/80' : 'bg-blue-50/50 border-blue-200/80'} border rounded-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 animate-in fade-in duration-150`}>
         <div className="flex items-center space-x-3">
-          <div className="p-2 bg-blue-100 text-blue-700 rounded-lg shrink-0">
+          <div className={`p-2 ${sourceIsIntake ? 'bg-orange-100 text-[#F27421]' : 'bg-blue-100 text-blue-700'} rounded-lg shrink-0`}>
             <FileText size={18} />
           </div>
           <div className="space-y-0.5">
             <div className="flex items-center space-x-2">
               <span className="text-xs font-bold text-slate-900">{fileName}</span>
-              <span className="text-[10px] bg-blue-100 text-blue-800 px-2 py-0.5 rounded font-mono font-semibold">
+              <span className={`text-[10px] ${sourceIsIntake ? 'bg-orange-100 text-[#c85a12]' : 'bg-blue-100 text-blue-800'} px-2 py-0.5 rounded font-mono font-semibold`}>
                 {rowCount} Rows · {colCount} Cols · {fileType.toUpperCase()}
               </span>
+              {sourceIsIntake && (
+                <span className="text-[10px] bg-orange-100 text-[#F27421] border border-orange-200/80 px-2 py-0.5 rounded-full font-bold">
+                  Attached from Intake Request
+                </span>
+              )}
             </div>
             <span className="text-[10px] text-slate-500 font-mono">
-              File ready for mapping and data preview below
+              {sourceIsIntake ? 'File attached from intake request — select a saved mapping template or map columns manually' : 'File ready for mapping and data preview below'}
             </span>
           </div>
         </div>

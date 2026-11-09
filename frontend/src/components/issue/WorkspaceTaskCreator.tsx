@@ -81,6 +81,7 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
   const [createRawHeaders, setCreateRawHeaders] = useState<string[]>([]);
   const [createFileMapping, setCreateFileMapping] = useState<Record<string, string>>({});
   const [createParsedRows, setCreateParsedRows] = useState<Record<string, any>[]>([]);
+  const [activeAttachment, setActiveAttachment] = useState<any>(null);
   const [isProcessingFile, setIsProcessingFile] = useState(false);
   const ingestionWorkspaceRef = React.useRef<StandardFileIngestionWorkspaceRef>(null);
 
@@ -180,12 +181,15 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
       const tabularAtt = initialPreFill.attachments.find(a => 
         a.contentType === 'spreadsheet' || 
         a.filename?.endsWith('.xlsx') || 
+        a.filename?.endsWith('.xls') || 
         a.filename?.endsWith('.csv') || 
+        a.filename?.endsWith('.xml') || 
         (a.parsedData && (a.parsedData.tabularRows || a.parsedData.sampleRows))
-      );
+      ) || initialPreFill.attachments[0];
 
       if (tabularAtt) {
-        setCreateFileName(tabularAtt.filename);
+        setActiveAttachment(tabularAtt);
+        setCreateFileName(tabularAtt.filename || 'attached_feed.xlsx');
         let rows: Record<string, any>[] = [];
         let headers: string[] = [];
 
@@ -715,22 +719,22 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
     }
 
     // Persist into Centralized Workspace Table if file data exists
-    if (includeInvestigationSpace && createFileName && createParsedRows.length > 0) {
-      const selectedTplObj = mappingTemplates.find(t => t.id === selectedMappingId);
-      const activeTplName = selectedTplObj ? selectedTplObj.name : (selectedMappingId ? `Mapping ${selectedMappingId}` : 'Global Standard Mapping');
+    if (includeInvestigationSpace && effectiveFileName && effectiveRows.length > 0) {
+      const selectedTplObj = mappingTemplates.find(t => t.id === effectiveTemplateId);
+      const activeTplName = selectedTplObj ? selectedTplObj.name : (effectiveTemplateId ? `Mapping ${effectiveTemplateId}` : 'Global Standard Mapping');
 
-      const workspaceRecords = createParsedRows.map((row, idx) => {
-        const transformedRow = globalMappingService.transformRowToGlobalSchema(row, createFileMapping);
+      const workspaceRecords = effectiveRows.map((row, idx) => {
+        const transformedRow = globalMappingService.transformRowToGlobalSchema(row, effectiveMapping);
         const rowValues = Object.values(transformedRow).map(v => String(v !== undefined && v !== null ? v : ''));
 
         return {
           id: `wtr-${Date.now()}-${idx + 1}-${Math.random().toString(36).substring(2, 6)}`,
-          file_name: createFileName,
+          file_name: effectiveFileName,
           user: currentUser.username || currentUser.id || 'anonymous_user',
           user_id: currentUser.id || currentUser.username,
           tag: (createHashtag && createHashtag !== 'Untagged') ? createHashtag : 'Untagged',
           task_id: generatedTaskId,
-          mapping_id: selectedMappingId || 'global-standard',
+          mapping_id: effectiveTemplateId || 'global-standard',
           mapping_name: activeTplName,
           transformed_data: transformedRow,
           raw_data: row,
@@ -1078,11 +1082,49 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
           </div>
 
           {includeInvestigationSpace && (
-            <div className="pt-2">
+            <div className="pt-2 space-y-3">
+              {initialPreFill?.attachments && initialPreFill.attachments.length > 0 && (
+                <div className="p-3 bg-orange-50/70 border border-orange-200/80 rounded-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2.5">
+                  <div className="flex items-center gap-2">
+                    <span className="text-[11px] font-bold uppercase tracking-wider text-[#F27421]">
+                      Intake Attachments ({initialPreFill.attachments.length}):
+                    </span>
+                    <span className="text-xs text-slate-600">
+                      Select attached file to load and map:
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {initialPreFill.attachments.map((att: any, idx: number) => {
+                      const isSelected = activeAttachment?.filename === att.filename || (!activeAttachment && idx === 0);
+                      return (
+                        <button
+                          key={idx}
+                          type="button"
+                          onClick={() => {
+                            setActiveAttachment(att);
+                            setCreateFileName(att.filename);
+                          }}
+                          className={`px-2.5 py-1 rounded-lg text-xs font-mono font-medium flex items-center gap-1.5 transition-all cursor-pointer ${
+                            isSelected
+                              ? 'bg-[#F27421] text-white shadow-2xs font-semibold'
+                              : 'bg-white hover:bg-orange-100 text-slate-700 border border-orange-200'
+                          }`}
+                        >
+                          <FileText size={12} />
+                          <span className="truncate max-w-[180px]">{att.filename || `File_${idx + 1}`}</span>
+                          {att.size && <span className="opacity-75 text-[10px]">({att.size})</span>}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
               <StandardFileIngestionWorkspace
                 ref={ingestionWorkspaceRef}
                 currentUser={currentUser}
                 selectedHashtag={selectedTagPreset}
+                initialAttachment={activeAttachment}
                 onDatasetReady={(payload) => {
                   setCreateFileName(payload.fileName);
                   setCreateRawHeaders(payload.activeHeaders);
