@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useRef, useEffect } from 'react';
-import { Smile, CornerDownLeft, Forward, Plus } from 'lucide-react';
+import { Smile, CornerDownLeft, Forward, Plus, CheckSquare } from 'lucide-react';
 import { MessageReplyInfo, MessageForwardInfo } from '../../types';
 
 export const POPULAR_REACTIONS = ['👍', '❤️', '🚀', '👀', '⚠️', '✅'] as const;
@@ -13,6 +13,7 @@ export interface MessageActionBarProps {
   onReply?: () => void;
   onForward?: () => void;
   onToggleReaction?: (emoji: string) => void;
+  onCreateTask?: () => void;
   isSelf?: boolean;
 }
 
@@ -20,6 +21,7 @@ export const MessageActionBar: React.FC<MessageActionBarProps> = ({
   onReply,
   onForward,
   onToggleReaction,
+  onCreateTask,
   isSelf = false
 }) => {
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
@@ -95,6 +97,18 @@ export const MessageActionBar: React.FC<MessageActionBarProps> = ({
           title="Forward message"
         >
           <Forward size={13} />
+        </button>
+      )}
+
+      {/* Create Task Button */}
+      {onCreateTask && (
+        <button
+          type="button"
+          onClick={onCreateTask}
+          className="p-1 text-slate-400 hover:text-[#F27421] hover:bg-orange-50 rounded transition-colors cursor-pointer"
+          title="Create task from message"
+        >
+          <CheckSquare size={13} />
         </button>
       )}
     </div>

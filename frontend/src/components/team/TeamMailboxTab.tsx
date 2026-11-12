@@ -10,6 +10,9 @@ import {
 } from '../../types';
 import { api } from '../../api/client';
 import { 
+  MessageActionBar, MessageReactionsRow 
+} from '../chat/MessageChatActions';
+import { 
   Mail, MessageSquare, Send, Paperclip, CheckCircle2, Clock, 
   Search, RefreshCw, PlusCircle, Reply, AlertCircle, ExternalLink, 
   FileSpreadsheet, FileText, Download, ChevronRight, User as UserIcon,
@@ -51,6 +54,57 @@ export const TeamMailboxTab: React.FC<TeamMailboxTabProps> = ({
 
   // Attachment inspection modal
   const [inspectingAttachment, setInspectingAttachment] = useState<MailboxAttachment | null>(null);
+
+  // Message Reactions & Hover Actions
+  const [localReactions, setLocalReactions] = useState<Record<string, Record<string, string[]>>>({});
+
+  const handleToggleMailboxReaction = (msgId: string, emoji: string) => {
+    setLocalReactions(prev => {
+      const existing = prev[msgId] || {};
+      const usersList = existing[emoji] || [];
+      const hasReacted = usersList.includes(currentUser.id);
+      const nextUsers = hasReacted ? usersList.filter(id => id !== currentUser.id) : [...usersList, currentUser.id];
+      const nextReactions = { ...existing };
+      if (nextUsers.length > 0) {
+        nextReactions[emoji] = nextUsers;
+      } else {
+        delete nextReactions[emoji];
+      }
+      return { ...prev, [msgId]: nextReactions };
+    });
+  };
+
+  const handleReplyToMailboxMessage = (msg: MailboxMessage) => {
+    setShowReplyComposer(true);
+    const quoteHeader = msg.sender_name || msg.sender_address || 'Sender';
+    const quoteSnippet = (msg.text_body || '').slice(0, 100);
+    setReplyBody(prev => prev ? prev : `> [Replying to ${quoteHeader}: "${quoteSnippet}..."]\n\n`);
+    setTimeout(() => {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }, 100);
+  };
+
+  const handleCreateTaskFromMailboxMessage = (msg: MailboxMessage) => {
+    if (!onNavigateToTaskCreation) {
+      alert('Task creator navigation is not configured in this view.');
+      return;
+    }
+    const sourceMessageId = msg.id || selectedThread?.threadId || '';
+    const msgAttachments = (msg.attachments && msg.attachments.length > 0) ? msg.attachments : (selectedThread?.attachments || []);
+    const preFill: TaskPreFillFromMessage = {
+      sourceMessageId,
+      threadId: selectedThread?.threadId,
+      title: selectedThread?.subject || `Inquiry from ${msg.sender_name || msg.sender_address || 'Counterparty'}`,
+      description: `[Ingested via ${(selectedThread?.channel || 'EMAIL').toUpperCase()} from ${msg.sender_address || 'External'}]\n\n${msg.text_body || ''}`,
+      teamId: currentTeam.id,
+      channel: selectedThread?.channel || 'email',
+      senderName: msg.sender_name,
+      senderAddress: msg.sender_address,
+      taskVisibility: 'TEAM_PUBLIC',
+      attachments: msgAttachments
+    };
+    onNavigateToTaskCreation(preFill);
+  };
 
   // Fetch mailbox data
   const loadMailbox = async (isBackground = false) => {
@@ -527,8 +581,18 @@ export const TeamMailboxTab: React.FC<TeamMailboxTabProps> = ({
                 return (
                   <div 
                     key={msg.id || index}
-                    className="rounded-xl border border-slate-200 bg-white p-4 space-y-2 shadow-2xs font-sans"
+                    className="group relative rounded-xl border border-slate-200 bg-white p-4 space-y-2 shadow-2xs font-sans hover:border-slate-300 transition-colors"
                   >
+                    {/* Micro Action Bar on Hover: Reply, Reaction, Create Task */}
+                    <div className="absolute -top-3 right-4 opacity-0 group-hover:opacity-100 transition-opacity z-20">
+                      <MessageActionBar
+                        onReply={() => handleReplyToMailboxMessage(msg)}
+                        onToggleReaction={(emoji) => handleToggleMailboxReaction(msg.id || `msg-${index}`, emoji)}
+                        onCreateTask={() => handleCreateTaskFromMailboxMessage(msg)}
+                        isSelf={!isInbound}
+                      />
+                    </div>
+
                     {/* Message Header */}
                     <div className="flex items-center justify-between gap-3">
                       <div className="flex items-center space-x-2.5">
@@ -622,6 +686,14 @@ export const TeamMailboxTab: React.FC<TeamMailboxTabProps> = ({
                         </div>
                       </div>
                     )}
+
+                    {/* Message Reactions */}
+                    <MessageReactionsRow
+                      reactions={localReactions[msg.id || `msg-${index}`] || msg.reactions || {}}
+                      currentUserId={currentUser.id}
+                      onToggleReaction={(emoji) => handleToggleMailboxReaction(msg.id || `msg-${index}`, emoji)}
+                      isSelf={!isInbound}
+                    />
                   </div>
                 );
               })}

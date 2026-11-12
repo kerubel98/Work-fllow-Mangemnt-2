@@ -865,6 +865,49 @@ export default function PersonalChat({
     }
   };
 
+  const handleCreateTaskFromDirectMessage = (msg: DirectMessage) => {
+    if (onNavigateToTaskCreation) {
+      const senderUser = users.find(u => u.id === msg.senderId) || (msg.senderId === currentUser.id ? currentUser : selectedContact);
+      const senderName = senderUser?.displayName || senderUser?.username || 'Colleague';
+      onNavigateToTaskCreation({
+        sourceMessageId: msg.id,
+        title: `Task: ${msg.content.slice(0, 50)}${msg.content.length > 50 ? '...' : ''}`,
+        description: `[Direct message from ${senderName} at ${new Date(msg.timestamp).toLocaleString()}]:\n\n${msg.content}`,
+        teamId: currentUser.permanentTeamId || currentUser.teamId || (teams && teams[0]?.id) || '',
+        channel: 'chat',
+        senderName: senderName,
+        taskVisibility: 'TEAM_PUBLIC'
+      });
+    }
+  };
+
+  const handleReplyToProviderMessage = (msg: any) => {
+    const sender = msg.sender_address || 'sender';
+    const quote = (msg.text_body || '').slice(0, 80);
+    setMailboxReplyText(`> [Replying to ${sender}: "${quote}..."]\n\n`);
+    const inputElem = document.getElementById('input-mailbox-reply');
+    if (inputElem) {
+      inputElem.focus();
+    }
+  };
+
+  const handleCreateTaskFromProviderMessage = (msg: any) => {
+    if (onNavigateToTaskCreation && activeMailboxThread) {
+      onNavigateToTaskCreation({
+        sourceMessageId: msg.id,
+        threadId: activeMailboxThread.threadId,
+        title: activeMailboxThread.subject || `Inquiry from ${msg.sender_address}`,
+        description: `[Ingested via ${(activeMailboxThread.channel || 'EMAIL').toUpperCase()} from ${msg.sender_address || 'External'}]:\n\n${msg.text_body || ''}`,
+        teamId: currentUser.permanentTeamId || currentUser.teamId || (teams && teams[0]?.id) || '',
+        channel: activeMailboxThread.channel || 'email',
+        senderName: msg.sender_name || msg.sender_address,
+        senderAddress: msg.sender_address,
+        taskVisibility: 'TEAM_PUBLIC',
+        attachments: msg.attachments || activeMailboxThread.attachments || []
+      });
+    }
+  };
+
   // Helper for rendering circular user avatar
   const renderCircularAvatar = (avatarUrl?: string, name?: string, sizeClass = 'w-8 h-8', borderClass = 'border border-slate-200') => {
     const initials = (name || 'User').trim().substring(0, 2).toUpperCase();
@@ -1365,6 +1408,7 @@ export default function PersonalChat({
                               onReply={() => setReplyingToMessage(msg)}
                               onForward={() => setForwardingMessage(msg)}
                               onToggleReaction={(emoji) => handleToggleReaction(msg.id, emoji)}
+                              onCreateTask={() => handleCreateTaskFromDirectMessage(msg)}
                               isSelf={isSelf}
                             />
                           </div>
@@ -1598,8 +1642,18 @@ export default function PersonalChat({
                     return (
                       <div
                         key={msg.id}
-                        className="bg-white border border-slate-200/90 rounded-xl p-4 shadow-2xs space-y-3"
+                        className="group relative bg-white border border-slate-200/90 rounded-xl p-4 shadow-2xs space-y-3 hover:border-slate-300 transition-colors"
                       >
+                        {/* Hover Action Bar: Reply, Reaction, Create Task */}
+                        <div className="absolute -top-3 right-4 opacity-0 group-hover:opacity-100 transition-opacity z-20">
+                          <MessageActionBar
+                            onReply={() => handleReplyToProviderMessage(msg)}
+                            onToggleReaction={(emoji) => handleToggleReaction(msg.id, emoji)}
+                            onCreateTask={() => handleCreateTaskFromProviderMessage(msg)}
+                            isSelf={isOutbound}
+                          />
+                        </div>
+
                         {/* Message Metadata Header */}
                         <div className="flex items-center justify-between border-b border-slate-100 pb-2.5">
                           <div className="flex items-center space-x-2.5">
@@ -1698,6 +1752,14 @@ export default function PersonalChat({
                             </div>
                           </div>
                         )}
+
+                        {/* Emoji Reactions Row */}
+                        <MessageReactionsRow
+                          reactions={localReactions[msg.id] || msg.reactions || {}}
+                          currentUserId={currentUser.id}
+                          onToggleReaction={(emoji) => handleToggleReaction(msg.id, emoji)}
+                          isSelf={isOutbound}
+                        />
                       </div>
                     );
                   })}
