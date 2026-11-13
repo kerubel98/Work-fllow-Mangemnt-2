@@ -56,8 +56,11 @@ import {
   Table,
   ChevronDown,
   BookOpen,
-  Combine
+  Combine,
+  Search,
+  FileSpreadsheet
 } from 'lucide-react';
+import { DataTablePagination } from './DataTablePagination';
 
 export interface IngestionDatasetPayload {
   fileName: string;
@@ -80,6 +83,7 @@ export interface StandardFileIngestionWorkspaceRef {
   hasFileAttached: () => boolean;
   isProcessing: () => boolean;
   resetFile: () => void;
+  triggerFileInput?: () => void;
 }
 
 export interface StandardFileIngestionWorkspaceProps {
@@ -89,6 +93,7 @@ export interface StandardFileIngestionWorkspaceProps {
   onValidationChange?: (isValid: boolean, errors: string[]) => void;
   className?: string;
   initialAttachment?: any;
+  hideFileCard?: boolean;
 }
 
 export function applyDataTransformationRule(
@@ -628,7 +633,7 @@ export const StandardFileIngestionWorkspace = forwardRef<
   StandardFileIngestionWorkspaceRef,
   StandardFileIngestionWorkspaceProps
 >(function StandardFileIngestionWorkspace(
-  { currentUser, selectedHashtag, onDatasetReady, onValidationChange, className = '', initialAttachment },
+  { currentUser, selectedHashtag, onDatasetReady, onValidationChange, className = '', initialAttachment, hideFileCard = false },
   ref
 ) {
   // File state
@@ -735,6 +740,24 @@ export const StandardFileIngestionWorkspace = forwardRef<
   const [showValidationBanner, setShowValidationBanner] = useState<boolean>(false);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Table search & pagination (matching Case Page design)
+  const [tableSearch, setTableSearch] = useState<string>('');
+  const [tablePage, setTablePage] = useState<number>(1);
+  const [tablePageSize, setTablePageSize] = useState<number>(7);
+
+  const filteredDisplayRows = useMemo(() => {
+    if (!tableSearch.trim()) return parsedRows;
+    const q = tableSearch.toLowerCase();
+    return parsedRows.filter(r =>
+      Object.values(r).some(val => String(val ?? '').toLowerCase().includes(q))
+    );
+  }, [parsedRows, tableSearch]);
+
+  const paginatedRows = useMemo(() => {
+    const start = (tablePage - 1) * tablePageSize;
+    return filteredDisplayRows.slice(start, start + tablePageSize);
+  }, [filteredDisplayRows, tablePage, tablePageSize]);
 
   // Target standard DB columns from Global Standard Column Dictionary
   const globalStandardFields = useMemo(() => {
@@ -1902,21 +1925,38 @@ export const StandardFileIngestionWorkspace = forwardRef<
     validateAndPrepareDataset,
     hasFileAttached: () => !!file || parsedRows.length > 0,
     isProcessing: () => isParsing,
-    resetFile: handleRemoveFile
+    resetFile: handleRemoveFile,
+    triggerFileInput: () => {
+      fileInputRef.current?.click();
+    }
   }));
 
   return (
     <div className={`space-y-3 ${className}`}>
-      {/* 1. FILE UPLOAD CARD / DROP ZONE (Former Style) */}
-      {createFileNameCard(
-        fileName,
-        parsedRows.length,
-        activeHeaders.length,
-        fileType,
-        fileInputRef,
-        processUploadedFile,
-        handleRemoveFile,
-        sourceIsIntake
+      {/* 1. FILE UPLOAD CARD / DROP ZONE (Hidden when hideFileCard is true and file is loaded) */}
+      {(!hideFileCard || !fileName) ? (
+        createFileNameCard(
+          fileName,
+          parsedRows.length,
+          activeHeaders.length,
+          fileType,
+          fileInputRef,
+          processUploadedFile,
+          handleRemoveFile,
+          sourceIsIntake
+        )
+      ) : (
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept=".csv, .xlsx, .xls, .xml"
+          onChange={e => {
+            if (e.target.files && e.target.files[0]) {
+              processUploadedFile(e.target.files[0]);
+            }
+          }}
+          className="hidden"
+        />
       )}
 
       {/* Parse Error Notification */}
@@ -2308,15 +2348,67 @@ export const StandardFileIngestionWorkspace = forwardRef<
             </div>
           )}
 
-          {/* 3. DATA VIEW TABLE WITH INTEGRATED HEADER MAPPING (Former Style) */}
-          <div className="border border-slate-200 rounded-xl overflow-hidden shadow-2xs bg-white">
-            <div className="overflow-x-auto max-h-96">
-              <table className="w-full text-left border-collapse text-xs">
-                <thead className="sticky top-0 z-10 shadow-2xs">
-                  {/* ROW 1: Raw Header Name, Exclude Button & Required Toggle */}
-                  <tr className="bg-slate-100 border-b border-slate-200 font-bold text-slate-700 text-[11px]">
-                    {/* Fixed Row Number Column Header with Master Checkbox */}
-                    <th className="py-2.5 px-3 w-12 text-center bg-slate-200/70 border-r border-slate-200 text-[10px] text-slate-500 font-mono">
+          {/* 3. DATA VIEW TABLE WITH CASE PAGE DESIGN */}
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xs overflow-hidden flex flex-col min-h-0">
+            {/* Tabs Row (at the top of the card, matching Case Page) */}
+            <div className="border-b border-slate-200 px-5 flex items-center space-x-6 shrink-0">
+              <button
+                type="button"
+                className="py-3.5 text-xs font-semibold font-heading flex items-center space-x-2 border-b-2 border-[#F27421] text-slate-900 transition-colors"
+              >
+                <span>Task transactions</span>
+                <span className="px-1.5 py-0.2 text-[10px] font-mono font-bold rounded-full bg-slate-900 text-white">
+                  {parsedRows.length}
+                </span>
+              </button>
+              <button
+                type="button"
+                className="py-3.5 text-xs font-semibold font-heading flex items-center space-x-2 border-b-2 border-transparent text-slate-500 transition-colors"
+              >
+                <span>Active columns</span>
+                <span className="px-1.5 py-0.2 text-[10px] font-mono font-bold rounded-full bg-slate-100 text-slate-700">
+                  {activeHeaders.length}
+                </span>
+              </button>
+            </div>
+
+            {/* Table Toolbar matching CasesWorkspaceView */}
+            <div className="p-3 sm:p-4 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 shrink-0">
+              <div className="flex items-center space-x-2 flex-1 max-w-sm">
+                <div className="relative flex-1">
+                  <Search size={13} className="absolute left-3 top-2.5 text-slate-400" />
+                  <input
+                    type="text"
+                    value={tableSearch}
+                    onChange={e => {
+                      setTableSearch(e.target.value);
+                      setTablePage(1);
+                    }}
+                    placeholder="Find in transactions..."
+                    className="w-full pl-8 pr-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-800 outline-none focus:border-[#F27421] transition-all"
+                  />
+                </div>
+              </div>
+
+              <div className="flex items-center space-x-3 text-xs text-slate-500">
+                <span>
+                  Showing <strong className="font-mono text-slate-800">{activeHeaders.length}</strong> of{' '}
+                  <strong className="font-mono text-slate-800">{rawHeaders.length}</strong> columns
+                </span>
+                {selectedFileCols.length > 0 && (
+                  <span className="text-[11px] font-mono bg-indigo-50 text-indigo-700 border border-indigo-200 px-2 py-0.5 rounded-md font-bold">
+                    {selectedFileCols.length} selected
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {/* Table Body */}
+            <div className="flex-1 min-h-0 overflow-auto">
+              <table className="w-full text-left text-xs">
+                <thead className="sticky top-0 z-10 bg-white text-slate-400 font-sans text-xs border-b border-slate-100 shadow-2xs">
+                  <tr>
+                    <th className="py-3 px-4 font-normal w-12 text-slate-400 text-center">
                       <div className="flex flex-col items-center justify-center gap-1">
                         <span>#</span>
                         {activeHeaders.length > 0 && (
@@ -2330,11 +2422,7 @@ export const StandardFileIngestionWorkspace = forwardRef<
                             }}
                             onChange={handleToggleSelectAllFileCols}
                             className="w-3.5 h-3.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer"
-                            title={
-                              selectedFileCols.length === activeHeaders.length
-                                ? 'Deselect all columns'
-                                : 'Select all columns'
-                            }
+                            title="Select all columns"
                           />
                         )}
                       </div>
@@ -2342,164 +2430,144 @@ export const StandardFileIngestionWorkspace = forwardRef<
                     {activeHeaders.map(colKey => {
                       const isRequired = requiredColumns.includes(colKey);
                       const isColSelected = selectedFileCols.includes(colKey);
+                      const currentMapping = columnMappings[colKey];
                       return (
                         <th
                           key={colKey}
-                          className={`py-2 px-2.5 min-w-[220px] border-r border-slate-200 font-sans relative transition-colors ${
-                            isColSelected ? 'bg-indigo-50/70 ring-1 ring-inset ring-indigo-300' : 'bg-slate-100'
+                          className={`py-2.5 px-3 font-normal whitespace-nowrap min-w-[200px] border-r border-slate-100 ${
+                            isColSelected ? 'bg-indigo-50/50' : 'bg-white'
                           }`}
                         >
-                          <div className="flex items-center justify-between gap-1 mb-1 relative">
-                            <div className="flex items-center gap-1.5 min-w-0">
-                              <input
-                                type="checkbox"
-                                checked={isColSelected}
-                                onChange={(e) => {
-                                  e.stopPropagation();
-                                  handleToggleFileColSelect(colKey);
-                                }}
-                                className="w-3.5 h-3.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer shrink-0"
-                                title={`Select column ${colKey} for merge or actions`}
-                              />
-                              <span
-                                className={`font-mono font-bold text-xs truncate max-w-[100px] ${
-                                  isColSelected ? 'text-indigo-900' : 'text-slate-800'
-                                }`}
-                                title={colKey}
-                              >
-                                {colKey}
-                              </span>
-                            </div>
-                            <div className="flex items-center gap-1">
-                              {/* Required column toggle */}
-                              <label
-                                className={`text-[9px] px-1.5 py-0.5 rounded font-bold cursor-pointer border flex items-center gap-0.5 ${
-                                  isRequired
-                                    ? 'bg-rose-50 text-rose-700 border-rose-300'
-                                    : 'bg-white text-slate-400 border-slate-200 hover:text-slate-600'
-                                }`}
-                                title="Toggle whether this column is strictly required by the template"
-                              >
+                          <div className="space-y-1.5">
+                            <div className="flex items-center justify-between gap-1.5">
+                              <div className="flex items-center gap-1.5 min-w-0">
                                 <input
                                   type="checkbox"
-                                  checked={isRequired}
-                                  onChange={() => handleToggleRequiredCol(colKey)}
-                                  className="hidden"
+                                  checked={isColSelected}
+                                  onChange={e => {
+                                    e.stopPropagation();
+                                    handleToggleFileColSelect(colKey);
+                                  }}
+                                  className="w-3.5 h-3.5 rounded border-slate-300 text-indigo-600 focus:ring-indigo-500 cursor-pointer shrink-0"
+                                  title={`Select column ${colKey}`}
                                 />
-                                <span>{isRequired ? 'REQ' : 'OPT'}</span>
-                              </label>
+                                <span
+                                  className="font-bold text-slate-800 font-mono text-xs truncate max-w-[120px]"
+                                  title={colKey}
+                                >
+                                  {colKey}
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-1">
+                                <label
+                                  className={`text-[9px] px-1.5 py-0.5 rounded font-bold cursor-pointer border flex items-center gap-0.5 ${
+                                    isRequired
+                                      ? 'bg-rose-50 text-rose-700 border-rose-300'
+                                      : 'bg-white text-slate-400 border-slate-200 hover:text-slate-600'
+                                  }`}
+                                  title="Toggle required status"
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={isRequired}
+                                    onChange={() => handleToggleRequiredCol(colKey)}
+                                    className="hidden"
+                                  />
+                                  <span>{isRequired ? 'REQ' : 'OPT'}</span>
+                                </label>
 
-                              {/* More actions (...) button */}
-                              <div className="relative">
+                                {/* Actions menu */}
+                                <div className="relative">
+                                  <button
+                                    type="button"
+                                    onClick={e => {
+                                      e.preventDefault();
+                                      e.stopPropagation();
+                                      setActiveColMenu(activeColMenu === colKey ? null : colKey);
+                                    }}
+                                    className={`p-1 rounded transition-colors ${
+                                      activeColMenu === colKey
+                                        ? 'bg-indigo-100 text-indigo-700'
+                                        : 'hover:bg-slate-100 text-slate-400'
+                                    }`}
+                                    title="Column actions (Split, Clean, Transform, DB Comparator)"
+                                  >
+                                    <MoreHorizontal size={13} />
+                                  </button>
+
+                                  {activeColMenu === colKey && (
+                                    <div className="absolute right-0 top-full mt-1 w-52 bg-white rounded-xl shadow-xl border border-slate-200 py-1.5 z-30 text-xs font-sans animate-in fade-in zoom-in-95 duration-100">
+                                      <div className="px-3 py-1 text-[10px] font-bold text-slate-400 uppercase tracking-wider border-b border-slate-100">
+                                        Operations for {colKey}
+                                      </div>
+
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          handleOpenSplitModal(colKey);
+                                          setActiveColMenu(null);
+                                        }}
+                                        className="w-full text-left px-3 py-1.5 hover:bg-slate-50 text-slate-700 flex items-center gap-2 transition-colors cursor-pointer"
+                                      >
+                                        <Split size={13} className="text-blue-500 shrink-0" />
+                                        <span>Split Column</span>
+                                      </button>
+
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          handleOpenTransformModal(colKey);
+                                          setActiveColMenu(null);
+                                        }}
+                                        className="w-full text-left px-3 py-1.5 hover:bg-purple-50 text-purple-700 flex items-center gap-2 transition-colors cursor-pointer"
+                                      >
+                                        <Sparkles size={13} className="text-purple-500 shrink-0" />
+                                        <span>Transform with Rules</span>
+                                      </button>
+
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          handleOpenDbComparator(colKey);
+                                          setActiveColMenu(null);
+                                        }}
+                                        className="w-full text-left px-3 py-1.5 hover:bg-indigo-50 text-indigo-700 flex items-center gap-2 transition-colors cursor-pointer"
+                                      >
+                                        <Database size={13} className="text-indigo-500 shrink-0" />
+                                        <span>Compare DB Sample</span>
+                                      </button>
+
+                                      <div className="border-t border-slate-100 my-1" />
+
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          handleDeleteColumn(colKey);
+                                          setActiveColMenu(null);
+                                        }}
+                                        className="w-full text-left px-3 py-1.5 hover:bg-rose-50 text-rose-600 flex items-center gap-2 transition-colors cursor-pointer"
+                                      >
+                                        <Trash2 size={13} className="text-rose-500 shrink-0" />
+                                        <span className="font-semibold text-xs">Exclude Column</span>
+                                      </button>
+                                    </div>
+                                  )}
+                                </div>
+
                                 <button
                                   type="button"
-                                  onClick={(e) => {
-                                    e.preventDefault();
-                                    e.stopPropagation();
-                                    setActiveColMenu(activeColMenu === colKey ? null : colKey);
-                                  }}
-                                  className={`p-1 rounded transition-colors cursor-pointer ${
-                                    activeColMenu === colKey
-                                      ? 'bg-blue-100 text-blue-700'
-                                      : 'hover:bg-slate-200 text-slate-500'
-                                  }`}
-                                  title="Column actions: Split, Merge, Transform Dictionary, DB Match"
+                                  onClick={() => handleDeleteColumn(colKey)}
+                                  className="p-1 hover:bg-rose-50 text-slate-400 hover:text-rose-600 rounded transition-colors"
+                                  title="Exclude column"
                                 >
-                                  <MoreHorizontal size={13} />
+                                  <Trash2 size={12} />
                                 </button>
-
-                                {/* Dropdown Menu */}
-                                {activeColMenu === colKey && (
-                                  <div
-                                    className="absolute right-0 top-full mt-1 w-60 bg-white border border-slate-200 rounded-xl shadow-xl z-50 py-1 text-xs animate-in fade-in duration-100 text-left"
-                                    onClick={(e) => e.stopPropagation()}
-                                  >
-                                    <div className="px-3 py-1.5 border-b border-slate-100 font-bold text-slate-800 font-mono text-[10px] flex items-center justify-between bg-slate-50 rounded-t-xl">
-                                      <span className="truncate max-w-[140px]">{colKey}</span>
-                                      <span className="text-slate-400 font-sans font-normal">Column Tools</span>
-                                    </div>
-
-                                    <button
-                                      type="button"
-                                      onClick={() => handleOpenSplitModal(colKey)}
-                                      className="w-full text-left px-3 py-1.5 hover:bg-blue-50 text-slate-700 hover:text-blue-700 flex items-center gap-2 transition-colors cursor-pointer"
-                                    >
-                                      <Split size={13} className="text-blue-600 shrink-0" />
-                                      <div className="flex flex-col">
-                                        <span className="font-semibold text-xs">Split Column</span>
-                                        <span className="text-[10px] text-slate-400">Split into multiple columns by delimiter</span>
-                                      </div>
-                                    </button>
-
-                                    <button
-                                      type="button"
-                                      onClick={() => handleOpenMergeModal(colKey)}
-                                      className="w-full text-left px-3 py-1.5 hover:bg-indigo-50 text-slate-700 hover:text-indigo-700 flex items-center gap-2 transition-colors cursor-pointer"
-                                    >
-                                      <Layers size={13} className="text-indigo-600 shrink-0" />
-                                      <div className="flex flex-col">
-                                        <span className="font-semibold text-xs">Merge with Column</span>
-                                        <span className="text-[10px] text-slate-400">Combine with another column</span>
-                                      </div>
-                                    </button>
-
-                                    <button
-                                      type="button"
-                                      onClick={() => handleOpenTransformModal(colKey)}
-                                      className="w-full text-left px-3 py-1.5 hover:bg-amber-50 text-slate-700 hover:text-amber-700 flex items-center gap-2 transition-colors cursor-pointer"
-                                    >
-                                      <Wand2 size={13} className="text-amber-600 shrink-0" />
-                                      <div className="flex flex-col">
-                                        <span className="font-semibold text-xs">Transformation Dictionary</span>
-                                        <span className="text-[10px] text-slate-400">Case, trim, phone, date format, regex</span>
-                                      </div>
-                                    </button>
-
-                                    <button
-                                      type="button"
-                                      onClick={() => handleOpenDbComparator(colKey)}
-                                      className="w-full text-left px-3 py-1.5 hover:bg-emerald-50 text-slate-700 hover:text-emerald-700 flex items-center gap-2 transition-colors cursor-pointer"
-                                    >
-                                      <Database size={13} className="text-emerald-600 shrink-0" />
-                                      <div className="flex flex-col">
-                                        <span className="font-semibold text-xs">Compare External DB</span>
-                                        <span className="text-[10px] text-slate-400">Inspect sample data from connected DB</span>
-                                      </div>
-                                    </button>
-
-                                    <div className="h-px bg-slate-100 my-1" />
-
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        handleDeleteColumn(colKey);
-                                        setActiveColMenu(null);
-                                      }}
-                                      className="w-full text-left px-3 py-1.5 hover:bg-rose-50 text-rose-600 flex items-center gap-2 transition-colors cursor-pointer"
-                                    >
-                                      <Trash2 size={13} className="text-rose-500 shrink-0" />
-                                      <span className="font-semibold text-xs">Exclude Column</span>
-                                    </button>
-                                  </div>
-                                )}
                               </div>
-
-                              {/* Exclude / Delete Column */}
-                              <button
-                                type="button"
-                                onClick={() => handleDeleteColumn(colKey)}
-                                className="p-1 hover:bg-rose-100 text-slate-400 hover:text-rose-600 rounded transition-colors"
-                                title="Exclude this column from import"
-                              >
-                                <Trash2 size={12} />
-                              </button>
                             </div>
-                          </div>
 
-                          {/* ROW 2 IN TH: Target Mapping Selector */}
-                          <div className="pt-1 border-t border-slate-200/80">
+                            {/* Target Standard Field Mapping Selector */}
                             <select
-                              value={columnMappings[colKey] || ''}
+                              value={currentMapping || ''}
                               onChange={e => {
                                 const target = e.target.value;
                                 setColumnMappings(prev => ({
@@ -2508,9 +2576,9 @@ export const StandardFileIngestionWorkspace = forwardRef<
                                 }));
                               }}
                               className={`w-full text-[11px] p-1 rounded font-mono font-semibold border transition-all ${
-                                columnMappings[colKey]
-                                  ? 'bg-blue-50 border-blue-300 text-blue-800'
-                                  : 'bg-white border-slate-200 text-slate-600'
+                                currentMapping
+                                  ? 'bg-blue-50/80 border-blue-300 text-blue-800'
+                                  : 'bg-slate-50 border-slate-200 text-slate-600'
                               }`}
                             >
                               <option value="">-- Target Standard Field --</option>
@@ -2526,49 +2594,83 @@ export const StandardFileIngestionWorkspace = forwardRef<
                     })}
                   </tr>
                 </thead>
-
-                {/* Table Body: Real Data Preview Rows */}
                 <tbody className="divide-y divide-slate-100 text-slate-700 font-mono text-[11px]">
-                  {parsedRows.slice(0, 15).map((row, rowIdx) => (
-                    <tr key={rowIdx} className="hover:bg-blue-50/40 transition-colors">
-                      <td className="py-1.5 px-3 text-center bg-slate-50/80 border-r border-slate-200 text-slate-400 font-mono text-[10px]">
-                        {rowIdx + 1}
+                  {paginatedRows.length === 0 ? (
+                    <tr>
+                      <td colSpan={activeHeaders.length + 1} className="py-12 text-center text-slate-400 font-sans">
+                        <FileSpreadsheet size={32} className="mx-auto mb-2 text-slate-300" />
+                        <p className="text-sm font-semibold text-slate-700">No transactions found</p>
+                        <p className="text-xs text-slate-400 mt-1">
+                          {tableSearch ? 'No rows match your search filter.' : 'Upload a spreadsheet or select an attachment to preview data.'}
+                        </p>
                       </td>
-                      {activeHeaders.map(colKey => {
-                        const cellVal = row[colKey];
-                        const isBlank =
-                          cellVal === undefined ||
-                          cellVal === null ||
-                          String(cellVal).trim() === '';
-                        return (
-                          <td
-                            key={colKey}
-                            className="py-1.5 px-2.5 border-r border-slate-100 truncate max-w-[220px]"
-                            title={String(cellVal ?? '')}
-                          >
-                            {!isBlank ? (
-                              <span>{String(cellVal)}</span>
-                            ) : (
-                              <span className="text-slate-300 italic">-</span>
-                            )}
-                          </td>
-                        );
-                      })}
                     </tr>
-                  ))}
+                  ) : (
+                    paginatedRows.map((row, rIdx) => {
+                      const displayNum = (tablePage - 1) * tablePageSize + rIdx + 1;
+                      return (
+                        <tr key={rIdx} className="hover:bg-slate-50/60 transition-colors h-11 max-h-11 border-b border-slate-100">
+                          <td className="py-2.5 px-4 font-sans text-slate-400 w-12 text-center whitespace-nowrap">
+                            {displayNum}
+                          </td>
+                          {activeHeaders.map(colKey => {
+                            const cellVal = row[colKey];
+                            const isBlank = cellVal === undefined || cellVal === null || String(cellVal).trim() === '';
+                            const isAmount = /amount|amt|fee|total|debit|credit/i.test(colKey) && !isNaN(Number(cellVal));
+                            const isStatus = /status|verdict/i.test(colKey);
+
+                            return (
+                              <td
+                                key={colKey}
+                                className="py-2.5 px-3 border-r border-slate-50/80 whitespace-nowrap truncate max-w-[220px]"
+                                title={String(cellVal ?? '')}
+                              >
+                                {isBlank ? (
+                                  <span className="text-slate-300 italic">-</span>
+                                ) : isAmount ? (
+                                  <span className="font-bold font-heading text-slate-900">
+                                    {Number(cellVal).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                  </span>
+                                ) : isStatus ? (
+                                  <span className={`inline-flex items-center space-x-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                                    String(cellVal).toLowerCase() === 'success' || String(cellVal).toLowerCase() === 'settled'
+                                      ? 'bg-emerald-50 text-emerald-700 border border-emerald-200/60'
+                                      : 'bg-amber-50 text-amber-700 border border-amber-200/60'
+                                  }`}>
+                                    <span className={`w-1.5 h-1.5 rounded-full ${
+                                      String(cellVal).toLowerCase() === 'success' || String(cellVal).toLowerCase() === 'settled'
+                                        ? 'bg-emerald-500'
+                                        : 'bg-amber-500'
+                                    }`} />
+                                    <span>{String(cellVal)}</span>
+                                  </span>
+                                ) : (
+                                  <span>{String(cellVal)}</span>
+                                )}
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      );
+                    })
+                  )}
                 </tbody>
               </table>
             </div>
 
-            {/* Table Footer info */}
-            <div className="p-2 bg-slate-50 border-t border-slate-200 flex items-center justify-between text-[11px] text-slate-500 font-mono">
-              <span>
-                Showing first {Math.min(parsedRows.length, 15)} of {parsedRows.length} rows
-              </span>
-              <span>
-                {activeHeaders.length} active columns • {requiredColumns.length} required fields marked
-              </span>
-            </div>
+            {/* Table Footer with Active Pagination matching CasesWorkspaceView */}
+            <DataTablePagination
+              currentPage={tablePage}
+              totalItems={filteredDisplayRows.length}
+              pageSize={tablePageSize}
+              pageSizeOptions={[5, 6, 7, 8, 9, 10, 12, 14, 15, 20, 25, 50]}
+              statusBadge={<span className="text-[10px] text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200 font-medium">Ready</span>}
+              onPageChange={p => setTablePage(p)}
+              onPageSizeChange={newSize => {
+                setTablePageSize(newSize);
+                setTablePage(1);
+              }}
+            />
           </div>
         </div>
       )}
