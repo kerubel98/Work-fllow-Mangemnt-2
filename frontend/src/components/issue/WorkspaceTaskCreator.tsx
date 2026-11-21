@@ -5,22 +5,22 @@
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import * as XLSX from 'xlsx';
-import { 
-  Plus, ArrowLeft, Layers, FileText, Upload, Trash2, CheckCircle2, 
-  Sparkles, Eraser, CheckCheck, ListFilter, Undo2, Wand2, BookmarkCheck, 
-  Search, Check, X, MoreHorizontal, MoreVertical, Edit3, Type, SlidersHorizontal, 
+import {
+  Plus, ArrowLeft, Layers, FileText, Upload, Trash2, CheckCircle2,
+  Sparkles, Eraser, CheckCheck, ListFilter, Undo2, Wand2, BookmarkCheck,
+  Search, Check, X, MoreHorizontal, MoreVertical, Edit3, Type, SlidersHorizontal,
   ShieldCheck, CheckSquare, RefreshCw, Save, AlertTriangle, GitBranch,
   FileSpreadsheet, Split, Combine, Sliders, Shield, Mail, Users, Lock, ChevronDown,
   ChevronRight, AlertCircle, Eye, HelpCircle, Terminal, PanelRightClose, PanelRightOpen,
   Paperclip, Download, RotateCcw, Link2, CircleDot, Clock, ChevronLeft, FolderOpen, Play, Hash
 } from 'lucide-react';
-import { 
-  IssuePriority, 
-  HashtagPreset, 
-  User, 
+import {
+  IssuePriority,
+  HashtagPreset,
+  User,
   Team,
-  DatabaseConnection, 
-  EnvironmentSystem, 
+  DatabaseConnection,
+  EnvironmentSystem,
   TaskPreFillFromMessage,
   GlobalTransactionSchemaField,
   FileIngestionMappingTemplate
@@ -49,8 +49,39 @@ export interface RecipeStep {
   appliedAt?: string;
 }
 
+// Grouped Column Transformation Definitions for Clean Modal Popup
+const COLUMN_TRANSFORMATION_GROUPS = [
+  {
+    category: 'Text Transformations',
+    icon: Type,
+    rules: [
+      { id: 'UPPERCASE', label: 'To UPPERCASE', desc: 'Convert all letters to uppercase', example: 'hello -> HELLO', icon: Type },
+      { id: 'LOWERCASE', label: 'To lowercase', desc: 'Convert all letters to lowercase', example: 'HELLO -> hello', icon: Type },
+      { id: 'TITLECASE', label: 'To Title Case', desc: 'Capitalize first letter of each word', example: 'john doe -> John Doe', icon: Type },
+      { id: 'TRIM', label: 'Trim Whitespace', desc: 'Strip leading and trailing whitespace', example: '"  abc  " -> "abc"', icon: Eraser },
+    ]
+  },
+  {
+    category: 'Numbers & Currency',
+    icon: SlidersHorizontal,
+    rules: [
+      { id: 'NUMBER_CLEAN', label: 'Clean Number (2 Decimals)', desc: 'Format numeric values to 2 decimal places', example: '1250 -> 1250.00', icon: SlidersHorizontal },
+      { id: 'STRIP_CURRENCY', label: 'Strip Currency Symbols', desc: 'Remove $, ETB, €, and comma separators', example: '$ 1,250.50 -> 1250.50', icon: Sliders },
+      { id: 'ROUND_INT', label: 'Round to Integer', desc: 'Round decimal values to nearest whole integer', example: '123.75 -> 124', icon: Sliders },
+    ]
+  },
+  {
+    category: 'Dates & Security',
+    icon: Shield,
+    rules: [
+      { id: 'DATE_ISO', label: 'Standardize Date (ISO)', desc: 'Convert date formats to standardized YYYY-MM-DD', example: '21/11/2026 -> 2026-11-21', icon: CheckSquare },
+      { id: 'MASK_PAN', label: 'Mask Account / PAN', desc: 'Mask sensitive middle digits of cards or account numbers', example: '1234567890123456 -> 1234••••••••3456', icon: Shield },
+    ]
+  }
+];
+
 export interface WorkspaceTaskCreatorProps {
-  currentUser: { id: string; username: string; role?: string; permanentTeamId?: string; shareWorkspaceWithTeam?: boolean; [key: string]: any };
+  currentUser: { id: string; username: string; role?: string; permanentTeamId?: string; shareWorkspaceWithTeam?: boolean;[key: string]: any };
   users: User[];
   hashtags: HashtagPreset[];
   teams?: Team[];
@@ -196,6 +227,45 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
   const [splitCol1Name, setSplitCol1Name] = useState('Terminal_Code');
   const [splitCol2Name, setSplitCol2Name] = useState('Terminal_Location');
 
+  // Column Transformation Modal State (Grouped Popup)
+  const [transformModalCol, setTransformModalCol] = useState<string | null>(null);
+  const [selectedTransformRule, setSelectedTransformRule] = useState<
+    'UPPERCASE' | 'LOWERCASE' | 'TITLECASE' | 'TRIM' | 'NUMBER_CLEAN' | 'STRIP_CURRENCY' | 'ROUND_INT' | 'DATE_ISO' | 'MASK_PAN'
+  >('UPPERCASE');
+
+  // Live Sample Preview for Column Transformation Modal
+  const samplePreviews = useMemo(() => {
+    if (!transformModalCol || !selectedTransformRule) return [];
+    return createParsedRows.slice(0, 3).map((r, idx) => {
+      const raw = r[transformModalCol];
+      const rawStr = raw !== undefined && raw !== null ? String(raw) : '';
+      let transformedStr = rawStr;
+      if (selectedTransformRule === 'UPPERCASE') transformedStr = rawStr.toUpperCase();
+      else if (selectedTransformRule === 'LOWERCASE') transformedStr = rawStr.toLowerCase();
+      else if (selectedTransformRule === 'TITLECASE') transformedStr = rawStr.replace(/\w\S*/g, txt => txt.charAt(0).toUpperCase() + txt.substr(1).toLowerCase());
+      else if (selectedTransformRule === 'TRIM') transformedStr = rawStr.trim();
+      else if (selectedTransformRule === 'NUMBER_CLEAN') {
+        const num = parseFloat(rawStr.replace(/[^0-9.-]/g, ''));
+        transformedStr = isNaN(num) ? '0.00' : num.toFixed(2);
+      } else if (selectedTransformRule === 'STRIP_CURRENCY') transformedStr = rawStr.replace(/[^0-9.,-]/g, '').trim();
+      else if (selectedTransformRule === 'ROUND_INT') {
+        const num = parseFloat(rawStr.replace(/[^0-9.-]/g, ''));
+        transformedStr = isNaN(num) ? '0' : Math.round(num).toString();
+      } else if (selectedTransformRule === 'DATE_ISO') {
+        const dmy = rawStr.match(/^(\d{1,2})[./-](\d{1,2})[./-](\d{4})/);
+        if (dmy) transformedStr = `${dmy[3]}-${dmy[2].padStart(2, '0')}-${dmy[1].padStart(2, '0')}`;
+        else {
+          const p = Date.parse(rawStr);
+          if (!isNaN(p)) transformedStr = new Date(p).toISOString().split('T')[0];
+        }
+      } else if (selectedTransformRule === 'MASK_PAN') {
+        const digits = rawStr.replace(/\D/g, '');
+        if (digits.length >= 8) transformedStr = `${digits.slice(0, 4)}••••••••${digits.slice(-4)}`;
+      }
+      return { rowNum: idx + 1, original: rawStr, transformed: transformedStr };
+    });
+  }, [transformModalCol, selectedTransformRule, createParsedRows]);
+
   // Workflows & Directive Validation Linkage
   const [workflows, setWorkflows] = useState<any[]>([]);
   useEffect(() => {
@@ -276,8 +346,8 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
     return uniqueCols.map(reqCol => {
       const match = columns.find(
         c => c.name.toLowerCase() === reqCol.toLowerCase() ||
-             c.id.toLowerCase() === reqCol.toLowerCase() ||
-             (c.mapping && c.mapping !== 'Unmapped' && c.mapping.toLowerCase() === reqCol.toLowerCase())
+          c.id.toLowerCase() === reqCol.toLowerCase() ||
+          (c.mapping && c.mapping !== 'Unmapped' && c.mapping.toLowerCase() === reqCol.toLowerCase())
       );
       return {
         name: reqCol,
@@ -324,8 +394,8 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
     const step1: RecipeStep = {
       num: 1,
       title: 'Inspect header structure',
-      desc: createFileName 
-        ? `Loaded "${createFileName}" (Header: row ${headerRowIndex}, Data: row ${dataStartRow}, ${createParsedRows.length} rows, ${columns.length} columns)` 
+      desc: createFileName
+        ? `Loaded "${createFileName}" (Header: row ${headerRowIndex}, Data: row ${dataStartRow}, ${createParsedRows.length} rows, ${columns.length} columns)`
         : `Awaiting spreadsheet upload (Header: row ${headerRowIndex}, Data: row ${dataStartRow})`,
       type: 'INSPECT_HEADER',
       appliedAt: 'Initial load',
@@ -917,12 +987,12 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
     if (initialPreFill.description) setCreateDesc(initialPreFill.description);
 
     if (initialPreFill.attachments && initialPreFill.attachments.length > 0) {
-      const tabularAtt = initialPreFill.attachments.find(a => 
-        a.contentType === 'spreadsheet' || 
-        a.filename?.endsWith('.xlsx') || 
-        a.filename?.endsWith('.xls') || 
-        a.filename?.endsWith('.csv') || 
-        a.filename?.endsWith('.xml') || 
+      const tabularAtt = initialPreFill.attachments.find(a =>
+        a.contentType === 'spreadsheet' ||
+        a.filename?.endsWith('.xlsx') ||
+        a.filename?.endsWith('.xls') ||
+        a.filename?.endsWith('.csv') ||
+        a.filename?.endsWith('.xml') ||
         (a.parsedData && (a.parsedData.tabularRows || a.parsedData.sampleRows))
       ) || initialPreFill.attachments[0];
 
@@ -1212,7 +1282,7 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
 
   // Comprehensive Data Transformation Actions for Column Header 3-Dots Menu
   const handleTransformColumn = (
-    colId: string, 
+    colId: string,
     rule: 'UPPERCASE' | 'LOWERCASE' | 'TITLECASE' | 'TRIM' | 'NUMBER_CLEAN' | 'STRIP_CURRENCY' | 'ROUND_INT' | 'DATE_ISO' | 'MASK_PAN'
   ) => {
     recordSnapshot();
@@ -1304,13 +1374,13 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
       // Robust fallback matching against activeFields keys and labels
       if (!targetField || targetField === 'Unmapped' || targetField === '') {
         const cClean = c.name.toLowerCase().replace(/[-_.\s]/g, '');
-        
+
         const matched = activeFields.find(f => {
           const fKey = (f.key || (f as any).fieldName || '').toLowerCase().replace(/[-_.\s]/g, '');
           const fLabel = (f.label || (f as any).displayName || '').toLowerCase().replace(/[-_.\s]/g, '');
           return fKey === cClean || fLabel === cClean || (fKey && cClean.includes(fKey)) || (fLabel && cClean.includes(fLabel));
         });
-        
+
         if (matched) {
           targetField = matched.key || (matched as any).fieldName;
         } else {
@@ -1488,7 +1558,7 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
     }
 
     const cleanTag = rawTag.replace(/^#/, '');
-    const preset = hashtags.find(h => 
+    const preset = hashtags.find(h =>
       h.tag.replace(/^#/, '').toLowerCase() === cleanTag.toLowerCase()
     );
 
@@ -1556,7 +1626,7 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
         const fieldKey = (field.key || (field as any).fieldName || '').toLowerCase().replace(/[^a-z0-9]/g, '');
         const fieldLabel = (field.label || (field as any).displayName || '').toLowerCase().replace(/[^a-z0-9]/g, '');
         if (rawName === fieldKey || colId === fieldKey || rawName === fieldLabel ||
-            (fieldKey && rawName.includes(fieldKey)) || (fieldKey && fieldKey.includes(rawName))) {
+          (fieldKey && rawName.includes(fieldKey)) || (fieldKey && fieldKey.includes(rawName))) {
           const val = field.key || (field as any).fieldName || field.label;
           mappedCountLocal++;
           newMapping[c.id] = val;
@@ -1953,20 +2023,18 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
             )}
 
             {/* Priority Badge */}
-            <span className={`inline-flex items-center space-x-1 px-2.5 py-0.5 rounded-full text-[11px] font-medium border ${
-              createPriority === 'Critical' || createPriority === 'High'
-                ? 'bg-rose-50 text-rose-700 border-rose-200/60'
-                : 'bg-amber-50 text-amber-700 border-amber-200/60'
-            }`}>
+            <span className={`inline-flex items-center space-x-1 px-2.5 py-0.5 rounded-full text-[11px] font-medium border ${createPriority === 'Critical' || createPriority === 'High'
+              ? 'bg-rose-50 text-rose-700 border-rose-200/60'
+              : 'bg-amber-50 text-amber-700 border-amber-200/60'
+              }`}>
               <span>Priority: {createPriority}</span>
             </span>
 
             {/* Visibility Badge */}
-            <span className={`inline-flex items-center space-x-1 px-2.5 py-0.5 rounded-full text-[11px] font-medium border ${
-              taskVisibility === 'TEAM_PUBLIC'
-                ? 'bg-emerald-50 text-emerald-700 border-emerald-200/60'
-                : 'bg-indigo-50 text-indigo-700 border-indigo-200/60'
-            }`}>
+            <span className={`inline-flex items-center space-x-1 px-2.5 py-0.5 rounded-full text-[11px] font-medium border ${taskVisibility === 'TEAM_PUBLIC'
+              ? 'bg-emerald-50 text-emerald-700 border-emerald-200/60'
+              : 'bg-indigo-50 text-indigo-700 border-indigo-200/60'
+              }`}>
               <span className={`w-1.5 h-1.5 rounded-full ${taskVisibility === 'TEAM_PUBLIC' ? 'bg-emerald-500' : 'bg-indigo-500'}`} />
               <span>{taskVisibility === 'TEAM_PUBLIC' ? 'Team Public' : 'Private'}</span>
             </span>
@@ -2235,16 +2303,14 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
                 <button
                   type="button"
                   onClick={() => setActiveTab('grid')}
-                  className={`py-3.5 text-xs font-semibold font-heading flex items-center space-x-2 border-b-2 transition-colors cursor-pointer shrink-0 ${
-                    activeTab === 'grid'
-                      ? 'border-[#F27421] text-slate-900'
-                      : 'border-transparent text-slate-500 hover:text-slate-800'
-                  }`}
+                  className={`py-3.5 text-xs font-semibold font-heading flex items-center space-x-2 border-b-2 transition-colors cursor-pointer shrink-0 ${activeTab === 'grid'
+                    ? 'border-[#F27421] text-slate-900'
+                    : 'border-transparent text-slate-500 hover:text-slate-800'
+                    }`}
                 >
                   <span>Ingested Data Grid</span>
-                  <span className={`px-1.5 py-0.2 text-[10px] font-mono font-bold rounded-full ${
-                    activeTab === 'grid' ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-700'
-                  }`}>
+                  <span className={`px-1.5 py-0.2 text-[10px] font-mono font-bold rounded-full ${activeTab === 'grid' ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-700'
+                    }`}>
                     {createParsedRows.length}
                   </span>
                 </button>
@@ -2252,16 +2318,14 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
                 <button
                   type="button"
                   onClick={() => setActiveTab('schema')}
-                  className={`py-3.5 text-xs font-semibold font-heading flex items-center space-x-2 border-b-2 transition-colors cursor-pointer shrink-0 ${
-                    activeTab === 'schema'
-                      ? 'border-[#F27421] text-slate-900'
-                      : 'border-transparent text-slate-500 hover:text-slate-800'
-                  }`}
+                  className={`py-3.5 text-xs font-semibold font-heading flex items-center space-x-2 border-b-2 transition-colors cursor-pointer shrink-0 ${activeTab === 'schema'
+                    ? 'border-[#F27421] text-slate-900'
+                    : 'border-transparent text-slate-500 hover:text-slate-800'
+                    }`}
                 >
                   <span>Source File &amp; Schema</span>
-                  <span className={`px-1.5 py-0.2 text-[10px] font-mono font-bold rounded-full ${
-                    activeTab === 'schema' ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-700'
-                  }`}>
+                  <span className={`px-1.5 py-0.2 text-[10px] font-mono font-bold rounded-full ${activeTab === 'schema' ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-700'
+                    }`}>
                     {columns.length}
                   </span>
                 </button>
@@ -2269,16 +2333,14 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
                 <button
                   type="button"
                   onClick={() => setActiveTab('recipes')}
-                  className={`py-3.5 text-xs font-semibold font-heading flex items-center space-x-2 border-b-2 transition-colors cursor-pointer shrink-0 ${
-                    activeTab === 'recipes'
-                      ? 'border-[#F27421] text-slate-900'
-                      : 'border-transparent text-slate-500 hover:text-slate-800'
-                  }`}
+                  className={`py-3.5 text-xs font-semibold font-heading flex items-center space-x-2 border-b-2 transition-colors cursor-pointer shrink-0 ${activeTab === 'recipes'
+                    ? 'border-[#F27421] text-slate-900'
+                    : 'border-transparent text-slate-500 hover:text-slate-800'
+                    }`}
                 >
                   <span>Applied Recipes</span>
-                  <span className={`px-1.5 py-0.2 text-[10px] font-mono font-bold rounded-full ${
-                    activeTab === 'recipes' ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-700'
-                  }`}>
+                  <span className={`px-1.5 py-0.2 text-[10px] font-mono font-bold rounded-full ${activeTab === 'recipes' ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-700'
+                    }`}>
                     {customRecipeSteps.length}
                   </span>
                 </button>
@@ -2294,11 +2356,10 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
                       setFilterMode('all');
                       setCurrentPage(1);
                     }}
-                    className={`px-3 py-1 rounded-lg transition-all cursor-pointer ${
-                      filterMode === 'all'
-                        ? 'bg-white text-slate-900 shadow-2xs font-bold'
-                        : 'text-[#1a64db] font-semibold hover:text-blue-800'
-                    }`}
+                    className={`px-3 py-1 rounded-lg transition-all cursor-pointer ${filterMode === 'all'
+                      ? 'bg-white text-slate-900 shadow-2xs font-bold'
+                      : 'text-[#1a64db] font-semibold hover:text-blue-800'
+                      }`}
                   >
                     All
                   </button>
@@ -2308,11 +2369,10 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
                       setFilterMode('duplicates');
                       setCurrentPage(1);
                     }}
-                    className={`px-3 py-1 rounded-lg transition-all cursor-pointer ${
-                      filterMode === 'duplicates'
-                        ? 'bg-white text-[#1a64db] shadow-2xs font-bold'
-                        : 'text-[#1a64db] font-semibold hover:text-blue-800'
-                    }`}
+                    className={`px-3 py-1 rounded-lg transition-all cursor-pointer ${filterMode === 'duplicates'
+                      ? 'bg-white text-[#1a64db] shadow-2xs font-bold'
+                      : 'text-[#1a64db] font-semibold hover:text-blue-800'
+                      }`}
                   >
                     Duplicates {duplicateCount}
                   </button>
@@ -2322,11 +2382,10 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
                       setFilterMode('unique');
                       setCurrentPage(1);
                     }}
-                    className={`px-3 py-1 rounded-lg transition-all cursor-pointer ${
-                      filterMode === 'unique'
-                        ? 'bg-white text-[#1a64db] shadow-2xs font-bold'
-                        : 'text-[#1a64db] font-semibold hover:text-blue-800'
-                    }`}
+                    className={`px-3 py-1 rounded-lg transition-all cursor-pointer ${filterMode === 'unique'
+                      ? 'bg-white text-[#1a64db] shadow-2xs font-bold'
+                      : 'text-[#1a64db] font-semibold hover:text-blue-800'
+                      }`}
                   >
                     Unique {Math.max(0, createParsedRows.length - duplicateCount)}
                   </button>
@@ -2418,11 +2477,10 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
                     <button
                       type="button"
                       onClick={() => setIsSidePanelCollapsed(prev => !prev)}
-                      className={`hidden md:flex items-center space-x-1 px-2.5 py-1.5 border rounded-lg text-xs font-medium transition-colors cursor-pointer ${
-                        isSidePanelCollapsed
-                          ? 'border-[#F27421] bg-orange-50 text-[#F27421]'
-                          : 'border-slate-200 text-slate-700 hover:bg-slate-50'
-                      }`}
+                      className={`hidden md:flex items-center space-x-1 px-2.5 py-1.5 border rounded-lg text-xs font-medium transition-colors cursor-pointer ${isSidePanelCollapsed
+                        ? 'border-[#F27421] bg-orange-50 text-[#F27421]'
+                        : 'border-slate-200 text-slate-700 hover:bg-slate-50'
+                        }`}
                       title={isSidePanelCollapsed ? "Show side panel" : "Collapse side panel to expand table width"}
                     >
                       {isSidePanelCollapsed ? <PanelRightOpen size={13} className="text-[#F27421]" /> : <PanelRightClose size={13} className="text-slate-500" />}
@@ -2434,11 +2492,10 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
                       <button
                         type="button"
                         onClick={() => setShowColumnFilter(!showColumnFilter)}
-                        className={`flex items-center space-x-1.5 px-2.5 py-1.5 border rounded-lg text-xs font-medium transition-colors cursor-pointer ${
-                          showColumnFilter
-                            ? 'border-[#F27421] bg-orange-50 text-[#F27421]'
-                            : 'border-slate-200 text-slate-700 hover:bg-slate-50'
-                        }`}
+                        className={`flex items-center space-x-1.5 px-2.5 py-1.5 border rounded-lg text-xs font-medium transition-colors cursor-pointer ${showColumnFilter
+                          ? 'border-[#F27421] bg-orange-50 text-[#F27421]'
+                          : 'border-slate-200 text-slate-700 hover:bg-slate-50'
+                          }`}
                         title="Customize table columns"
                       >
                         <SlidersHorizontal size={12} className={showColumnFilter ? 'text-[#F27421]' : 'text-slate-500'} />
@@ -2523,11 +2580,10 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
                       <button
                         type="button"
                         onClick={() => setShowTableActionsMenu(!showTableActionsMenu)}
-                        className={`p-1.5 border rounded-lg transition-colors cursor-pointer ${
-                          showTableActionsMenu
-                            ? 'border-[#F27421] bg-orange-50 text-[#F27421] shadow-2xs'
-                            : 'border-slate-200 text-slate-600 hover:text-slate-900 hover:bg-slate-50'
-                        }`}
+                        className={`p-1.5 border rounded-lg transition-colors cursor-pointer ${showTableActionsMenu
+                          ? 'border-[#F27421] bg-orange-50 text-[#F27421] shadow-2xs'
+                          : 'border-slate-200 text-slate-600 hover:text-slate-900 hover:bg-slate-50'
+                          }`}
                         title="Data actions & cleaning transforms (Auto-Map, Trim, Deduplicate, Empty rows, Merge)"
                       >
                         <MoreVertical size={14} />
@@ -2535,9 +2591,9 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
 
                       {showTableActionsMenu && (
                         <>
-                          <div 
-                            className="fixed inset-0 z-40" 
-                            onClick={() => setShowTableActionsMenu(false)} 
+                          <div
+                            className="fixed inset-0 z-40"
+                            onClick={() => setShowTableActionsMenu(false)}
                           />
                           <div className="absolute right-0 top-full mt-1.5 w-56 bg-white border border-slate-200 rounded-xl shadow-xl z-50 py-1.5 text-xs font-sans animate-in fade-in zoom-in-95 duration-100">
                             <div className="px-3 py-1 font-bold text-slate-500 text-[10px] uppercase tracking-wider border-b border-slate-100 mb-1">
@@ -2636,11 +2692,10 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
                                 }
                               }}
                               disabled={selectedCount < 2}
-                              className={`w-full px-3 py-2 text-left flex items-center justify-between transition-colors ${
-                                selectedCount >= 2
-                                  ? 'hover:bg-slate-50 text-slate-800 cursor-pointer'
-                                  : 'text-slate-400 opacity-60 cursor-not-allowed'
-                              }`}
+                              className={`w-full px-3 py-2 text-left flex items-center justify-between transition-colors ${selectedCount >= 2
+                                ? 'hover:bg-slate-50 text-slate-800 cursor-pointer'
+                                : 'text-slate-400 opacity-60 cursor-not-allowed'
+                                }`}
                             >
                               <div className="flex items-center gap-2">
                                 <Combine size={13} className={selectedCount >= 2 ? 'text-blue-600' : 'text-slate-400'} />
@@ -2714,9 +2769,8 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
                           {activeTableColumns.map(col => (
                             <th
                               key={col.id}
-                              className={`py-2 px-3 min-w-[180px] max-w-[260px] font-sans transition-colors ${
-                                col.selected ? 'bg-orange-50/40' : 'bg-white'
-                              }`}
+                              className={`py-2 px-3 min-w-[180px] max-w-[260px] font-sans transition-colors ${col.selected ? 'bg-orange-50/40' : 'bg-white'
+                                }`}
                             >
                               <div className="flex items-center justify-between mb-1.5">
                                 <label className="flex items-center space-x-1.5 cursor-pointer select-none">
@@ -2736,11 +2790,10 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
 
                                 <div className="flex items-center space-x-1">
                                   {/* Type Pill */}
-                                  <span className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-medium ${
-                                    col.type === 'Number' ? 'bg-blue-50 text-blue-700' :
+                                  <span className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-medium ${col.type === 'Number' ? 'bg-blue-50 text-blue-700' :
                                     col.type === 'Date' ? 'bg-amber-50 text-amber-700' :
-                                    'bg-slate-100 text-slate-600'
-                                  }`}>
+                                      'bg-slate-100 text-slate-600'
+                                    }`}>
                                     {col.type}
                                   </span>
 
@@ -2757,13 +2810,13 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
 
                                     {activeMenuColumn === col.id && (
                                       <>
-                                        <div 
-                                          className="fixed inset-0 z-40" 
-                                          onClick={() => setActiveMenuColumn(null)} 
+                                        <div
+                                          className="fixed inset-0 z-40"
+                                          onClick={() => setActiveMenuColumn(null)}
                                         />
-                                        <div className="absolute right-0 top-7 w-56 bg-white border border-slate-200 rounded-xl shadow-xl z-50 py-1.5 text-xs font-sans animate-in fade-in zoom-in-95 duration-100">
+                                        <div className="absolute right-0 top-7 w-52 bg-white border border-slate-200 rounded-xl shadow-xl z-50 py-1.5 text-xs font-sans animate-in fade-in zoom-in-95 duration-100">
                                           <div className="px-3 py-1 font-bold text-slate-500 text-[10px] uppercase tracking-wider border-b border-slate-100 mb-1">
-                                            Transform: {col.name}
+                                            Actions: {col.name}
                                           </div>
 
                                           {/* Rename Original Header */}
@@ -2775,88 +2828,30 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
                                               setEditingColId(col.id);
                                               setTempColHeaderName(col.name);
                                             }}
-                                            className="w-full px-3 py-1.5 text-left hover:bg-orange-50/70 flex items-center gap-2 cursor-pointer text-[#F27421] font-semibold border-b border-slate-100 mb-1"
+                                            className="w-full px-3 py-1.5 text-left hover:bg-orange-50/70 flex items-center gap-2 cursor-pointer text-slate-700 font-medium"
                                           >
-                                            <Edit3 size={12} className="text-[#F27421]" />
+                                            <Edit3 size={13} className="text-[#F27421]" />
                                             <span>Rename Header...</span>
                                           </button>
 
-                                          {/* Text Category */}
-                                          <div className="px-3 py-0.5 text-[9px] font-bold text-slate-400 uppercase">Text Transforms</div>
+                                          {/* Transform Data (Opens Grouped Modal Popup) */}
                                           <button
                                             type="button"
-                                            onClick={() => handleTransformColumn(col.id, 'UPPERCASE')}
-                                            className="w-full px-3 py-1.5 text-left hover:bg-slate-50 flex items-center gap-2 cursor-pointer text-slate-700"
+                                            onClick={() => {
+                                              setActiveMenuColumn(null);
+                                              setTransformModalCol(col.id);
+                                              setSelectedTransformRule('UPPERCASE');
+                                            }}
+                                            className="w-full px-3 py-1.5 text-left hover:bg-purple-50 text-purple-700 flex items-center justify-between cursor-pointer font-medium"
                                           >
-                                            <Type size={12} className="text-slate-500" />
-                                            <span>To UPPERCASE</span>
-                                          </button>
-                                          <button
-                                            type="button"
-                                            onClick={() => handleTransformColumn(col.id, 'LOWERCASE')}
-                                            className="w-full px-3 py-1.5 text-left hover:bg-slate-50 flex items-center gap-2 cursor-pointer text-slate-700"
-                                          >
-                                            <Type size={12} className="text-slate-500" />
-                                            <span>To lowercase</span>
-                                          </button>
-                                          <button
-                                            type="button"
-                                            onClick={() => handleTransformColumn(col.id, 'TITLECASE')}
-                                            className="w-full px-3 py-1.5 text-left hover:bg-slate-50 flex items-center gap-2 cursor-pointer text-slate-700"
-                                          >
-                                            <Type size={12} className="text-slate-500" />
-                                            <span>To Title Case</span>
-                                          </button>
-                                          <button
-                                            type="button"
-                                            onClick={() => handleTransformColumn(col.id, 'TRIM')}
-                                            className="w-full px-3 py-1.5 text-left hover:bg-slate-50 flex items-center gap-2 cursor-pointer text-slate-700"
-                                          >
-                                            <Eraser size={12} className="text-slate-500" />
-                                            <span>Trim Whitespace</span>
+                                            <div className="flex items-center gap-2">
+                                              <Sparkles size={13} className="text-purple-600" />
+                                              <span>Transform Data...</span>
+                                            </div>
+                                            <ChevronRight size={12} className="text-purple-400" />
                                           </button>
 
-                                          <div className="h-px bg-slate-100 my-1" />
-
-                                          {/* Numbers & Dates Category */}
-                                          <div className="px-3 py-0.5 text-[9px] font-bold text-slate-400 uppercase">Numbers &amp; Dates</div>
-                                          <button
-                                            type="button"
-                                            onClick={() => handleTransformColumn(col.id, 'NUMBER_CLEAN')}
-                                            className="w-full px-3 py-1.5 text-left hover:bg-slate-50 flex items-center gap-2 cursor-pointer text-slate-700"
-                                          >
-                                            <SlidersHorizontal size={12} className="text-blue-600" />
-                                            <span>Clean Number (2 Decimals)</span>
-                                          </button>
-                                          <button
-                                            type="button"
-                                            onClick={() => handleTransformColumn(col.id, 'STRIP_CURRENCY')}
-                                            className="w-full px-3 py-1.5 text-left hover:bg-slate-50 flex items-center gap-2 cursor-pointer text-slate-700"
-                                          >
-                                            <Sliders size={12} className="text-blue-600" />
-                                            <span>Strip Currency Symbols</span>
-                                          </button>
-                                          <button
-                                            type="button"
-                                            onClick={() => handleTransformColumn(col.id, 'ROUND_INT')}
-                                            className="w-full px-3 py-1.5 text-left hover:bg-slate-50 flex items-center gap-2 cursor-pointer text-slate-700"
-                                          >
-                                            <Sliders size={12} className="text-blue-600" />
-                                            <span>Round to Integer</span>
-                                          </button>
-                                          <button
-                                            type="button"
-                                            onClick={() => handleTransformColumn(col.id, 'DATE_ISO')}
-                                            className="w-full px-3 py-1.5 text-left hover:bg-slate-50 flex items-center gap-2 cursor-pointer text-slate-700"
-                                          >
-                                            <CheckSquare size={12} className="text-amber-600" />
-                                            <span>Standardize Date (ISO)</span>
-                                          </button>
-
-                                          <div className="h-px bg-slate-100 my-1" />
-
-                                          {/* Security & Structure */}
-                                          <div className="px-3 py-0.5 text-[9px] font-bold text-slate-400 uppercase">Security &amp; Structure</div>
+                                          {/* Split Column */}
                                           <button
                                             type="button"
                                             onClick={() => {
@@ -2866,18 +2861,13 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
                                               setSplitModalOpen(true);
                                               setActiveMenuColumn(null);
                                             }}
-                                            className="w-full px-3 py-1.5 text-left hover:bg-slate-50 flex items-center gap-2 cursor-pointer text-slate-700"
+                                            className="w-full px-3 py-1.5 text-left hover:bg-blue-50 text-blue-700 flex items-center justify-between cursor-pointer font-medium"
                                           >
-                                            <Split size={12} className="text-indigo-600" />
-                                            <span>Split column...</span>
-                                          </button>
-                                          <button
-                                            type="button"
-                                            onClick={() => handleTransformColumn(col.id, 'MASK_PAN')}
-                                            className="w-full px-3 py-1.5 text-left hover:bg-slate-50 flex items-center gap-2 cursor-pointer text-slate-700"
-                                          >
-                                            <Shield size={12} className="text-purple-600" />
-                                            <span>Mask Account / PAN</span>
+                                            <div className="flex items-center gap-2">
+                                              <Split size={13} className="text-blue-600" />
+                                              <span>Split Column...</span>
+                                            </div>
+                                            <ChevronRight size={12} className="text-blue-400" />
                                           </button>
 
                                           <div className="h-px bg-slate-100 my-1" />
@@ -2885,11 +2875,14 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
                                           {/* Column Exclusion */}
                                           <button
                                             type="button"
-                                            onClick={() => handleExcludeColumn(col.id)}
+                                            onClick={() => {
+                                              setActiveMenuColumn(null);
+                                              handleExcludeColumn(col.id);
+                                            }}
                                             className="w-full px-3 py-1.5 text-left hover:bg-rose-50 text-rose-600 flex items-center gap-2 cursor-pointer font-medium"
                                           >
-                                            <Trash2 size={12} />
-                                            <span>Exclude column</span>
+                                            <Trash2 size={13} />
+                                            <span>Exclude Column</span>
                                           </button>
                                         </div>
                                       </>
@@ -2915,11 +2908,10 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
                                       [col.id]: newMapping
                                     }));
                                   }}
-                                  className={`w-full py-1 px-2 text-[11px] font-mono rounded-lg border appearance-none cursor-pointer focus:outline-none transition-colors ${
-                                    col.mapping && col.mapping !== 'Unmapped'
-                                      ? 'bg-orange-50/40 border-orange-200 text-slate-800 font-semibold'
-                                      : 'bg-slate-50 border-slate-200 text-slate-400'
-                                  }`}
+                                  className={`w-full py-1 px-2 text-[11px] font-mono rounded-lg border appearance-none cursor-pointer focus:outline-none transition-colors ${col.mapping && col.mapping !== 'Unmapped'
+                                    ? 'bg-orange-50/40 border-orange-200 text-slate-800 font-semibold'
+                                    : 'bg-slate-50 border-slate-200 text-slate-400'
+                                    }`}
                                 >
                                   <option value="Unmapped">-- Map standard field --</option>
                                   {standardFields.length > 0 ? (
@@ -2970,9 +2962,8 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
                               const isDupRow = duplicateIndices.has((currentPage - 1) * pageSize + rIdx);
 
                               return (
-                                <tr key={rIdx} className={`hover:bg-slate-50/60 transition-colors h-11 max-h-11 border-b border-slate-100 ${
-                                  isDupRow ? 'bg-amber-50/20' : ''
-                                }`}>
+                                <tr key={rIdx} className={`hover:bg-slate-50/60 transition-colors h-11 max-h-11 border-b border-slate-100 ${isDupRow ? 'bg-amber-50/20' : ''
+                                  }`}>
                                   <td className="py-2.5 px-3 font-sans text-slate-400 w-12 text-center whitespace-nowrap">
                                     {displayNum}
                                   </td>
@@ -2991,16 +2982,14 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
                                             {Number(String(val).replace(/,/g, '')).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                                           </span>
                                         ) : isStatus ? (
-                                          <span className={`inline-flex items-center space-x-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                                            String(val).toLowerCase() === 'settled' || String(val).toLowerCase() === 'success'
-                                              ? 'bg-emerald-50 text-emerald-700 border border-emerald-200/60'
-                                              : 'bg-amber-50 text-amber-700 border border-amber-200/60'
-                                          }`}>
-                                            <span className={`w-1.5 h-1.5 rounded-full ${
-                                              String(val).toLowerCase() === 'settled' || String(val).toLowerCase() === 'success'
-                                                ? 'bg-emerald-500'
-                                                : 'bg-amber-500'
-                                            }`} />
+                                          <span className={`inline-flex items-center space-x-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium ${String(val).toLowerCase() === 'settled' || String(val).toLowerCase() === 'success'
+                                            ? 'bg-emerald-50 text-emerald-700 border border-emerald-200/60'
+                                            : 'bg-amber-50 text-amber-700 border border-amber-200/60'
+                                            }`}>
+                                            <span className={`w-1.5 h-1.5 rounded-full ${String(val).toLowerCase() === 'settled' || String(val).toLowerCase() === 'success'
+                                              ? 'bg-emerald-500'
+                                              : 'bg-amber-500'
+                                              }`} />
                                             <span>{String(val)}</span>
                                           </span>
                                         ) : (
@@ -3029,7 +3018,7 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
                   </div>
                 ) : (
                   <div className="flex-1 flex flex-col items-center justify-center p-8 bg-slate-50/40">
-                    <div 
+                    <div
                       onDragOver={e => e.preventDefault()}
                       onDrop={e => {
                         e.preventDefault();
@@ -3157,19 +3146,17 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
                             )}
                           </div>
                         )}
-                        <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold shrink-0 ${
-                          col.type === 'Number' ? 'bg-blue-50 text-blue-700' :
+                        <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold shrink-0 ${col.type === 'Number' ? 'bg-blue-50 text-blue-700' :
                           col.type === 'Date' ? 'bg-amber-50 text-amber-700' :
-                          'bg-slate-200 text-slate-700'
-                        }`}>
+                            'bg-slate-200 text-slate-700'
+                          }`}>
                           {col.type}
                         </span>
                       </div>
                       <div className="flex items-center justify-between text-[11px] text-slate-600">
                         <span>Directory Mapping:</span>
-                        <span className={`font-mono font-semibold ${
-                          col.mapping && col.mapping !== 'Unmapped' ? 'text-[#F27421]' : 'text-slate-400'
-                        }`}>
+                        <span className={`font-mono font-semibold ${col.mapping && col.mapping !== 'Unmapped' ? 'text-[#F27421]' : 'text-slate-400'
+                          }`}>
                           {col.mapping || 'Unmapped'}
                         </span>
                       </div>
@@ -3219,8 +3206,8 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
                   {allRecipeSteps.map((step) => {
                     const isCompleted = step.type === 'INSPECT_HEADER' ? isStep1Complete
                       : step.type === 'MAP_FIELDS' ? isStep2Complete
-                      : step.type === 'REQUIRED_COLUMNS' ? isRequiredColumnsStepComplete
-                      : true;
+                        : step.type === 'REQUIRED_COLUMNS' ? isRequiredColumnsStepComplete
+                          : true;
 
                     return (
                       <div
@@ -3229,9 +3216,8 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
                         className="p-3.5 bg-white border border-slate-200/80 rounded-xl flex items-start justify-between shadow-2xs hover:border-orange-200 hover:bg-orange-50/20 transition-all cursor-pointer group"
                       >
                         <div className="flex items-start space-x-3">
-                          <span className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-mono font-bold shrink-0 mt-0.5 transition-colors ${
-                            isCompleted ? 'bg-emerald-600 text-white' : 'bg-amber-500 text-white'
-                          }`}>
+                          <span className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-mono font-bold shrink-0 mt-0.5 transition-colors ${isCompleted ? 'bg-emerald-600 text-white' : 'bg-amber-500 text-white'
+                            }`}>
                             {isCompleted ? <Check size={12} strokeWidth={3} /> : step.num}
                           </span>
                           <div>
@@ -3319,10 +3305,10 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
               <button
                 type="button"
                 onClick={() => handleRunHashtag()}
-                className="w-full flex items-center justify-center space-x-2 py-2.5 bg-[#F27421] hover:bg-[#e06516] active:bg-[#c95712] text-white rounded-xl text-xs font-bold transition shadow-xs cursor-pointer group"
+                className="w-full flex items-center justify-center space-x-2 py-2.5 text-gray-600 rounded-md text-xs font-bold transition shadow-xs cursor-pointer group border-solid border-gray-300"
                 title="Execute hashtag directive and apply its own column mappings directly to the task data"
               >
-                <Play size={13} className="fill-white group-hover:scale-110 transition-transform" />
+                <Play size={13} color="#12a83aff" className="fill-white group-hover:scale-110 transition-transform" />
                 <span>Run Hashtag</span>
               </button>
             </div>
@@ -3339,15 +3325,14 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
                   Edit
                 </button>
               </div>
-              
+
               <div className="space-y-2.5 text-xs">
                 <div className="flex items-center justify-between">
                   <span className="text-slate-500 font-normal">Priority</span>
-                  <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium capitalize border ${
-                    createPriority === 'Critical' || createPriority === 'High'
-                      ? 'bg-rose-50 text-rose-700 border-rose-200/60'
-                      : 'bg-amber-50 text-amber-700 border-amber-200/60'
-                  }`}>
+                  <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium capitalize border ${createPriority === 'Critical' || createPriority === 'High'
+                    ? 'bg-rose-50 text-rose-700 border-rose-200/60'
+                    : 'bg-amber-50 text-amber-700 border-amber-200/60'
+                    }`}>
                     {createPriority}
                   </span>
                 </div>
@@ -3539,11 +3524,10 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
                   <button
                     type="button"
                     onClick={() => setTaskVisibility('TEAM_PUBLIC')}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer flex items-center justify-center space-x-1.5 ${
-                      taskVisibility === 'TEAM_PUBLIC'
-                        ? 'bg-white text-slate-900 shadow-2xs font-bold'
-                        : 'text-slate-600 hover:text-slate-900'
-                    }`}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer flex items-center justify-center space-x-1.5 ${taskVisibility === 'TEAM_PUBLIC'
+                      ? 'bg-white text-slate-900 shadow-2xs font-bold'
+                      : 'text-slate-600 hover:text-slate-900'
+                      }`}
                   >
                     <Users size={12} className={taskVisibility === 'TEAM_PUBLIC' ? 'text-[#F27421]' : 'text-slate-500'} />
                     <span>Team Public</span>
@@ -3551,11 +3535,10 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
                   <button
                     type="button"
                     onClick={() => setTaskVisibility('PERSONAL_PRIVATE')}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer flex items-center justify-center space-x-1.5 ${
-                      taskVisibility === 'PERSONAL_PRIVATE'
-                        ? 'bg-white text-slate-900 shadow-2xs font-bold'
-                        : 'text-slate-600 hover:text-slate-900'
-                    }`}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer flex items-center justify-center space-x-1.5 ${taskVisibility === 'PERSONAL_PRIVATE'
+                      ? 'bg-white text-slate-900 shadow-2xs font-bold'
+                      : 'text-slate-600 hover:text-slate-900'
+                      }`}
                   >
                     <Lock size={12} className={taskVisibility === 'PERSONAL_PRIVATE' ? 'text-indigo-600' : 'text-slate-500'} />
                     <span>Personal Private</span>
@@ -3692,11 +3675,10 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
                     {columns.map(c => (
                       <div key={c.id} className="flex items-center justify-between text-xs p-1.5 rounded-lg bg-white border border-slate-100">
                         <span className="font-mono text-slate-800">{c.name}</span>
-                        <span className={`px-2 py-0.5 rounded font-mono text-[10px] font-semibold ${
-                          c.mapping && c.mapping !== 'Unmapped'
-                            ? 'bg-orange-50 text-[#F27421] border border-orange-200'
-                            : 'bg-slate-100 text-slate-400'
-                        }`}>
+                        <span className={`px-2 py-0.5 rounded font-mono text-[10px] font-semibold ${c.mapping && c.mapping !== 'Unmapped'
+                          ? 'bg-orange-50 text-[#F27421] border border-orange-200'
+                          : 'bg-slate-100 text-slate-400'
+                          }`}>
                           → {c.mapping || 'Unmapped'}
                         </span>
                       </div>
@@ -3713,11 +3695,10 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
                         ? `Mandatory columns required for #${createHashtag}:`
                         : 'No mandatory columns enforced for this feed'}
                     </span>
-                    <span className={`px-2 py-0.5 rounded-full font-bold text-[10px] ${
-                      isRequiredColumnsStepComplete
-                        ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                        : 'bg-amber-50 text-amber-700 border border-amber-200'
-                    }`}>
+                    <span className={`px-2 py-0.5 rounded-full font-bold text-[10px] ${isRequiredColumnsStepComplete
+                      ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                      : 'bg-amber-50 text-amber-700 border border-amber-200'
+                      }`}>
                       {readyRequiredCount} / {requiredColumnsList.length} Ready
                     </span>
                   </div>
@@ -3732,11 +3713,10 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
                               <span className="block text-[10px] text-slate-500 font-mono">Satisfied by: {rc.mappedField}</span>
                             )}
                           </div>
-                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                            rc.status === 'Ready'
-                              ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                              : 'bg-amber-50 text-amber-700 border border-amber-200'
-                          }`}>
+                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${rc.status === 'Ready'
+                            ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                            : 'bg-amber-50 text-amber-700 border border-amber-200'
+                            }`}>
                             {rc.status}
                           </span>
                         </div>
@@ -3804,9 +3784,8 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
                   <span className="text-xs font-bold text-slate-900 uppercase tracking-wider">
                     Required Columns
                   </span>
-                  <span className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded-full ${
-                    isRequiredColumnsStepComplete ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-amber-50 text-amber-700 border border-amber-200'
-                  }`}>
+                  <span className={`text-[10px] font-mono font-bold px-2 py-0.5 rounded-full ${isRequiredColumnsStepComplete ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' : 'bg-amber-50 text-amber-700 border border-amber-200'
+                    }`}>
                     {readyRequiredCount} / {requiredColumnsList.length} Ready
                   </span>
                 </div>
@@ -3815,9 +3794,8 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
                     {requiredColumnsList.map(rc => (
                       <div key={rc.name} className="flex items-center justify-between p-2 rounded-xl border bg-white border-slate-200 text-xs font-mono">
                         <span className="font-semibold text-slate-800 truncate" title={rc.name}>{rc.name}</span>
-                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                          rc.status === 'Ready' ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'
-                        }`}>
+                        <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${rc.status === 'Ready' ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'
+                          }`}>
                           {rc.status}
                         </span>
                       </div>
@@ -3904,6 +3882,161 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
                 <Plus size={16} />
                 <span>Create Task &amp; Launch Workspace</span>
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Grouped Column Transformations Modal */}
+      {transformModalCol && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-xs p-4 animate-in fade-in duration-100">
+          <div className="bg-white border border-slate-200/90 rounded-2xl p-6 max-w-2xl w-full shadow-2xl space-y-4 max-h-[90vh] overflow-y-auto">
+            {/* Header */}
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <div className="flex items-center space-x-3">
+                <div className="w-9 h-9 rounded-xl bg-purple-100 text-purple-700 flex items-center justify-center shrink-0">
+                  <Sparkles size={18} />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <h3 className="text-sm font-bold text-slate-900">
+                      Transform Column: <span className="font-mono text-purple-700">{columns.find(c => c.id === transformModalCol)?.name || transformModalCol}</span>
+                    </h3>
+                    {(() => {
+                      const c = columns.find(col => col.id === transformModalCol);
+                      return c?.originalName && c.originalName !== c.name ? (
+                        <span className="text-[10px] font-mono text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded">
+                          was: {c.originalName}
+                        </span>
+                      ) : null;
+                    })()}
+                    <span className="px-2 py-0.5 text-[10px] font-mono font-semibold bg-slate-100 text-slate-600 rounded">
+                      {columns.find(c => c.id === transformModalCol)?.type || 'Text'}
+                    </span>
+                  </div>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    Select a transformation recipe to apply across all values in this column.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setTransformModalCol(null)}
+                className="p-1 text-slate-400 hover:text-slate-700 rounded-lg cursor-pointer transition-colors"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            {/* Grouped Rules */}
+            <div className="space-y-3.5 text-xs">
+              {COLUMN_TRANSFORMATION_GROUPS.map(group => {
+                const GroupIcon = group.icon;
+                return (
+                  <div key={group.category} className="space-y-1.5">
+                    <div className="flex items-center gap-1.5 text-[11px] font-bold text-slate-500 uppercase tracking-wider">
+                      <GroupIcon size={12} className="text-slate-400" />
+                      <span>{group.category}</span>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                      {group.rules.map(rule => {
+                        const RuleIcon = rule.icon;
+                        const isSelected = selectedTransformRule === rule.id;
+                        return (
+                          <div
+                            key={rule.id}
+                            onClick={() => setSelectedTransformRule(rule.id as any)}
+                            onDoubleClick={() => {
+                              handleTransformColumn(transformModalCol, rule.id as any);
+                              setTransformModalCol(null);
+                            }}
+                            className={`p-2.5 rounded-xl border text-left cursor-pointer transition-all flex flex-col justify-between ${isSelected
+                              ? 'border-purple-500 bg-purple-50/50 ring-1 ring-purple-500 shadow-xs'
+                              : 'border-slate-200 hover:border-purple-300 hover:bg-slate-50/80 bg-white'
+                              }`}
+                          >
+                            <div className="flex items-center justify-between mb-1">
+                              <div className="flex items-center gap-1.5 font-bold text-slate-800">
+                                <RuleIcon size={13} className={isSelected ? 'text-purple-600' : 'text-slate-500'} />
+                                <span>{rule.label}</span>
+                              </div>
+                              {isSelected && (
+                                <span className="w-4 h-4 rounded-full bg-purple-600 text-white flex items-center justify-center text-[10px]">
+                                  <Check size={10} />
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-[11px] text-slate-500 leading-tight mb-1.5">{rule.desc}</p>
+                            <div className="font-mono text-[10px] text-slate-400 bg-slate-100/80 px-1.5 py-0.5 rounded truncate">
+                              e.g. {rule.example}
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Live Sample Preview */}
+            <div className="bg-slate-50 border border-slate-200/80 rounded-xl p-3 space-y-2">
+              <div className="flex items-center justify-between text-[11px] font-bold text-slate-600 uppercase tracking-wider">
+                <span className="flex items-center gap-1.5">
+                  <Eye size={12} className="text-purple-600" />
+                  Live Preview (First 3 Rows)
+                </span>
+                <span className="text-purple-600 font-mono font-medium lowercase">
+                  rule: {selectedTransformRule}
+                </span>
+              </div>
+              <div className="grid grid-cols-1 divide-y divide-slate-200/60 bg-white rounded-lg border border-slate-200/60 text-xs">
+                {samplePreviews.length === 0 ? (
+                  <div className="p-3 text-slate-400 text-center italic text-xs">No sample records available for preview</div>
+                ) : (
+                  samplePreviews.map(p => (
+                    <div key={p.rowNum} className="flex items-center px-3 py-1.5 font-mono text-xs">
+                      <span className="text-slate-400 w-14 shrink-0">Row {p.rowNum}:</span>
+                      <span className="text-slate-600 truncate flex-1 max-w-[200px]" title={p.original || '(empty)'}>
+                        {p.original || <span className="italic text-slate-400">(empty)</span>}
+                      </span>
+                      <span className="text-purple-400 px-2 font-sans font-bold">→</span>
+                      <span className="text-purple-700 font-bold truncate flex-1 max-w-[200px]" title={p.transformed}>
+                        {p.transformed}
+                      </span>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+
+            {/* Footer */}
+            <div className="flex items-center justify-between pt-3 border-t border-slate-100">
+              <span className="text-xs text-slate-400">
+                Double-click a rule or click Apply
+              </span>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setTransformModalCol(null)}
+                  className="px-4 py-2 text-xs font-semibold text-slate-600 hover:text-slate-800 hover:bg-slate-100 rounded-xl transition cursor-pointer"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (transformModalCol && selectedTransformRule) {
+                      handleTransformColumn(transformModalCol, selectedTransformRule);
+                      setTransformModalCol(null);
+                    }
+                  }}
+                  className="px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white text-xs font-bold rounded-xl shadow-xs transition-colors flex items-center gap-1.5 cursor-pointer"
+                >
+                  <Wand2 size={13} />
+                  <span>Apply Transformation</span>
+                </button>
+              </div>
             </div>
           </div>
         </div>
