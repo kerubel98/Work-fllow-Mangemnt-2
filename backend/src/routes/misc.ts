@@ -1219,5 +1219,55 @@ miscRouter.delete('/settings/transformation-rules/:id', async (req: Request, res
   }
 });
 
+// ================= RECIPE EXECUTION ENGINE (Domain 18 / Governance Rule 23) =================
+miscRouter.post('/recipe-execution/preview', async (req: Request, res: Response) => {
+  try {
+    const { rows, template, templateId, options } = req.body;
+    if (!rows || !Array.isArray(rows)) {
+      return res.status(400).json({ error: 'rows array is required' });
+    }
+    const { recipeExecutionService } = await import('../services/recipeExecutionService.js');
+    let effectiveTemplate = template;
+    if (!effectiveTemplate && templateId) {
+      effectiveTemplate = await repo.getFileMappingTemplateById(templateId);
+      if (!effectiveTemplate) {
+        return res.status(404).json({ error: `Template ${templateId} not found` });
+      }
+    }
+    if (!effectiveTemplate) {
+      return res.status(400).json({ error: 'template or templateId is required' });
+    }
+    const result = await recipeExecutionService.previewRecipe(rows, effectiveTemplate, options);
+    return res.json(result);
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+miscRouter.post('/recipe-execution/execute', async (req: Request, res: Response) => {
+  try {
+    const { rows, template, templateId, options } = req.body;
+    if (!rows || !Array.isArray(rows)) {
+      return res.status(400).json({ error: 'rows array is required' });
+    }
+    const { recipeExecutionService } = await import('../services/recipeExecutionService.js');
+    let effectiveTemplate = template;
+    if (!effectiveTemplate && templateId) {
+      effectiveTemplate = await repo.getFileMappingTemplateById(templateId);
+      if (!effectiveTemplate) {
+        return res.status(404).json({ error: `Template ${templateId} not found` });
+      }
+    }
+    if (!effectiveTemplate) {
+      return res.status(400).json({ error: 'template or templateId is required' });
+    }
+    const result = await recipeExecutionService.executeRecipe(rows, effectiveTemplate, options);
+    return res.json(result);
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+
 
 

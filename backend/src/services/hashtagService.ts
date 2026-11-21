@@ -213,13 +213,15 @@ export async function executeFileIngestionHashtag(
         templateName = template.name;
         (template.requiredColumns || []).forEach(col => mandatedRequired.add(col));
 
-        // Replay template operations (splits, merges, transforms, cleaning actions)
-        let dicts: any[] = [];
-        try {
-          dicts = await repo.getValueTranslationDictionaries();
-        } catch {}
-        const replayed = dataSanitizerService.replayTemplateOperations(rawRecords, template, dicts);
-        rawRecords = replayed.processedRows;
+        // Replay template operations step-by-step via recipeExecutionService
+        const { recipeExecutionService } = await import('./recipeExecutionService.js');
+        const recipeRes = await recipeExecutionService.executeRecipe(rawRecords, template, {
+          projectToCanonical: true,
+          preserveRawPayload: true
+        });
+        if (recipeRes.success) {
+          rawRecords = recipeRes.processedRows;
+        }
       }
     } catch (err: any) {
       console.warn(`[HashtagService] Could not resolve mapping template ${preset.mappingTemplateId}:`, err?.message);
@@ -631,10 +633,14 @@ export async function testPreFlight(
           if (template) {
             templateName = template.name;
             (template.requiredColumns || []).forEach(col => mandatedRequired.add(col));
-            let dicts: any[] = [];
-            try { dicts = await repo.getValueTranslationDictionaries(); } catch {}
-            const replayed = dataSanitizerService.replayTemplateOperations(sampleRows || [], template, dicts);
-            sampleRows = replayed.processedRows;
+            const { recipeExecutionService } = await import('./recipeExecutionService.js');
+            const recipeRes = await recipeExecutionService.executeRecipe(sampleRows || [], template, {
+              projectToCanonical: true,
+              preserveRawPayload: true
+            });
+            if (recipeRes.success) {
+              sampleRows = recipeRes.processedRows;
+            }
           }
         } catch (err: any) {
           console.warn(`[HashtagService] Could not resolve mapping template ${preset.mappingTemplateId}:`, err?.message);

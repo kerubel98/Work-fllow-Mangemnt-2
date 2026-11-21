@@ -399,6 +399,8 @@ export interface Issue {
   initialSnapshot?: Record<string, any>[];
   attachments?: any[];
   mappingTemplateId?: string;
+  recipeSnapshot?: any;
+  recipeExecutionLog?: any[];
   templateRequiredColumns?: string[];
   escalatedToTeamId?: string;
   escalationReason?: string;
@@ -718,7 +720,8 @@ export interface FileIngestionCleaningRecipe {
 
 export interface FileIngestionRecipe {
   headerMode: 'ROW_INDEX' | 'HEADERLESS_MANUAL';
-  headerRowIndex: number; // 1-indexed (e.g. 1 = first row, 4 = after 3 preamble lines)
+  headerRowIndex: number;
+  dataStartRow?: number; // 1-indexed (e.g. 1 = first row, 4 = after 3 preamble lines)
   dataStartRowIndex?: number;
   manualHeaders: Record<string, string>; // e.g. { "col_0": "Txn_Ref", "col_1": "Amount" }
   deletedColumns: string[]; // List of original column names/indexes to permanently exclude
@@ -874,16 +877,19 @@ export interface FileIngestionMappingTemplate {
   sourceType: 'csv' | 'xlsx' | 'xls' | 'xml';
   headerMode: 'ROW_INDEX' | 'HEADERLESS_MANUAL';
   headerRowIndex: number;
+  dataStartRow?: number;
   manualHeaders?: Record<string, string>;
   deletedColumns?: string[];
   requiredColumns: string[];
   columnMappings: Record<string, string>;
   cleaningRecipe?: FileIngestionCleaningRecipe;
+  orderedRecipeSteps?: any[];
   splitOperations?: SplitOperation[];
   mergeOperations?: MergeOperation[];
   transformOperations?: TransformOperation[];
   cleaningActions?: string[];
   valueTranslations?: Record<string, string>; // column -> dictionaryId
+  version?: number;
   createdBy?: string;
   teamId?: string;
   isDefault?: boolean;
@@ -1085,9 +1091,11 @@ export interface FolderStructureException {
 
 export interface FtpStagingScheduleConfig {
   enabled: boolean;
-  frequency: 'MANUAL' | 'EVERY_15_MIN' | 'HOURLY' | 'EVERY_6_HOURS' | 'DAILY';
+  frequency: 'MANUAL' | 'EVERY_15_MIN' | 'HOURLY' | 'EVERY_6_HOURS' | 'DAILY' | 'CUSTOM_CRON';
   scheduledTime?: string; // "02:00" for DAILY
+  scheduleCron?: string;  // "0 2 * * *"
   targetType: 'ALL' | 'CSV' | 'EXCEL' | 'XML' | 'TXT';
+  deduplicationPolicy?: 'SKIP' | 'UPDATE';
   lastRunAt?: string;
   nextRunAt?: string;
 }
@@ -1110,6 +1118,7 @@ export interface FtpFileStagingConfig {
   customDelimiter?: string;
   hasHeader: boolean;
   headerRowIndex: number;
+  dataStartRow?: number;
   headerRowCount?: number;
   handleMergedCells?: boolean;
   mergedHeaderSeparator?: string;
@@ -1130,6 +1139,7 @@ export interface FtpFileStagingConfig {
   xmlRootElement?: string;
   xmlRecordElement?: string;
   fieldMappings: FtpFieldMapping[];
+  mappingTemplateId?: string;
   stagingTableName?: string;
   sampleFileName?: string;
   lastStagedAt?: string;
@@ -1137,6 +1147,7 @@ export interface FtpFileStagingConfig {
   lastStagedCount?: number;
   lastErrorMessage?: string;
   lastSkippedMismatches?: FtpSkippedMismatch[];
+  createdBy?: string;
   createdAt?: string;
   updatedAt?: string;
 }
@@ -1225,12 +1236,25 @@ export interface DbTableMappingConfig {
   columns: DbColumnMappingItem[];
   updatedAt?: string;
   isCustom?: boolean;
+  teamId?: string | null;
+  makerId?: string;
+  makerName?: string;
+  status?: 'DRAFT' | 'PENDING' | 'APPROVED' | 'DECLINED';
+  isLocked?: boolean;
+  approvedByUserId?: string | null;
+  approvedByUserName?: string | null;
+  approvedAt?: string | null;
+  checkerFeedback?: string | null;
+  sharedSourceId?: string | null;
 }
 
 export interface GlobalMappingConfig {
   version: string;
   updatedAt: string;
   updatedBy: string;
+  description?: string;
+  strictMappingEnforced?: boolean;
+  versionHistory?: any[];
   standardFields: GlobalTransactionSchemaField[];
   tableMappings: Record<string, DbTableMappingConfig>;
 }

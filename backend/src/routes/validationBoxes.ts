@@ -408,7 +408,7 @@ validationBoxesRouter.post('/test', async (req: Request, res: Response) => {
         const allMappings = await postgresRepo.getTableMappings();
         const mapping = allMappings[`${box.targetDbId}::${box.targetTable}`] || allMappings[`${box.targetDbId}:${box.targetTable}`];
         if (mapping?.columns && Array.isArray(mapping.columns)) {
-          tableColNames = mapping.columns.map((c: any) => typeof c === 'string' ? c : (c.columnName || c.name || c.key)).filter(Boolean);
+          tableColNames = mapping.columns.map((c: any) => typeof c === 'string' ? c : (c.physicalColumn || c.columnName || c.name || c.key || c.globalKey)).filter(Boolean);
         }
       } catch {
         // ignore mapping fetch error

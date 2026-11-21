@@ -602,11 +602,14 @@ export default function GlobalTransactionSettings({
     setNewFieldNotes('');
     setNewFieldUserId(currentUser.id || 'usr-1');
     setFieldModalError(null);
-    setSaveSuccessMsg(`Saved standard field "${fieldObj.label}" (${fieldObj.key}) & automatically executed ALTER TABLE ${updatedTable.tableName} ADD COLUMN in Central Repository!`);
+    setSaveSuccessMsg(`Saved standard field "${fieldObj.label}" (${fieldObj.key}) & compiled ALTER TABLE ${updatedTable.tableName} ADD COLUMN preview in Central Repository!`);
     setTimeout(() => setSaveSuccessMsg(null), 5000);
 
-    // Persist to backend with version increment
-    globalMappingService.saveConfigToBackend(currentUser.username, `${editingField ? 'Updated' : 'Added'} field "${fieldObj.label}" (${fieldObj.key})`)
+    // Persist to backend with version increment (MAP-09 fix)
+    globalMappingService.saveConfigToBackend({
+      description: `${editingField ? 'Updated' : 'Added'} field "${fieldObj.label}" (${fieldObj.key})`,
+      username: currentUser.username
+    })
       .then(savedCfg => {
         if (savedCfg) setMappingConfig(savedCfg);
       })
@@ -623,7 +626,10 @@ export default function GlobalTransactionSettings({
       setSaveSuccessMsg(`Removed custom field "${key}" and synchronized Central Repository Table schema.`);
       setTimeout(() => setSaveSuccessMsg(null), 3000);
 
-      globalMappingService.saveConfigToBackend(currentUser.username, `Deleted standard field "${key}"`)
+      globalMappingService.saveConfigToBackend({
+        description: `Deleted standard field "${key}"`,
+        username: currentUser.username
+      })
         .then(savedCfg => {
           if (savedCfg) setMappingConfig(savedCfg);
         })
@@ -641,7 +647,10 @@ export default function GlobalTransactionSettings({
     setSaveSuccessMsg('All Global Schema, Central Repository Table, and Database Mappings reset to factory App Defaults!');
     setTimeout(() => setSaveSuccessMsg(null), 5000);
 
-    globalMappingService.saveConfigToBackend(currentUser.username, 'Reset schema dictionary to default factory baseline')
+    globalMappingService.saveConfigToBackend({
+      description: 'Reset schema dictionary to default factory baseline',
+      username: currentUser.username
+    })
       .then(savedCfg => {
         if (savedCfg) setMappingConfig(savedCfg);
       })
@@ -1222,7 +1231,7 @@ export default function GlobalTransactionSettings({
                     </span>
                   </div>
                   <p className="text-xs text-slate-600 mt-1 max-w-3xl leading-relaxed">
-                    Formal model representation of the Global Mapping Schema. This model serves as the single source of truth used to build and maintain the <strong className="text-slate-900 font-mono">{centralTable.tableName}</strong> table. Whenever you click <em>Create Table</em> or add a new Standard Field, an <code className="bg-slate-100 px-1 py-0.5 rounded text-indigo-700 font-bold">ALTER TABLE</code> DDL migration is executed dynamically to keep the central uploaded transaction repository table in sync.
+                    Formal model representation of the Global Mapping Schema. This model serves as the single source of truth used to model and compile schemas for the <strong className="text-slate-900 font-mono">{centralTable.tableName}</strong> table. Whenever you click <em>Rebuild / Sync</em> or add a new Standard Field, an <code className="bg-slate-100 px-1 py-0.5 rounded text-indigo-700 font-bold">ALTER TABLE</code> DDL migration preview is compiled to keep the repository model in sync.
                   </p>
                 </div>
               </div>
@@ -1253,10 +1262,10 @@ export default function GlobalTransactionSettings({
                   id="btn-view-ddl-history"
                   onClick={() => setShowDdlHistoryModal(true)}
                   className="px-3.5 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 text-xs font-bold rounded-xl flex items-center space-x-1.5 transition-all cursor-pointer shadow-2xs"
-                  title="View history of all CREATE TABLE and ALTER TABLE DDL statements executed"
+                  title="View history of all compiled CREATE TABLE and ALTER TABLE DDL migration statements"
                 >
                   <History size={13} className="text-slate-600" />
-                  <span>DDL Alter Log ({centralTable.ddlHistory?.length || 0})</span>
+                  <span>DDL Migration Log ({centralTable.ddlHistory?.length || 0})</span>
                 </button>
 
                 <div className="flex items-center space-x-1 pl-1">
@@ -1303,12 +1312,12 @@ export default function GlobalTransactionSettings({
               </div>
 
               <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-1">
-                <div className="text-[10px] font-bold text-slate-500 uppercase font-mono">Last DDL Execution</div>
+                <div className="text-[10px] font-bold text-slate-500 uppercase font-mono">Last DDL Migration</div>
                 <div className="text-sm font-bold font-mono text-slate-800 truncate">
                   {centralTable.ddlHistory?.[0]?.action || 'CREATE_TABLE'}
                 </div>
                 <div className="text-[10px] text-slate-500 truncate">
-                  Status: <span className="text-emerald-700 font-bold uppercase">{centralTable.ddlHistory?.[0]?.status || 'SUCCESS'}</span>
+                  Status: <span className="text-indigo-700 font-bold uppercase">{centralTable.ddlHistory?.[0]?.status || 'COMPILED'}</span>
                 </div>
               </div>
             </div>
@@ -3520,7 +3529,7 @@ ${createTableColumns.map(c => `  ${c.name} ${c.dataType}${c.isPrimaryKey ? ' PRI
         </div>
       )}
 
-      {/* 9. MODAL: DDL Execution & ALTER TABLE History Log */}
+      {/* 9. MODAL: DDL Execution & ALTER TABLE Migration History Log */}
       {showDdlHistoryModal && (
         <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-in fade-in duration-200">
           <div className="bg-white rounded-2xl max-w-4xl w-full p-6 shadow-2xl space-y-4 max-h-[85vh] flex flex-col border border-slate-200">
@@ -3531,13 +3540,13 @@ ${createTableColumns.map(c => `  ${c.name} ${c.dataType}${c.isPrimaryKey ? ' PRI
                 </div>
                 <div>
                   <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
-                    <span>Central Repository DDL & Alteration History</span>
+                    <span>Central Repository DDL & Migration History</span>
                     <span className="px-2 py-0.5 text-[10px] font-mono bg-indigo-50 text-indigo-700 rounded-full font-bold">
                       {centralTable.ddlHistory?.length || 0} DDL Events
                     </span>
                   </h3>
                   <p className="text-xs text-slate-500">
-                    Audit log of all automatic <code className="text-indigo-600 font-bold">CREATE TABLE</code> and <code className="text-indigo-600 font-bold">ALTER TABLE</code> statements executed on <strong className="text-slate-800">{centralTable.tableName}</strong>.
+                    Audit log of all compiled <code className="text-indigo-600 font-bold">CREATE TABLE</code> and <code className="text-indigo-600 font-bold">ALTER TABLE</code> migration statements for <strong className="text-slate-800">{centralTable.tableName}</strong>.
                   </p>
                 </div>
               </div>

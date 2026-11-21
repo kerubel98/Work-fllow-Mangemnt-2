@@ -993,7 +993,7 @@ export const ftpFileStagingService = {
           if (rx.test(normFolder) || rx.test(`${normFolder}/${cleanFileName}`) || rx.test(cleanFileName)) {
             return true;
           }
-        } catch {}
+        } catch { }
         // Substring fallback
         const cleanSub = pat.replace(/\*/g, '');
         return normFolder.includes(cleanSub) || cleanFileName.includes(cleanSub);
@@ -1060,7 +1060,7 @@ export const ftpFileStagingService = {
         .filter(entry => {
           if (!config.fileNamePattern || config.fileNamePattern.trim() === '*' || config.fileNamePattern.trim() === '.*') return true;
           return matchesFilePattern(config.fileNamePattern, entry.name, entry.fullPath) ||
-                 regex.test(entry.name) || regex.test(entry.fullPath);
+            regex.test(entry.name) || regex.test(entry.fullPath);
         })
         .map(entry => ({
           fullPath: entry.fullPath,
@@ -1090,6 +1090,28 @@ export const ftpFileStagingService = {
 
     // 3. Resolve columns to stage: Field Mappings or Auto-detected Real Headers
     let mappings: any[] = (config.fieldMappings && config.fieldMappings.length > 0) ? [...config.fieldMappings] : [];
+    let boundTemplate: any = null;
+    if (config.mappingTemplateId) {
+      try {
+        boundTemplate = await repo.getFileMappingTemplateById(config.mappingTemplateId);
+        if (boundTemplate && boundTemplate.columnMappings) {
+          const tplMappings = Object.entries(boundTemplate.columnMappings).map(([src, tgt]: [string, any], idx) => ({
+            sourceHeader: src,
+            sourceColumn: src,
+            targetColumn: sanitizeColumnName(tgt || src, idx + 1),
+            canonicalField: sanitizeColumnName(tgt || src, idx + 1),
+            dataType: 'VARCHAR(255)'
+          }));
+          for (const tm of tplMappings) {
+            if (!mappings.some((m: any) => (m.targetColumn || m.canonicalField) === tm.targetColumn)) {
+              mappings.push(tm);
+            }
+          }
+        }
+      } catch (tErr: any) {
+        console.warn(`[ftpFileStagingService] Could not preload template ${config.mappingTemplateId}:`, tErr.message);
+      }
+    }
 
     // If no explicit field mappings are provided in config, auto-inspect the sample or first target file to derive real physical columns
     if (mappings.length === 0 && targetFiles.length > 0) {
@@ -1149,19 +1171,19 @@ export const ftpFileStagingService = {
       }
       seenColNames.add(colName.toLowerCase());
 
-        let pgType = 'VARCHAR(255)';
-        const typeStr = (m.dataType || '').toLowerCase();
-        if (typeStr === 'number' || typeStr.includes('numeric') || typeStr.includes('decimal')) {
-          pgType = 'NUMERIC(18, 4)';
-        } else if (typeStr === 'date' || typeStr.includes('timestamp') || typeStr.includes('timestamptz')) {
-          pgType = 'TIMESTAMPTZ';
-        } else if (typeStr === 'boolean' || typeStr.includes('bool')) {
-          pgType = 'BOOLEAN';
-        } else if (typeStr === 'bigint' || typeStr === 'integer' || typeStr === 'int') {
-          pgType = 'BIGINT';
-        } else if (typeStr.startsWith('varchar') || typeStr.startsWith('char') || typeStr.startsWith('text')) {
-          pgType = m.dataType;
-        }
+      let pgType = 'VARCHAR(255)';
+      const typeStr = (m.dataType || '').toLowerCase();
+      if (typeStr === 'number' || typeStr.includes('numeric') || typeStr.includes('decimal')) {
+        pgType = 'NUMERIC(18, 4)';
+      } else if (typeStr === 'date' || typeStr.includes('timestamp') || typeStr.includes('timestamptz')) {
+        pgType = 'TIMESTAMPTZ';
+      } else if (typeStr === 'boolean' || typeStr.includes('bool')) {
+        pgType = 'BOOLEAN';
+      } else if (typeStr === 'bigint' || typeStr === 'integer' || typeStr === 'int') {
+        pgType = 'BIGINT';
+      } else if (typeStr.startsWith('varchar') || typeStr.startsWith('char') || typeStr.startsWith('text')) {
+        pgType = m.dataType;
+      }
 
       columnDefinitions.push({
         colName,
@@ -1209,12 +1231,33 @@ export const ftpFileStagingService = {
     // Ensure the table is permanent and WAL-logged in case it was previously created as UNLOGGED
     try {
       await queryPg(`ALTER TABLE "${mirrorTableName}" SET LOGGED;`);
+      await queryPg(`ALTER TABLE "${mirrorTableName}" ADD COLUMN IF NOT EXISTS _staging_id UUID DEFAULT gen_random_uuid();`);
       await queryPg(`ALTER TABLE "${mirrorTableName}" ADD COLUMN IF NOT EXISTS _batch_id VARCHAR(64);`);
+      try {
+        await queryPg(`ALTER TABLE "${mirrorTableName}" ALTER COLUMN _batch_id DROP NOT NULL;`);
+      } catch (_) { }
+      try {
+        await queryPg(`ALTER TABLE "${mirrorTableName}" ALTER COLUMN _batch_id SET DEFAULT 'FTP_BATCH';`);
+      } catch (_) { }
       await queryPg(`ALTER TABLE "${mirrorTableName}" ADD COLUMN IF NOT EXISTS _rule_block_id VARCHAR(64);`);
+      try {
+        await queryPg(`ALTER TABLE "${mirrorTableName}" ALTER COLUMN _rule_block_id DROP NOT NULL;`);
+      } catch (_) { }
+      try {
+        await queryPg(`ALTER TABLE "${mirrorTableName}" ALTER COLUMN _rule_block_id SET DEFAULT 'FTP_INITIAL_STAGING';`);
+      } catch (_) { }
+      try {
+        await queryPg(`ALTER TABLE "${mirrorTableName}" ALTER COLUMN _validation_status DROP NOT NULL;`);
+      } catch (_) { }
       await queryPg(`ALTER TABLE "${mirrorTableName}" ADD COLUMN IF NOT EXISTS _validation_status VARCHAR(32) DEFAULT 'PENDING';`);
       await queryPg(`ALTER TABLE "${mirrorTableName}" ADD COLUMN IF NOT EXISTS _validation_action VARCHAR(32) DEFAULT 'CONTINUE';`);
       await queryPg(`ALTER TABLE "${mirrorTableName}" ADD COLUMN IF NOT EXISTS _validation_details JSONB DEFAULT '{}'::jsonb;`);
       await queryPg(`ALTER TABLE "${mirrorTableName}" ADD COLUMN IF NOT EXISTS _mirrored_at TIMESTAMPTZ DEFAULT NOW();`);
+      await queryPg(`ALTER TABLE "${mirrorTableName}" ADD COLUMN IF NOT EXISTS _staged_at TIMESTAMPTZ DEFAULT NOW();`);
+      await queryPg(`ALTER TABLE "${mirrorTableName}" ADD COLUMN IF NOT EXISTS _source_file TEXT;`);
+      await queryPg(`ALTER TABLE "${mirrorTableName}" ADD COLUMN IF NOT EXISTS _source_folder TEXT;`);
+      await queryPg(`ALTER TABLE "${mirrorTableName}" ADD COLUMN IF NOT EXISTS _raw_row_index INT;`);
+      await queryPg(`ALTER TABLE "${mirrorTableName}" ADD COLUMN IF NOT EXISTS raw_payload JSONB;`);
       await queryPg(`ALTER TABLE "${mirrorTableName}" ADD COLUMN IF NOT EXISTS payload JSONB DEFAULT '{}'::jsonb;`);
 
       // Dynamically add all mapped physical columns if the table already existed previously
@@ -1285,8 +1328,24 @@ export const ftpFileStagingService = {
           fileNamePattern: fileItem.fullPath
         }, 0);
 
-        const rowsToInsert = preview.parsedRowsSample;
+        let rowsToInsert = preview.parsedRowsSample;
         if (!rowsToInsert || rowsToInsert.length === 0) continue;
+
+        if (boundTemplate) {
+          try {
+            const { recipeExecutionService } = await import('./recipeExecutionService.js');
+            const recipeRes = await recipeExecutionService.executeRecipe(rowsToInsert, boundTemplate, {
+              projectToCanonical: true,
+              preserveRawPayload: true
+            });
+            if (recipeRes.success && recipeRes.processedRows.length > 0) {
+              rowsToInsert = recipeRes.processedRows;
+              console.log(`[ftpFileStagingService] Executed recipe template '${boundTemplate.name}' (${recipeRes.auditTrail.length} steps) on ${rowsToInsert.length} rows for file '${fileItem.name}'.`);
+            }
+          } catch (recipeErr: any) {
+            console.warn(`[ftpFileStagingService] Recipe execution error for ${fileItem.name}:`, recipeErr.message);
+          }
+        }
 
         const insertChunks: string[] = [];
         rowsToInsert.forEach((rawRow, idx) => {
@@ -1330,8 +1389,12 @@ export const ftpFileStagingService = {
           const escapedFile = fileItem.name.replace(/'/g, "''");
           const escapedFolder = fileItem.folder.replace(/'/g, "''");
           const jsonPayload = JSON.stringify(rawRow).replace(/'/g, "''");
+          const currentBatchId = (config.id || `batch-ftp-${Date.now()}`).substring(0, 64).replace(/'/g, "''");
+          const currentRuleBlockId = 'FTP_INITIAL_STAGING';
 
           insertChunks.push(`(
+            '${currentBatchId}',
+            '${currentRuleBlockId}',
             '${escapedFile}',
             '${escapedFolder}',
             ${idx + 1},
@@ -1349,7 +1412,7 @@ export const ftpFileStagingService = {
             const chunk = insertChunks.slice(b, b + BATCH_SIZE);
             await queryPg(`
               INSERT INTO "${mirrorTableName}" (
-                _source_file, _source_folder, _raw_row_index, ${colNamesSql}, raw_payload, payload
+                _batch_id, _rule_block_id, _source_file, _source_folder, _raw_row_index, ${colNamesSql}, raw_payload, payload
               ) VALUES ${chunk.join(',\n')};
             `);
           }

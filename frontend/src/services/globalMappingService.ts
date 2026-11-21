@@ -66,21 +66,7 @@ export const DEFAULT_GLOBAL_STANDARD_FIELDS: GlobalTransactionSchemaField[] = [
   { id: 'gsd-response-code', key: 'response_code', label: 'Response Code', description: 'Standard response codes: 00 (Approved), 05 (Do not honor), 51 (Insufficient funds)', dataType: 'string', required: false, isStandard: true, category: 'General', notes: 'Standard response codes: 00 (Approved), 05 (Do not honor), 51 (Insufficient funds)' }
 ];
 
-export const DEFAULT_DATABASE_TABLE_MAPPINGS: Record<string, DbTableMappingConfig> = {
-  'db-sftp-local::mirror_ftp_aib__unsettled_xls': {
-    dbId: 'db-sftp-local',
-    dbName: 'LocalFTP (SFTP)',
-    tableName: 'mirror_ftp_aib__unsettled_xls',
-    columns: [
-      { physicalColumn: '_task_id', globalKey: 'task_id' },
-      { physicalColumn: '_row_number', globalKey: 'row_number' },
-      { physicalColumn: '_validation_action', globalKey: 'validation_action' },
-      { physicalColumn: '_validation_details', globalKey: 'validation_details' },
-      { physicalColumn: '_mirrored_at', globalKey: 'mirrored_at' }
-    ],
-    updatedAt: '2026-10-09T18:45:51Z'
-  }
-};
+export const DEFAULT_DATABASE_TABLE_MAPPINGS: Record<string, DbTableMappingConfig> = {};
 
 // NON-AUTHORITATIVE OFFLINE CACHE KEYS (PostgreSQL global_standard_directory and database_table_mappings are the sole authority)
 const STORAGE_KEY = 'global_mapping_schema_config_v2';
@@ -205,6 +191,7 @@ export class GlobalMappingService {
         // non-blocking
       }
       this.isHydrated = true;
+      this.notifyListeners();
       return this.config;
     } catch (err: any) {
       console.warn('[GlobalMappingService] Error hydrating from PostgreSQL authoritative backend, using offline cache:', err.message);
@@ -212,8 +199,29 @@ export class GlobalMappingService {
     }
   }
 
+  private listeners = new Set<() => void>();
+
+  /**
+   * Subscribes a listener to configuration state changes (MAP-16 fix)
+   */
+  public subscribe(listener: () => void): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  private notifyListeners(): void {
+    this.listeners.forEach(fn => {
+      try { fn(); } catch (e) { console.error('[GlobalMappingService] Listener error:', e); }
+    });
+  }
+
+  /**
+   * Returns a deep clone of the current configuration (MAP-23 fix)
+   */
   public getConfig(): GlobalMappingConfig {
-    return { ...this.config };
+    return JSON.parse(JSON.stringify(this.config));
   }
 
   public saveConfig(newConfig: GlobalMappingConfig): void {
@@ -231,19 +239,24 @@ export class GlobalMappingService {
     api.saveGlobalSchemaConfig(this.config).catch(err => {
       console.warn('[GlobalMappingService] Could not persist schema config to PostgreSQL:', err.message);
     });
+
+    this.notifyListeners();
   }
 
+  /**
+   * Resets schema dictionary to seeded baseline without wiping columns (MAP-07 fix)
+   */
   public resetToDefaults(username: string = 'admin'): GlobalMappingConfig {
     const freshConfig: GlobalMappingConfig = {
-      version: '2.2.0',
+      version: '2.3.0',
       updatedAt: new Date().toISOString(),
       updatedBy: username,
-      standardFields: [],
-      tableMappings: { ...DEFAULT_DATABASE_TABLE_MAPPINGS }
+      standardFields: [...DEFAULT_GLOBAL_STANDARD_FIELDS],
+      tableMappings: {}
     };
     this.saveConfig(freshConfig);
-    // Also rebuild central table based on standard fields
-    this.buildCentralRepositoryTable({ tableName: 'central_transaction_repository', username, populateExisting: true });
+    // Also compile preview schema model based on standard fields
+    this.buildCentralRepositoryTable({ tableName: 'central_transaction_repository', username, populateExisting: false });
     return freshConfig;
   }
 
@@ -255,6 +268,10 @@ export class GlobalMappingService {
       } catch (err) {
         // ignore storage error
       }
+      api.saveGlobalSchemaConfig(this.config).catch(err => {
+        console.warn('[GlobalMappingService] Could not persist updated fields to PostgreSQL:', err.message);
+      });
+      this.notifyListeners();
     }
   }
 
@@ -317,7 +334,7 @@ export class GlobalMappingService {
         sqlDataType,
         isPrimaryKey: isPk,
         isNullable: !isPk && !f.required,
-        isIndexed: isPk || f.key === 'created_at' || f.key === 'status_state' || f.key === 'user_email' || f.key === 'merchant_id',
+        isIndexed: isPk || f.key.endsWith('_id') || f.key === 'status' || f.key === 'amount',
         defaultValue: dVal,
         required: f.required,
         isStandard: f.isStandard,
@@ -329,6 +346,11 @@ export class GlobalMappingService {
         updated_at: f.updated_at
       };
     });
+
+    const indexableCandidates = ['status', 'amount', 'currency', 'card_number', 'mirrored_at', 'acq_sdatetime'];
+    const activeIndexFields = fields.filter(f =>
+      f.key !== 'transaction_id' && (indexableCandidates.includes(f.key) || f.key.endsWith('_id') || f.key.endsWith('_date') || f.key.endsWith('_at'))
+    );
 
     const ddl = this.generateSqlDdl(tableName, 'PostgreSQL');
     const tsCode = this.generateTypeScriptModel();
@@ -343,12 +365,10 @@ export class GlobalMappingService {
       description: 'Canonical enterprise schema model and data contract used to construct the central uploaded transaction repository table and map heterogeneous database feeds.',
       fields: modelFields,
       primaryKey: 'transaction_id',
-      indexes: [
-        { name: `idx_${tableName}_created_at`, columns: ['created_at'] },
-        { name: `idx_${tableName}_status_state`, columns: ['status_state'] },
-        { name: `idx_${tableName}_user_email`, columns: ['user_email'] },
-        { name: `idx_${tableName}_merchant_id`, columns: ['merchant_id'] }
-      ],
+      indexes: activeIndexFields.map(f => ({
+        name: `idx_${tableName}_${f.key}`,
+        columns: [f.key]
+      })),
       sqlDdlDefinition: ddl,
       typeScriptDefinition: tsCode,
       jsonSchemaDefinition: jsonSchema,
@@ -359,20 +379,28 @@ export class GlobalMappingService {
   }
 
   /**
-   * Generates production-ready SQL DDL statements for creating the Central Repository Table
+   * Generates production-ready SQL DDL statements for creating the Central Repository Table (MAP-01 / MAP-08 fix)
    */
   public generateSqlDdl(
     tableName: string = 'central_transaction_repository', 
     dialect: 'PostgreSQL' | 'Oracle' | 'MySQL' | 'Generic' = 'PostgreSQL'
   ): string {
     const fields = this.getStandardFields();
+    if (fields.length === 0) {
+      return `-- No fields defined in schema model`;
+    }
+    const safeTable = tableName.replace(/[^a-zA-Z0-9_]/g, '');
+    const isPg = dialect === 'PostgreSQL' || dialect === 'Generic';
+    const qOpen = isPg ? '"' : '`';
+    const qClose = isPg ? '"' : '`';
     const lines: string[] = [];
 
     fields.forEach((f) => {
-      const sqlColName = f.key;
+      const safeKey = f.key.replace(/[^a-zA-Z0-9_]/g, '');
+      const sqlColName = `${qOpen}${safeKey}${qClose}`;
       const sqlType = this.getSqlDataType(f, dialect);
       const isPk = f.key === 'transaction_id';
-      let line = `  ${sqlColName.padEnd(20)} ${sqlType}`;
+      let line = `  ${sqlColName.padEnd(24)} ${sqlType}`;
 
       if (isPk) {
         line += ' PRIMARY KEY NOT NULL';
@@ -384,25 +412,30 @@ export class GlobalMappingService {
         line += ' DEFAULT 0.00';
       } else if (f.dataType === 'boolean') {
         line += ' DEFAULT FALSE';
-      } else if (f.dataType === 'date' && dialect === 'PostgreSQL') {
+      } else if (f.dataType === 'date' && isPg) {
         line += ' DEFAULT CURRENT_TIMESTAMP';
       }
 
       lines.push(line);
     });
 
-    const createTableStmt = `-- ==========================================================================\n-- CENTRAL UPLOADED TRANSACTION REPOSITORY TABLE\n-- Generated from Global Mapping Schema Model v${this.config.version}\n-- ==========================================================================\n\nCREATE TABLE IF NOT EXISTS ${tableName} (\n${lines.join(',\n')}\n);`;
+    const createTableStmt = `-- ==========================================================================\n-- CENTRAL UPLOADED TRANSACTION REPOSITORY TABLE (SCHEMA PREVIEW DDL)\n-- Generated from Global Mapping Schema Model v${this.config.version}\n-- ==========================================================================\n\nCREATE TABLE IF NOT EXISTS ${qOpen}${safeTable}${qClose} (\n${lines.join(',\n')}\n);`;
 
-    const indexStmts = [
-      `CREATE INDEX IF NOT EXISTS idx_${tableName}_created ON ${tableName} (created_at);`,
-      `CREATE INDEX IF NOT EXISTS idx_${tableName}_status ON ${tableName} (status_state);`,
-      `CREATE INDEX IF NOT EXISTS idx_${tableName}_email ON ${tableName} (user_email);`,
-      `CREATE INDEX IF NOT EXISTS idx_${tableName}_merchant ON ${tableName} (merchant_id);`
-    ].join('\n');
+    const indexableCandidates = ['status', 'amount', 'currency', 'card_number', 'mirrored_at', 'acq_sdatetime'];
+    const activeIndexFields = fields.filter(f =>
+      f.key !== 'transaction_id' && (indexableCandidates.includes(f.key) || f.key.endsWith('_id') || f.key.endsWith('_date') || f.key.endsWith('_at'))
+    );
 
-    const commentStmt = `-- Add Schema Model metadata comment\nCOMMENT ON TABLE ${tableName} IS 'Central Uploaded Transaction Repository constructed automatically from Global Mapping Schema Model v${this.config.version}';`;
+    const indexStmts = activeIndexFields.map(f => {
+      const safeKey = f.key.replace(/[^a-zA-Z0-9_]/g, '');
+      return `CREATE INDEX IF NOT EXISTS ${qOpen}idx_${safeTable}_${safeKey}${qClose} ON ${qOpen}${safeTable}${qClose} (${qOpen}${safeKey}${qClose});`;
+    }).join('\n');
 
-    return `${createTableStmt}\n\n${indexStmts}\n\n${commentStmt}`;
+    const commentStmt = isPg
+      ? `-- Add Schema Model metadata comment\nCOMMENT ON TABLE ${qOpen}${safeTable}${qClose} IS 'Central Uploaded Transaction Repository preview compiled from Global Mapping Schema Model v${this.config.version}';`
+      : '';
+
+    return `${createTableStmt}\n\n${indexStmts}${commentStmt ? `\n\n${commentStmt}` : ''}`;
   }
 
   /**
@@ -466,7 +499,7 @@ export class GlobalMappingService {
   }
 
   /**
-   * Generates Drizzle / ORM Model code representation
+   * Generates Drizzle / ORM Model code representation (MAP-08 fix)
    */
   public generateOrmModel(tableName: string = 'central_transaction_repository'): string {
     const fields = this.getStandardFields();
@@ -486,7 +519,16 @@ export class GlobalMappingService {
       }
     });
 
-    return `import { pgTable, varchar, decimal, timestamp, boolean, index } from 'drizzle-orm/pg-core';\n\nexport const centralUploadedTransactions = pgTable('${tableName}', {\n${colLines.join('\n')}\n}, (table) => ({\n  createdIdx: index('idx_${tableName}_created').on(table.createdAt),\n  statusIdx: index('idx_${tableName}_status').on(table.statusState),\n}));`;
+    const indexableCandidates = ['status', 'amount', 'currency', 'card_number', 'mirrored_at'];
+    const activeIndexFields = fields.filter(f =>
+      f.key !== 'transaction_id' && (indexableCandidates.includes(f.key) || f.key.endsWith('_id'))
+    );
+    const indexExpressions = activeIndexFields.slice(0, 3).map(f => {
+      const camel = this.toCamelCase(f.key);
+      return `  ${camel}Idx: index('idx_${tableName}_${f.key}').on(table.${camel}),`;
+    }).join('\n');
+
+    return `import { pgTable, varchar, decimal, timestamp, boolean, index } from 'drizzle-orm/pg-core';\n\nexport const centralUploadedTransactions = pgTable('${tableName}', {\n${colLines.join('\n')}\n}, (table) => ({\n${indexExpressions}\n}));`;
   }
 
   private toCamelCase(str: string): string {
@@ -531,8 +573,8 @@ export class GlobalMappingService {
 
     const initialTable: CentralUploadedTransactionRepositoryTable = {
       tableName: 'central_transaction_repository',
-      dbId: 'mongoatlas',
-      dbName: 'Application Working Database (MongoDB Atlas / Operational DB)',
+      dbId: 'app-internal-postgres',
+      dbName: 'Operational Workflow Database (PostgreSQL)',
       schemaVersion: this.config.version,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -545,11 +587,11 @@ export class GlobalMappingService {
         {
           id: `ddl-${Date.now()}-init`,
           action: 'CREATE_TABLE',
-          ddlStatement: `CREATE TABLE central_transaction_repository (${model.fields.map(f => `${f.key} ${f.sqlDataType}`).join(', ')});`,
+          ddlStatement: model.sqlDdlDefinition,
           timestamp: new Date().toISOString(),
           executedBy: 'system_auto_provision',
-          status: 'SUCCESS',
-          message: `Central Uploaded Transaction Repository Table initialized with ${model.fields.length} Global Standard columns.`
+          status: 'GENERATED',
+          message: `Schema Model preview initialized with ${model.fields.length} Global Standard columns.`
         }
       ]
     };
@@ -593,7 +635,7 @@ export class GlobalMappingService {
 
   /**
    * TRIGGER 1: "Create Table" button clicked in Global Mapping Schema
-   * Builds / Provisions or Rebuilds the Central Uploaded Transaction Repository Table
+   * Compiles / Generates the Central Uploaded Transaction Repository Table Schema Model
    */
   public buildCentralRepositoryTable(options?: { 
     tableName?: string; 
@@ -603,7 +645,7 @@ export class GlobalMappingService {
     columnsOverride?: SchemaModelFieldDef[];
   }): CentralUploadedTransactionRepositoryTable {
     const tableName = options?.tableName || 'central_transaction_repository';
-    const dbId = options?.dbId || 'app-internal-mongodb';
+    const dbId = options?.dbId || 'app-internal-postgres';
     const username = options?.username || 'admin';
     const model = this.getSchemaModel(tableName);
     const columns = options?.columnsOverride || model.fields;
@@ -629,14 +671,14 @@ export class GlobalMappingService {
       ddlStatement: ddlExecuted,
       timestamp: new Date().toISOString(),
       executedBy: username,
-      status: 'SUCCESS',
-      message: `Built Central Uploaded Transaction Repository table "${tableName}" in Application Working Database with ${columns.length} schema columns.`
+      status: 'GENERATED',
+      message: `Compiled schema model and DDL migration preview for "${tableName}" with ${columns.length} schema columns.`
     };
 
     const newTable: CentralUploadedTransactionRepositoryTable = {
       tableName,
       dbId,
-      dbName: dbId === 'app-internal-mongodb' ? 'Application Working Database (MongoDB / Desktop Local Storage)' : (this.config.tableMappings[`${dbId}::${tableName}`]?.dbName || 'Database'),
+      dbName: dbId === 'app-internal-postgres' ? 'Operational Workflow Database (PostgreSQL)' : (this.config.tableMappings[`${dbId}::${tableName}`]?.dbName || 'Database'),
       schemaVersion: this.config.version,
       createdAt: existing.createdAt || new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -715,8 +757,8 @@ export class GlobalMappingService {
       ddlStatement: alterDdl,
       timestamp: new Date().toISOString(),
       executedBy: username,
-      status: 'SUCCESS',
-      message: `Executed schema migration: Added column "${field.key}" (${sqlDataType}) to Central Uploaded Transaction Repository Table.`
+      status: 'GENERATED',
+      message: `Compiled schema migration preview: Added column "${field.key}" (${sqlDataType}) to Schema Model.`
     };
 
     const updatedTable: CentralUploadedTransactionRepositoryTable = {
@@ -869,9 +911,15 @@ export class GlobalMappingService {
       standardFields: updated
     });
 
-    // Log DDL alteration and update central repository table
+    // Physically delete from PostgreSQL global_standard_directory (MAP-05 fix)
+    const deleteId = target.id || `gsd-${key}`;
+    api.deleteGlobalStandardDirectoryField(deleteId).catch(err => {
+      console.warn('[GlobalMappingService] Error deleting field from PostgreSQL directory:', err.message);
+    });
+
+    // Log DDL alteration preview and update central repository table model (MAP-01 fix)
     const currentTable = this.getCentralRepositoryTable();
-    const alterDdl = `ALTER TABLE ${currentTable.tableName} DROP COLUMN IF EXISTS ${key};`;
+    const alterDdl = `ALTER TABLE "${currentTable.tableName}" DROP COLUMN IF EXISTS "${key}";`;
     const updatedColumns = currentTable.columns.filter(c => c.key !== key);
     const ddlLog: CentralRepositoryDdlLog = {
       id: `ddl-drop-${Date.now()}`,
@@ -880,8 +928,8 @@ export class GlobalMappingService {
       ddlStatement: alterDdl,
       timestamp: new Date().toISOString(),
       executedBy: username,
-      status: 'SUCCESS',
-      message: `Dropped column "${key}" from Central Uploaded Transaction Repository Table.`
+      status: 'GENERATED',
+      message: `Compiled DROP COLUMN migration preview for "${key}".`
     };
 
     this.saveCentralRepositoryTable({
@@ -901,16 +949,21 @@ export class GlobalMappingService {
       standardFields: []
     });
 
+    // Physically clear PostgreSQL directory (MAP-05 fix)
+    api.clearGlobalStandardDirectory().catch(err => {
+      console.warn('[GlobalMappingService] Error clearing PostgreSQL directory:', err.message);
+    });
+
     const currentTable = this.getCentralRepositoryTable();
     const ddlLog: CentralRepositoryDdlLog = {
       id: `ddl-clear-${Date.now()}`,
       action: 'ALTER_TABLE_DROP_COLUMN',
       columnKey: '*',
-      ddlStatement: `TRUNCATE TABLE ${currentTable.tableName};`,
+      ddlStatement: `TRUNCATE TABLE "${currentTable.tableName}";`,
       timestamp: new Date().toISOString(),
       executedBy: username,
-      status: 'SUCCESS',
-      message: `Cleared all columns from Central Uploaded Transaction Repository Table.`
+      status: 'GENERATED',
+      message: `Compiled TRUNCATE TABLE migration preview for Schema Model.`
     };
 
     this.saveCentralRepositoryTable({
@@ -918,7 +971,7 @@ export class GlobalMappingService {
       columns: [],
       records: [],
       recordCount: 0,
-      lastDdlExecuted: `TRUNCATE TABLE ${currentTable.tableName};`,
+      lastDdlExecuted: `TRUNCATE TABLE "${currentTable.tableName}";`,
       ddlHistory: [ddlLog, ...(currentTable.ddlHistory || []).slice(0, 49)]
     });
 
@@ -1058,10 +1111,13 @@ export class GlobalMappingService {
     const tableMap = this.getTableMapping(dbId, tableName);
     const globalRecord: Record<string, any> = {};
 
-    // Build physical -> global lookup map
+    // Build physical -> global lookup map (guarded against undefined - MAP-18 fix)
     const physToGlobalMap: Record<string, string> = {};
     tableMap.columns.forEach(c => {
-      physToGlobalMap[c.physicalColumn.toLowerCase()] = c.globalKey;
+      const colName = c.physicalColumn || (c as any).columnName || (c as any).name;
+      if (colName) {
+        physToGlobalMap[String(colName).toLowerCase()] = c.globalKey || (c as any).key;
+      }
     });
 
     Object.entries(rawRecord).forEach(([physKey, value]) => {
@@ -1086,7 +1142,7 @@ export class GlobalMappingService {
       return cleanP.length >= 10 ? cleanP : String(val).trim();
     }
 
-    // Amount / Numeric transformation
+    // Amount / Numeric transformation (Disambiguates European decimal commas - MAP-13 fix)
     if (dataType === 'number' || dataType === 'integer' || sKey.includes('amt') || sKey.includes('amount') || sKey === 'reqamt' || sKey === 'conamt') {
       if (typeof val === 'number') return isNaN(val) || !isFinite(val) ? null : val;
       let s = String(val).trim();
@@ -1096,7 +1152,24 @@ export class GlobalMappingService {
       s = s.replace(/[\$\€\£\¥\₹\s]/g, '');
       if (isParenNeg) s = '-' + s.replace(/[\(\)]/g, '');
       else if (isTrailNeg) s = '-' + s.replace(/-$/, '');
-      s = s.replace(/,/g, '');
+
+      // Disambiguate European decimal comma (1.234,56) vs US/UK thousands comma (1,234.56)
+      if (s.includes('.') && s.includes(',')) {
+        if (s.lastIndexOf(',') > s.lastIndexOf('.')) {
+          // German / European: 1.234,56 -> 1234.56
+          s = s.replace(/\./g, '').replace(/,/g, '.');
+        } else {
+          // US / UK: 1,234.56 -> 1234.56
+          s = s.replace(/,/g, '');
+        }
+      } else if (s.includes(',') && !s.includes('.')) {
+        if (/,\d{1,2}$/.test(s)) {
+          s = s.replace(/,/g, '.');
+        } else {
+          s = s.replace(/,/g, '');
+        }
+      }
+
       const parsed = parseFloat(s);
       if (!isNaN(parsed) && isFinite(parsed)) {
         return (dataType === 'integer' || sKey === 'prcode') ? Math.round(parsed) : parsed;
@@ -1104,7 +1177,7 @@ export class GlobalMappingService {
       return null;
     }
 
-    // Date / Timestamp transformation
+    // Date / Timestamp transformation (Strict date parsing without leaking broken strings - MAP-13 fix)
     if (dataType === 'date' || dataType === 'timestamp' || sKey.includes('date') || sKey.includes('time') || sKey === 'ttime') {
       if (val instanceof Date && !isNaN(val.getTime())) return val.toISOString();
       if (typeof val === 'number') {
@@ -1118,11 +1191,28 @@ export class GlobalMappingService {
         return `${str.substring(0, 4)}-${str.substring(4, 6)}-${str.substring(6, 8)}`;
       }
       if (/^\d{1,2}:\d{2}(:\d{2})?$/.test(str)) return str;
+
+      // Handle slash dates: DD/MM/YYYY or MM/DD/YYYY
+      const slashMatch = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:\s+(\d{1,2}:\d{2}(?::\d{2})?))?$/);
+      if (slashMatch) {
+        const [, p1, p2, year, time] = slashMatch;
+        const n1 = parseInt(p1, 10);
+        const n2 = parseInt(p2, 10);
+        let month = n1;
+        let day = n2;
+        if (n1 > 12) {
+          day = n1;
+          month = n2;
+        }
+        const isoDate = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+        return time ? `${isoDate}T${time}` : isoDate;
+      }
+
       const d = new Date(str);
       if (!isNaN(d.getTime())) {
         return !str.includes(':') ? d.toISOString().split('T')[0] : d.toISOString();
       }
-      return str;
+      return null;
     }
 
     // Boolean transformation
@@ -1346,6 +1436,15 @@ export class GlobalMappingService {
         if (target) { map[rawH] = target.key; return; }
       }
 
+      // Authorization / Approval Code (ISO 8583 F38 / Auth Log - MAP-11 / MAP-12 fix)
+      if (/^(auth_code|authcode|approval_code|auth_num|auth_id|auth_log|approval|auth)$/i.test(slugH) || slugH.includes('auth') || slugH.includes('approval')) {
+        const target = fields.find(f => f.key.toLowerCase() === 'auth_code')
+          || fields.find(f => f.key.toLowerCase() === 'approval_code')
+          || fields.find(f => f.key.toLowerCase() === 'authcode')
+          || fields.find(f => /auth_code|auth_id|approval_code|auth_log|auth/i.test(f.key));
+        if (target) { map[rawH] = target.key; return; }
+      }
+
       // Status
       if (/^(status|state|stat|statusstate)$/i.test(slugH) || slugH.includes('status')) {
         const target = fields.find(f => /status|status_state/i.test(f.key));
@@ -1429,9 +1528,29 @@ export class GlobalMappingService {
   }
 
   /**
-   * Persists version-controlled Global Mapping configuration to backend API
+   * Persists version-controlled Global Mapping configuration to backend API (MAP-09 fix)
    */
-  public async saveConfigToBackend(description?: string, username: string = 'admin'): Promise<GlobalMappingConfig> {
+  public async saveConfigToBackend(
+    optionsOrDesc?: string | { description?: string; username?: string },
+    legacyUsername?: string
+  ): Promise<GlobalMappingConfig> {
+    let description: string | undefined;
+    let username: string = 'admin';
+
+    if (typeof optionsOrDesc === 'object' && optionsOrDesc !== null) {
+      description = optionsOrDesc.description;
+      username = optionsOrDesc.username || 'admin';
+    } else if (typeof optionsOrDesc === 'string') {
+      // Disambiguate if caller swapped: saveConfigToBackend(currentUser.username, description)
+      if (legacyUsername && (legacyUsername.includes(' ') || legacyUsername.length > 20)) {
+        username = optionsOrDesc;
+        description = legacyUsername;
+      } else {
+        description = optionsOrDesc;
+        username = legacyUsername || 'admin';
+      }
+    }
+
     const configToSave = {
       ...this.config,
       updatedAt: new Date().toISOString(),

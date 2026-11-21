@@ -7,12 +7,14 @@ import React, { useState, useEffect, useMemo } from 'react';
 import {
   Inbox, RefreshCw, Search, Mail, FileText, ChevronRight, X,
   CheckCircle2, AlertTriangle, Terminal, Server, Shield, Eye,
-  Play, Check, Plus, ExternalLink, ArrowUpRight, Clock, UserCheck
+  Play, Check, Plus, ExternalLink, ArrowUpRight, Clock, UserCheck,
+  Calendar, Layers, Zap, Database, RotateCcw, Settings2, SlidersHorizontal
 } from 'lucide-react';
-import { Team, User } from '../../types';
+import { Team, User, FtpFileStagingConfig } from '../../types';
 import { api } from '../../api/client';
 import { ErrorBoundary } from '../ErrorBoundary';
 import { DataTablePagination } from '../common/DataTablePagination';
+import { FtpScheduleConfigModal } from './FtpScheduleConfigModal';
 
 interface IntakeViewProps {
   currentTeam?: Team | null;
@@ -469,7 +471,7 @@ const IntakeViewContent: React.FC<IntakeViewProps> = ({
   onNavigateToCase,
   onNavigateToCreateTask
 }) => {
-  const [activeSubTab, setActiveSubTab] = useState<'requests' | 'providers' | 'webhooks' | 'simulator'>('requests');
+  const [activeSubTab, setActiveSubTab] = useState<'requests' | 'ftp_feeds' | 'providers' | 'webhooks' | 'simulator'>('requests');
   const [quickTaskModalOpen, setQuickTaskModalOpen] = useState(false);
   const [quickTaskTitle, setQuickTaskTitle] = useState('');
   const [quickTaskDesc, setQuickTaskDesc] = useState('');
@@ -488,6 +490,12 @@ const IntakeViewContent: React.FC<IntakeViewProps> = ({
   const [stagedMessages, setStagedMessages] = useState<any[]>(DEFAULT_INTAKE_ITEMS);
   const [providers, setProviders] = useState<any[]>([]);
   const [configs, setConfigs] = useState<any[]>([]);
+  const [ftpConfigs, setFtpConfigs] = useState<FtpFileStagingConfig[]>([]);
+  const [isInitiatingIntake, setIsInitiatingIntake] = useState<Record<string, boolean>>({});
+  const [isInitiatingAll, setIsInitiatingAll] = useState(false);
+  const [selectedFtpConfigForSchedule, setSelectedFtpConfigForSchedule] = useState<FtpFileStagingConfig | null>(null);
+  const [isScheduleModalOpen, setIsScheduleModalOpen] = useState(false);
+  const [ftpSearchQuery, setFtpSearchQuery] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [successMsg, setSuccessMsg] = useState<string | null>(null);
@@ -500,6 +508,10 @@ const IntakeViewContent: React.FC<IntakeViewProps> = ({
   // Pagination State for Requests Table
   const [requestPage, setRequestPage] = useState(1);
   const [requestPageSize, setRequestPageSize] = useState(7);
+
+  // Pagination State for FTP Feeds Table
+  const [ftpPage, setFtpPage] = useState(1);
+  const [ftpPageSize, setFtpPageSize] = useState(7);
 
   // Selected item for review drawer
   const [selectedStaged, setSelectedStaged] = useState<any | null>(null);
@@ -521,25 +533,90 @@ const IntakeViewContent: React.FC<IntakeViewProps> = ({
     setIsLoading(true);
     setErrorMsg(null);
     try {
-      if (teamId) {
-        const [summ, staged, provs, cfgs] = await Promise.all([
-          api.getExternalRequestSummary(teamId).catch(() => null),
-          api.getStagedMessages({ teamId, limit: 100 }).catch(() => []),
-          api.getMessageProviders({ teamId }).catch(() => []),
-          api.getTeamChannelConfigs(teamId).catch(() => [])
-        ]);
-        if (summ) setSummary(summ);
-        if (Array.isArray(staged) && staged.length > 0) {
-          setStagedMessages(staged);
-        }
-        if (Array.isArray(provs)) setProviders(provs);
-        if (Array.isArray(cfgs)) setConfigs(cfgs);
+      const [summ, staged, provs, cfgs, loadedFtp] = await Promise.all([
+        teamId ? api.getExternalRequestSummary(teamId).catch(() => null) : Promise.resolve(null),
+        teamId ? api.getStagedMessages({ teamId, limit: 100 }).catch(() => []) : Promise.resolve([]),
+        teamId ? api.getMessageProviders({ teamId }).catch(() => []) : Promise.resolve([]),
+        teamId ? api.getTeamChannelConfigs(teamId).catch(() => []) : Promise.resolve([]),
+        api.getFtpStagingConfigs().catch(() => [])
+      ]);
+      if (summ) setSummary(summ);
+      if (Array.isArray(staged) && staged.length > 0) {
+        setStagedMessages(staged);
+      }
+      if (Array.isArray(provs)) setProviders(provs);
+      if (Array.isArray(cfgs)) setConfigs(cfgs);
+      if (Array.isArray(loadedFtp)) {
+        // Filter out duplicate configs with identical name and pattern to keep UI crystal clear
+        const seen = new Set<string>();
+        const uniqueFtp = loadedFtp.filter(c => {
+          const key = `${c.name}::${c.fileNamePattern}`;
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
+        setFtpConfigs(uniqueFtp);
       }
     } catch (err: any) {
       console.warn('Could not load dynamic intake data, using established cache:', err);
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const handleInitiateSingleFtp = async (config: FtpFileStagingConfig) => {
+    setIsInitiatingIntake(prev => ({ ...prev, [config.id]: true }));
+    setErrorMsg(null);
+    setSuccessMsg(null);
+    try {
+      const res = await api.stageFtpFile({
+        configId: config.id,
+        connectionId: config.ftpConnectionId
+      });
+      setSuccessMsg(
+        `Intake initiated for [${config.name}]: Staged ${res.stagedCount?.toLocaleString() || 0} records into ${res.stagingTableName || 'mirror table'}.`
+      );
+      await loadAllData();
+    } catch (err: any) {
+      setErrorMsg(`Failed to initiate intake for [${config.name}]: ${err.message}`);
+    } finally {
+      setIsInitiatingIntake(prev => ({ ...prev, [config.id]: false }));
+    }
+  };
+
+  const handleInitiateAllFtp = async () => {
+    setIsInitiatingAll(true);
+    setErrorMsg(null);
+    setSuccessMsg(null);
+    try {
+      const res = await api.runScheduledFtpStaging({ forceAll: true });
+      setSuccessMsg(
+        `Batch intake completed across ${res.executedCount || ftpConfigs.length} feed(s): Staged ${res.totalStaged?.toLocaleString() || 0} records into PostgreSQL mirror tables.`
+      );
+      await loadAllData();
+    } catch (err: any) {
+      setErrorMsg(`Failed to initiate batch intake: ${err.message}`);
+    } finally {
+      setIsInitiatingAll(false);
+    }
+  };
+
+  const handleResetLedger = async (config: FtpFileStagingConfig) => {
+    if (!confirm(`Reset the ingested files ledger for pattern "${config.fileNamePattern}"?\n\nThis will allow remote files matching this pattern to be re-staged on the next intake run.`)) {
+      return;
+    }
+    try {
+      await api.resetFtpPatternLedger(config.ftpConnectionId, config.fileNamePattern);
+      setSuccessMsg(`Ingested files ledger reset for pattern [${config.fileNamePattern}]. Ready for fresh re-ingestion.`);
+      await loadAllData();
+    } catch (err: any) {
+      setErrorMsg(`Could not reset ledger: ${err.message}`);
+    }
+  };
+
+  const handleOpenScheduleModal = (config: FtpFileStagingConfig) => {
+    setSelectedFtpConfigForSchedule(config);
+    setIsScheduleModalOpen(true);
   };
 
   useEffect(() => {
@@ -565,10 +642,34 @@ const IntakeViewContent: React.FC<IntakeViewProps> = ({
     return filteredMessages.slice(start, start + requestPageSize);
   }, [filteredMessages, requestPage, requestPageSize]);
 
+  // Pagination & Filtering for FTP Feeds Table
+  const filteredFtpConfigs = useMemo(() => {
+    return ftpConfigs.filter(c => {
+      if (!ftpSearchQuery.trim()) return true;
+      const query = ftpSearchQuery.toLowerCase();
+      return (
+        c.name.toLowerCase().includes(query) ||
+        c.fileNamePattern.toLowerCase().includes(query) ||
+        (c.stagingTableName || '').toLowerCase().includes(query) ||
+        (c.ftpConnectionId || '').toLowerCase().includes(query) ||
+        (c.fileFormat || '').toLowerCase().includes(query)
+      );
+    });
+  }, [ftpConfigs, ftpSearchQuery]);
+
+  const paginatedFtpConfigs = useMemo(() => {
+    const start = (ftpPage - 1) * ftpPageSize;
+    return filteredFtpConfigs.slice(start, start + ftpPageSize);
+  }, [filteredFtpConfigs, ftpPage, ftpPageSize]);
+
   // Reset to page 1 when filters change
   useEffect(() => {
     setRequestPage(1);
   }, [statusFilter, urgencyFilter, searchQuery]);
+
+  useEffect(() => {
+    setFtpPage(1);
+  }, [ftpSearchQuery]);
 
   const handleOpenReview = (msg: any) => {
     setSelectedStaged(msg);
@@ -630,6 +731,38 @@ const IntakeViewContent: React.FC<IntakeViewProps> = ({
         </div>
 
         <div className="flex items-center gap-2.5">
+          <button
+            type="button"
+            id="btn-intake-ftp-schedule"
+            onClick={() => {
+              if (ftpConfigs.length > 0) {
+                handleOpenScheduleModal(ftpConfigs[0]);
+              } else {
+                setActiveSubTab('ftp_feeds');
+              }
+            }}
+            className="flex items-center gap-1.5 px-3 py-2 bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 rounded-xl text-xs font-medium font-sans transition-colors shadow-2xs cursor-pointer"
+            title="Configure Automated FTP Staging Schedule"
+          >
+            <Clock size={13} className="text-[#F27421]" />
+            <span>FTP Schedule</span>
+            {ftpConfigs.some(c => c.scheduleConfig?.enabled) && (
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse ml-0.5" />
+            )}
+          </button>
+
+          <button
+            type="button"
+            id="btn-intake-initiate-intake"
+            disabled={isInitiatingAll}
+            onClick={handleInitiateAllFtp}
+            className="flex items-center gap-1.5 px-3.5 py-2 bg-[#0F142A] hover:bg-slate-800 text-white rounded-xl text-xs font-semibold font-sans transition-colors shadow-2xs cursor-pointer disabled:opacity-50"
+            title="Initiate immediate intake from connected FTP servers"
+          >
+            <Play size={13} className={isInitiatingAll ? 'animate-spin text-[#F27421]' : 'text-[#F27421] fill-[#F27421]'} />
+            <span>{isInitiatingAll ? 'Initiating Intake...' : 'Initiate Intake'}</span>
+          </button>
+
           <button
             onClick={loadAllData}
             disabled={isLoading}
@@ -750,6 +883,28 @@ const IntakeViewContent: React.FC<IntakeViewProps> = ({
           }`}>
             {stagedMessages.length > 50 ? stagedMessages.length : 100}
           </span>
+        </button>
+
+        <button
+          type="button"
+          id="tab-intake-ftp-feeds"
+          onClick={() => setActiveSubTab('ftp_feeds')}
+          className={`px-3 py-1.5 rounded-lg text-xs font-medium transition flex items-center gap-1.5 cursor-pointer ${
+            activeSubTab === 'ftp_feeds'
+              ? 'bg-[#0F142A] text-white shadow-xs'
+              : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+          }`}
+        >
+          <Server size={13} className={activeSubTab === 'ftp_feeds' ? 'text-[#F27421]' : 'text-slate-500'} />
+          <span>FTP Feeds</span>
+          <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-sans ${
+            activeSubTab === 'ftp_feeds' ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-600'
+          }`}>
+            {ftpConfigs.length}
+          </span>
+          {ftpConfigs.some(c => c.scheduleConfig?.enabled) && (
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse ml-0.5" />
+          )}
         </button>
 
         <button
@@ -1021,6 +1176,293 @@ const IntakeViewContent: React.FC<IntakeViewProps> = ({
       )}
 
       {/* ========================================================= */}
+      {/* TAB: FTP FEEDS & SCHEDULE MANAGEMENT                      */}
+      {/* ========================================================= */}
+      {activeSubTab === 'ftp_feeds' && (
+        <div className="flex-1 min-h-0 flex flex-col space-y-4">
+          {/* Top Operational Metrics Row */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5 shrink-0">
+            <div className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-2xs space-y-1">
+              <span className="text-xs text-slate-500 font-medium font-sans block">Configured Feeds</span>
+              <p className="text-2xl font-bold font-heading text-slate-900 flex items-center justify-between">
+                <span>{ftpConfigs.length}</span>
+                <Server size={18} className="text-slate-400" />
+              </p>
+            </div>
+
+            <div className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-2xs space-y-1">
+              <span className="text-xs text-slate-500 font-medium font-sans block">Active Schedules</span>
+              <p className="text-2xl font-bold font-heading text-emerald-600 flex items-center justify-between">
+                <span>{ftpConfigs.filter(c => c.scheduleConfig?.enabled).length}</span>
+                <Clock size={18} className="text-emerald-500" />
+              </p>
+            </div>
+
+            <div className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-2xs space-y-1">
+              <span className="text-xs text-slate-500 font-medium font-sans block">Total Rows Staged</span>
+              <p className="text-2xl font-bold font-heading text-[#F27421] flex items-center justify-between">
+                <span>{ftpConfigs.reduce((acc, c) => acc + (c.lastStagedCount || 0), 0).toLocaleString()}</span>
+                <Database size={18} className="text-[#F27421]" />
+              </p>
+            </div>
+
+            <div className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-2xs space-y-1">
+              <span className="text-xs text-slate-500 font-medium font-sans block">Automated Engine</span>
+              <p className="text-xs font-semibold font-sans text-slate-700 flex items-center gap-1.5 mt-2">
+                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                <span>Scheduler Service Online</span>
+              </p>
+            </div>
+          </div>
+
+          {/* Action & Filter Toolbar */}
+          <div className="bg-white border border-slate-200/80 rounded-xl p-3.5 shadow-2xs flex flex-wrap items-center justify-between gap-3 shrink-0">
+            <div className="flex items-center gap-2.5">
+              <div className="relative">
+                <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+                <input
+                  type="text"
+                  placeholder="Filter feeds by name, pattern, or table..."
+                  value={ftpSearchQuery}
+                  onChange={e => setFtpSearchQuery(e.target.value)}
+                  className="w-72 bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5 pl-8 text-xs text-slate-700 placeholder-slate-400 font-sans focus:outline-none focus:border-[#F27421] focus:bg-white"
+                />
+              </div>
+
+              <span className="text-xs text-slate-500 font-sans">
+                Showing {filteredFtpConfigs.length} of {ftpConfigs.length} clearing feeds
+              </span>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={loadAllData}
+                disabled={isLoading}
+                className="px-3 py-1.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-700 rounded-lg text-xs font-medium font-sans transition cursor-pointer flex items-center gap-1.5"
+              >
+                <RefreshCw size={12} className={isLoading ? 'animate-spin text-[#F27421]' : 'text-slate-500'} />
+                <span>Refresh Feeds</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={isInitiatingAll}
+                onClick={handleInitiateAllFtp}
+                className="px-3.5 py-1.5 bg-[#0F142A] hover:bg-slate-800 text-white rounded-lg text-xs font-semibold font-sans transition cursor-pointer flex items-center gap-1.5 shadow-2xs disabled:opacity-50"
+              >
+                <Play size={12} className={isInitiatingAll ? 'animate-spin text-[#F27421]' : 'text-[#F27421] fill-[#F27421]'} />
+                <span>{isInitiatingAll ? 'Initiating All Feeds...' : 'Initiate Intake (All Feeds)'}</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Table Container */}
+          <div className="bg-white border border-slate-200/80 rounded-xl shadow-xs overflow-hidden flex-1 min-h-0 flex flex-col">
+            <div className="flex-1 min-h-0 overflow-auto">
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="sticky top-0 z-10 bg-white border-b border-slate-100 text-slate-400 font-sans text-xs">
+                    <th className="py-3 px-4 font-normal">Feed & Endpoint</th>
+                    <th className="py-3 px-4 font-normal">Pattern & Mirror Table</th>
+                    <th className="py-3 px-4 font-normal">Format</th>
+                    <th className="py-3 px-4 font-normal">Schedule & Frequency</th>
+                    <th className="py-3 px-4 font-normal">Deduplication</th>
+                    <th className="py-3 px-4 font-normal">Telemetry</th>
+                    <th className="py-3 px-4 font-normal text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 text-xs">
+                  {paginatedFtpConfigs.length === 0 ? (
+                    <tr>
+                      <td colSpan={7} className="py-12 text-center text-slate-400 font-sans">
+                        <div className="flex flex-col items-center justify-center space-y-2">
+                          <Server size={24} className="text-slate-300" />
+                          <p className="font-medium text-slate-600">No FTP feeds match the search criteria</p>
+                          <p className="text-xs text-slate-400">Try adjusting your filter keyword</p>
+                        </div>
+                      </td>
+                    </tr>
+                  ) : (
+                    paginatedFtpConfigs.map(config => {
+                      const isSchedActive = config.scheduleConfig?.enabled !== false;
+                      const isProcessingThis = !!isInitiatingIntake[config.id];
+
+                      return (
+                        <tr key={config.id} className="hover:bg-slate-50/70 transition">
+                          {/* 1. Feed & Endpoint */}
+                          <td className="py-3.5 px-4 max-w-xs">
+                            <div className="flex items-center space-x-3">
+                              <div className="w-8 h-8 rounded-lg bg-orange-50 border border-orange-200/60 flex items-center justify-center text-[#F27421] shrink-0">
+                                <Server size={15} />
+                              </div>
+                              <div className="min-w-0">
+                                <div className="font-bold text-slate-900 font-sans truncate" title={config.name}>
+                                  {config.name}
+                                </div>
+                                <div className="text-slate-400 text-xs truncate mt-0.5 font-mono flex items-center gap-1.5">
+                                  <span className="truncate" title={config.ftpConnectionId}>{config.ftpConnectionId}</span>
+                                  <span>•</span>
+                                  <span className="text-slate-500">{config.folderTraversalMode || 'RECURSIVE'}</span>
+                                </div>
+                              </div>
+                            </div>
+                          </td>
+
+                          {/* 2. Pattern & Mirror Table */}
+                          <td className="py-3.5 px-4">
+                            <div className="space-y-1">
+                              <div className="font-mono text-xs font-semibold text-slate-800 truncate max-w-xs" title={config.fileNamePattern}>
+                                {config.fileNamePattern}
+                              </div>
+                              <div className="inline-flex items-center gap-1 font-mono text-[11px] text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200/60 truncate max-w-xs" title={config.stagingTableName || 'mirror_ftp_*'}>
+                                <Database size={10} className="shrink-0 text-emerald-600" />
+                                <span className="truncate">{config.stagingTableName || 'mirror_ftp_*'}</span>
+                              </div>
+                            </div>
+                          </td>
+
+                          {/* 3. Format */}
+                          <td className="py-3.5 px-4">
+                            <span className={`px-2 py-0.5 rounded text-[11px] font-bold border ${
+                              (config.fileFormat || 'EXCEL').toUpperCase() === 'EXCEL'
+                                ? 'bg-blue-50 text-blue-700 border-blue-200'
+                                : (config.fileFormat || '').toUpperCase() === 'CSV'
+                                ? 'bg-indigo-50 text-indigo-700 border-indigo-200'
+                                : 'bg-purple-50 text-purple-700 border-purple-200'
+                            }`}>
+                              {config.fileFormat || 'EXCEL'}
+                            </span>
+                          </td>
+
+                          {/* 4. Schedule & Frequency */}
+                          <td className="py-3.5 px-4">
+                            <div className="space-y-1">
+                              <div>
+                                {isSchedActive ? (
+                                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+                                    <span>Active</span>
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[11px] font-medium bg-slate-100 text-slate-600 border border-slate-200">
+                                    <span className="w-1.5 h-1.5 rounded-full bg-slate-400" />
+                                    <span>Paused</span>
+                                  </span>
+                                )}
+                              </div>
+                              <div className="text-slate-700 text-xs font-medium flex items-center gap-1">
+                                <Clock size={11} className="text-[#F27421] shrink-0" />
+                                <span>
+                                  {config.scheduleConfig?.frequency === 'DAILY'
+                                    ? `Daily at ${config.scheduleConfig?.scheduledTime || '02:00'} UTC`
+                                    : config.scheduleConfig?.frequency === 'HOURLY'
+                                    ? 'Hourly Polling (60m)'
+                                    : config.scheduleConfig?.frequency === 'EVERY_15_MIN'
+                                    ? 'Intraday (15m)'
+                                    : config.scheduleConfig?.frequency === 'CUSTOM_CRON'
+                                    ? `Cron: ${config.scheduleConfig?.scheduleCron || '0 2 * * *'}`
+                                    : 'Manual / On-Demand'}
+                                </span>
+                              </div>
+                            </div>
+                          </td>
+
+                          {/* 5. Deduplication Policy */}
+                          <td className="py-3.5 px-4">
+                            <span className="inline-flex items-center gap-1 text-slate-600 text-xs font-medium">
+                              <Shield size={12} className="text-slate-400 shrink-0" />
+                              <span>
+                                {config.scheduleConfig?.deduplicationPolicy === 'UPDATE'
+                                  ? 'Re-parse & Overwrite'
+                                  : 'Skip Duplicates (Ledger)'}
+                              </span>
+                            </span>
+                          </td>
+
+                          {/* 6. Telemetry */}
+                          <td className="py-3.5 px-4">
+                            <div>
+                              <span className="font-semibold text-slate-800">
+                                {config.lastStagedCount !== undefined
+                                  ? `${config.lastStagedCount.toLocaleString()} rows`
+                                  : '0 rows'}
+                              </span>
+                              {config.lastStagedAt && (
+                                <div className="text-slate-400 text-[11px] mt-0.5 font-sans">
+                                  {new Date(config.lastStagedAt).toLocaleDateString()}
+                                </div>
+                              )}
+                            </div>
+                          </td>
+
+                          {/* 7. Actions */}
+                          <td className="py-3.5 px-4 text-right">
+                            <div className="flex items-center justify-end gap-1.5">
+                              <button
+                                type="button"
+                                onClick={() => handleResetLedger(config)}
+                                className="px-2 py-1 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-lg text-xs font-medium font-sans transition cursor-pointer flex items-center gap-1"
+                                title="Reset ingested files ledger so remote files can be re-staged"
+                              >
+                                <RotateCcw size={12} />
+                                <span className="hidden sm:inline">Reset</span>
+                              </button>
+
+                              <button
+                                type="button"
+                                id={`btn-configure-schedule-${config.id}`}
+                                onClick={() => handleOpenScheduleModal(config)}
+                                className="px-2.5 py-1 bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 rounded-lg text-xs font-semibold font-sans transition cursor-pointer flex items-center gap-1.5 shadow-2xs"
+                                title="Configure Ingestion Schedule & Triggers"
+                              >
+                                <Clock size={12} className="text-[#F27421]" />
+                                <span>Schedule</span>
+                              </button>
+
+                              <button
+                                type="button"
+                                id={`btn-initiate-intake-${config.id}`}
+                                disabled={isProcessingThis}
+                                onClick={() => handleInitiateSingleFtp(config)}
+                                className="px-3 py-1 bg-[#F27421] hover:bg-[#e06516] text-white rounded-lg text-xs font-semibold font-sans transition cursor-pointer flex items-center gap-1.5 shadow-2xs disabled:opacity-50"
+                                title="Initiate Immediate Ingestion for this feed"
+                              >
+                                <Play size={11} className={isProcessingThis ? 'animate-spin' : 'fill-white'} />
+                                <span>{isProcessingThis ? 'Ingesting...' : 'Initiate Intake'}</span>
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Pagination Footer */}
+            <DataTablePagination
+              currentPage={ftpPage}
+              totalItems={filteredFtpConfigs.length}
+              pageSize={ftpPageSize}
+              pageSizeOptions={[5, 7, 8, 10, 15, 20]}
+              onPageChange={setFtpPage}
+              onPageSizeChange={(newSize) => {
+                setFtpPageSize(newSize);
+                setFtpPage(1);
+              }}
+              statusBadge={
+                <span className="text-[11px] font-mono text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full border border-slate-200/60">
+                  {filteredFtpConfigs.length} filtered · {ftpConfigs.length} total feeds
+                </span>
+              }
+            />
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================= */}
       {/* 5. TAB 2: PROVIDERS                                       */}
       {/* ========================================================= */}
       {activeSubTab === 'providers' && (
@@ -1066,12 +1508,45 @@ const IntakeViewContent: React.FC<IntakeViewProps> = ({
                 <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
                   SFTP STAGING
                 </span>
-                <span className="text-xs text-emerald-600 font-medium">● Connected</span>
+                <span className="text-xs text-emerald-600 font-medium">
+                  ● {ftpConfigs.filter(c => c.scheduleConfig?.enabled).length > 0 ? 'Active' : 'Connected'}
+                </span>
               </div>
               <h4 className="font-bold text-xs text-slate-900">National Switch FTP Batch</h4>
               <p className="text-xs text-slate-500">
                 Auto-ingests .xlsx and .csv settlement reports from secure bank FTP servers.
               </p>
+              <div className="pt-2 border-t border-slate-100 flex items-center justify-between gap-2">
+                <button
+                  type="button"
+                  onClick={() => setActiveSubTab('ftp_feeds')}
+                  className="px-2.5 py-1 text-slate-700 bg-slate-50 hover:bg-slate-100 border border-slate-200 rounded-lg text-xs font-semibold transition cursor-pointer"
+                >
+                  View Feeds ({ftpConfigs.length})
+                </button>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      if (ftpConfigs.length > 0) handleOpenScheduleModal(ftpConfigs[0]);
+                      else setActiveSubTab('ftp_feeds');
+                    }}
+                    className="px-2.5 py-1 text-slate-700 bg-white hover:bg-slate-50 border border-slate-200 rounded-lg text-xs font-semibold transition cursor-pointer flex items-center gap-1"
+                  >
+                    <Clock size={11} className="text-[#F27421]" />
+                    <span>Schedule</span>
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isInitiatingAll}
+                    onClick={handleInitiateAllFtp}
+                    className="px-2.5 py-1 bg-[#F27421] hover:bg-[#e06516] text-white rounded-lg text-xs font-semibold transition cursor-pointer flex items-center gap-1 disabled:opacity-50"
+                  >
+                    <Play size={11} className="fill-white" />
+                    <span>Intake</span>
+                  </button>
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -1409,6 +1884,20 @@ const IntakeViewContent: React.FC<IntakeViewProps> = ({
           </div>
         </div>
       )}
+
+      {/* 9. FTP Ingestion Schedule Configuration Modal */}
+      <FtpScheduleConfigModal
+        isOpen={isScheduleModalOpen}
+        onClose={() => setIsScheduleModalOpen(false)}
+        config={selectedFtpConfigForSchedule}
+        onSaved={async (updatedConfig) => {
+          setSuccessMsg(`Schedule configuration updated for [${updatedConfig.name}].`);
+          await loadAllData();
+        }}
+        onInitiateAfterSave={async (cfg) => {
+          await handleInitiateSingleFtp(cfg);
+        }}
+      />
     </div>
   );
 };

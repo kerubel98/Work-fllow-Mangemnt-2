@@ -43,7 +43,7 @@ export interface RecipeStep {
   num: number;
   title: string;
   desc: string;
-  type?: 'INSPECT_HEADER' | 'MAP_FIELDS' | 'REQUIRED_COLUMNS' | 'DEDUPLICATE' | 'TRIM' | 'EMPTY_ROWS' | 'MERGE' | 'SPLIT' | 'TRANSFORM' | 'CUSTOM';
+  type?: 'INSPECT_HEADER' | 'MAP_FIELDS' | 'REQUIRED_COLUMNS' | 'DEDUPLICATE' | 'TRIM' | 'EMPTY_ROWS' | 'MERGE' | 'SPLIT' | 'TRANSFORM' | 'CUSTOM' | 'HEADER_ROW_CONFIG';
   details?: Record<string, any>;
   appliedAt?: string;
 }
@@ -121,6 +121,9 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
   const [createFileMapping, setCreateFileMapping] = useState<Record<string, string>>({});
   const [createParsedRows, setCreateParsedRows] = useState<Record<string, any>[]>([]);
   const [activeAttachment, setActiveAttachment] = useState<any>(null);
+  const [rawSheetMatrix, setRawSheetMatrix] = useState<any[][]>([]);
+  const [headerRowIndex, setHeaderRowIndex] = useState<number>(1);
+  const [dataStartRow, setDataStartRow] = useState<number>(2);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   // Dynamic Columns State for Grid View (populated on file upload / attachment ingestion)
@@ -152,6 +155,11 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
   const [saveTemplateModalOpen, setSaveTemplateModalOpen] = useState(false);
   const [templateSaveName, setTemplateSaveName] = useState('My Custom Settlement Template');
 
+  // Header & Data Row Config Modal State
+  const [headerConfigModalOpen, setHeaderConfigModalOpen] = useState(false);
+  const [inputHeaderRow, setInputHeaderRow] = useState<number>(1);
+  const [inputDataRow, setInputDataRow] = useState<number>(2);
+
   // Undo / History Stack
   const [history, setHistory] = useState<Array<{
     rows: Record<string, any>[];
@@ -159,6 +167,9 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
     columnMappings: Record<string, string>;
     customSteps: RecipeStep[];
     fileName: string;
+    headerRowIndex?: number;
+    dataStartRow?: number;
+    rawSheetMatrix?: any[][];
   }>>([]);
   const [feedbackMessage, setFeedbackMessage] = useState<string | null>(null);
 
@@ -304,12 +315,14 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
       num: 1,
       title: 'Inspect header structure',
       desc: createFileName 
-        ? `Loaded "${createFileName}" (${createParsedRows.length} rows, ${columns.length} columns)` 
-        : `Awaiting spreadsheet upload (${createParsedRows.length} rows, ${columns.length} columns)`,
+        ? `Loaded "${createFileName}" (Header: row ${headerRowIndex}, Data: row ${dataStartRow}, ${createParsedRows.length} rows, ${columns.length} columns)` 
+        : `Awaiting spreadsheet upload (Header: row ${headerRowIndex}, Data: row ${dataStartRow})`,
       type: 'INSPECT_HEADER',
       appliedAt: 'Initial load',
       details: {
         fileName: createFileName,
+        headerRowIndex,
+        dataStartRow,
         rows: createParsedRows.length,
         columns: columns.map(c => ({ name: c.name, type: c.type, mapping: c.mapping }))
       }
@@ -351,7 +364,7 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
     };
 
     return [step1, step2, ...customSteps, finalStep];
-  }, [createFileName, createParsedRows.length, columns, mappedCount, createFileMapping, customRecipeSteps, requiredColumnsList, readyRequiredCount]);
+  }, [createFileName, createParsedRows.length, columns, mappedCount, createFileMapping, customRecipeSteps, requiredColumnsList, readyRequiredCount, headerRowIndex, dataStartRow]);
 
   // Handle switching intake attachment
   const handleSelectAttachment = (att: any) => {
@@ -367,13 +380,16 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
 
     let rows: Record<string, any>[] = [];
     let headers: string[] = [];
+    let matrix: any[][] = [];
 
     if (att.parsedData?.sampleRows && att.parsedData.sampleRows.length > 0) {
       rows = att.parsedData.sampleRows;
       headers = att.parsedData.sampleHeaders || Object.keys(rows[0] || {});
+      matrix = [headers, ...rows.map(r => headers.map(h => r[h]))];
     } else if (att.parsedData?.tabularRows && att.parsedData.tabularRows.length > 0) {
       rows = att.parsedData.tabularRows;
       headers = att.parsedData.tabularHeaders || Object.keys(rows[0] || {});
+      matrix = [headers, ...rows.map(r => headers.map(h => r[h]))];
     } else if (att.rawBase64) {
       try {
         const binary = atob(att.rawBase64);
@@ -385,6 +401,7 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
         const firstSheet = wb.Sheets[wb.SheetNames[0]];
         if (firstSheet) {
           const raw = XLSX.utils.sheet_to_json(firstSheet, { header: 1 }) as any[][];
+          matrix = raw;
           if (raw.length > 0) {
             headers = raw[0].map((h: any) => String(h || '').trim()).filter(Boolean);
             rows = XLSX.utils.sheet_to_json(firstSheet) as Record<string, any>[];
@@ -399,7 +416,14 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
       const fallback = generateFallbackAttachmentDataset(att.filename);
       headers = fallback.headers;
       rows = fallback.rows;
+      matrix = [headers, ...rows.map(r => headers.map(h => r[h]))];
     }
+
+    if (matrix.length > 0) {
+      setRawSheetMatrix(matrix);
+    }
+    setHeaderRowIndex(1);
+    setDataStartRow(2);
 
     if (headers.length > 0) {
       setCreateRawHeaders(headers);
@@ -461,7 +485,10 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
         columns: JSON.parse(JSON.stringify(columns)),
         columnMappings: { ...createFileMapping },
         customSteps: [...customRecipeSteps],
-        fileName: createFileName
+        fileName: createFileName,
+        headerRowIndex,
+        dataStartRow,
+        rawSheetMatrix: rawSheetMatrix.length > 0 ? [...rawSheetMatrix] : undefined
       }
     ]);
   };
@@ -475,6 +502,9 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
     setCreateFileMapping(previous.columnMappings);
     setCustomRecipeSteps(previous.customSteps);
     if (previous.fileName) setCreateFileName(previous.fileName);
+    if (previous.headerRowIndex !== undefined) setHeaderRowIndex(previous.headerRowIndex);
+    if (previous.dataStartRow !== undefined) setDataStartRow(previous.dataStartRow);
+    if (previous.rawSheetMatrix) setRawSheetMatrix(previous.rawSheetMatrix);
     setFeedbackMessage('Reverted last data cleaning modification.');
     setTimeout(() => setFeedbackMessage(null), 3000);
   };
@@ -518,6 +548,9 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
           setCreateTitle(prev => (!prev || prev === 'New Task' || prev === 'Untitled Task' ? formattedTitle : prev));
           setCreateRawHeaders(rawH);
           setCreateParsedRows(parsed);
+          setRawSheetMatrix(json);
+          setHeaderRowIndex(1);
+          setDataStartRow(2);
           setCreateFileMapping(autoMap);
           setColumns(newCols);
           setVisibleColumnIds(newCols.map(c => c.id));
@@ -899,30 +932,132 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
   const handleSelectTemplate = (templateName: string) => {
     setSelectedTemplate(templateName);
     const tpl = templates.find(t => t.name === templateName);
-    if (tpl && tpl.columnMappings) {
-      recordSnapshot();
-      setCreateFileMapping(prev => ({ ...prev, ...tpl.columnMappings }));
-      setColumns(cols => cols.map(c => {
-        const mapped = tpl.columnMappings[c.name] || tpl.columnMappings[c.id] || c.mapping;
-        return {
-          ...c,
-          mapping: mapped || 'Unmapped',
-          unmapped: !mapped || mapped === 'Unmapped'
-        };
-      }));
-      setCustomRecipeSteps(prev => [
-        ...prev,
-        {
-          num: 3 + prev.length,
-          title: `Applied template "${templateName}"`,
-          desc: `Loaded predefined column mappings`,
-          type: 'MAP_FIELDS',
-          appliedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-        }
-      ]);
-      setFeedbackMessage(`Applied mapping template "${templateName}".`);
-      setTimeout(() => setFeedbackMessage(null), 3500);
+    if (tpl) {
+      if (tpl.headerRowIndex && tpl.headerRowIndex !== headerRowIndex) {
+        setHeaderRowIndex(tpl.headerRowIndex);
+      }
+      if (tpl.dataStartRow && tpl.dataStartRow !== dataStartRow) {
+        setDataStartRow(tpl.dataStartRow);
+      }
+      if (tpl.columnMappings) {
+        recordSnapshot();
+        setCreateFileMapping(prev => ({ ...prev, ...tpl.columnMappings }));
+        setColumns(cols => cols.map(c => {
+          const mapped = tpl.columnMappings[c.name] || tpl.columnMappings[c.id] || c.mapping;
+          return {
+            ...c,
+            mapping: mapped || 'Unmapped',
+            unmapped: !mapped || mapped === 'Unmapped'
+          };
+        }));
+        setCustomRecipeSteps(prev => [
+          ...prev,
+          {
+            num: 3 + prev.length,
+            title: `Applied template "${templateName}"`,
+            desc: `Loaded predefined column mappings (Header row ${tpl.headerRowIndex || 1}, Data starts row ${tpl.dataStartRow || 2})`,
+            type: 'MAP_FIELDS',
+            appliedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+          }
+        ]);
+        setFeedbackMessage(`Applied mapping template "${templateName}".`);
+        setTimeout(() => setFeedbackMessage(null), 3500);
+      }
     }
+  };
+
+  // Configure Header Row and Data Start Row (Preamble Truncation & Dynamic Slicing)
+  const handleApplyHeaderRowConfig = (newHeaderRow: number, newDataRow: number) => {
+    recordSnapshot();
+    setHeaderRowIndex(newHeaderRow);
+    setDataStartRow(newDataRow);
+
+    // Matrix to slice from: either rawSheetMatrix or reconstructed from createRawHeaders + createParsedRows
+    let matrixToUse = rawSheetMatrix;
+    if ((!matrixToUse || matrixToUse.length === 0) && createRawHeaders.length > 0) {
+      matrixToUse = [
+        createRawHeaders,
+        ...createParsedRows.map(r => createRawHeaders.map(h => r[h] !== undefined && r[h] !== null ? r[h] : ''))
+      ];
+      setRawSheetMatrix(matrixToUse);
+    }
+
+    if (matrixToUse && matrixToUse.length > 0) {
+      const headerIdx = Math.max(0, newHeaderRow - 1);
+      const dataIdx = Math.max(headerIdx + 1, newDataRow - 1);
+
+      const headerRowArray = matrixToUse[headerIdx] || [];
+      const newHeaders: string[] = (Array.isArray(headerRowArray) ? headerRowArray : Object.values(headerRowArray))
+        .map((h: any, i: number) => String(h || '').trim() || `col_${i + 1}`)
+        .filter(Boolean);
+
+      const newRows: Record<string, any>[] = [];
+      for (let r = dataIdx; r < matrixToUse.length; r++) {
+        const rowData = matrixToUse[r];
+        if (!rowData) continue;
+        if (Array.isArray(rowData) && rowData.every(c => c === '' || c === null || c === undefined)) continue;
+
+        const rowObj: Record<string, any> = {};
+        newHeaders.forEach((hdr, cIdx) => {
+          const val = Array.isArray(rowData) ? rowData[cIdx] : (rowData as any)[hdr] ?? (rowData as any)[cIdx];
+          rowObj[hdr] = val !== undefined && val !== null ? val : '';
+        });
+        newRows.push(rowObj);
+      }
+
+      if (newHeaders.length > 0) {
+        setCreateRawHeaders(newHeaders);
+        const activeFields = standardFields.length > 0 ? standardFields : DEFAULT_GLOBAL_STANDARD_FIELDS;
+        const autoMap = globalMappingService.autoGenerateColumnMapping(newHeaders, activeFields);
+        setCreateFileMapping(autoMap);
+        setCreateParsedRows(newRows);
+
+        const newCols: ColumnDef[] = newHeaders.map(h => {
+          const sampleVal = newRows[0] ? newRows[0][h] : undefined;
+          const mapped = autoMap[h] || 'Unmapped';
+          return {
+            id: h,
+            name: h,
+            type: inferType(h, sampleVal),
+            mapping: mapped,
+            selected: false,
+            unmapped: mapped === 'Unmapped'
+          };
+        });
+        setColumns(newCols);
+        setVisibleColumnIds(newCols.map(c => c.id));
+        setCurrentPage(1);
+      }
+    }
+
+    // Upsert or append HEADER_ROW_CONFIG recipe step
+    const stepIdx = customRecipeSteps.findIndex(s => s.type === 'HEADER_ROW_CONFIG' || s.title.includes('Header Row'));
+    const newStep: RecipeStep = {
+      num: stepIdx >= 0 ? customRecipeSteps[stepIdx].num : 3 + customRecipeSteps.length,
+      title: `Set Header Row (${newHeaderRow}) & Data Row (${newDataRow})`,
+      desc: `Extracted headers from row ${newHeaderRow}; parsed data starting at row ${newDataRow}`,
+      type: 'HEADER_ROW_CONFIG',
+      appliedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+      details: {
+        headerRowIndex: newHeaderRow,
+        dataStartRow: newDataRow,
+        preambleRowsSkipped: Math.max(0, newHeaderRow - 1)
+      }
+    };
+
+    if (stepIdx >= 0) {
+      setCustomRecipeSteps(prev => {
+        const copy = [...prev];
+        copy[stepIdx] = newStep;
+        return copy;
+      });
+    } else {
+      setCustomRecipeSteps(prev => [...prev, newStep]);
+    }
+
+    setHeaderConfigModalOpen(false);
+    setFeedbackMessage(`Header Row set to ${newHeaderRow}, Data Row set to ${newDataRow}. Added to recipes.`);
+    setTimeout(() => setFeedbackMessage(null), 3500);
   };
 
   // Run Hashtag Directive: applies hashtag's own column mappings, schema, and rules to task data
@@ -1045,19 +1180,110 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
   const handleSaveTemplateSubmit = async () => {
     if (!templateSaveName.trim()) return;
     try {
+      const splitOperations: any[] = [];
+      const mergeOperations: any[] = [];
+      const transformOperations: any[] = [];
+      const cleaningActions: string[] = [];
+      const deletedCols: string[] = [];
+
+      for (const step of customRecipeSteps) {
+        const titleLower = step.title.toLowerCase();
+        if (step.type === 'SPLIT' || titleLower.startsWith('split column')) {
+          const colMatch = step.title.match(/"([^"]+)"/);
+          const col = step.details?.column || (colMatch ? colMatch[1] : undefined);
+          const parts = step.details?.partNames || [step.details?.col1, step.details?.col2].filter(Boolean);
+          if (col) {
+            splitOperations.push({
+              id: `split_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+              column: col,
+              delimiterType: 'CUSTOM',
+              customDelimiter: step.details?.delimiter || ' ',
+              partNames: parts.length > 0 ? parts : [`${col}_part1`, `${col}_part2`],
+              keepOriginal: false
+            });
+          }
+        } else if (step.type === 'MERGE' || titleLower.startsWith('merge columns')) {
+          const resMatch = step.title.match(/into "([^"]+)"/);
+          const resCol = step.details?.newColName || (resMatch ? resMatch[1] : undefined);
+          const sources = step.details?.sources || [];
+          if (resCol) {
+            mergeOperations.push({
+              id: `merge_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+              col1: sources[0] || 'col1',
+              col2: sources[1] || 'col2',
+              separatorType: 'SPACE',
+              resultColumnName: resCol,
+              keepSources: false
+            });
+          }
+        } else if (step.type === 'TRANSFORM' || titleLower.startsWith('transform')) {
+          const colMatch = step.title.match(/"([^"]+)"/);
+          const col = step.details?.column || (colMatch ? colMatch[1] : undefined);
+          if (col) {
+            transformOperations.push({
+              id: `trans_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+              column: col,
+              ruleType: step.details?.rule || 'UPPERCASE'
+            });
+          }
+        } else if (titleLower.includes('exclude')) {
+          const colMatch = step.title.match(/"([^"]+)"/);
+          if (colMatch && colMatch[1]) deletedCols.push(colMatch[1]);
+        } else if (titleLower.includes('deduplicate')) {
+          cleaningActions.push('DEDUPLICATE');
+        } else if (titleLower.includes('trim')) {
+          cleaningActions.push('TRIM_WHITESPACE');
+        } else if (titleLower.includes('date')) {
+          cleaningActions.push('NORMALIZE_DATES');
+        } else if (titleLower.includes('mask')) {
+          cleaningActions.push('MASK_PAN');
+        }
+      }
+
       const payload: any = {
         name: templateSaveName.trim(),
-        description: `Custom template for ${createHashtag !== 'Untagged' ? createHashtag : 'settlement file'}`,
+        description: `Executable template saved from intake with ${allRecipeSteps.length} recipe steps`,
+        sourceType: 'csv',
+        headerMode: 'ROW_INDEX',
+        headerRowIndex: headerRowIndex,
+        dataStartRow: dataStartRow,
+        manualHeaders: {},
+        deletedColumns: deletedCols,
+        requiredColumns: requiredColumnsList,
         columnMappings: createFileMapping,
-        cleaningRecipe: allRecipeSteps
+        cleaningRecipe: {
+          headerRowIndex: headerRowIndex,
+          dataStartRow: dataStartRow,
+          orderedRecipeSteps: allRecipeSteps,
+          splitOperations,
+          mergeOperations,
+          transformOperations,
+          cleaningActions,
+          trimWhitespace: cleaningActions.includes('TRIM_WHITESPACE'),
+          normalizeDatesToIso: cleaningActions.includes('NORMALIZE_DATES'),
+          maskCardPan: cleaningActions.includes('MASK_PAN')
+        },
+        orderedRecipeSteps: allRecipeSteps,
+        splitOperations,
+        mergeOperations,
+        transformOperations,
+        cleaningActions,
+        teamId: effectivePermanentTeamId || (currentUser as any)?.teamId,
+        isDefault: false
       };
-      await api.createFileMappingTemplate(payload);
+
+      const saved = await api.createFileMappingTemplate(payload);
       setSaveTemplateModalOpen(false);
       setFeedbackMessage(`Saved template "${templateSaveName.trim()}".`);
       setTimeout(() => setFeedbackMessage(null), 3500);
-      api.getFileMappingTemplates().then(res => {
-        if (Array.isArray(res)) setTemplates(res);
-      }).catch(console.warn);
+
+      const refreshed = await api.getFileMappingTemplates();
+      if (Array.isArray(refreshed)) {
+        setTemplates(refreshed);
+        if (saved?.name) {
+          setSelectedTemplate(saved.name);
+        }
+      }
     } catch (err) {
       console.error('Failed to save template:', err);
       alert('Failed to save template.');
@@ -1078,6 +1304,7 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
     const generatedTaskId = `ISS-${Math.floor(1000 + Math.random() * 9000)}`;
     const hasAttachedFile = Boolean(createFileName && createFileName.trim().length > 0 && createParsedRows.length > 0);
     const assignee = users.find(u => u.id === createAssigneeId);
+    const matchedTemplate = templates.find(t => t.name === selectedTemplate || t.id === selectedTemplate);
 
     const newIssuePayload: any = {
       id: generatedTaskId,
@@ -1092,6 +1319,14 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
       uploadedFileHeaders: (hasAttachedFile && createRawHeaders.length > 0) ? createRawHeaders : undefined,
       fileMapping: (hasAttachedFile && Object.keys(createFileMapping).length > 0) ? createFileMapping : undefined,
       firstLevelMappedData: (hasAttachedFile && createParsedRows.length > 0) ? createParsedRows : undefined,
+      mappingTemplateId: matchedTemplate ? matchedTemplate.id : undefined,
+      recipeSnapshot: {
+        templateId: matchedTemplate?.id,
+        templateName: selectedTemplate,
+        orderedRecipeSteps: allRecipeSteps,
+        customSteps: customRecipeSteps,
+        columnMappings: createFileMapping
+      },
       mappingId: selectedTemplate || 'global-standard',
       investigationEnvironment: 'production' as const,
       teamId: initialPreFill?.teamId || effectivePermanentTeamId || (currentUser as any)?.teamId,
@@ -1521,58 +1756,119 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
 
           {/* Table Workspace Card */}
           <div className="bg-white rounded-2xl border border-slate-200 shadow-2xs overflow-hidden flex flex-col h-full min-h-0">
-            {/* Tabs Row */}
-            <div className="border-b border-slate-200 px-5 flex items-center space-x-6 shrink-0">
-              <button
-                type="button"
-                onClick={() => setActiveTab('grid')}
-                className={`py-3.5 text-xs font-semibold font-heading flex items-center space-x-2 border-b-2 transition-colors cursor-pointer ${
-                  activeTab === 'grid'
-                    ? 'border-[#F27421] text-slate-900'
-                    : 'border-transparent text-slate-500 hover:text-slate-800'
-                }`}
-              >
-                <span>Ingested Data Grid</span>
-                <span className={`px-1.5 py-0.2 text-[10px] font-mono font-bold rounded-full ${
-                  activeTab === 'grid' ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-700'
-                }`}>
-                  {createParsedRows.length}
-                </span>
-              </button>
+            {/* Tabs Row Header with Filter Pills and Template Selector */}
+            <div className="border-b border-slate-200 px-5 flex flex-col md:flex-row md:items-center md:justify-between gap-3 shrink-0 bg-white">
+              <div className="flex items-center space-x-6 overflow-x-auto">
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('grid')}
+                  className={`py-3.5 text-xs font-semibold font-heading flex items-center space-x-2 border-b-2 transition-colors cursor-pointer shrink-0 ${
+                    activeTab === 'grid'
+                      ? 'border-[#F27421] text-slate-900'
+                      : 'border-transparent text-slate-500 hover:text-slate-800'
+                  }`}
+                >
+                  <span>Ingested Data Grid</span>
+                  <span className={`px-1.5 py-0.2 text-[10px] font-mono font-bold rounded-full ${
+                    activeTab === 'grid' ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-700'
+                  }`}>
+                    {createParsedRows.length}
+                  </span>
+                </button>
 
-              <button
-                type="button"
-                onClick={() => setActiveTab('schema')}
-                className={`py-3.5 text-xs font-semibold font-heading flex items-center space-x-2 border-b-2 transition-colors cursor-pointer ${
-                  activeTab === 'schema'
-                    ? 'border-[#F27421] text-slate-900'
-                    : 'border-transparent text-slate-500 hover:text-slate-800'
-                }`}
-              >
-                <span>Source File &amp; Schema</span>
-                <span className={`px-1.5 py-0.2 text-[10px] font-mono font-bold rounded-full ${
-                  activeTab === 'schema' ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-700'
-                }`}>
-                  {columns.length}
-                </span>
-              </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('schema')}
+                  className={`py-3.5 text-xs font-semibold font-heading flex items-center space-x-2 border-b-2 transition-colors cursor-pointer shrink-0 ${
+                    activeTab === 'schema'
+                      ? 'border-[#F27421] text-slate-900'
+                      : 'border-transparent text-slate-500 hover:text-slate-800'
+                  }`}
+                >
+                  <span>Source File &amp; Schema</span>
+                  <span className={`px-1.5 py-0.2 text-[10px] font-mono font-bold rounded-full ${
+                    activeTab === 'schema' ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-700'
+                  }`}>
+                    {columns.length}
+                  </span>
+                </button>
 
-              <button
-                type="button"
-                onClick={() => setActiveTab('recipes')}
-                className={`py-3.5 text-xs font-semibold font-heading flex items-center space-x-2 border-b-2 transition-colors cursor-pointer ${
-                  activeTab === 'recipes'
-                    ? 'border-[#F27421] text-slate-900'
-                    : 'border-transparent text-slate-500 hover:text-slate-800'
-                }`}
-              >
-                <span>Applied Recipes</span>
-                <span className={`px-1.5 py-0.2 text-[10px] font-mono font-bold rounded-full ${
-                  activeTab === 'recipes' ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-700'
-                }`}>
-                  {customRecipeSteps.length}
-                </span>
-              </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('recipes')}
+                  className={`py-3.5 text-xs font-semibold font-heading flex items-center space-x-2 border-b-2 transition-colors cursor-pointer shrink-0 ${
+                    activeTab === 'recipes'
+                      ? 'border-[#F27421] text-slate-900'
+                      : 'border-transparent text-slate-500 hover:text-slate-800'
+                  }`}
+                >
+                  <span>Applied Recipes</span>
+                  <span className={`px-1.5 py-0.2 text-[10px] font-mono font-bold rounded-full ${
+                    activeTab === 'recipes' ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-700'
+                  }`}>
+                    {customRecipeSteps.length}
+                  </span>
+                </button>
+              </div>
+
+              {/* Right Side Header Controls: Filter Mode Pills (All, Duplicates, Unique) & Template Selector */}
+              <div className="flex items-center space-x-3 py-1.5 shrink-0 self-end md:self-auto">
+                {/* Filter Mode Pills (All, Duplicates, Unique) matching screenshot */}
+                <div className="flex items-center p-0.5 bg-slate-100/90 border border-slate-200/60 rounded-lg text-xs font-medium text-slate-600 shadow-2xs">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFilterMode('all');
+                      setCurrentPage(1);
+                    }}
+                    className={`px-3 py-1 rounded-md transition-all cursor-pointer ${
+                      filterMode === 'all' ? 'bg-white text-slate-900 shadow-2xs font-bold' : 'hover:text-slate-900'
+                    }`}
+                  >
+                    All
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFilterMode('duplicates');
+                      setCurrentPage(1);
+                    }}
+                    className={`px-3 py-1 rounded-md transition-all cursor-pointer ${
+                      filterMode === 'duplicates' ? 'bg-white text-slate-900 shadow-2xs font-bold' : 'hover:text-slate-900'
+                    }`}
+                  >
+                    Duplicates {duplicateCount}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFilterMode('unique');
+                      setCurrentPage(1);
+                    }}
+                    className={`px-3 py-1 rounded-md transition-all cursor-pointer ${
+                      filterMode === 'unique' ? 'bg-white text-slate-900 shadow-2xs font-bold' : 'hover:text-slate-900'
+                    }`}
+                  >
+                    Unique {Math.max(0, createParsedRows.length - duplicateCount)}
+                  </button>
+                </div>
+
+                {/* Template Selector with Chevron Dropdown */}
+                <div className="relative">
+                  <select
+                    value={selectedTemplate}
+                    onChange={e => handleSelectTemplate(e.target.value)}
+                    className="appearance-none pl-3 pr-8 py-1.5 bg-white border border-slate-200 hover:border-slate-300 rounded-lg text-xs font-semibold text-slate-800 shadow-2xs focus:outline-none focus:border-[#F27421] cursor-pointer"
+                    title="Select and apply mapping template"
+                  >
+                    <option value="Standard Settlement Template">Standard Settlement Template</option>
+                    {templates.map(t => (
+                      <option key={t.id} value={t.name}>{t.name}</option>
+                    ))}
+                  </select>
+                  <ChevronDown size={13} className="absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none text-slate-500" />
+                </div>
+              </div>
             </div>
 
             {/* TAB 1: Ingested Data Grid View */}
@@ -1580,9 +1876,8 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
               <>
                 {/* Table Toolbar */}
                 <div className="p-3 sm:px-4 sm:py-2.5 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2.5 shrink-0 bg-white">
-                  {/* Left Controls: Search, Filter pills, Template, Quick Clean Buttons */}
+                  {/* Left Controls: Search in grid */}
                   <div className="flex items-center space-x-2 flex-wrap gap-2 flex-1">
-                    {/* Search in grid */}
                     <div className="relative">
                       <Search size={13} className="absolute left-2.5 top-2.5 text-slate-400" />
                       <input
@@ -1593,71 +1888,13 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
                           setCurrentPage(1);
                         }}
                         placeholder="Find in grid..."
-                        className="pl-7 pr-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-800 outline-none focus:border-[#F27421] transition-all w-32 sm:w-40"
+                        className="pl-7 pr-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-800 outline-none focus:border-[#F27421] transition-all w-36 sm:w-48"
                       />
                     </div>
-
-                    {/* Filter Mode Pills (All, Duplicates, Unique) matching Case page */}
-                    <div className="flex items-center p-0.5 bg-slate-100 rounded-lg text-xs font-medium text-slate-600">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setFilterMode('all');
-                          setCurrentPage(1);
-                        }}
-                        className={`px-2 py-1 rounded-md transition-all cursor-pointer ${
-                          filterMode === 'all' ? 'bg-white text-slate-900 shadow-2xs font-bold' : 'hover:text-slate-900'
-                        }`}
-                      >
-                        All
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setFilterMode('duplicates');
-                          setCurrentPage(1);
-                        }}
-                        className={`px-2 py-1 rounded-md transition-all cursor-pointer ${
-                          filterMode === 'duplicates' ? 'bg-white text-slate-900 shadow-2xs font-bold' : 'hover:text-slate-900'
-                        }`}
-                      >
-                        Duplicates {duplicateCount}
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          setFilterMode('unique');
-                          setCurrentPage(1);
-                        }}
-                        className={`px-2 py-1 rounded-md transition-all cursor-pointer ${
-                          filterMode === 'unique' ? 'bg-white text-slate-900 shadow-2xs font-bold' : 'hover:text-slate-900'
-                        }`}
-                      >
-                        Unique {createParsedRows.length - duplicateCount}
-                      </button>
-                    </div>
-
-                    {/* Template Picker */}
-                    <select
-                      value={selectedTemplate}
-                      onChange={e => handleSelectTemplate(e.target.value)}
-                      className="px-2.5 py-1.5 bg-slate-50 border border-slate-200 hover:border-slate-300 rounded-lg text-xs font-medium text-slate-700 shadow-2xs focus:outline-none focus:border-[#F27421] cursor-pointer"
-                      title="Select and apply mapping template"
-                    >
-                      <option value="Standard Settlement Template">Standard Settlement Template</option>
-                      {templates.map(t => (
-                        <option key={t.id} value={t.name}>{t.name}</option>
-                      ))}
-                    </select>
                   </div>
 
-                  {/* Right Controls: Columns Info, Column Filter, Vertical ... Table Actions */}
+                  {/* Right Controls: Maximize, Column Filter, Vertical ... Table Actions */}
                   <div className="flex items-center space-x-2.5 text-xs text-slate-500 shrink-0">
-                    <span>
-                      Showing <strong className="font-mono text-slate-800">{activeTableColumns.length}</strong> of{' '}
-                      <strong className="font-mono text-slate-800">{columns.length}</strong> columns
-                    </span>
-
                     {/* Maximize Table / Side Panel Toggle Button matching Case page */}
                     <button
                       type="button"
@@ -1787,6 +2024,26 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
                             <div className="px-3 py-1 font-bold text-slate-500 text-[10px] uppercase tracking-wider border-b border-slate-100 mb-1">
                               Dataset Actions &amp; Transforms
                             </div>
+
+                            {/* Header Row Indicator & Data Row Config */}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setShowTableActionsMenu(false);
+                                setInputHeaderRow(headerRowIndex);
+                                setInputDataRow(dataStartRow);
+                                setHeaderConfigModalOpen(true);
+                              }}
+                              className="w-full px-3 py-2 text-left hover:bg-orange-50/70 text-slate-800 flex items-center justify-between cursor-pointer group transition-colors"
+                            >
+                              <div className="flex items-center gap-2">
+                                <FileSpreadsheet size={13} className="text-[#F27421]" />
+                                <span className="font-semibold group-hover:text-[#F27421]">Header &amp; Data Rows</span>
+                              </div>
+                              <span className="text-[10px] bg-orange-100 text-[#F27421] px-1.5 py-0.5 rounded font-mono font-bold">
+                                H:{headerRowIndex} · D:{dataStartRow}
+                              </span>
+                            </button>
 
                             {/* Auto-Map */}
                             <button
@@ -2754,6 +3011,30 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
             </div>
 
             <div className="space-y-3 text-xs max-h-72 overflow-y-auto pr-1">
+              {(stepDetailModal.type === 'HEADER_ROW_CONFIG' || stepDetailModal.title.includes('Header Row')) && (
+                <div className="space-y-3">
+                  <div className="p-3.5 bg-orange-50/50 rounded-xl border border-orange-200/80 space-y-2 text-xs">
+                    <div className="flex justify-between items-center">
+                      <span className="text-slate-600 font-medium">Header Row Index:</span>
+                      <strong className="text-slate-900 font-mono text-sm">Row {stepDetailModal.details?.headerRowIndex || headerRowIndex}</strong>
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span className="text-slate-600 font-medium">Data Start Row Index:</span>
+                      <strong className="text-slate-900 font-mono text-sm">Row {stepDetailModal.details?.dataStartRow || dataStartRow}</strong>
+                    </div>
+                    {stepDetailModal.details?.preambleRowsSkipped !== undefined && (
+                      <div className="flex justify-between items-center">
+                        <span className="text-slate-600 font-medium">Preamble Rows Skipped:</span>
+                        <strong className="text-orange-700 font-mono">{stepDetailModal.details.preambleRowsSkipped} rows</strong>
+                      </div>
+                    )}
+                  </div>
+                  <p className="text-[11px] text-slate-500">
+                    Column names are parsed from row {stepDetailModal.details?.headerRowIndex || headerRowIndex}. All preceding rows are ignored as preamble metadata.
+                  </p>
+                </div>
+              )}
+
               {stepDetailModal.type === 'INSPECT_HEADER' && (
                 <div className="space-y-3">
                   <div className="p-3 bg-slate-50 rounded-xl border border-slate-200/70 space-y-1.5">
@@ -3135,6 +3416,110 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
                 className="px-4 py-2 bg-[#F27421] hover:bg-[#e06516] text-white text-xs font-bold rounded-xl shadow-2xs cursor-pointer"
               >
                 Save Template
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Header & Data Row Configuration Modal */}
+      {headerConfigModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-xs p-4 animate-in fade-in duration-100">
+          <div className="bg-white border border-slate-200/90 rounded-2xl p-6 max-w-md w-full shadow-2xl space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+              <h3 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                <FileSpreadsheet size={16} className="text-[#F27421]" />
+                <span>Configure Header &amp; Data Rows</span>
+              </h3>
+              <button
+                type="button"
+                onClick={() => setHeaderConfigModalOpen(false)}
+                className="p-1 text-slate-400 hover:text-slate-700 rounded-lg cursor-pointer"
+              >
+                <X size={15} />
+              </button>
+            </div>
+
+            <p className="text-xs text-slate-500 leading-relaxed">
+              Define which row contains the column headers and which row begins transaction data. This configuration will be recorded and executed as part of your mapping recipes.
+            </p>
+
+            <div className="space-y-3.5 text-xs">
+              <div>
+                <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">
+                  Header Row Number
+                </label>
+                <div className="relative">
+                  <input
+                    type="number"
+                    min={1}
+                    value={inputHeaderRow}
+                    onChange={e => {
+                      const val = Math.max(1, parseInt(e.target.value) || 1);
+                      setInputHeaderRow(val);
+                      if (inputDataRow <= val) {
+                        setInputDataRow(val + 1);
+                      }
+                    }}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 text-xs font-mono font-medium focus:border-[#F27421] outline-none"
+                  />
+                  <span className="absolute right-3 top-2.5 text-[11px] text-slate-400 font-sans">
+                    (1-indexed)
+                  </span>
+                </div>
+                <span className="text-[10px] text-slate-400 mt-1 block">
+                  Row {inputHeaderRow} will be extracted as column headers. Rows 1 to {Math.max(0, inputHeaderRow - 1)} will be treated as preamble metadata.
+                </span>
+              </div>
+
+              <div>
+                <label className="block text-[11px] font-bold text-slate-700 uppercase mb-1">
+                  Data Start Row Number
+                </label>
+                <div className="relative">
+                  <input
+                    type="number"
+                    min={inputHeaderRow + 1}
+                    value={inputDataRow}
+                    onChange={e => {
+                      const val = Math.max(inputHeaderRow + 1, parseInt(e.target.value) || (inputHeaderRow + 1));
+                      setInputDataRow(val);
+                    }}
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 text-xs font-mono font-medium focus:border-[#F27421] outline-none"
+                  />
+                  <span className="absolute right-3 top-2.5 text-[11px] text-slate-400 font-sans">
+                    (1-indexed)
+                  </span>
+                </div>
+                <span className="text-[10px] text-slate-400 mt-1 block">
+                  Data ingestion starts from row {inputDataRow}.
+                </span>
+              </div>
+
+              {/* Status summary pill */}
+              <div className="p-3 bg-orange-50/50 border border-orange-100 rounded-xl flex items-center justify-between text-xs text-orange-950">
+                <span className="font-medium">Recipe Step:</span>
+                <span className="font-mono text-[11px] bg-white px-2 py-0.5 rounded border border-orange-200/80 font-semibold text-orange-800">
+                  Header: Row {inputHeaderRow} · Data: Row {inputDataRow}
+                </span>
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2 pt-2 border-t border-slate-100">
+              <button
+                type="button"
+                onClick={() => setHeaderConfigModalOpen(false)}
+                className="px-3 py-1.5 text-xs text-slate-600 hover:text-slate-900 cursor-pointer"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => handleApplyHeaderRowConfig(inputHeaderRow, inputDataRow)}
+                className="px-4 py-2 bg-[#F27421] hover:bg-[#e06516] text-white text-xs font-bold rounded-xl shadow-2xs cursor-pointer flex items-center gap-1.5"
+              >
+                <Check size={14} />
+                <span>Apply &amp; Add to Recipe</span>
               </button>
             </div>
           </div>

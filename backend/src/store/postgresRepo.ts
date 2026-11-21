@@ -74,6 +74,16 @@ async function ensureFileMappingTemplatesSchema(): Promise<void> {
       CREATE INDEX IF NOT EXISTS idx_file_ingest_tpl_team ON file_ingestion_mapping_templates(team_id);
       CREATE INDEX IF NOT EXISTS idx_file_ingest_tpl_name ON file_ingestion_mapping_templates(name);
       ALTER TABLE hashtag_presets ADD COLUMN IF NOT EXISTS mapping_template_id VARCHAR(64);
+      ALTER TABLE file_ingestion_mapping_templates ADD COLUMN IF NOT EXISTS ordered_recipe_steps JSONB DEFAULT '[]'::jsonb;
+      ALTER TABLE file_ingestion_mapping_templates ADD COLUMN IF NOT EXISTS split_operations JSONB DEFAULT '[]'::jsonb;
+      ALTER TABLE file_ingestion_mapping_templates ADD COLUMN IF NOT EXISTS merge_operations JSONB DEFAULT '[]'::jsonb;
+      ALTER TABLE file_ingestion_mapping_templates ADD COLUMN IF NOT EXISTS transform_operations JSONB DEFAULT '[]'::jsonb;
+      ALTER TABLE file_ingestion_mapping_templates ADD COLUMN IF NOT EXISTS cleaning_actions JSONB DEFAULT '[]'::jsonb;
+      ALTER TABLE file_ingestion_mapping_templates ADD COLUMN IF NOT EXISTS version INT NOT NULL DEFAULT 1;
+      ALTER TABLE issues ADD COLUMN IF NOT EXISTS mapping_template_id VARCHAR(64);
+      ALTER TABLE issues ADD COLUMN IF NOT EXISTS recipe_snapshot JSONB DEFAULT '{}'::jsonb;
+      ALTER TABLE issues ADD COLUMN IF NOT EXISTS recipe_execution_log JSONB DEFAULT '[]'::jsonb;
+      ALTER TABLE ftp_file_staging_configs ADD COLUMN IF NOT EXISTS mapping_template_id VARCHAR(64);
     `);
     fileMappingSchemaInitialized = true;
   } catch (err: any) {
@@ -135,6 +145,7 @@ async function ensureFtpStagingSchema(): Promise<void> {
       ALTER TABLE ftp_file_staging_configs ADD COLUMN IF NOT EXISTS schedule_config JSONB DEFAULT '{}'::jsonb;
       ALTER TABLE ftp_file_staging_configs ADD COLUMN IF NOT EXISTS unconfigured_folder_action VARCHAR(32) DEFAULT 'NOTIFY_ADMIN';
       ALTER TABLE ftp_file_staging_configs ADD COLUMN IF NOT EXISTS last_skipped_mismatches JSONB DEFAULT '[]'::jsonb;
+      ALTER TABLE ftp_file_staging_configs ADD COLUMN IF NOT EXISTS created_by VARCHAR(255);
 
       CREATE TABLE IF NOT EXISTS ftp_unconfigured_folders_audit (
         id VARCHAR(64) PRIMARY KEY,
@@ -233,7 +244,7 @@ export const postgresRepo = {
          display_name, avatar_url, phone, department, title, timezone, 
          message_provider_settings, preferences, password_hash
        )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
        ON CONFLICT (id) DO UPDATE SET
          username = EXCLUDED.username,
          email = EXCLUDED.email,
@@ -272,7 +283,8 @@ export const postgresRepo = {
         userData.title || null,
         userData.timezone || 'UTC',
         JSON.stringify(userData.messageProviderSettings || {}),
-        JSON.stringify(userData.preferences || {})
+        JSON.stringify(userData.preferences || {}),
+        userData.password_hash || null
       ]
     );
     return userData;
@@ -396,7 +408,8 @@ export const postgresRepo = {
         investigation_table, validation_status, validation_errors, query_results, moved_to_testing,
         row_labels, added_label_column_name, custom_filters, team_id, visibility,
         process_type, workflow_id, accepted_script_proposal_id, initial_snapshot, attachments,
-        staged_environment, staged_by_user_id, staged_by_user_name, staged_at, findings_notes
+        staged_environment, staged_by_user_id, staged_by_user_name, staged_at, findings_notes,
+        mapping_template_id, recipe_snapshot, recipe_execution_log
       ) VALUES (
         $1, $2, $3, $4, $5, $6, $7, $8, $9,
         $10, $11, $12, $13, $14,
@@ -406,7 +419,8 @@ export const postgresRepo = {
         $28, $29, $30, $31, $32,
         $33, $34, $35, $36, $37,
         $38, $39, $40, $41, $42,
-        $43, $44, $45, $46, $47
+        $43, $44, $45, $46, $47,
+        $48, $49, $50
       ) ON CONFLICT (id) DO UPDATE SET
         title = EXCLUDED.title,
         description = EXCLUDED.description,
@@ -450,7 +464,10 @@ export const postgresRepo = {
         staged_by_user_id = EXCLUDED.staged_by_user_id,
         staged_by_user_name = EXCLUDED.staged_by_user_name,
         staged_at = EXCLUDED.staged_at,
-        findings_notes = EXCLUDED.findings_notes;`,
+        findings_notes = EXCLUDED.findings_notes,
+        mapping_template_id = COALESCE(EXCLUDED.mapping_template_id, issues.mapping_template_id),
+        recipe_snapshot = COALESCE(EXCLUDED.recipe_snapshot, issues.recipe_snapshot),
+        recipe_execution_log = COALESCE(EXCLUDED.recipe_execution_log, issues.recipe_execution_log);`,
       [
         issue.id,
         issue.title,
@@ -498,7 +515,10 @@ export const postgresRepo = {
         issue.stagedByUserId || null,
         issue.stagedByUserName || null,
         issue.stagedAt ? new Date(issue.stagedAt) : null,
-        issue.findingsNotes || null
+        issue.findingsNotes || null,
+        issue.mappingTemplateId || null,
+        JSON.stringify(issue.recipeSnapshot || {}),
+        JSON.stringify(issue.recipeExecutionLog || [])
       ]
     );
 
@@ -624,7 +644,10 @@ export const postgresRepo = {
       stagedByUserId: r.staged_by_user_id || undefined,
       stagedByUserName: r.staged_by_user_name || undefined,
       stagedAt: r.staged_at?.toISOString() || undefined,
-      findingsNotes: r.findings_notes || undefined
+      findingsNotes: r.findings_notes || undefined,
+      mappingTemplateId: r.mapping_template_id || undefined,
+      recipeSnapshot: parseJson(r.recipe_snapshot, undefined),
+      recipeExecutionLog: parseJson(r.recipe_execution_log, [])
     };
   },
 
@@ -2531,12 +2554,22 @@ async updateDatabaseConnection(id: string, updates: Partial<DatabaseConnection>)
     };
   },
 
-  async getTableMappings(): Promise<Record<string, any>> {
+  async getTableMappings(teamId?: string, isAdmin: boolean = true): Promise<Record<string, any>> {
     const pool = getPostgresPool();
     const result: Record<string, any> = {};
 
     try {
-      const { rows } = await pool.query('SELECT * FROM database_table_mappings ORDER BY updated_at DESC;');
+      let query = 'SELECT * FROM database_table_mappings';
+      const params: any[] = [];
+      if (!isAdmin && teamId) {
+        query += ' WHERE team_id = $1 OR team_id IS NULL';
+        params.push(teamId);
+      } else if (!isAdmin && !teamId) {
+        query += ' WHERE team_id IS NULL';
+      }
+      query += ' ORDER BY updated_at DESC;';
+
+      const { rows } = await pool.query(query, params);
       for (const r of rows) {
         const item = {
           dbId: r.db_id,
@@ -2545,7 +2578,17 @@ async updateDatabaseConnection(id: string, updates: Partial<DatabaseConnection>)
           columns: parseJson(r.columns, []),
           isCustom: r.is_custom,
           updatedBy: r.updated_by,
-          updatedAt: r.updated_at ? r.updated_at.toISOString() : new Date().toISOString()
+          updatedAt: r.updated_at ? r.updated_at.toISOString() : new Date().toISOString(),
+          teamId: r.team_id,
+          makerId: r.maker_id,
+          makerName: r.maker_name,
+          status: r.status || 'DRAFT',
+          isLocked: Boolean(r.is_locked),
+          approvedByUserId: r.approved_by_user_id,
+          approvedByUserName: r.approved_by_user_name,
+          approvedAt: r.approved_at ? r.approved_at.toISOString() : null,
+          checkerFeedback: r.checker_feedback,
+          sharedSourceId: r.shared_source_id
         };
         result[`${r.db_id}::${r.table_name}`] = item;
         result[`${r.db_id}:${r.table_name}`] = item;
@@ -2565,27 +2608,122 @@ async updateDatabaseConnection(id: string, updates: Partial<DatabaseConnection>)
     return result;
   },
 
-  async saveTableMapping(dbId: string, tableName: string, mappingObj: any): Promise<void> {
+  async saveTableMapping(
+    dbIdOrObj: string | any,
+    tableNameOrActor?: string | any,
+    mappingObjParam?: any,
+    actorParam?: { id?: string; name?: string; role?: string; teamId?: string }
+  ): Promise<any> {
     const pool = getPostgresPool();
+    let dbId: string;
+    let tableName: string;
+    let mappingObj: any;
+    let actor: { id?: string; name?: string; role?: string; teamId?: string } | undefined;
+
+    if (typeof dbIdOrObj === 'object' && dbIdOrObj !== null) {
+      mappingObj = dbIdOrObj;
+      dbId = mappingObj.dbId;
+      tableName = mappingObj.tableName;
+      actor = typeof tableNameOrActor === 'object' ? tableNameOrActor : undefined;
+    } else {
+      dbId = dbIdOrObj;
+      tableName = tableNameOrActor;
+      mappingObj = mappingObjParam || {};
+      actor = actorParam;
+    }
+
     const id = `${dbId}::${tableName}`;
     const dbName = mappingObj.dbName || dbId;
     const columns = mappingObj.columns || [];
     const isCustom = !!mappingObj.isCustom;
-    const updatedBy = mappingObj.updatedBy || 'admin';
+    const updatedBy = actor?.name || actor?.id || mappingObj.updatedBy || 'admin';
     const now = new Date();
 
-    // 1. Direct row persistence in database_table_mappings
-    await pool.query(
-      `INSERT INTO database_table_mappings (id, db_id, db_name, table_name, columns, is_custom, updated_by, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+    // Check existing mapping and locking governance
+    let existing: any = null;
+    try {
+      const { rows } = await pool.query('SELECT * FROM database_table_mappings WHERE id = $1 LIMIT 1;', [id]);
+      if (rows.length > 0) existing = rows[0];
+    } catch (e: any) {
+      console.warn('[postgresRepo] Lock check select error:', e.message);
+    }
+
+    if (existing?.is_locked) {
+      const isApprovingChecker = actor?.id && actor.id === existing.approved_by_user_id;
+      const isAdmin = actor?.role === 'ADMIN' || actor?.role === 'SUPER_ADMIN';
+      if (!isApprovingChecker && !isAdmin) {
+        throw new Error(`Table mapping "${id}" is LOCKED. Edits are restricted strictly to approving Checker (${existing.approved_by_user_name || existing.approved_by_user_id}) or System Admin.`);
+      }
+    }
+
+    const teamId = mappingObj.teamId || actor?.teamId || existing?.team_id || null;
+    const makerId = existing?.maker_id || mappingObj.makerId || actor?.id || 'system';
+    const makerName = existing?.maker_name || mappingObj.makerName || actor?.name || updatedBy;
+    const status = mappingObj.status || existing?.status || 'DRAFT';
+    const isLocked = mappingObj.isLocked !== undefined ? Boolean(mappingObj.isLocked) : Boolean(existing?.is_locked);
+    const approvedByUserId = mappingObj.approvedByUserId || existing?.approved_by_user_id || null;
+    const approvedByUserName = mappingObj.approvedByUserName || existing?.approved_by_user_name || null;
+    const approvedAt = mappingObj.approvedAt ? new Date(mappingObj.approvedAt) : (existing?.approved_at || null);
+    const checkerFeedback = mappingObj.checkerFeedback !== undefined ? mappingObj.checkerFeedback : (existing?.checker_feedback || null);
+    const sharedSourceId = mappingObj.sharedSourceId || existing?.shared_source_id || null;
+
+    // 1. Direct row persistence in database_table_mappings with complete governance
+    const { rows: savedRows } = await pool.query(
+      `INSERT INTO database_table_mappings (
+         id, db_id, db_name, table_name, columns, is_custom, updated_by, updated_at,
+         team_id, maker_id, maker_name, status, is_locked,
+         approved_by_user_id, approved_by_user_name, approved_at, checker_feedback, shared_source_id
+       )
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
        ON CONFLICT (id) DO UPDATE SET
          db_name = EXCLUDED.db_name,
          columns = EXCLUDED.columns,
          is_custom = EXCLUDED.is_custom,
          updated_by = EXCLUDED.updated_by,
-         updated_at = EXCLUDED.updated_at;`,
-      [id, dbId, dbName, tableName, JSON.stringify(columns), isCustom, updatedBy, now]
+         updated_at = EXCLUDED.updated_at,
+         team_id = COALESCE(EXCLUDED.team_id, database_table_mappings.team_id),
+         maker_id = COALESCE(database_table_mappings.maker_id, EXCLUDED.maker_id),
+         maker_name = COALESCE(database_table_mappings.maker_name, EXCLUDED.maker_name),
+         status = EXCLUDED.status,
+         is_locked = EXCLUDED.is_locked,
+         approved_by_user_id = EXCLUDED.approved_by_user_id,
+         approved_by_user_name = EXCLUDED.approved_by_user_name,
+         approved_at = EXCLUDED.approved_at,
+         checker_feedback = EXCLUDED.checker_feedback,
+         shared_source_id = COALESCE(EXCLUDED.shared_source_id, database_table_mappings.shared_source_id)
+       RETURNING *;`,
+      [
+        id, dbId, dbName, tableName, JSON.stringify(columns), isCustom, updatedBy, now,
+        teamId, makerId, makerName, status, isLocked,
+        approvedByUserId, approvedByUserName, approvedAt, checkerFeedback, sharedSourceId
+      ]
     );
+
+    const savedRecord = savedRows[0] || {
+      id, db_id: dbId, db_name: dbName, table_name: tableName, columns, is_custom: isCustom,
+      updated_by: updatedBy, updated_at: now, team_id: teamId, maker_id: makerId, maker_name: makerName,
+      status, is_locked: isLocked
+    };
+
+    const clientItem = {
+      dbId: savedRecord.db_id,
+      dbName: savedRecord.db_name,
+      tableName: savedRecord.table_name,
+      columns: parseJson(savedRecord.columns, []),
+      isCustom: savedRecord.is_custom,
+      updatedBy: savedRecord.updated_by,
+      updatedAt: savedRecord.updated_at ? new Date(savedRecord.updated_at).toISOString() : now.toISOString(),
+      teamId: savedRecord.team_id,
+      makerId: savedRecord.maker_id,
+      makerName: savedRecord.maker_name,
+      status: savedRecord.status || 'DRAFT',
+      isLocked: Boolean(savedRecord.is_locked),
+      approvedByUserId: savedRecord.approved_by_user_id,
+      approvedByUserName: savedRecord.approved_by_user_name,
+      approvedAt: savedRecord.approved_at ? new Date(savedRecord.approved_at).toISOString() : null,
+      checkerFeedback: savedRecord.checker_feedback,
+      sharedSourceId: savedRecord.shared_source_id
+    };
 
     // 2. Also update JSONB in global_transaction_schema_configs for unified config export
     const cfgId = 'default_schema_config';
@@ -2597,8 +2735,10 @@ async updateDatabaseConnection(id: string, updates: Partial<DatabaseConnection>)
        ),
        updated_at = NOW()
        WHERE id = $4;`,
-      [`${dbId}::${tableName}`, JSON.stringify(mappingObj), `${dbId}:${tableName}`, cfgId]
-    );
+      [`${dbId}::${tableName}`, JSON.stringify(clientItem), `${dbId}:${tableName}`, cfgId]
+    ).catch(e => console.warn('[postgresRepo] Could not sync JSONB table_mappings:', e.message));
+
+    return clientItem;
   },
 
   // ================= GLOBAL STANDARD DIRECTORY =================
@@ -2801,11 +2941,13 @@ async updateDatabaseConnection(id: string, updates: Partial<DatabaseConnection>)
       xmlRootElement: r.xml_root_element,
       xmlRecordElement: r.xml_record_element,
       fieldMappings: parseJson(r.field_mappings, []),
+      mappingTemplateId: r.mapping_template_id || undefined,
       stagingTableName: r.staging_table_name,
       lastStagedAt: r.last_staged_at ? new Date(r.last_staged_at).toISOString() : undefined,
       lastStagedStatus: r.last_staged_status,
       lastStagedCount: r.last_staged_count,
       lastErrorMessage: r.last_error_message,
+      createdBy: r.created_by || undefined,
       createdAt: r.created_at ? new Date(r.created_at).toISOString() : undefined,
       updatedAt: r.updated_at ? new Date(r.updated_at).toISOString() : undefined
     }));
@@ -2847,11 +2989,13 @@ async updateDatabaseConnection(id: string, updates: Partial<DatabaseConnection>)
       xmlRootElement: r.xml_root_element,
       xmlRecordElement: r.xml_record_element,
       fieldMappings: parseJson(r.field_mappings, []),
+      mappingTemplateId: r.mapping_template_id || undefined,
       stagingTableName: r.staging_table_name,
       lastStagedAt: r.last_staged_at ? new Date(r.last_staged_at).toISOString() : undefined,
       lastStagedStatus: r.last_staged_status,
       lastStagedCount: r.last_staged_count,
       lastErrorMessage: r.last_error_message,
+      createdBy: r.created_by || undefined,
       createdAt: r.created_at ? new Date(r.created_at).toISOString() : undefined,
       updatedAt: r.updated_at ? new Date(r.updated_at).toISOString() : undefined
     };
@@ -2871,11 +3015,12 @@ async updateDatabaseConnection(id: string, updates: Partial<DatabaseConnection>)
         xml_root_element, xml_record_element,
         root_directory_path, folder_exceptions, mismatch_handling,
         schedule_config, unconfigured_folder_action, last_skipped_mismatches,
+        created_by, mapping_template_id,
         updated_at
       ) VALUES (
         $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19,
         $20, $21, $22, $23, $24, $25, $26, $27, $28,
-        $29, $30, $31, $32, $33, $34,
+        $29, $30, $31, $32, $33, $34, $35, $36,
         NOW()
       )
       ON CONFLICT (id) DO UPDATE SET
@@ -2912,6 +3057,8 @@ async updateDatabaseConnection(id: string, updates: Partial<DatabaseConnection>)
         schedule_config = EXCLUDED.schedule_config,
         unconfigured_folder_action = EXCLUDED.unconfigured_folder_action,
         last_skipped_mismatches = EXCLUDED.last_skipped_mismatches,
+        created_by = COALESCE(EXCLUDED.created_by, ftp_file_staging_configs.created_by),
+        mapping_template_id = EXCLUDED.mapping_template_id,
         updated_at = NOW();`,
       [
         config.id,
@@ -2947,7 +3094,9 @@ async updateDatabaseConnection(id: string, updates: Partial<DatabaseConnection>)
         config.mismatchHandling || 'SKIP_AND_NOTIFY',
         JSON.stringify(config.scheduleConfig || {}),
         config.unconfiguredFolderAction || 'NOTIFY_ADMIN',
-        JSON.stringify(config.lastSkippedMismatches || [])
+        JSON.stringify(config.lastSkippedMismatches || []),
+        config.createdBy || null,
+        config.mappingTemplateId || null
       ]
     );
     return (await this.getFtpStagingConfigById(config.id)) || config;
@@ -5099,11 +5248,13 @@ async updateDatabaseConnection(id: string, updates: Partial<DatabaseConnection>)
         requiredColumns: parseJson(r.required_columns, []),
         columnMappings: parseJson(r.column_mappings, {}),
         cleaningRecipe: cr,
-        splitOperations: cr.splitOperations || [],
-        mergeOperations: cr.mergeOperations || [],
-        transformOperations: cr.transformOperations || [],
-        cleaningActions: cr.cleaningActions || [],
+        orderedRecipeSteps: parseJson(r.ordered_recipe_steps, cr.orderedRecipeSteps || []),
+        splitOperations: parseJson(r.split_operations, cr.splitOperations || []),
+        mergeOperations: parseJson(r.merge_operations, cr.mergeOperations || []),
+        transformOperations: parseJson(r.transform_operations, cr.transformOperations || []),
+        cleaningActions: parseJson(r.cleaning_actions, cr.cleaningActions || []),
         valueTranslations: cr.valueTranslations || {},
+        version: r.version || 1,
         createdBy: r.created_by,
         teamId: r.team_id,
         isDefault: r.is_default || false,
@@ -5135,11 +5286,13 @@ async updateDatabaseConnection(id: string, updates: Partial<DatabaseConnection>)
       requiredColumns: parseJson(r.required_columns, []),
       columnMappings: parseJson(r.column_mappings, {}),
       cleaningRecipe: cr,
-      splitOperations: cr.splitOperations || [],
-      mergeOperations: cr.mergeOperations || [],
-      transformOperations: cr.transformOperations || [],
-      cleaningActions: cr.cleaningActions || [],
+      orderedRecipeSteps: parseJson(r.ordered_recipe_steps, cr.orderedRecipeSteps || []),
+      splitOperations: parseJson(r.split_operations, cr.splitOperations || []),
+      mergeOperations: parseJson(r.merge_operations, cr.mergeOperations || []),
+      transformOperations: parseJson(r.transform_operations, cr.transformOperations || []),
+      cleaningActions: parseJson(r.cleaning_actions, cr.cleaningActions || []),
       valueTranslations: cr.valueTranslations || {},
+      version: r.version || 1,
       createdBy: r.created_by,
       teamId: r.team_id,
       isDefault: r.is_default || false,
@@ -5154,12 +5307,20 @@ async updateDatabaseConnection(id: string, updates: Partial<DatabaseConnection>)
     const id = template.id || `tpl_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const now = new Date();
 
+    const splitOps = template.splitOperations || template.cleaningRecipe?.splitOperations || [];
+    const mergeOps = template.mergeOperations || template.cleaningRecipe?.mergeOperations || [];
+    const transformOps = template.transformOperations || template.cleaningRecipe?.transformOperations || [];
+    const cleaningActs = template.cleaningActions || template.cleaningRecipe?.cleaningActions || [];
+    const orderedSteps = template.orderedRecipeSteps || (template.cleaningRecipe as any)?.orderedRecipeSteps || [];
+    const versionNum = template.version || 1;
+
     const fullCleaningRecipe = {
       ...(template.cleaningRecipe || {}),
-      splitOperations: template.splitOperations || template.cleaningRecipe?.splitOperations || [],
-      mergeOperations: template.mergeOperations || template.cleaningRecipe?.mergeOperations || [],
-      transformOperations: template.transformOperations || template.cleaningRecipe?.transformOperations || [],
-      cleaningActions: template.cleaningActions || template.cleaningRecipe?.cleaningActions || [],
+      orderedRecipeSteps: orderedSteps,
+      splitOperations: splitOps,
+      mergeOperations: mergeOps,
+      transformOperations: transformOps,
+      cleaningActions: cleaningActs,
       valueTranslations: template.valueTranslations || template.cleaningRecipe?.valueTranslations || {}
     };
 
@@ -5167,9 +5328,10 @@ async updateDatabaseConnection(id: string, updates: Partial<DatabaseConnection>)
       `INSERT INTO file_ingestion_mapping_templates (
          id, name, description, source_type, header_mode, header_row_index,
          manual_headers, deleted_columns, required_columns, column_mappings,
-         cleaning_recipe, created_by, team_id, is_default, created_at, updated_at
+         cleaning_recipe, created_by, team_id, is_default, created_at, updated_at,
+         ordered_recipe_steps, split_operations, merge_operations, transform_operations, cleaning_actions, version
        )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)
        ON CONFLICT (id) DO UPDATE SET
          name = EXCLUDED.name,
          description = EXCLUDED.description,
@@ -5183,7 +5345,13 @@ async updateDatabaseConnection(id: string, updates: Partial<DatabaseConnection>)
          cleaning_recipe = EXCLUDED.cleaning_recipe,
          team_id = EXCLUDED.team_id,
          is_default = EXCLUDED.is_default,
-         updated_at = EXCLUDED.updated_at;`,
+         updated_at = EXCLUDED.updated_at,
+         ordered_recipe_steps = EXCLUDED.ordered_recipe_steps,
+         split_operations = EXCLUDED.split_operations,
+         merge_operations = EXCLUDED.merge_operations,
+         transform_operations = EXCLUDED.transform_operations,
+         cleaning_actions = EXCLUDED.cleaning_actions,
+         version = EXCLUDED.version;`,
       [
         id,
         template.name,
@@ -5200,7 +5368,13 @@ async updateDatabaseConnection(id: string, updates: Partial<DatabaseConnection>)
         template.teamId || null,
         template.isDefault || false,
         template.createdAt || now,
-        now
+        now,
+        JSON.stringify(orderedSteps),
+        JSON.stringify(splitOps),
+        JSON.stringify(mergeOps),
+        JSON.stringify(transformOps),
+        JSON.stringify(cleaningActs),
+        versionNum
       ]
     );
     const saved = await this.getFileMappingTemplateById(id);

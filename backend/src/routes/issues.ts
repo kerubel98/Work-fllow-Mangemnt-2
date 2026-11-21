@@ -106,19 +106,61 @@ issuesRouter.post('/', async (req: Request, res: Response) => {
     }
 
     const requiredFields = Array.from(mandatedRequired);
+    let recipeExecutionAudit: any[] = [];
+    let recipeSnapshotObj: any = issueData.recipeSnapshot || null;
 
     if (rawRows && Array.isArray(rawRows) && rawRows.length > 0) {
+      const { recipeExecutionService } = await import('../services/recipeExecutionService.js');
       const { dataSanitizerService } = await import('../services/dataSanitizerService.js');
-      if (activeTemplate) {
-        let dicts: any[] = [];
-        try { dicts = await repo.getValueTranslationDictionaries(); } catch {}
-        const replayed = dataSanitizerService.replayTemplateOperations(rawRows, activeTemplate, dicts);
-        rawRows = replayed.processedRows;
-        (issueData as any).firstLevelMappedData = rawRows;
-        if (activeTemplate.columnMappings) {
-          effectiveMapping = { ...activeTemplate.columnMappings, ...effectiveMapping };
+
+      // Construct effective template if activeTemplate or recipeSnapshot provided
+      let templateToRun = activeTemplate;
+      if (!templateToRun && (issueData.recipeSnapshot || issueData.fileMapping)) {
+        templateToRun = {
+          id: issueData.mappingTemplateId || 'custom_task_recipe',
+          name: 'Task Intake Recipe',
+          sourceType: 'csv',
+          headerMode: 'ROW_INDEX',
+          headerRowIndex: 1,
+          manualHeaders: {},
+          deletedColumns: [],
+          requiredColumns: requiredFields,
+          columnMappings: effectiveMapping || {},
+          cleaningRecipe: typeof issueData.recipeSnapshot === 'object' ? issueData.recipeSnapshot : {},
+          splitOperations: (issueData.recipeSnapshot as any)?.splitOperations || [],
+          mergeOperations: (issueData.recipeSnapshot as any)?.mergeOperations || [],
+          transformOperations: (issueData.recipeSnapshot as any)?.transformOperations || [],
+          cleaningActions: (issueData.recipeSnapshot as any)?.cleaningActions || [],
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        };
+      }
+
+      if (templateToRun) {
+        const recipeResult = await recipeExecutionService.executeRecipe(rawRows, templateToRun, {
+          projectToCanonical: true,
+          preserveRawPayload: true
+        });
+        if (recipeResult.success) {
+          rawRows = recipeResult.processedRows;
+          recipeExecutionAudit = recipeResult.auditTrail;
+          effectiveHeaders = recipeResult.headers;
+          if (templateToRun.columnMappings) {
+            effectiveMapping = { ...templateToRun.columnMappings, ...effectiveMapping };
+          }
+          recipeSnapshotObj = {
+            templateId: templateToRun.id,
+            templateName: templateToRun.name,
+            orderedRecipeSteps: templateToRun.orderedRecipeSteps || [],
+            splitOperations: templateToRun.splitOperations || [],
+            mergeOperations: templateToRun.mergeOperations || [],
+            transformOperations: templateToRun.transformOperations || [],
+            cleaningActions: templateToRun.cleaningActions || [],
+            columnMappings: templateToRun.columnMappings || {}
+          };
         }
       }
+
       const sampleRow = rawRows[0];
 
       if (effectiveHeaders.length === 0 && sampleRow && typeof sampleRow === 'object') {
@@ -139,7 +181,7 @@ issuesRouter.post('/', async (req: Request, res: Response) => {
       const sanitization = await dataSanitizerService.sanitizeRows(rawRows, validation.autoMapping || effectiveMapping);
       sanitizedRows = sanitization.sanitizedRows;
       effectiveMapping = sanitization.effectiveMapping;
-      console.log(`[IssueCreation] Auto-mapped and sanitized ${sanitizedRows.length} rows for new task.`);
+      console.log(`[IssueCreation] Executed recipe & sanitized ${sanitizedRows.length} rows for new task.`);
     }
 
     const newIssue: Issue = {
@@ -163,6 +205,9 @@ issuesRouter.post('/', async (req: Request, res: Response) => {
       assignedTechUserName: issueData.assignedTechUserName,
       teamId: effectiveTeamId,
       visibility: effectiveVisibility,
+      mappingTemplateId: issueData.mappingTemplateId || (activeTemplate ? activeTemplate.id : undefined),
+      recipeSnapshot: recipeSnapshotObj || undefined,
+      recipeExecutionLog: recipeExecutionAudit.length > 0 ? recipeExecutionAudit : undefined,
       chat: []
     };
 
@@ -261,9 +306,53 @@ issuesRouter.post(['/:id/dataset', '/:id/ingest-dataset'], async (req: Request, 
     if (!rows || !Array.isArray(rows)) {
       return res.status(400).json({ error: 'rows or records array is required' });
     }
+
+    let rowsToIngest = rows;
+    let headersToIngest = headers;
+    let effectiveMapping = fileMapping;
+
+    const issue = await repo.getIssueById(req.params.id);
+    if (issue && (issue.mappingTemplateId || issue.recipeSnapshot)) {
+      const { recipeExecutionService } = await import('../services/recipeExecutionService.js');
+      let tpl: any = null;
+      if (issue.mappingTemplateId) {
+        tpl = await repo.getFileMappingTemplateById(issue.mappingTemplateId);
+      }
+      if (!tpl && issue.recipeSnapshot) {
+        tpl = {
+          id: issue.mappingTemplateId || 'task_recipe',
+          name: 'Task Recipe',
+          sourceType: 'csv',
+          headerMode: 'ROW_INDEX',
+          headerRowIndex: 1,
+          manualHeaders: {},
+          deletedColumns: [],
+          requiredColumns: [],
+          columnMappings: effectiveMapping || {},
+          cleaningRecipe: issue.recipeSnapshot,
+          splitOperations: (issue.recipeSnapshot as any)?.splitOperations || [],
+          mergeOperations: (issue.recipeSnapshot as any)?.mergeOperations || [],
+          transformOperations: (issue.recipeSnapshot as any)?.transformOperations || [],
+          cleaningActions: (issue.recipeSnapshot as any)?.cleaningActions || [],
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
+        };
+      }
+      if (tpl) {
+        const recipeRes = await recipeExecutionService.executeRecipe(rowsToIngest, tpl, { projectToCanonical: true, preserveRawPayload: true });
+        if (recipeRes.success) {
+          rowsToIngest = recipeRes.processedRows;
+          headersToIngest = recipeRes.headers;
+          if (tpl.columnMappings) {
+            effectiveMapping = { ...tpl.columnMappings, ...effectiveMapping };
+          }
+        }
+      }
+    }
+
     const { dataSanitizerService } = await import('../services/dataSanitizerService.js');
-    const sampleRow = rows[0];
-    const validation = await dataSanitizerService.validateMapping(fileMapping, sampleRow);
+    const sampleRow = rowsToIngest[0];
+    const validation = await dataSanitizerService.validateMapping(effectiveMapping, sampleRow);
     if (!validation.valid) {
       return res.status(422).json({
         error: 'Pre-flight mapping validation failed: Required standard fields are not mapped',
@@ -273,7 +362,7 @@ issuesRouter.post(['/:id/dataset', '/:id/ingest-dataset'], async (req: Request, 
     }
 
     const { datasetIngestionService } = await import('../services/datasetIngestionService.js');
-    const result = await datasetIngestionService.ingestDatasetRows(req.params.id, rows, headers, fileMapping);
+    const result = await datasetIngestionService.ingestDatasetRows(req.params.id, rowsToIngest, headersToIngest, effectiveMapping);
     eventService.broadcastEvent('issue:dataset_ingested', {
       issueId: req.params.id,
       transactionCount: result.insertedCount

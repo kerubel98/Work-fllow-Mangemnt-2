@@ -372,7 +372,23 @@ export function Step2DiscoverFiles({
                 placeholder="SETTLE_*.csv"
                 className="w-full px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg font-mono text-xs text-slate-800 focus:outline-none focus:bg-white"
               />
-              <span className="text-[10px] text-slate-400 font-mono mt-0.5 block">Glob pattern: e.g. *.csv</span>
+              <div className="flex items-center justify-between text-[10px] font-mono mt-1">
+                <span className={matchedFiles.length > 0 ? "text-emerald-600 font-semibold" : "text-slate-400"}>
+                  {matchedFiles.length > 0 ? `✓ Accepts ${matchedFiles.length} of ${remoteFiles.length} files` : 'No files matched'}
+                </span>
+              </div>
+              <div className="flex flex-wrap gap-1 mt-1">
+                {['*-Unsettled.xls', '*.xlsx', '*.csv'].map((pat) => (
+                  <button
+                    key={pat}
+                    type="button"
+                    onClick={() => setFilePattern(pat)}
+                    className="px-1.5 py-0.5 text-[9px] font-mono bg-slate-100 hover:bg-orange-50 border border-slate-200 hover:border-orange-300 rounded text-slate-600 hover:text-orange-900 cursor-pointer"
+                  >
+                    {pat}
+                  </button>
+                ))}
+              </div>
             </div>
 
             <div>

@@ -84,14 +84,15 @@ transactionSettingsRouter.get('/schema/config', async (_req: Request, res: Respo
 
 // POST /api/transactions/schema/config - Persist version-controlled Global Mapping configuration
 transactionSettingsRouter.post('/schema/config', async (req: Request, res: Response) => {
-  const { standardFields, version, versionHistory, updatedBy, description, strictMappingEnforced } = req.body;
+  const { standardFields, tableMappings, version, versionHistory, updatedBy, description, strictMappingEnforced } = req.body;
 
   if (!standardFields || !Array.isArray(standardFields)) {
     return res.status(400).json({ error: 'standardFields array is required' });
   }
 
+  const user = (req as any).user;
+  const author = updatedBy || user?.name || user?.username || 'system';
   const now = new Date().toISOString();
-  const author = updatedBy || 'system';
   const newVersion = version || store.globalSchema.version || '2.3.0';
 
   const history: any[] = Array.isArray(versionHistory) ? [...versionHistory] : (store.globalSchema.versionHistory || []);
@@ -100,9 +101,15 @@ transactionSettingsRouter.post('/schema/config', async (req: Request, res: Respo
       version: newVersion,
       timestamp: now,
       author,
-      description: description.trim(),
+      description: typeof description === 'string' ? description.trim() : JSON.stringify(description),
       fieldCount: standardFields.length
     });
+  }
+
+  // Merge tableMappings if supplied (MAP-06 fix)
+  let mergedMappings = store.globalSchema.tableMappings || {};
+  if (tableMappings && typeof tableMappings === 'object') {
+    mergedMappings = { ...mergedMappings, ...tableMappings };
   }
 
   store.globalSchema = {
@@ -111,11 +118,13 @@ transactionSettingsRouter.post('/schema/config', async (req: Request, res: Respo
     updatedAt: now,
     updatedBy: author,
     standardFields,
+    tableMappings: mergedMappings,
     versionHistory: history.slice(0, 50),
     strictMappingEnforced: strictMappingEnforced !== undefined ? !!strictMappingEnforced : true
   };
 
   // Sync memory directory table
+  const newFieldKeys = new Set(standardFields.map((f: any) => f.key));
   store.globalStandardDirectory = standardFields.map((f: any) => ({
     id: f.id || `gsd-${f.key}`,
     key: f.key,
@@ -127,7 +136,7 @@ transactionSettingsRouter.post('/schema/config', async (req: Request, res: Respo
     exampleValue: f.exampleValue || '',
     category: f.category || 'General',
     notes: f.notes || '',
-    user_id: f.user_id || 'system',
+    user_id: f.user_id || user?.id || 'system',
     created_at: f.created_at || now,
     updated_at: now
   }));
@@ -143,16 +152,33 @@ transactionSettingsRouter.post('/schema/config', async (req: Request, res: Respo
         strictMappingEnforced: store.globalSchema.strictMappingEnforced,
         updatedBy: author
       });
-      // Also persist every directory record to global_standard_directory
+
+      // Symmetrical cleanup: remove any deleted directory fields (MAP-05 fix)
+      const existingDir = await postgresRepo.getGlobalStandardDirectory();
+      for (const existingField of existingDir) {
+        if (!newFieldKeys.has(existingField.key)) {
+          await postgresRepo.deleteGlobalStandardDirectoryField(existingField.id || existingField.key).catch(() => {});
+        }
+      }
+
+      // Upsert current directory records
       for (const f of store.globalStandardDirectory) {
         await postgresRepo.saveGlobalStandardDirectoryField(f).catch(() => {});
+      }
+
+      // Persist individual table mappings if provided (MAP-06 fix)
+      if (tableMappings && typeof tableMappings === 'object') {
+        const actor = user ? { id: user.id, name: user.name, role: user.role, teamId: user.teamId } : undefined;
+        for (const [key, mapping] of Object.entries(tableMappings)) {
+          if (mapping && typeof mapping === 'object' && (mapping as any).dbId && (mapping as any).tableName) {
+            await postgresRepo.saveTableMapping((mapping as any).dbId, (mapping as any).tableName, mapping, actor).catch(() => {});
+          }
+        }
       }
     } catch (err: any) {
       console.warn('[SchemaConfig] Error saving config to PostgreSQL:', err.message);
     }
   }
-
-
 
   return res.json({
     message: `Global Schema updated to version ${newVersion}`,
@@ -161,11 +187,15 @@ transactionSettingsRouter.post('/schema/config', async (req: Request, res: Respo
   });
 });
 
-// GET /api/transactions/table-mappings - List all database-to-global table mappings
-transactionSettingsRouter.get('/table-mappings', async (_req: Request, res: Response) => {
+// GET /api/transactions/table-mappings - List database-to-global table mappings (Scoped by team & role - MAP-03 fix)
+transactionSettingsRouter.get('/table-mappings', async (req: Request, res: Response) => {
+  const user = (req as any).user;
+  const teamId = req.query.teamId ? String(req.query.teamId) : user?.teamId;
+  const isAdmin = !user || user.role === 'ADMIN' || user.role === 'SUPER_ADMIN';
+
   if (isPostgresConnected) {
     try {
-      const mappings = await postgresRepo.getTableMappings();
+      const mappings = await postgresRepo.getTableMappings(teamId, isAdmin);
       if (mappings && Object.keys(mappings).length > 0) {
         return res.json(mappings);
       }
@@ -174,20 +204,20 @@ transactionSettingsRouter.get('/table-mappings', async (_req: Request, res: Resp
     }
   }
 
-
-
   return res.json(store.globalSchema.tableMappings || {});
 });
 
-// POST /api/transactions/table-mappings - Save or update table mapping for a database table
+// POST /api/transactions/table-mappings - Save or update table mapping with lock & maker-checker governance (MAP-02 fix)
 transactionSettingsRouter.post('/table-mappings', async (req: Request, res: Response) => {
-  const { dbId, dbName, tableName, columns, isCustom } = req.body;
+  const { dbId, dbName, tableName, columns, isCustom, teamId, status, isLocked, checkerFeedback } = req.body;
 
   if (!dbId || !tableName) {
     return res.status(400).json({ error: 'dbId and tableName are required' });
   }
 
-  const mappingKey = `${dbId}:${tableName}`;
+  const user = (req as any).user;
+  const actor = user ? { id: user.id, name: user.name, role: user.role, teamId: user.teamId } : undefined;
+  const mappingKey = `${dbId}::${tableName}`;
   const now = new Date().toISOString();
 
   const mappingObj: any = {
@@ -196,31 +226,56 @@ transactionSettingsRouter.post('/table-mappings', async (req: Request, res: Resp
     tableName,
     columns: Array.isArray(columns) ? columns : [],
     updatedAt: now,
-    isCustom: !!isCustom
+    isCustom: !!isCustom,
+    teamId: teamId || user?.teamId || null,
+    makerId: req.body.makerId || user?.id || 'system',
+    makerName: req.body.makerName || user?.name || user?.username || 'admin',
+    status: status || 'DRAFT',
+    isLocked: Boolean(isLocked),
+    checkerFeedback: checkerFeedback || null
   };
+
+  let savedMapping = mappingObj;
+
+  // Primary: Persist to PostgreSQL with lock enforcement
+  if (isPostgresConnected) {
+    try {
+      savedMapping = await postgresRepo.saveTableMapping(dbId, tableName, mappingObj, actor);
+    } catch (err: any) {
+      console.warn('[TableMappings] Error saving table mapping to PostgreSQL:', err.message);
+      if (err.message && err.message.includes('LOCKED')) {
+        return res.status(423).json({ error: err.message });
+      }
+    }
+  }
 
   if (!store.globalSchema.tableMappings) {
     store.globalSchema.tableMappings = {};
   }
-  store.globalSchema.tableMappings[mappingKey] = mappingObj;
+  store.globalSchema.tableMappings[mappingKey] = savedMapping;
+  store.globalSchema.tableMappings[`${dbId}:${tableName}`] = savedMapping;
 
-  // Primary: Persist to PostgreSQL
+  // Compute validation state using authoritative directory
+  let standardFields: any[] = [];
   if (isPostgresConnected) {
     try {
-      await postgresRepo.saveTableMapping(dbId, tableName, mappingObj);
-    } catch (err: any) {
-      console.warn('[TableMappings] Error saving table mapping to PostgreSQL:', err.message);
+      standardFields = await postgresRepo.getGlobalStandardDirectory();
+    } catch (e) {
+      standardFields = store.globalSchema.standardFields || store.globalStandardDirectory || [];
     }
+  } else {
+    standardFields = store.globalSchema.standardFields || store.globalStandardDirectory || [];
   }
 
-
-
-  const standardFields = store.globalSchema.standardFields || store.globalStandardDirectory || [];
   const requiredKeys = standardFields.filter((f: any) => f.required).map((f: any) => f.key);
   const mappedKeys = new Set(
-    (mappingObj.columns || [])
-      .filter((c: any) => c.globalKey && c.physicalColumn && c.physicalColumn.trim() !== '' && c.globalKey !== 'unmapped')
-      .map((c: any) => c.globalKey)
+    (savedMapping.columns || [])
+      .filter((c: any) => {
+        const pCol = c.physicalColumn || c.columnName || c.name;
+        const gKey = c.globalKey || c.key;
+        return gKey && pCol && String(pCol).trim() !== '' && gKey !== 'unmapped';
+      })
+      .map((c: any) => c.globalKey || c.key)
   );
   const missingRequired = requiredKeys.filter((k: string) => !mappedKeys.has(k));
   const isComplete = missingRequired.length === 0;
@@ -231,24 +286,53 @@ transactionSettingsRouter.post('/table-mappings', async (req: Request, res: Resp
     missingRequiredColumns: missingRequired,
     missingRequiredKeys: missingRequired,
     mappedColumnsCount: mappedKeys.size,
-    requiredColumnsCount: requiredKeys.length
+    requiredColumnsCount: requiredKeys.length,
+    governance: {
+      status: savedMapping.status || 'DRAFT',
+      isLocked: Boolean(savedMapping.isLocked),
+      makerName: savedMapping.makerName,
+      approvedByUserName: savedMapping.approvedByUserName,
+      approvedAt: savedMapping.approvedAt
+    }
   };
 
   return res.json({
     message: `Table mapping saved for ${dbName || dbId}.${tableName}`,
-    mapping: mappingObj,
+    mapping: savedMapping,
     validation
   });
 });
 
-// GET /api/transactions/table-mappings/validate/:dbId/:tableName - Validate table mapping completion
+// GET /api/transactions/table-mappings/validate/:dbId/:tableName - Validate table mapping completion (MAP-10 fix)
 transactionSettingsRouter.get('/table-mappings/validate/:dbId/:tableName', async (req: Request, res: Response) => {
   const { dbId, tableName } = req.params;
-  const mappings = store.globalSchema.tableMappings || {};
-  const mappingKey = `${dbId}:${tableName}`;
-  const mapping = mappings[mappingKey];
+  const user = (req as any).user;
+  const isAdmin = !user || user.role === 'ADMIN' || user.role === 'SUPER_ADMIN';
 
-  const standardFields = store.globalSchema.standardFields || store.globalStandardDirectory || [];
+  let mappings: Record<string, any> = {};
+  if (isPostgresConnected) {
+    try {
+      mappings = await postgresRepo.getTableMappings(user?.teamId, isAdmin);
+    } catch {
+      mappings = store.globalSchema.tableMappings || {};
+    }
+  } else {
+    mappings = store.globalSchema.tableMappings || {};
+  }
+
+  const mapping = mappings[`${dbId}::${tableName}`] || mappings[`${dbId}:${tableName}`];
+
+  let standardFields: any[] = [];
+  if (isPostgresConnected) {
+    try {
+      standardFields = await postgresRepo.getGlobalStandardDirectory();
+    } catch {
+      standardFields = store.globalSchema.standardFields || store.globalStandardDirectory || [];
+    }
+  } else {
+    standardFields = store.globalSchema.standardFields || store.globalStandardDirectory || [];
+  }
+
   const requiredKeys = standardFields.filter((f: any) => f.required).map((f: any) => f.key);
 
   if (!mapping || !Array.isArray(mapping.columns) || mapping.columns.length === 0) {
@@ -266,8 +350,12 @@ transactionSettingsRouter.get('/table-mappings/validate/:dbId/:tableName', async
 
   const mappedKeys = new Set(
     mapping.columns
-      .filter((c: any) => c.globalKey && c.physicalColumn && c.physicalColumn.trim() !== '' && c.globalKey !== 'unmapped')
-      .map((c: any) => c.globalKey)
+      .filter((c: any) => {
+        const pCol = c.physicalColumn || c.columnName || c.name;
+        const gKey = c.globalKey || c.key;
+        return gKey && pCol && String(pCol).trim() !== '' && gKey !== 'unmapped';
+      })
+      .map((c: any) => c.globalKey || c.key)
   );
 
   const missingRequired = requiredKeys.filter((k: string) => !mappedKeys.has(k));
@@ -281,7 +369,13 @@ transactionSettingsRouter.get('/table-mappings/validate/:dbId/:tableName', async
     missingRequiredKeys: missingRequired,
     mappedColumnsCount: mappedKeys.size,
     requiredColumnsCount: requiredKeys.length,
-    status: isComplete ? 'COMPLETE' : 'INCOMPLETE'
+    status: isComplete ? 'COMPLETE' : 'INCOMPLETE',
+    governance: {
+      status: mapping.status || 'DRAFT',
+      isLocked: Boolean(mapping.isLocked),
+      makerName: mapping.makerName,
+      approvedByUserName: mapping.approvedByUserName
+    }
   });
 });
 

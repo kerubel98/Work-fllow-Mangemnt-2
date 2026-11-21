@@ -224,11 +224,10 @@ export function DataSetupLandingView({
         <button
           type="button"
           onClick={() => setActiveTab('resources')}
-          className={`pb-3 border-b-2 transition cursor-pointer ${
-            activeTab === 'resources'
-              ? 'border-orange-500 text-orange-600 font-bold'
-              : 'border-transparent text-slate-500 hover:text-slate-800'
-          }`}
+          className={`pb-3 border-b-2 transition cursor-pointer ${activeTab === 'resources'
+            ? 'border-orange-500 text-orange-600 font-bold'
+            : 'border-transparent text-slate-500 hover:text-slate-800'
+            }`}
         >
           Resources <span className="ml-1 px-1.5 py-0.2 bg-slate-100 rounded text-slate-600">{resources.length}</span>
         </button>
@@ -236,11 +235,10 @@ export function DataSetupLandingView({
         <button
           type="button"
           onClick={() => setActiveTab('mapping')}
-          className={`pb-3 border-b-2 transition cursor-pointer ${
-            activeTab === 'mapping'
-              ? 'border-orange-500 text-orange-600 font-bold'
-              : 'border-transparent text-slate-500 hover:text-slate-800'
-          }`}
+          className={`pb-3 border-b-2 transition cursor-pointer ${activeTab === 'mapping'
+            ? 'border-orange-500 text-orange-600 font-bold'
+            : 'border-transparent text-slate-500 hover:text-slate-800'
+            }`}
         >
           Mapping dictionary <span className="ml-1 px-1.5 py-0.2 bg-slate-100 rounded text-slate-600">{mappingCount}</span>
         </button>
@@ -248,11 +246,10 @@ export function DataSetupLandingView({
         <button
           type="button"
           onClick={() => setActiveTab('values')}
-          className={`pb-3 border-b-2 transition cursor-pointer ${
-            activeTab === 'values'
-              ? 'border-orange-500 text-orange-600 font-bold'
-              : 'border-transparent text-slate-500 hover:text-slate-800'
-          }`}
+          className={`pb-3 border-b-2 transition cursor-pointer ${activeTab === 'values'
+            ? 'border-orange-500 text-orange-600 font-bold'
+            : 'border-transparent text-slate-500 hover:text-slate-800'
+            }`}
         >
           Value dictionaries <span className="ml-1 px-1.5 py-0.2 bg-slate-100 rounded text-slate-600">6</span>
         </button>

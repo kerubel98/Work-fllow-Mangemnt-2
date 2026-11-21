@@ -9,6 +9,7 @@
 
 import { repo } from '../store/repository.js';
 import { ftpFileStagingService } from './ftpFileStagingService.js';
+import { stagingService } from './messaging/stagingService.js';
 import { FtpFileStagingConfig, DatabaseConnection } from '../types.js';
 
 export interface ScheduledRunResult {
@@ -85,6 +86,43 @@ export const ftpSchedulerService = {
         
         totalStaged += stageRes.stagedCount;
         totalSkippedMismatches += skippedCount;
+
+        // Automatically stage inbound request in Intake for operational review if files were processed
+        if (stageRes.stagedCount > 0 || (stageRes.filesProcessed && stageRes.filesProcessed.length > 0)) {
+          try {
+            const filesStr = (stageRes.filesProcessed || []).map((f: string) => f.split('/').pop() || f).join(', ');
+            const batchRef = `BATCH-FTP-${Date.now().toString().slice(-6)}`;
+            const msgId = `msg-ftp-${config.id}-${Date.now()}`;
+            await stagingService.stageInboundEnvelope({
+              messageId: msgId,
+              sourceChannel: 'email',
+              sourceMessageId: msgId,
+              senderType: 'system',
+              receivedAt: new Date().toISOString(),
+              dedupeKey: `dedupe-ftp-${config.id}-${Date.now()}`,
+              senderAddress: `${db.type || 'sftp'}://${db.host || '127.0.0.1'}:${db.port || 22}`,
+              senderName: `${config.name} (${db.name || 'SFTP Endpoint'})`,
+              textBody: `Automated FTP file intake batch for pattern [${config.fileNamePattern}]. Staged ${stageRes.stagedCount.toLocaleString()} records from ${stageRes.filesProcessedCount || stageRes.filesProcessed?.length || 1} file(s) into staging table [${stageRes.stagingTableName}]. Files: ${filesStr}`,
+              metadata: {
+                subject: `FTP Clearing Feed: ${config.name} (${stageRes.stagedCount.toLocaleString()} records staged)`,
+                batchId: batchRef,
+                configId: config.id,
+                stagingTable: stageRes.stagingTableName,
+                filesProcessed: stageRes.filesProcessed
+              },
+              attachments: (stageRes.filesProcessed || []).map((filePath: string) => ({
+                id: `att-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+                filename: filePath.split('/').pop() || filePath,
+                mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                sizeBytes: 1024 * 50,
+                contentType: 'spreadsheet',
+                checksum: 'auto-staged'
+              }))
+            });
+          } catch (stgErr: any) {
+            console.warn('[ftpSchedulerService] Notice: could not register staged_message entry:', stgErr.message);
+          }
+        }
 
         // Update schedule metadata
         if (config.scheduleConfig) {

@@ -9,6 +9,7 @@ import { mirrorTableManager } from '../services/mirrorTableManager.js';
 import { ftpFileStagingService } from '../services/ftpFileStagingService.js';
 import { discoverFtpFilesRecursive } from '../services/ftpConnectionService.js';
 import { ftpSchedulerService } from '../services/ftpSchedulerService.js';
+import { stagingService } from '../services/messaging/stagingService.js';
 import { resolveUserAdminCapabilities } from '../utils/capabilityHelper.js';
 
 export const databaseRouter = Router();
@@ -2328,6 +2329,7 @@ databaseRouter.post('/ftp-staging-configs', async (req: Request, res: Response) 
       ftpConnectionId: ftpConnId,
       fileNamePattern: pattern,
       sourceDirectoryPath: data.sourceDirectoryPath || data.remoteDirectory || '/',
+      createdBy: data.createdBy || (req as any).user?.email || (req as any).user?.name || undefined,
       id: data.id || `stg-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
@@ -2449,6 +2451,44 @@ databaseRouter.post('/ftp-staging/stage-file', async (req: Request, res: Respons
 
     // Trigger full staging
     const stageResult = await ftpFileStagingService.stageFtpFileForValidation(db, stagingConfig);
+
+    // If records were staged or files processed, automatically register an Intake case staged item
+    if (stageResult && (stageResult.stagedCount > 0 || (stageResult.filesProcessed && stageResult.filesProcessed.length > 0))) {
+      try {
+        const filesStr = (stageResult.filesProcessed || []).map((f: string) => f.split('/').pop() || f).join(', ');
+        const batchRef = `BATCH-FTP-${Date.now().toString().slice(-6)}`;
+        const msgId = `msg-ftp-${stagingConfig.id}-${Date.now()}`;
+        await stagingService.stageInboundEnvelope({
+          messageId: msgId,
+          sourceChannel: 'email',
+          sourceMessageId: msgId,
+          senderType: 'system',
+          receivedAt: new Date().toISOString(),
+          dedupeKey: `dedupe-ftp-${stagingConfig.id}-${Date.now()}`,
+          senderAddress: `${db.type || 'sftp'}://${db.host || '127.0.0.1'}:${db.port || 22}`,
+          senderName: `${stagingConfig.name} (${db.name || 'SFTP Endpoint'})`,
+          textBody: `On-demand FTP file intake executed for pattern [${stagingConfig.fileNamePattern}]. Staged ${stageResult.stagedCount.toLocaleString()} records from ${stageResult.filesProcessedCount || stageResult.filesProcessed?.length || 1} file(s) into staging table [${stageResult.stagingTableName}]. Files: ${filesStr}`,
+          metadata: {
+            subject: `FTP Clearing Feed: ${stagingConfig.name} (${stageResult.stagedCount.toLocaleString()} records staged)`,
+            batchId: batchRef,
+            configId: stagingConfig.id,
+            stagingTable: stageResult.stagingTableName,
+            filesProcessed: stageResult.filesProcessed
+          },
+          attachments: (stageResult.filesProcessed || []).map((filePath: string) => ({
+            id: `att-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
+            filename: filePath.split('/').pop() || filePath,
+            mimeType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            sizeBytes: 1024 * 50,
+            contentType: 'spreadsheet',
+            checksum: 'auto-staged'
+          }))
+        });
+      } catch (stgErr: any) {
+        console.warn('[databaseRouter] Notice: could not register staged_message entry for staged file:', stgErr.message);
+      }
+    }
+
     return res.json(stageResult);
   } catch (err: any) {
     return res.status(500).json({ error: err.message });

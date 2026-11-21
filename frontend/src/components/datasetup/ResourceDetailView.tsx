@@ -10,7 +10,7 @@ import {
   User, CheckCircle2, FileText, ChevronRight, ChevronDown, FileSpreadsheet, Layers,
   Filter, Search, Calendar, Zap, Terminal, Sparkles, Trash2, Edit3,
   CheckCheck, FolderTree, FileCode, CheckSquare, Eye, Table, FolderOpen,
-  ArrowUpRight, Info, RotateCcw, FileCheck, HardDrive
+  ArrowUpRight, Info, RotateCcw, FileCheck, HardDrive, X, PlusCircle
 } from 'lucide-react';
 import { api } from '../../api/client';
 import { groupUnconfiguredFolders, UnconfiguredFolderGroup } from '../../utils/ftpStagingDisplay';
@@ -129,6 +129,11 @@ export function ResourceDetailView({
       fileType: string;
     };
     matchedFiles?: Array<any>;
+    createdBy?: string;
+    createdByName?: string;
+    createdAt?: string;
+    isCustom?: boolean;
+    description?: string;
   }>>([]);
   const [isLoadingPatterns, setIsLoadingPatterns] = useState(false);
 
@@ -154,6 +159,48 @@ export function ResourceDetailView({
   const [ingestedSearchFilter, setIngestedSearchFilter] = useState('');
   const [ingestedPatternFilter, setIngestedPatternFilter] = useState('ALL');
   const [isStagingPattern, setIsStagingPattern] = useState<string | null>(null);
+
+  // =========================================================================
+  // SFTP 1: PATTERN ACCEPTOR STATE (FOLDER DISCOVERY)
+  // =========================================================================
+  const [patternInput, setPatternInput] = useState<string>('');
+  const [acceptedPatterns, setAcceptedPatterns] = useState<string[]>([]);
+  const [activeAcceptedPattern, setActiveAcceptedPattern] = useState<string | null>(null);
+  const [patternFilterMode, setPatternFilterMode] = useState<'ALL' | 'ACCEPTED' | 'UNCONFIGURED' | 'INGESTED'>('ALL');
+  const [patternAcceptNotice, setPatternAcceptNotice] = useState<string | null>(null);
+
+  // =========================================================================
+  // DETECTED FILE PATTERNS: FILTER & CUSTOM PATTERN CREATION STATE
+  // =========================================================================
+  const [patternCardFilter, setPatternCardFilter] = useState<'ALL' | 'MY_PATTERNS'>('ALL');
+  const [isAddingPattern, setIsAddingPattern] = useState<boolean>(false);
+  const [newPatternInput, setNewPatternInput] = useState<string>('');
+  const [newPatternFormat, setNewPatternFormat] = useState<'EXCEL' | 'CSV' | 'PIPE' | 'TAB' | 'DAT' | 'TXT'>('EXCEL');
+  const [newPatternTableName, setNewPatternTableName] = useState<string>('');
+  const [newPatternDescription, setNewPatternDescription] = useState<string>('');
+  const [isSavingCustomPattern, setIsSavingCustomPattern] = useState<boolean>(false);
+
+  // Current operator identification
+  const currentUserName = currentUser?.name || currentUser?.username || 'admin';
+  const currentUserEmail = currentUser?.email || 'admin@paymentops.com';
+
+  // Helper for wildcard/glob matching across filenames and paths
+  const matchGlobPattern = useCallback((pattern: string, fileName: string, fullPath?: string): boolean => {
+    if (!pattern || !pattern.trim()) return false;
+    const clean = pattern.trim();
+    try {
+      const escaped = clean
+        .replace(/[-[\]{}()+.,\\^$|#\s]/g, '\\$&')
+        .replace(/\*/g, '.*')
+        .replace(/\?/g, '.');
+      const rx = new RegExp('^' + escaped + '$', 'i');
+      if (rx.test(fileName)) return true;
+      if (fullPath && (rx.test(fullPath) || rx.test(fullPath.replace(/^\/+/, '')))) return true;
+      return false;
+    } catch {
+      return false;
+    }
+  }, []);
 
   // =========================================================================
   // SFTP 2: FILE TYPE ID-ING & DELIMITER STATE
@@ -383,9 +430,174 @@ export function ResourceDetailView({
   const matchingPatternFiles = useMemo(() => {
     if (!discoveredFiles || discoveredFiles.length === 0) return [];
     if (!filePattern) return discoveredFiles;
-    const regex = new RegExp('^' + filePattern.replace(/\./g, '\\.').replace(/\*/g, '.*') + '$', 'i');
-    return discoveredFiles.filter(f => regex.test(f.name));
-  }, [discoveredFiles, filePattern]);
+    return discoveredFiles.filter(f => matchGlobPattern(filePattern, f.name, f.fullPath));
+  }, [discoveredFiles, filePattern, matchGlobPattern]);
+
+  // Real-time matched files for whatever pattern is currently typed in the Pattern Acceptor
+  const testMatchedFiles = useMemo(() => {
+    const p = patternInput.trim();
+    if (!p) return [];
+    return discoveredFiles.filter(f => matchGlobPattern(p, f.name, f.fullPath));
+  }, [discoveredFiles, patternInput, matchGlobPattern]);
+
+  // Files matched by the currently active accepted pattern
+  const acceptedMatchedFiles = useMemo(() => {
+    if (!activeAcceptedPattern) return [];
+    return discoveredFiles.filter(f => matchGlobPattern(activeAcceptedPattern, f.name, f.fullPath));
+  }, [discoveredFiles, activeAcceptedPattern, matchGlobPattern]);
+
+  // Accept a glob pattern into the workflow
+  const handleAcceptPattern = useCallback((patToAccept?: string) => {
+    const pat = (patToAccept || patternInput).trim();
+    if (!pat) return;
+
+    setAcceptedPatterns(prev => (prev.includes(pat) ? prev : [...prev, pat]));
+    setActiveAcceptedPattern(pat);
+    setFilePattern(pat);
+    setPatternInput(pat);
+
+    const matches = discoveredFiles.filter(f => matchGlobPattern(pat, f.name, f.fullPath));
+    if (matches.length > 0) {
+      const sample = matches[0];
+      setSelectedFileForParser(sample.fullPath);
+      const isXls = sample.name.endsWith('.xls') || sample.name.endsWith('.xlsx') || sample.format === 'EXCEL';
+      setFileFormat(isXls ? 'EXCEL' : sample.format === 'PIPE' ? 'PIPE' : sample.format === 'TAB' ? 'TAB' : 'CSV');
+      setDelimiter(sample.format === 'PIPE' ? '|' : sample.format === 'TAB' ? '\\t' : ',');
+      const cleanName = pat.replace(/[^a-zA-Z0-9]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '').toLowerCase();
+      if (cleanName) {
+        setTargetTableName(`mirror_ftp_${cleanName}`);
+      }
+    }
+
+    setPatternAcceptNotice(`✓ Pattern "${pat}" accepted (${matches.length} matching file${matches.length === 1 ? '' : 's'}). Ready for Step 2 parser.`);
+  }, [patternInput, discoveredFiles, matchGlobPattern]);
+
+  // Remove a pattern from accepted registry
+  const handleUnacceptPattern = useCallback((patToRemove: string) => {
+    setAcceptedPatterns(prev => {
+      const next = prev.filter(p => p !== patToRemove);
+      if (activeAcceptedPattern === patToRemove) {
+        const fallback = next.length > 0 ? next[0] : null;
+        setActiveAcceptedPattern(fallback);
+        if (fallback) {
+          setFilePattern(fallback);
+          setPatternInput(fallback);
+        }
+      }
+      return next;
+    });
+  }, [activeAcceptedPattern]);
+
+  // Matches for the pattern currently entered in the Add Pattern form
+  const newPatternMatchedFiles = useMemo(() => {
+    if (!newPatternInput.trim()) return [];
+    return discoveredFiles.filter(f => matchGlobPattern(newPatternInput.trim(), f.name, f.fullPath));
+  }, [discoveredFiles, newPatternInput, matchGlobPattern]);
+
+  // Auto-suggest format and table name as user types in the Add Pattern form
+  useEffect(() => {
+    if (!newPatternInput.trim()) return;
+    const lower = newPatternInput.toLowerCase();
+    if (lower.endsWith('.xls') || lower.endsWith('.xlsx')) {
+      setNewPatternFormat('EXCEL');
+    } else if (lower.endsWith('.csv')) {
+      setNewPatternFormat('CSV');
+    } else if (lower.endsWith('.tsv') || lower.endsWith('.tab')) {
+      setNewPatternFormat('TAB');
+    } else if (lower.endsWith('.dat')) {
+      setNewPatternFormat('DAT');
+    } else if (lower.endsWith('.txt')) {
+      setNewPatternFormat('TXT');
+    }
+    const clean = newPatternInput.replace(/[^a-zA-Z0-9]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '').toLowerCase();
+    if (clean) {
+      setNewPatternTableName(`mirror_ftp_${clean}`);
+    }
+  }, [newPatternInput]);
+
+  // Displayed pattern groups according to "All" vs "My Patterns" filter
+  const displayedPatternGroups = useMemo(() => {
+    if (patternCardFilter === 'MY_PATTERNS') {
+      return detectedPatterns.filter(grp =>
+        grp.createdBy === currentUserEmail ||
+        grp.createdByName === currentUserName ||
+        (grp.isCustom && (grp.createdBy === currentUserEmail || grp.createdByName === currentUserName))
+      );
+    }
+    return detectedPatterns;
+  }, [detectedPatterns, patternCardFilter, currentUserEmail, currentUserName]);
+
+  const myPatternsCount = useMemo(() => {
+    return detectedPatterns.filter(grp =>
+      grp.createdBy === currentUserEmail ||
+      grp.createdByName === currentUserName ||
+      (grp.isCustom && (grp.createdBy === currentUserEmail || grp.createdByName === currentUserName))
+    ).length;
+  }, [detectedPatterns, currentUserEmail, currentUserName]);
+
+  // Save new custom pattern handler
+  const handleSaveNewPattern = async () => {
+    const pat = newPatternInput.trim();
+    if (!pat) return;
+    setIsSavingCustomPattern(true);
+    try {
+      const clean = pat.replace(/[^a-zA-Z0-9]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '').toLowerCase();
+      const tblName = newPatternTableName.trim() || `mirror_ftp_${clean || 'feed'}`;
+      const matches = discoveredFiles.filter(f => matchGlobPattern(pat, f.name, f.fullPath));
+      const sample = matches[0];
+
+      const newEntry = {
+        pattern: pat,
+        cleanPattern: pat.replace(/[*?]/g, ''),
+        fileType: newPatternFormat,
+        suggestedTableName: tblName,
+        fileCount: matches.length,
+        folders: Array.from(new Set(matches.map(f => f.subfolder || '/'))),
+        sampleFile: sample,
+        matchedFiles: matches,
+        ingestedFileCount: matches.filter(f => f.status === 'Ingested').length,
+        stagedPercent: 0,
+        createdBy: currentUserEmail,
+        createdByName: currentUserName,
+        createdAt: new Date().toISOString(),
+        isCustom: true,
+        description: newPatternDescription.trim() || undefined
+      };
+
+      // Persist to PostgreSQL backend
+      await api.createFtpStagingConfig({
+        name: newPatternDescription.trim() || `${resource.name || 'SFTP'} - ${pat}`,
+        ftpConnectionId: resource.id,
+        fileNamePattern: pat,
+        fileFormat: newPatternFormat,
+        stagingTableName: tblName,
+        sourceDirectoryPath: remoteFolderPath || '/',
+        createdBy: currentUserEmail,
+        hasHeader: true,
+        headerRowIndex: 1,
+        dataStartRow: 2
+      }).catch(err => console.warn('Could not persist to ftp_file_staging_configs:', err));
+
+      // Add to detectedPatterns at the top of the cards list
+      setDetectedPatterns(prev => [newEntry, ...prev.filter(p => p.pattern !== pat)]);
+
+      // Formally accept the newly created pattern into the session
+      handleAcceptPattern(pat);
+
+      // Reset form and exit adding mode
+      setNewPatternInput('');
+      setNewPatternTableName('');
+      setNewPatternDescription('');
+      setIsAddingPattern(false);
+
+      setPatternAcceptNotice(`✓ Pattern "${pat}" successfully created by ${currentUserName} and saved to your patterns list!`);
+      setTimeout(() => setPatternAcceptNotice(null), 6000);
+    } catch (err: any) {
+      console.error('Error saving pattern:', err);
+    } finally {
+      setIsSavingCustomPattern(false);
+    }
+  };
 
   const activeMappedCount = useMemo(() => {
     return columnMappings.filter(m => m.included !== false && globalFields.some(f => f.key === m.targetColumn)).length;
@@ -526,7 +738,41 @@ export function ResourceDetailView({
             password: resource.password,
             databaseName: resource.database
           });
-          setDetectedPatterns(patterns || []);
+          const detectedList: any[] = [...(patterns || [])];
+          (configs || []).forEach((cfg: any) => {
+            const pat = cfg.fileNamePattern || cfg.filePattern;
+            if (!pat) return;
+            const existing = detectedList.find((p: any) => p.pattern === pat);
+            if (existing) {
+              if (cfg.createdBy) {
+                existing.createdBy = cfg.createdBy;
+                existing.createdByName = cfg.createdBy.split('@')[0];
+                existing.isCustom = true;
+              }
+            } else {
+              const matching = files.filter(f => matchGlobPattern(pat, f.name, f.fullPath));
+              detectedList.push({
+                pattern: pat,
+                cleanPattern: pat.replace(/[*?]/g, ''),
+                fileType: (cfg.fileFormat || 'CSV').toUpperCase(),
+                suggestedTableName: cfg.stagingTableName || `mirror_ftp_${pat.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase()}`,
+                fileCount: matching.length,
+                folders: Array.from(new Set(matching.map(f => f.relativeFolder || scanDir))),
+                sampleFile: matching[0],
+                matchedFiles: matching,
+                ingestedFileCount: matching.filter(f => ingestedMap.has(f.fullPath)).length,
+                stagedPercent: 0,
+                createdBy: cfg.createdBy || 'admin',
+                createdByName: cfg.createdBy ? cfg.createdBy.split('@')[0] : 'admin',
+                createdAt: cfg.createdAt,
+                isCustom: true
+              });
+            }
+          });
+          setDetectedPatterns(detectedList);
+          if (detectedList && detectedList.length > 0) {
+            setPatternInput(prev => prev || detectedList[0].pattern);
+          }
         } catch (patErr) {
           console.warn('detectFtpPatterns error:', patErr);
         } finally {
@@ -1029,7 +1275,11 @@ export function ResourceDetailView({
   // Select file from discovery to parser
   const handleSelectFileToParse = (file: typeof discoveredFiles[0]) => {
     setSelectedFileForParser(file.fullPath);
-    setFilePattern(file.name.replace(/\d{4,8}/g, '*'));
+    if (activeAcceptedPattern && matchGlobPattern(activeAcceptedPattern, file.name, file.fullPath)) {
+      setFilePattern(activeAcceptedPattern);
+    } else {
+      setFilePattern(file.name.replace(/\d{4,8}/g, '*'));
+    }
     const isXls = file.name.endsWith('.xls') || file.name.endsWith('.xlsx') || file.format === 'EXCEL';
     setFileFormat(isXls ? 'EXCEL' : file.format === 'PIPE' ? 'PIPE' : file.format === 'TAB' ? 'TAB' : 'CSV');
     setDelimiter(file.format === 'PIPE' ? '|' : file.format === 'TAB' ? '\\t' : ',');
@@ -1044,12 +1294,28 @@ export function ResourceDetailView({
     }
   }, [activeTab, selectedFileForParser, sampleData.headers.length, isInspecting]);
 
-  // Filtered discovered files
+  // Filtered discovered files taking into account search query and patternFilterMode
   const filteredFiles = useMemo(() => {
-    if (!folderSearchFilter) return discoveredFiles;
-    const q = folderSearchFilter.toLowerCase();
-    return discoveredFiles.filter(f => f.name.toLowerCase().includes(q) || f.subfolder.toLowerCase().includes(q));
-  }, [discoveredFiles, folderSearchFilter]);
+    let result = discoveredFiles;
+
+    if (patternFilterMode === 'ACCEPTED') {
+      const activePat = activeAcceptedPattern || patternInput.trim();
+      if (activePat) {
+        result = result.filter(f => matchGlobPattern(activePat, f.name, f.fullPath));
+      }
+    } else if (patternFilterMode === 'UNCONFIGURED') {
+      result = result.filter(f => f.status === 'Unconfigured');
+    } else if (patternFilterMode === 'INGESTED') {
+      result = result.filter(f => f.status === 'Ingested');
+    }
+
+    if (folderSearchFilter.trim()) {
+      const q = folderSearchFilter.toLowerCase();
+      result = result.filter(f => f.name.toLowerCase().includes(q) || f.subfolder.toLowerCase().includes(q));
+    }
+
+    return result;
+  }, [discoveredFiles, patternFilterMode, activeAcceptedPattern, patternInput, folderSearchFilter, matchGlobPattern]);
 
   return (
     <div className="flex-1 flex flex-col h-full bg-slate-50 overflow-hidden text-slate-800 text-xs p-6" style={{ zoom: 0.9 }}>
@@ -1530,11 +1796,396 @@ export function ResourceDetailView({
       {activeTab === 'folders' && isSftp && (
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-4 flex-1 min-h-0 h-full overflow-hidden">
           {/* ------------------------------------------------------------- */}
-          {/* LEFT PANEL (1 Col): DETECTED FILE PATTERNS                   */}
+          {/* LEFT PANEL (1 Col): PATTERN ACCEPTOR & DETECTED PATTERNS      */}
           {/* ------------------------------------------------------------- */}
           <div className="lg:col-span-1 space-y-3 flex flex-col min-h-0 h-full overflow-y-auto pr-1">
-            {/* Header / Summary Card */}
-            <div className="p-4 bg-white border border-slate-200/90 rounded-2xl shadow-2xs space-y-2 shrink-0">
+            {/* =========================================================== */}
+            {/* CONDITIONAL: ADD PATTERN FORM vs NORMAL LIST VIEW           */}
+            {/* =========================================================== */}
+            {isAddingPattern ? (
+              /* ========================================================= */
+              /* ADD NEW PATTERN FORM (ONLY COMPONENT SHOWN ON LEFT PANEL) */
+              /* ========================================================= */
+              <div className="p-4 bg-white border-2 border-indigo-200 rounded-2xl shadow-xs space-y-3.5 shrink-0">
+                {/* Form Header */}
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center space-x-2">
+                    <div className="w-7 h-7 rounded-lg bg-indigo-50 border border-indigo-200 flex items-center justify-center text-indigo-600">
+                      <PlusCircle size={15} />
+                    </div>
+                    <div>
+                      <h3 className="font-bold text-slate-900 text-xs tracking-tight">Add New Pattern</h3>
+                      <p className="text-[10px] text-slate-400">Custom wildcard &amp; staging feed</p>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsAddingPattern(false);
+                      setNewPatternInput('');
+                    }}
+                    className="p-1 text-slate-400 hover:text-slate-600 rounded-lg hover:bg-slate-100 transition cursor-pointer"
+                    title="Cancel and close form"
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+
+                {/* User Identification Banner */}
+                <div className="px-3 py-2 bg-indigo-50/70 border border-indigo-100 rounded-xl flex items-center space-x-2 text-[11px] text-indigo-900">
+                  <User size={13} className="text-indigo-600 shrink-0" />
+                  <span className="truncate">
+                    Author: <strong className="font-semibold">{currentUserName}</strong>{' '}
+                    <span className="text-[10px] text-indigo-700/80">({currentUserEmail})</span>
+                  </span>
+                </div>
+
+                {/* Wildcard Pattern Input */}
+                <div className="space-y-1.5">
+                  <div className="flex items-center justify-between">
+                    <label className="text-[10px] font-bold text-slate-600 uppercase tracking-wider">
+                      Wildcard Pattern <span className="text-rose-500">*</span>
+                    </label>
+                    {newPatternInput && (
+                      <button
+                        type="button"
+                        onClick={() => setNewPatternInput('')}
+                        className="text-[10px] text-slate-400 hover:text-rose-600 cursor-pointer flex items-center space-x-0.5"
+                      >
+                        <X size={10} />
+                        <span>Clear</span>
+                      </button>
+                    )}
+                  </div>
+                  <input
+                    type="text"
+                    value={newPatternInput}
+                    onChange={(e) => setNewPatternInput(e.target.value)}
+                    placeholder="e.g. *-Unsettled.xls, *.csv"
+                    autoFocus
+                    className="w-full px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl font-mono text-xs text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-indigo-500 focus:bg-white transition"
+                  />
+
+                  {/* Live Match Preview */}
+                  {newPatternInput.trim() ? (
+                    newPatternMatchedFiles.length > 0 ? (
+                      <div className="p-2 bg-emerald-50 border border-emerald-200 rounded-xl text-emerald-800 text-[11px] flex items-center space-x-1.5">
+                        <CheckCircle2 size={12} className="text-emerald-600 shrink-0" />
+                        <span className="font-semibold">
+                          Matches {newPatternMatchedFiles.length} discovered file{newPatternMatchedFiles.length > 1 ? 's' : ''}
+                        </span>
+                      </div>
+                    ) : (
+                      <div className="p-2 bg-amber-50 border border-amber-200 rounded-xl text-amber-800 text-[11px] flex items-center space-x-1.5">
+                        <AlertCircle size={12} className="text-amber-600 shrink-0" />
+                        <span>0 discovered files currently match this pattern</span>
+                      </div>
+                    )
+                  ) : (
+                    <p className="text-[10px] text-slate-400">
+                      Use standard wildcards like <code className="font-mono bg-slate-100 px-1 rounded">*</code> or <code className="font-mono bg-slate-100 px-1 rounded">?</code>
+                    </p>
+                  )}
+                </div>
+
+                {/* File Format Selector */}
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-bold text-slate-600 uppercase tracking-wider block">
+                    File Format
+                  </label>
+                  <select
+                    value={newPatternFormat}
+                    onChange={(e) => setNewPatternFormat(e.target.value as any)}
+                    className="w-full px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 focus:outline-none focus:border-indigo-500 focus:bg-white transition"
+                  >
+                    <option value="EXCEL">EXCEL (Spreadsheet .xls, .xlsx)</option>
+                    <option value="CSV">CSV (Comma-Separated)</option>
+                    <option value="PIPE">PIPE (Pipe-Delimited |)</option>
+                    <option value="TAB">TAB (Tab-Delimited \t)</option>
+                    <option value="DAT">DAT (Data File)</option>
+                    <option value="TXT">TXT (Fixed/Plain Text)</option>
+                  </select>
+                </div>
+
+                {/* Target Mirror Table Name */}
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-bold text-slate-600 uppercase tracking-wider block">
+                    Target Mirror Table
+                  </label>
+                  <input
+                    type="text"
+                    value={newPatternTableName}
+                    onChange={(e) => setNewPatternTableName(e.target.value)}
+                    placeholder="e.g. mirror_ftp_unsettled"
+                    className="w-full px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl font-mono text-xs text-slate-900 focus:outline-none focus:border-indigo-500 focus:bg-white transition"
+                  />
+                  <p className="text-[10px] text-slate-400">
+                    Dedicated PostgreSQL unlogged table for staging records
+                  </p>
+                </div>
+
+                {/* Feed Description (Optional) */}
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-bold text-slate-600 uppercase tracking-wider block">
+                    Description <span className="text-slate-400 font-normal lowercase">(optional)</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={newPatternDescription}
+                    onChange={(e) => setNewPatternDescription(e.target.value)}
+                    placeholder="e.g. Daily settlement clearing feed"
+                    className="w-full px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-900 focus:outline-none focus:border-indigo-500 focus:bg-white transition"
+                  />
+                </div>
+
+                {/* Action Buttons: Cancel & Save */}
+                <div className="pt-2 border-t border-slate-100 flex items-center justify-end space-x-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsAddingPattern(false);
+                      setNewPatternInput('');
+                    }}
+                    className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-semibold text-xs transition cursor-pointer"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleSaveNewPattern}
+                    disabled={!newPatternInput.trim() || isSavingCustomPattern}
+                    className="px-4 py-1.5 bg-indigo-600 hover:bg-indigo-700 disabled:bg-slate-200 disabled:text-slate-400 text-white rounded-xl font-bold text-xs transition cursor-pointer flex items-center space-x-1.5 shadow-xs"
+                  >
+                    <Check size={13} />
+                    <span>{isSavingCustomPattern ? 'Saving...' : 'Save Pattern'}</span>
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <>
+                {/* =========================================================== */}
+                {/* 1. PATTERN ACCEPTOR CARD (CORE WORKFLOW COMPONENT)          */}
+                {/* =========================================================== */}
+                <div className="p-4 bg-white border border-slate-200/90 rounded-2xl shadow-2xs space-y-3 shrink-0">
+              {/* Header */}
+              <div className="flex items-center justify-between">
+                <div className="flex items-center space-x-2">
+                  <div className="w-7 h-7 rounded-lg bg-orange-50 border border-orange-200 flex items-center justify-center text-orange-600">
+                    <CheckCheck size={14} />
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-slate-900 text-xs tracking-tight">Pattern Acceptor</h3>
+                    <p className="text-[10px] text-slate-400">Validate &amp; accept filename wildcards</p>
+                  </div>
+                </div>
+                {activeAcceptedPattern ? (
+                  <span className="px-2 py-0.5 rounded-full text-[9px] font-mono font-bold bg-emerald-50 text-emerald-800 border border-emerald-300 inline-flex items-center space-x-1">
+                    <Check size={10} className="text-emerald-600" />
+                    <span>Active</span>
+                  </span>
+                ) : (
+                  <span className="px-2 py-0.5 rounded-full text-[9px] font-mono font-semibold bg-slate-100 text-slate-600 border border-slate-200">
+                    Draft
+                  </span>
+                )}
+              </div>
+
+              {/* Notice Banner */}
+              {patternAcceptNotice && (
+                <div className="p-2.5 bg-emerald-50 border border-emerald-200 rounded-xl text-emerald-900 text-[11px] flex items-start justify-between gap-1">
+                  <div className="flex items-start space-x-1.5">
+                    <CheckCircle2 size={13} className="text-emerald-600 shrink-0 mt-0.5" />
+                    <span>{patternAcceptNotice}</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('file_type')}
+                    className="text-emerald-800 underline font-semibold text-[10px] shrink-0 cursor-pointer hover:text-emerald-950"
+                  >
+                    Step 2 →
+                  </button>
+                </div>
+              )}
+
+              {/* Pattern Input Box */}
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="text-[10px] font-bold text-slate-600 uppercase tracking-wider">
+                    Wildcard Pattern (Glob)
+                  </label>
+                  {patternInput && (
+                    <button
+                      type="button"
+                      onClick={() => setPatternInput('')}
+                      className="text-[10px] text-slate-400 hover:text-rose-600 cursor-pointer flex items-center space-x-0.5"
+                    >
+                      <X size={10} />
+                      <span>Clear</span>
+                    </button>
+                  )}
+                </div>
+                <div className="relative">
+                  <input
+                    type="text"
+                    value={patternInput}
+                    onChange={(e) => setPatternInput(e.target.value)}
+                    placeholder="e.g. *-Unsettled.xls, *.csv"
+                    className="w-full px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl font-mono text-xs text-slate-900 placeholder:text-slate-400 focus:outline-none focus:border-orange-500 focus:bg-white transition"
+                  />
+                </div>
+              </div>
+
+              {/* Live Acceptance Telemetry */}
+              <div className="p-2.5 bg-slate-50 border border-slate-200/80 rounded-xl space-y-1.5 text-[11px]">
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-500">Live Evaluation:</span>
+                  {patternInput.trim() ? (
+                    testMatchedFiles.length > 0 ? (
+                      <span className="font-semibold text-emerald-700 inline-flex items-center space-x-1">
+                        <CheckCircle2 size={11} className="text-emerald-600" />
+                        <span>Accepts {testMatchedFiles.length} of {discoveredFiles.length} files</span>
+                      </span>
+                    ) : (
+                      <span className="font-semibold text-amber-700 inline-flex items-center space-x-1">
+                        <AlertCircle size={11} className="text-amber-600" />
+                        <span>0 matches found</span>
+                      </span>
+                    )
+                  ) : (
+                    <span className="text-slate-400 italic">Enter pattern or select preset</span>
+                  )}
+                </div>
+
+                {/* Mini preview of matched filenames */}
+                {testMatchedFiles.length > 0 && (
+                  <div className="pt-1.5 border-t border-slate-200/60 space-y-1">
+                    <div className="text-[10px] text-slate-400 flex items-center justify-between">
+                      <span>Matching Sample{testMatchedFiles.length > 1 ? 's' : ''}:</span>
+                      <span className="font-mono text-slate-500 text-[9px]">{testMatchedFiles.length} total</span>
+                    </div>
+                    <div className="flex flex-col space-y-1 max-h-20 overflow-y-auto">
+                      {testMatchedFiles.slice(0, 3).map((mf, mIdx) => (
+                        <div key={mIdx} className="font-mono text-[10px] text-slate-700 truncate bg-white px-2 py-0.5 rounded border border-slate-200/80 flex items-center space-x-1.5">
+                          <FileCode size={10} className="text-slate-400 shrink-0" />
+                          <span className="truncate">{mf.name}</span>
+                        </div>
+                      ))}
+                      {testMatchedFiles.length > 3 && (
+                        <div className="text-[9px] text-slate-400 italic pl-1">
+                          + {testMatchedFiles.length - 3} more files
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Action Buttons */}
+              <div className="space-y-1.5">
+                <button
+                  type="button"
+                  onClick={() => handleAcceptPattern()}
+                  disabled={!patternInput.trim() || testMatchedFiles.length === 0}
+                  className={`w-full py-2 px-3 rounded-xl font-bold text-xs transition cursor-pointer flex items-center justify-center space-x-1.5 shadow-xs ${
+                    activeAcceptedPattern === patternInput.trim() && patternInput.trim()
+                      ? 'bg-emerald-600 hover:bg-emerald-700 text-white'
+                      : 'bg-[#F97316] hover:bg-orange-600 text-white disabled:bg-slate-200 disabled:text-slate-400 disabled:cursor-not-allowed'
+                  }`}
+                >
+                  <CheckCheck size={14} />
+                  <span>
+                    {activeAcceptedPattern === patternInput.trim() && patternInput.trim()
+                      ? 'Pattern Accepted (Re-Apply)'
+                      : 'Accept Pattern'}
+                  </span>
+                </button>
+
+                {activeAcceptedPattern && (
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('file_type')}
+                    className="w-full py-1.5 px-3 bg-white hover:bg-orange-50 border border-orange-200 text-orange-700 rounded-xl font-semibold text-xs transition cursor-pointer flex items-center justify-center space-x-1 shadow-2xs"
+                  >
+                    <span>Configure in Step 2</span>
+                    <ChevronRight size={13} />
+                  </button>
+                )}
+              </div>
+
+              {/* Accepted Patterns Registry */}
+              {acceptedPatterns.length > 0 && (
+                <div className="pt-2 border-t border-slate-100 space-y-1.5">
+                  <label className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block">
+                    Accepted Patterns ({acceptedPatterns.length})
+                  </label>
+                  <div className="flex flex-wrap gap-1.5">
+                    {acceptedPatterns.map((ap, apIdx) => {
+                      const isActive = activeAcceptedPattern === ap;
+                      return (
+                        <div
+                          key={apIdx}
+                          className={`group px-2 py-1 rounded-lg text-[10px] font-mono font-bold border transition flex items-center space-x-1.5 ${
+                            isActive
+                              ? 'bg-emerald-50 border-emerald-300 text-emerald-900'
+                              : 'bg-slate-50 border-slate-200 text-slate-700 hover:border-slate-300'
+                          }`}
+                        >
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setActiveAcceptedPattern(ap);
+                              setPatternInput(ap);
+                              setFilePattern(ap);
+                            }}
+                            className="cursor-pointer truncate max-w-[130px]"
+                            title={`Select ${ap}`}
+                          >
+                            {isActive && <span className="text-emerald-600 mr-1">✓</span>}
+                            <span>{ap}</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleUnacceptPattern(ap)}
+                            className="text-slate-400 hover:text-rose-600 cursor-pointer ml-1"
+                            title="Remove pattern"
+                          >
+                            <X size={10} />
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+
+              {/* Quick Presets from Detected Patterns */}
+              {detectedPatterns.length > 0 && (
+                <div className="pt-2 border-t border-slate-100 space-y-1.5">
+                  <label className="text-[10px] font-semibold text-slate-400 block">
+                    Quick Presets from Remote Scan:
+                  </label>
+                  <div className="flex flex-wrap gap-1.5">
+                    {detectedPatterns.map((grp, gIdx) => (
+                      <button
+                        key={gIdx}
+                        type="button"
+                        onClick={() => {
+                          setPatternInput(grp.pattern);
+                          handleAcceptPattern(grp.pattern);
+                        }}
+                        className="px-2 py-0.5 rounded-lg text-[10px] font-mono bg-slate-50 hover:bg-orange-50 border border-slate-200 hover:border-orange-300 text-slate-700 hover:text-orange-900 transition cursor-pointer flex items-center space-x-1 shadow-2xs"
+                      >
+                        <span>{grp.pattern}</span>
+                        <span className="text-[9px] text-slate-400">({grp.fileCount})</span>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* 2. DETECTED FILE PATTERNS CARD WITH FILTERS & ADD PATTERN BUTTON */}
+            <div className="p-4 bg-white border border-slate-200/90 rounded-2xl shadow-2xs space-y-3 shrink-0">
               <div className="flex items-center justify-between">
                 <div className="flex items-center space-x-2">
                   <div className="w-7 h-7 rounded-lg bg-orange-50 border border-orange-200 flex items-center justify-center text-orange-600">
@@ -1545,13 +2196,60 @@ export function ResourceDetailView({
                     <p className="text-[10px] text-slate-400">Semantic grouping across folders</p>
                   </div>
                 </div>
-                <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-slate-100 text-slate-700 border border-slate-200">
-                  {detectedPatterns.length}
-                </span>
+
+                {/* Add Pattern Action Button */}
+                <button
+                  type="button"
+                  onClick={() => setIsAddingPattern(true)}
+                  className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-700 text-white rounded-xl font-bold text-[10px] transition cursor-pointer flex items-center space-x-1 shadow-2xs"
+                  title="Add a custom file pattern"
+                >
+                  <PlusCircle size={11} />
+                  <span>Add Pattern</span>
+                </button>
               </div>
+
               <p className="text-[11px] text-slate-500 leading-relaxed">
-                Files sharing names or wildcards are grouped into staging feeds. One parser configuration stages all matching files into a dedicated PostgreSQL table.
+                Files sharing names or wildcards are grouped into staging feeds. Filter by all or your custom patterns.
               </p>
+
+              {/* Filter Pills: All vs My Patterns */}
+              <div className="flex items-center space-x-1.5 pt-1 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setPatternCardFilter('ALL')}
+                  className={`px-2.5 py-1 rounded-xl text-[11px] font-semibold transition cursor-pointer flex items-center space-x-1.5 ${
+                    patternCardFilter === 'ALL'
+                      ? 'bg-[#0F142A] text-white shadow-2xs'
+                      : 'bg-slate-50 hover:bg-slate-100 text-slate-600 border border-slate-200'
+                  }`}
+                >
+                  <span>All</span>
+                  <span className={`px-1.5 py-0.2 rounded-full text-[9px] font-mono ${
+                    patternCardFilter === 'ALL' ? 'bg-slate-700 text-white' : 'bg-slate-200/70 text-slate-600'
+                  }`}>
+                    {detectedPatterns.length}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setPatternCardFilter('MY_PATTERNS')}
+                  className={`px-2.5 py-1 rounded-xl text-[11px] font-semibold transition cursor-pointer flex items-center space-x-1.5 ${
+                    patternCardFilter === 'MY_PATTERNS'
+                      ? 'bg-indigo-600 text-white shadow-2xs'
+                      : 'bg-indigo-50 hover:bg-indigo-100 text-indigo-700 border border-indigo-200'
+                  }`}
+                >
+                  <User size={10} className={patternCardFilter === 'MY_PATTERNS' ? 'text-white' : 'text-indigo-600'} />
+                  <span>My Patterns</span>
+                  <span className={`px-1.5 py-0.2 rounded-full text-[9px] font-mono ${
+                    patternCardFilter === 'MY_PATTERNS' ? 'bg-indigo-800 text-white' : 'bg-indigo-200 text-indigo-900'
+                  }`}>
+                    {myPatternsCount}
+                  </span>
+                </button>
+              </div>
             </div>
 
             {/* Rotating Folders Callout (if detected) */}
@@ -1582,26 +2280,41 @@ export function ResourceDetailView({
               </div>
             )}
 
-            {/* List of Detected Patterns */}
-            {detectedPatterns.length === 0 ? (
+            {/* List of Pattern Cards (Filtered by All / My Patterns) */}
+            {displayedPatternGroups.length === 0 ? (
               <div className="p-6 bg-white border border-slate-200/80 rounded-2xl text-center space-y-2">
-                <Sparkles size={20} className="text-slate-300 mx-auto" />
-                <div className="font-bold text-slate-700 text-xs">No Patterns Detected</div>
-                <p className="text-[11px] text-slate-400">
-                  Scan the remote directory using the scanner on the right to discover incoming files and auto-detect patterns.
-                </p>
+                {patternCardFilter === 'MY_PATTERNS' ? (
+                  <>
+                    <User size={20} className="text-indigo-300 mx-auto" />
+                    <div className="font-bold text-slate-700 text-xs">No Custom Patterns Yet</div>
+                    <p className="text-[11px] text-slate-400">
+                      You haven't created any custom patterns yet. Click "+ Add Pattern" above to define your own wildcard feed.
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <Sparkles size={20} className="text-slate-300 mx-auto" />
+                    <div className="font-bold text-slate-700 text-xs">No Patterns Detected</div>
+                    <p className="text-[11px] text-slate-400">
+                      Scan the remote directory using the scanner on the right to discover incoming files and auto-detect patterns.
+                    </p>
+                  </>
+                )}
               </div>
             ) : (
               <div className="space-y-3">
-                {detectedPatterns.map((grp, pIdx) => {
+                {displayedPatternGroups.map((grp, pIdx) => {
                   const isAllIngested = grp.ingestedFileCount !== undefined && grp.ingestedFileCount >= grp.fileCount && grp.fileCount > 0;
                   const isPartiallyIngested = grp.ingestedFileCount !== undefined && grp.ingestedFileCount > 0 && !isAllIngested;
                   const isStaging = isStagingPattern === grp.pattern;
+                  const hasUserAttribution = Boolean(grp.isCustom || grp.createdBy || grp.createdByName);
 
                   return (
                     <div
                       key={pIdx}
-                      className="p-3.5 rounded-2xl border border-slate-200/90 bg-white hover:border-orange-300 hover:shadow-xs transition space-y-2.5 shadow-2xs"
+                      className={`p-3.5 rounded-2xl border bg-white hover:border-orange-300 hover:shadow-xs transition space-y-2.5 shadow-2xs ${
+                        grp.isCustom ? 'border-indigo-200/90' : 'border-slate-200/90'
+                      }`}
                     >
                       <div className="flex items-start justify-between gap-1.5">
                         <div className="space-y-1 min-w-0 flex-1">
@@ -1616,6 +2329,26 @@ export function ResourceDetailView({
                             }`}>
                               {grp.fileType}
                             </span>
+
+                            {/* User Identification Badge */}
+                            {hasUserAttribution ? (
+                              <span
+                                className="px-1.5 py-0.2 rounded text-[9px] font-medium bg-indigo-50 text-indigo-700 border border-indigo-200 inline-flex items-center space-x-1"
+                                title={`Created by ${grp.createdByName || grp.createdBy}`}
+                              >
+                                <User size={9} className="text-indigo-600 shrink-0" />
+                                <span className="truncate max-w-[110px]">
+                                  By: {grp.createdByName === currentUserName || grp.createdBy === currentUserEmail
+                                    ? `You (${currentUserName})`
+                                    : (grp.createdByName || grp.createdBy)}
+                                </span>
+                              </span>
+                            ) : (
+                              <span className="px-1.5 py-0.2 rounded text-[9px] font-medium bg-slate-100 text-slate-600 border border-slate-200 inline-flex items-center space-x-1">
+                                <Sparkles size={9} className="text-orange-500 shrink-0" />
+                                <span>Auto-Detected</span>
+                              </span>
+                            )}
                           </div>
                           <div className="flex items-center space-x-1 text-[10px] text-slate-500">
                             <Database size={11} className="text-blue-600 shrink-0" />
@@ -1697,21 +2430,39 @@ export function ResourceDetailView({
                           )}
                         </div>
 
-                        <button
-                          type="button"
-                          onClick={() => handleSelectPatternToConfigure(grp)}
-                          className="px-2.5 py-1 bg-white hover:bg-orange-50 border border-slate-200 hover:border-orange-300 text-slate-700 hover:text-orange-700 rounded-lg font-semibold text-[10px] transition cursor-pointer flex items-center space-x-0.5 shadow-2xs"
-                        >
-                          <span>Configure &amp; Parse</span>
-                          <ChevronRight size={11} />
-                        </button>
+                        <div className="flex items-center space-x-1">
+                          <button
+                            type="button"
+                            onClick={() => handleAcceptPattern(grp.pattern)}
+                            className={`px-2 py-1 rounded-lg font-semibold text-[10px] transition cursor-pointer flex items-center space-x-1 shadow-2xs ${
+                              activeAcceptedPattern === grp.pattern
+                                ? 'bg-emerald-50 text-emerald-800 border border-emerald-300 font-bold'
+                                : 'bg-white hover:bg-emerald-50 border border-slate-200 hover:border-emerald-300 text-slate-700 hover:text-emerald-700'
+                            }`}
+                            title="Accept this pattern into the Pattern Acceptor"
+                          >
+                            <CheckCheck size={11} className={activeAcceptedPattern === grp.pattern ? 'text-emerald-600' : 'text-slate-400'} />
+                            <span>{activeAcceptedPattern === grp.pattern ? 'Accepted' : 'Accept'}</span>
+                          </button>
+
+                          <button
+                            type="button"
+                            onClick={() => handleSelectPatternToConfigure(grp)}
+                            className="px-2 py-1 bg-white hover:bg-orange-50 border border-slate-200 hover:border-orange-300 text-slate-700 hover:text-orange-700 rounded-lg font-semibold text-[10px] transition cursor-pointer flex items-center space-x-0.5 shadow-2xs"
+                          >
+                            <span>Configure</span>
+                            <ChevronRight size={11} />
+                          </button>
+                        </div>
                       </div>
                     </div>
                   );
                 })}
               </div>
             )}
-          </div>
+          </>
+        )}
+      </div>
 
           {/* ------------------------------------------------------------- */}
           {/* RIGHT PANEL (3 Cols): DISCOVERED REMOTE FILES TABLE           */}
@@ -1760,15 +2511,73 @@ export function ResourceDetailView({
                 </div>
               </div>
 
-              {/* Status Metrics Strip */}
-              <div className="flex items-center justify-between pt-2 border-t border-slate-100 text-[11px]">
-                <div className="flex items-center space-x-3 text-slate-500">
-                  <span>Found: <strong className="text-slate-900 font-mono">{discoveredFiles.length}</strong> files</span>
-                  <span>·</span>
-                  <span>Ingested: <strong className="text-emerald-700 font-mono">{ingestedFilesList.length}</strong></span>
-                  <span>·</span>
-                  <span>Unconfigured: <strong className="text-amber-700 font-mono">{discoveredFiles.filter(f => f.status === 'Unconfigured').length}</strong></span>
+              {/* Status Metrics Strip & Acceptance Filter Tabs */}
+              <div className="flex flex-wrap items-center justify-between pt-2 border-t border-slate-100 text-[11px] gap-2">
+                <div className="flex items-center space-x-1.5 overflow-x-auto py-0.5">
+                  <button
+                    type="button"
+                    onClick={() => setPatternFilterMode('ALL')}
+                    className={`px-2.5 py-1 rounded-xl text-[11px] font-semibold transition cursor-pointer flex items-center space-x-1 ${
+                      patternFilterMode === 'ALL'
+                        ? 'bg-[#0F142A] text-white shadow-2xs'
+                        : 'bg-white hover:bg-slate-100 text-slate-600 border border-slate-200'
+                    }`}
+                  >
+                    <span>All Files</span>
+                    <span className={`px-1.5 py-0.2 rounded-full text-[9px] font-mono ${
+                      patternFilterMode === 'ALL' ? 'bg-slate-700 text-white' : 'bg-slate-100 text-slate-600'
+                    }`}>{discoveredFiles.length}</span>
+                  </button>
+
+                  {activeAcceptedPattern && (
+                    <button
+                      type="button"
+                      onClick={() => setPatternFilterMode('ACCEPTED')}
+                      className={`px-2.5 py-1 rounded-xl text-[11px] font-semibold transition cursor-pointer flex items-center space-x-1 ${
+                        patternFilterMode === 'ACCEPTED'
+                          ? 'bg-emerald-600 text-white shadow-2xs'
+                          : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300'
+                      }`}
+                    >
+                      <CheckCheck size={12} className={patternFilterMode === 'ACCEPTED' ? 'text-white' : 'text-emerald-600'} />
+                      <span>Accepted: <code className="font-mono">{activeAcceptedPattern}</code></span>
+                      <span className={`px-1.5 py-0.2 rounded-full text-[9px] font-mono ${
+                        patternFilterMode === 'ACCEPTED' ? 'bg-emerald-800 text-emerald-100' : 'bg-emerald-200/80 text-emerald-900'
+                      }`}>{acceptedMatchedFiles.length}</span>
+                    </button>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={() => setPatternFilterMode('UNCONFIGURED')}
+                    className={`px-2.5 py-1 rounded-xl text-[11px] font-semibold transition cursor-pointer flex items-center space-x-1 ${
+                      patternFilterMode === 'UNCONFIGURED'
+                        ? 'bg-amber-600 text-white shadow-2xs'
+                        : 'bg-white hover:bg-amber-50 text-slate-600 hover:text-amber-800 border border-slate-200'
+                    }`}
+                  >
+                    <span>Unconfigured</span>
+                    <span className={`px-1.5 py-0.2 rounded-full text-[9px] font-mono ${
+                      patternFilterMode === 'UNCONFIGURED' ? 'bg-amber-800 text-white' : 'bg-slate-100 text-slate-600'
+                    }`}>{discoveredFiles.filter(f => f.status === 'Unconfigured').length}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setPatternFilterMode('INGESTED')}
+                    className={`px-2.5 py-1 rounded-xl text-[11px] font-semibold transition cursor-pointer flex items-center space-x-1 ${
+                      patternFilterMode === 'INGESTED'
+                        ? 'bg-blue-600 text-white shadow-2xs'
+                        : 'bg-white hover:bg-blue-50 text-slate-600 hover:text-blue-800 border border-slate-200'
+                    }`}
+                  >
+                    <span>Ingested</span>
+                    <span className={`px-1.5 py-0.2 rounded-full text-[9px] font-mono ${
+                      patternFilterMode === 'INGESTED' ? 'bg-blue-800 text-white' : 'bg-slate-100 text-slate-600'
+                    }`}>{ingestedFilesList.length}</span>
+                  </button>
                 </div>
+
                 <div className="text-[10px] text-slate-400 font-mono">
                   {isScanningFolders ? 'Scanning SFTP server...' : hasScanned ? `Path: ${remoteFolderPath || '/'}` : 'Scan required'}
                 </div>
@@ -1846,74 +2655,135 @@ export function ResourceDetailView({
                     </button>
                   </div>
                 ) : (
-                  <table className="w-full text-left text-xs border-collapse">
-                    <thead className="sticky top-0 bg-slate-50 border-b border-slate-200 z-10 text-slate-400 font-medium text-[11px]">
-                      <tr>
-                        <th className="py-2.5 px-4">File Name &amp; Path</th>
-                        <th className="py-2.5 px-3">Size</th>
-                        <th className="py-2.5 px-3">Detected Format</th>
-                        <th className="py-2.5 px-3">Last Modified</th>
-                        <th className="py-2.5 px-3">Feed Status</th>
-                        <th className="py-2.5 px-4 text-right">Action</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-slate-100 text-xs">
-                      {filteredFiles.map((file, idx) => (
-                        <tr key={idx} className="hover:bg-slate-50/70 transition">
-                          <td className="py-2.5 px-4">
-                            <div className="flex items-center space-x-2.5">
-                              <FileCode size={15} className="text-slate-400 shrink-0" />
-                              <div>
-                                <div className="font-mono font-bold text-slate-900">{file.name}</div>
-                                <div className="text-[10px] text-slate-400 font-mono">{file.subfolder}</div>
-                              </div>
-                            </div>
-                          </td>
-                          <td className="py-2.5 px-3 font-mono text-slate-600">{file.size}</td>
-                          <td className="py-2.5 px-3">
-                            <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
-                              file.format === 'EXCEL' ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' :
-                              file.format === 'PIPE' ? 'bg-purple-50 text-purple-700 border border-purple-200' :
-                              file.format === 'TAB' ? 'bg-indigo-50 text-indigo-700 border border-indigo-200' :
-                              'bg-blue-50 text-blue-700 border border-blue-200'
-                            }`}>
-                              {file.format}
-                            </span>
-                          </td>
-                          <td className="py-2.5 px-3 text-slate-500 text-[11px]">{file.date}</td>
-                          <td className="py-2.5 px-3">
-                            {file.status === 'Ingested' ? (
-                              <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 text-emerald-800 border border-emerald-300 inline-flex items-center space-x-1">
-                                <CheckCircle2 size={11} className="text-emerald-600" />
-                                <span>Ingested ({file.recordsStaged || 0} rows)</span>
-                              </span>
-                            ) : file.status === 'Covered' ? (
-                              <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200 inline-flex items-center space-x-1">
-                                <Check size={11} />
-                                <span>Covered by Feed</span>
-                              </span>
-                            ) : (
-                              <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-50 text-amber-700 border border-amber-200 inline-flex items-center space-x-1">
-                                <AlertCircle size={11} />
-                                <span>Unconfigured</span>
-                              </span>
-                            )}
-                          </td>
-                          <td className="py-2.5 px-4 text-right">
-                            <button
-                              type="button"
-                              onClick={() => handleSelectFileToParse(file)}
-                              className="px-3 py-1.5 bg-white hover:bg-orange-50 border border-slate-200 hover:border-orange-300 text-slate-700 hover:text-orange-700 rounded-xl font-semibold text-xs transition cursor-pointer flex items-center space-x-1 ml-auto shadow-2xs"
-                            >
-                              <span>Configure Feed</span>
-                              <ChevronRight size={13} />
-                            </button>
-                          </td>
+                  <>
+                    {/* Live Pattern Match Evaluation Banner in Add Pattern Mode */}
+                    {isAddingPattern && newPatternInput.trim() && (
+                      <div className="mx-4 my-2.5 p-2.5 bg-indigo-50/90 border border-indigo-200 rounded-xl flex items-center justify-between text-xs text-indigo-900 shrink-0">
+                        <div className="flex items-center space-x-2">
+                          <Sparkles size={14} className="text-indigo-600 shrink-0" />
+                          <span>
+                            Evaluating custom pattern <strong className="font-mono bg-white px-1.5 py-0.5 rounded border border-indigo-200">{newPatternInput.trim()}</strong>:{' '}
+                            <strong className="text-indigo-950">{newPatternMatchedFiles.length} file{newPatternMatchedFiles.length !== 1 ? 's' : ''}</strong> currently match
+                          </span>
+                        </div>
+                        <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-white text-indigo-800 border border-indigo-200">
+                          Live Evaluation
+                        </span>
+                      </div>
+                    )}
+
+                    <table className="w-full text-left text-xs border-collapse">
+                      <thead className="sticky top-0 bg-slate-50 border-b border-slate-200 z-10 text-slate-400 font-medium text-[11px]">
+                        <tr>
+                          <th className="py-2.5 px-4">File Name &amp; Path</th>
+                          <th className="py-2.5 px-3">Size</th>
+                          <th className="py-2.5 px-3">Detected Format</th>
+                          <th className="py-2.5 px-3">Last Modified</th>
+                          <th className="py-2.5 px-3">Feed Status</th>
+                          <th className="py-2.5 px-4 text-right">Action</th>
                         </tr>
-                      ))}
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 text-xs">
+                        {filteredFiles.map((file, idx) => {
+                          const isNewPatternMatch = isAddingPattern && newPatternInput.trim() ? matchGlobPattern(newPatternInput.trim(), file.name, file.fullPath) : false;
+                          const isAcceptedMatch = activeAcceptedPattern ? matchGlobPattern(activeAcceptedPattern, file.name, file.fullPath) : false;
+                          const isCurrentSample = selectedFileForParser === file.fullPath;
+
+                          return (
+                            <tr
+                              key={idx}
+                              className={`hover:bg-slate-50/70 transition ${
+                                isNewPatternMatch
+                                  ? 'bg-indigo-50/40 font-medium'
+                                  : isAcceptedMatch
+                                  ? 'bg-emerald-50/25'
+                                  : ''
+                              }`}
+                            >
+                              <td className="py-2.5 px-4">
+                                <div className="flex items-center space-x-2.5">
+                                  <FileCode
+                                    size={15}
+                                    className={
+                                      isNewPatternMatch
+                                        ? "text-indigo-600 shrink-0"
+                                        : isAcceptedMatch
+                                        ? "text-emerald-600 shrink-0"
+                                        : "text-slate-400 shrink-0"
+                                    }
+                                  />
+                                  <div>
+                                    <div className="flex items-center space-x-1.5 flex-wrap">
+                                      <span className="font-mono font-bold text-slate-900">{file.name}</span>
+                                      {isNewPatternMatch && (
+                                        <span className="px-1.5 py-0.2 rounded text-[9px] font-semibold bg-indigo-50 text-indigo-800 border border-indigo-300 inline-flex items-center space-x-0.5">
+                                          <Sparkles size={9} className="text-indigo-600" />
+                                          <span>Matches New Pattern</span>
+                                        </span>
+                                      )}
+                                      {isAcceptedMatch && !isNewPatternMatch && (
+                                        <span className="px-1.5 py-0.2 rounded text-[9px] font-semibold bg-emerald-50 text-emerald-800 border border-emerald-300 inline-flex items-center space-x-0.5">
+                                          <CheckCheck size={9} className="text-emerald-600" />
+                                          <span>Matches Pattern</span>
+                                        </span>
+                                      )}
+                                      {isCurrentSample && (
+                                        <span className="px-1.5 py-0.2 rounded text-[9px] font-semibold bg-orange-50 text-orange-800 border border-orange-200">
+                                          Active Sample
+                                        </span>
+                                      )}
+                                    </div>
+                                    <div className="text-[10px] text-slate-400 font-mono">{file.subfolder}</div>
+                                  </div>
+                              </div>
+                            </td>
+                            <td className="py-2.5 px-3 font-mono text-slate-600">{file.size}</td>
+                            <td className="py-2.5 px-3">
+                              <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
+                                file.format === 'EXCEL' ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' :
+                                file.format === 'PIPE' ? 'bg-purple-50 text-purple-700 border border-purple-200' :
+                                file.format === 'TAB' ? 'bg-indigo-50 text-indigo-700 border border-indigo-200' :
+                                'bg-blue-50 text-blue-700 border border-blue-200'
+                              }`}>
+                                {file.format}
+                              </span>
+                            </td>
+                            <td className="py-2.5 px-3 text-slate-500 text-[11px]">{file.date}</td>
+                            <td className="py-2.5 px-3">
+                              {file.status === 'Ingested' ? (
+                                <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 text-emerald-800 border border-emerald-300 inline-flex items-center space-x-1">
+                                  <CheckCircle2 size={11} className="text-emerald-600" />
+                                  <span>Ingested ({file.recordsStaged || 0} rows)</span>
+                                </span>
+                              ) : file.status === 'Covered' ? (
+                                <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200 inline-flex items-center space-x-1">
+                                  <Check size={11} />
+                                  <span>Covered by Feed</span>
+                                </span>
+                              ) : (
+                                <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-50 text-amber-700 border border-amber-200 inline-flex items-center space-x-1">
+                                  <AlertCircle size={11} />
+                                  <span>Unconfigured</span>
+                                </span>
+                              )}
+                            </td>
+                            <td className="py-2.5 px-4 text-right">
+                              <button
+                                type="button"
+                                onClick={() => handleSelectFileToParse(file)}
+                                className="px-3 py-1.5 bg-white hover:bg-orange-50 border border-slate-200 hover:border-orange-300 text-slate-700 hover:text-orange-700 rounded-xl font-semibold text-xs transition cursor-pointer flex items-center space-x-1 ml-auto shadow-2xs"
+                              >
+                                <span>Configure Feed</span>
+                                <ChevronRight size={13} />
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
-                )}
+                </>
+              )}
               </div>
             </div>
           </div>
