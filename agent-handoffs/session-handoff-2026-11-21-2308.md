@@ -1,5 +1,10 @@
 # Session Handoff
 
+- **Session Date**: 2026-11-21 23:08 (UTC+3)
+- **Branch**: `feature/frontend-redesign`
+- **Git Commit**: `5e95b9c` (`5e95b9c966d812dd7604d3e83783ffd34eda893b`)
+- **Commit Summary**: `feat: implement global mapping service, value dictionary transformation rules, and operational workflow workspace components`
+
 ## 1. Current Task
 Back Office (BO) Settlement & Operational Workflow Management platform enhancements:
 - Implementing editable original file header names in the **Source File & Schema** page and Ingested Data Grid.
