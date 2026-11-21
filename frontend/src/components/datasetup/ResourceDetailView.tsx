@@ -7,13 +7,15 @@ import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   ChevronLeft, RefreshCw, Settings, ShieldCheck, Database, Folder,
   Check, AlertTriangle, AlertCircle, Play, Plus, Clock, ExternalLink, ArrowRight,
-  User, CheckCircle2, FileText, ChevronRight, FileSpreadsheet, Layers,
+  User, CheckCircle2, FileText, ChevronRight, ChevronDown, FileSpreadsheet, Layers,
   Filter, Search, Calendar, Zap, Terminal, Sparkles, Trash2, Edit3,
   CheckCheck, FolderTree, FileCode, CheckSquare, Eye, Table, FolderOpen,
-  ArrowUpRight, Info
+  ArrowUpRight, Info, RotateCcw, FileCheck, HardDrive
 } from 'lucide-react';
 import { api } from '../../api/client';
 import { groupUnconfiguredFolders, UnconfiguredFolderGroup } from '../../utils/ftpStagingDisplay';
+import { globalMappingService } from '../../services/globalMappingService';
+import { GlobalTransactionSchemaField } from '../../types';
 
 export interface ResourceDetailViewProps {
   resource: any;
@@ -32,6 +34,9 @@ export function ResourceDetailView({
 }: ResourceDetailViewProps) {
   const isSftp = resource.type === 'SFTP' || resource.type === 'FTP';
   const isOffline = resource.status === 'OFFLINE';
+
+  const parsedPort = Number(resource.port) || (resource.host?.includes(':') ? Number(resource.host.split(':')[1]) : undefined) || (isSftp ? 22 : 5432);
+  const parsedHost = resource.host?.includes(':') ? resource.host.split(':')[0] : (resource.host || '127.0.0.1');
 
   // Navigation tab state - dynamically adapts for SFTP Discovery & Staging Studio
   const [activeTab, setActiveTab] = useState<'overview' | 'folders' | 'file_type' | 'schedule_table' | 'tables_feeds' | 'access' | 'activity'>(
@@ -90,9 +95,14 @@ export function ResourceDetailView({
     subfolder: string;
     fullPath: string;
     size: string;
+    rawSize?: number;
     date: string;
     format: string;
-    status: 'Covered' | 'Unconfigured';
+    isIngested?: boolean;
+    ingestedTargetTable?: string;
+    recordsStaged?: number;
+    ingestedAt?: string;
+    status: 'Covered' | 'Unconfigured' | 'Ingested';
   }>>([]);
 
   // Staging configs retrieved from backend
@@ -100,6 +110,50 @@ export function ResourceDetailView({
 
   // Dynamically detected folder groups using groupUnconfiguredFolders
   const [detectedFolderGroups, setDetectedFolderGroups] = useState<UnconfiguredFolderGroup[]>([]);
+
+  // Semantic pattern detection state across folders
+  const [detectedPatterns, setDetectedPatterns] = useState<Array<{
+    pattern: string;
+    cleanPattern?: string;
+    fileType: string;
+    fileCount: number;
+    folders: string[];
+    suggestedTableName: string;
+    ingestedFileCount?: number;
+    pendingFileCount?: number;
+    sampleFile?: {
+      name: string;
+      fullPath: string;
+      relativeFolder: string;
+      size: number;
+      fileType: string;
+    };
+    matchedFiles?: Array<any>;
+  }>>([]);
+  const [isLoadingPatterns, setIsLoadingPatterns] = useState(false);
+
+  // Ingested files ledger state (persistent ftp_ingested_files storage)
+  const [ingestedFilesList, setIngestedFilesList] = useState<Array<{
+    id: string;
+    ftpConnectionId: string;
+    fileName: string;
+    filePath: string;
+    relativeFolder: string;
+    fileSize: number;
+    fileModifiedAt?: string;
+    fileFormat: string;
+    filePattern: string;
+    stagingConfigId?: string;
+    targetTableName: string;
+    recordsStaged: number;
+    ingestionStatus: string;
+    ingestedAt: string;
+    lastCheckedAt?: string;
+  }>>([]);
+  const [isLoadingIngestedFiles, setIsLoadingIngestedFiles] = useState(false);
+  const [ingestedSearchFilter, setIngestedSearchFilter] = useState('');
+  const [ingestedPatternFilter, setIngestedPatternFilter] = useState('ALL');
+  const [isStagingPattern, setIsStagingPattern] = useState<string | null>(null);
 
   // =========================================================================
   // SFTP 2: FILE TYPE ID-ING & DELIMITER STATE
@@ -113,6 +167,7 @@ export function ResourceDetailView({
   const [encoding, setEncoding] = useState<string>('UTF-8');
   const [isInspecting, setIsInspecting] = useState<boolean>(false);
   const [inspectSummary, setInspectSummary] = useState<{ columnsFound: number; sampleCount: number } | null>(null);
+  const [inspectError, setInspectError] = useState<string | null>(null);
 
   const [sampleData, setSampleData] = useState<{ headers: string[]; rows: any[] }>({
     headers: [],
@@ -132,7 +187,171 @@ export function ResourceDetailView({
     targetColumn: string;
     dataType: string;
     isPrimaryKey: boolean;
+    included?: boolean;
+    hasData?: boolean;
+    nonEmptyCount?: number;
+    totalRows?: number;
+    sampleValues?: string[];
+    isMergedSpan?: boolean;
+    globalFieldKey?: string;
   }>>([]);
+  const [pruneEmptyColumns, setPruneEmptyColumns] = useState(true);
+  const [allColumnsAnalysis, setAllColumnsAnalysis] = useState<Array<any>>([]);
+
+  // Global Standard Directory Integration
+  const [globalFields, setGlobalFields] = useState<GlobalTransactionSchemaField[]>(() =>
+    globalMappingService.getStandardFields()
+  );
+  const [, setIsLoadingGlobalFields] = useState(false);
+
+  useEffect(() => {
+    setIsLoadingGlobalFields(true);
+    api.getGlobalStandardDirectory()
+      .then((fields) => {
+        if (Array.isArray(fields) && fields.length > 0) {
+          setGlobalFields(fields);
+          globalMappingService.updateStandardFields(fields);
+          // Auto-align any existing column mappings with freshly loaded database global fields
+          setColumnMappings(prev => {
+            if (!prev || prev.length === 0) return prev;
+            const headers = prev.map(m => m.sourceHeader);
+            const autoMap = globalMappingService.autoGenerateColumnMapping(headers, fields);
+            return prev.map((m, idx) => {
+              const matchedKey = autoMap[m.sourceHeader];
+              if (!matchedKey) return m;
+              const matchedField = fields.find(f => f.key === matchedKey);
+              return {
+                ...m,
+                targetColumn: matchedKey,
+                globalFieldKey: matchedKey,
+                dataType: matchedField ? mapGlobalTypeToPostgres(matchedField.dataType, m.dataType) : m.dataType,
+                isPrimaryKey: idx === 0 || matchedKey === 'transaction_id' || matchedKey === 'refnum'
+              };
+            });
+          });
+        }
+      })
+      .catch((err) => {
+        console.warn('Could not fetch global standard directory:', err);
+      })
+      .finally(() => {
+        setIsLoadingGlobalFields(false);
+      });
+  }, []);
+
+  const mapGlobalTypeToPostgres = (globalType?: string, fallbackType?: string): string => {
+    if (fallbackType && (fallbackType.includes('NUMERIC') || fallbackType.includes('TIMESTAMP'))) {
+      return fallbackType;
+    }
+    switch (globalType) {
+      case 'number': return 'NUMERIC(18,4)';
+      case 'date': return 'TIMESTAMP';
+      case 'boolean': return 'BOOLEAN';
+      case 'string':
+      default:
+        return fallbackType || 'VARCHAR(128)';
+    }
+  };
+
+  const buildColumnMappingFromAnalysis = useCallback((
+    analysisCols: any[],
+    fields: GlobalTransactionSchemaField[],
+    pruneEmpty: boolean
+  ) => {
+    const colsToMap = pruneEmpty
+      ? analysisCols.filter((c: any) => !c.isExcludedEmpty)
+      : analysisCols;
+
+    const headers = colsToMap.map((c: any) => c.header);
+    const autoMap = globalMappingService.autoGenerateColumnMapping(headers, fields);
+
+    return colsToMap.map((c: any, idx: number) => {
+      const matchedKey = autoMap[c.header];
+      const matchedField = matchedKey ? fields.find(f => f.key === matchedKey) : undefined;
+      const hasMatch = Boolean(matchedKey && matchedField);
+      const targetCol = hasMatch ? matchedKey : '';
+      const dataType = matchedField
+        ? mapGlobalTypeToPostgres(matchedField.dataType, c.suggestedDataType)
+        : (c.suggestedDataType || 'VARCHAR(128)');
+
+      return {
+        sourceHeader: c.header,
+        targetColumn: targetCol,
+        dataType,
+        isPrimaryKey: idx === 0 || targetCol === 'transaction_id' || targetCol === 'refnum',
+        included: !c.isExcludedEmpty && hasMatch,
+        hasData: c.hasData,
+        nonEmptyCount: c.nonEmptyCount,
+        totalRows: c.totalRows,
+        sampleValues: c.sampleValues,
+        isMergedSpan: c.isMergedSpan,
+        globalFieldKey: hasMatch ? matchedKey : undefined
+      };
+    });
+  }, []);
+
+  const handleAutoMapAllToGlobal = useCallback(() => {
+    if (columnMappings.length === 0) return;
+    const headers = columnMappings.map(m => m.sourceHeader);
+    const autoMap = globalMappingService.autoGenerateColumnMapping(headers, globalFields);
+
+    setColumnMappings(prev => prev.map((m, idx) => {
+      const matchedKey = autoMap[m.sourceHeader];
+      const matchedField = matchedKey ? globalFields.find(f => f.key === matchedKey) : undefined;
+      const hasMatch = Boolean(matchedKey && matchedField);
+      return {
+        ...m,
+        targetColumn: hasMatch ? matchedKey : '',
+        globalFieldKey: hasMatch ? matchedKey : undefined,
+        included: hasMatch,
+        dataType: matchedField ? mapGlobalTypeToPostgres(matchedField.dataType, m.dataType) : m.dataType,
+        isPrimaryKey: idx === 0 || matchedKey === 'transaction_id' || matchedKey === 'refnum'
+      };
+    }));
+  }, [columnMappings, globalFields]);
+
+  const groupedGlobalFields = useMemo(() => {
+    const groups: Record<string, GlobalTransactionSchemaField[]> = {};
+    const preferredOrder = [
+      'Identity & Reference',
+      'Financial & Amounts',
+      'Card & Account',
+      'Audit & Timestamps',
+      'Lifecycle & Status',
+      'Network & Clearing',
+      'Merchant & POS',
+      'Customer & Account Holder',
+      'Reconciliation & Operations',
+      'General'
+    ];
+
+    (globalFields || []).forEach(f => {
+      let cat = f.category || 'General';
+      if (/identity|ref/i.test(cat)) cat = 'Identity & Reference';
+      else if (/financial|amount/i.test(cat)) cat = 'Financial & Amounts';
+      else if (/card|account/i.test(cat)) cat = 'Card & Account';
+      else if (/audit|timestamp|time|date/i.test(cat)) cat = 'Audit & Timestamps';
+      else if (/lifecycle|status/i.test(cat)) cat = 'Lifecycle & Status';
+      else if (/network|clearing|routing/i.test(cat)) cat = 'Network & Clearing';
+      else if (/merchant|pos/i.test(cat)) cat = 'Merchant & POS';
+      else if (/customer|holder/i.test(cat)) cat = 'Customer & Account Holder';
+      else if (/recon|operation/i.test(cat)) cat = 'Reconciliation & Operations';
+      else cat = 'General';
+
+      if (!groups[cat]) groups[cat] = [];
+      groups[cat].push(f);
+    });
+
+    const orderedCategories = [
+      ...preferredOrder.filter(c => groups[c] && groups[c].length > 0),
+      ...Object.keys(groups).filter(c => !preferredOrder.includes(c)).sort()
+    ];
+
+    return orderedCategories.map(cat => ({
+      category: cat,
+      fields: groups[cat].sort((a, b) => (a.label || a.key).localeCompare(b.label || b.key))
+    }));
+  }, [globalFields]);
 
   const [scheduleMode, setScheduleMode] = useState<'DAILY' | 'HOURLY' | 'INTRADAY' | 'CUSTOM_CRON' | 'MANUAL'>('DAILY');
   const [scheduleCron, setScheduleCron] = useState('0 2 * * *');
@@ -141,6 +360,60 @@ export function ResourceDetailView({
   const [archiveDirectory, setArchiveDirectory] = useState(
     initialBaseDir.endsWith('/') ? `${initialBaseDir}archive/` : `${initialBaseDir}/archive/`
   );
+
+  // Sub-tab navigation and filtering matching Create Task page layout
+  const [scheduleSubTab, setScheduleSubTab] = useState<'mapping' | 'preview' | 'files' | 'policy'>('mapping');
+  const [columnSearchQuery, setColumnSearchQuery] = useState('');
+  const [columnFilterMode, setColumnFilterMode] = useState<'all' | 'mapped' | 'unmapped'>('all');
+  const [parserSearchQuery, setParserSearchQuery] = useState('');
+  const [parserSubTab, setParserSubTab] = useState<'grid' | 'columns'>('grid');
+
+  const selectedFileObj = useMemo(() => {
+    return (discoveredFiles || []).find(f => f.fullPath === selectedFileForParser);
+  }, [discoveredFiles, selectedFileForParser]);
+
+  const filteredSampleRows = useMemo(() => {
+    if (!parserSearchQuery.trim()) return sampleData.rows;
+    const q = parserSearchQuery.toLowerCase();
+    return sampleData.rows.filter(row => {
+      return Object.values(row).some(v => String(v).toLowerCase().includes(q));
+    });
+  }, [sampleData.rows, parserSearchQuery]);
+
+  const matchingPatternFiles = useMemo(() => {
+    if (!discoveredFiles || discoveredFiles.length === 0) return [];
+    if (!filePattern) return discoveredFiles;
+    const regex = new RegExp('^' + filePattern.replace(/\./g, '\\.').replace(/\*/g, '.*') + '$', 'i');
+    return discoveredFiles.filter(f => regex.test(f.name));
+  }, [discoveredFiles, filePattern]);
+
+  const activeMappedCount = useMemo(() => {
+    return columnMappings.filter(m => m.included !== false && globalFields.some(f => f.key === m.targetColumn)).length;
+  }, [columnMappings, globalFields]);
+
+  const activeTotalCount = useMemo(() => {
+    return columnMappings.filter(m => m.included !== false).length;
+  }, [columnMappings]);
+
+  const displayedColumns = useMemo(() => {
+    return columnMappings.filter(col => {
+      if (columnSearchQuery.trim()) {
+        const q = columnSearchQuery.toLowerCase();
+        const matchHeader = col.sourceHeader.toLowerCase().includes(q);
+        const matchTarget = (col.targetColumn || '').toLowerCase().includes(q);
+        const matchGlobal = (col.globalFieldKey || '').toLowerCase().includes(q);
+        if (!matchHeader && !matchTarget && !matchGlobal) return false;
+      }
+      const isGlobal = Boolean(col.targetColumn && globalFields.some(f => f.key === col.targetColumn));
+      if (columnFilterMode === 'mapped') {
+        return isGlobal;
+      }
+      if (columnFilterMode === 'unmapped') {
+        return !isGlobal;
+      }
+      return true;
+    });
+  }, [columnMappings, columnSearchQuery, columnFilterMode, globalFields]);
 
   // Dry-run and Save Action states
   const [isDryRunning, setIsDryRunning] = useState(false);
@@ -170,9 +443,6 @@ export function ResourceDetailView({
     setIsTesting(true);
     setTestFeedbackNotice(null);
     try {
-      const parsedPort = Number(resource.port) || (resource.host?.includes(':') ? Number(resource.host.split(':')[1]) : undefined) || (resource.type === 'SFTP' ? 22 : 3306);
-      const parsedHost = resource.host?.includes(':') ? resource.host.split(':')[0] : (resource.host || '127.0.0.1');
-
       const res = await api.testConnection({
         type: resource.type,
         host: parsedHost,
@@ -217,12 +487,22 @@ export function ResourceDetailView({
     setScanError(null);
 
     try {
-      // 1. Fetch saved staging configurations to match covered vs unconfigured files
-      const configs = await api.getFtpStagingConfigs(resource.id).catch(() => []);
+      // 1. Fetch saved staging configurations and ingested files in parallel
+      const [configs, ingested] = await Promise.all([
+        api.getFtpStagingConfigs(resource.id).catch(() => []),
+        api.getIngestedFtpFiles(resource.id).catch(() => [])
+      ]);
       setStagingConfigs(configs || []);
+      setIngestedFilesList(ingested || []);
 
       // 2. Discover recursive files from backend API
-      const files = await api.discoverFtpFilesRecursive(resource.id, scanDir).catch((err: any) => {
+      const files = await api.discoverFtpFilesRecursive(resource.id, scanDir, {
+        host: parsedHost,
+        port: parsedPort,
+        username: resource.username,
+        password: resource.password,
+        databaseName: resource.database || scanDir
+      }).catch((err: any) => {
         console.warn('FTP recursive scan error:', err);
         setScanError(err?.message || 'Failed to scan remote directory');
         return [];
@@ -230,8 +510,31 @@ export function ResourceDetailView({
 
       setHasScanned(true);
 
+      const ingestedMap = new Map((ingested || []).map((i: any) => [i.filePath, i]));
+
       if (Array.isArray(files) && files.length > 0) {
+        // 3. Detect semantic patterns across folders
+        try {
+          setIsLoadingPatterns(true);
+          const patterns = await api.detectFtpPatterns({
+            connectionId: resource.id,
+            files,
+            baseDir: scanDir,
+            host: parsedHost,
+            port: parsedPort,
+            username: resource.username,
+            password: resource.password,
+            databaseName: resource.database
+          });
+          setDetectedPatterns(patterns || []);
+        } catch (patErr) {
+          console.warn('detectFtpPatterns error:', patErr);
+        } finally {
+          setIsLoadingPatterns(false);
+        }
+
         const mapped = files.map(f => {
+          const ingestedEntry = ingestedMap.get(f.fullPath);
           const isCovered = (configs || []).some((c: any) => {
             if (!c.filePattern) return false;
             try {
@@ -247,9 +550,14 @@ export function ResourceDetailView({
             subfolder: f.relativeFolder || scanDir,
             fullPath: f.fullPath,
             size: formatBytes(f.size),
+            rawSize: f.size,
             date: formatDate(f.modifiedAt),
             format: (f.fileType || 'CSV').toUpperCase(),
-            status: isCovered ? ('Covered' as const) : ('Unconfigured' as const)
+            isIngested: !!ingestedEntry,
+            ingestedTargetTable: ingestedEntry?.targetTableName,
+            recordsStaged: ingestedEntry?.recordsStaged,
+            ingestedAt: ingestedEntry?.ingestedAt,
+            status: (ingestedEntry ? 'Ingested' : isCovered ? 'Covered' : 'Unconfigured') as 'Ingested' | 'Covered' | 'Unconfigured'
           };
         });
 
@@ -257,8 +565,12 @@ export function ResourceDetailView({
 
         // Pre-select first file if parser has none
         if (!selectedFileForParser && mapped.length > 0) {
-          setSelectedFileForParser(mapped[0].fullPath);
-          setFilePattern(mapped[0].name.replace(/\d{4,8}/g, '*'));
+          const first = mapped[0];
+          setSelectedFileForParser(first.fullPath);
+          setFilePattern(first.name.replace(/\d{4,8}/g, '*'));
+          const isXls = first.name.endsWith('.xls') || first.name.endsWith('.xlsx') || first.format === 'EXCEL';
+          setFileFormat(isXls ? 'EXCEL' : first.format === 'PIPE' ? 'PIPE' : first.format === 'TAB' ? 'TAB' : 'CSV');
+          setDelimiter(first.format === 'PIPE' ? '|' : first.format === 'TAB' ? '\\t' : ',');
         }
 
         // Dynamically detect rotating period folders from discovered files
@@ -276,16 +588,158 @@ export function ResourceDetailView({
         setDetectedFolderGroups(groups.filter(g => g.isRotating || g.folders.length > 1));
       } else {
         setDiscoveredFiles([]);
+        setDetectedPatterns([]);
         setDetectedFolderGroups([]);
       }
     } catch (err: any) {
       setScanError(err?.message || 'Error communicating with SFTP server');
       setDiscoveredFiles([]);
+      setDetectedPatterns([]);
       setDetectedFolderGroups([]);
     } finally {
       setIsScanningFolders(false);
     }
-  }, [resource?.id, remoteFolderPath, selectedFileForParser]);
+  }, [resource?.id, remoteFolderPath, selectedFileForParser, parsedHost, parsedPort, resource.username, resource.password, resource.database]);
+
+  // Select a detected pattern group to configure
+  const handleSelectPatternToConfigure = useCallback((group: any) => {
+    setFilePattern(group.pattern);
+    setTargetTableName(group.suggestedTableName);
+    if (group.sampleFile?.fullPath) {
+      setSelectedFileForParser(group.sampleFile.fullPath);
+      const isXls = group.fileType === 'EXCEL' || group.sampleFile.name.endsWith('.xls') || group.sampleFile.name.endsWith('.xlsx');
+      setFileFormat(isXls ? 'EXCEL' : group.sampleFile.fileType === 'PIPE' ? 'PIPE' : group.sampleFile.fileType === 'TAB' ? 'TAB' : 'CSV');
+      setDelimiter(group.sampleFile.fileType === 'PIPE' ? '|' : group.sampleFile.fileType === 'TAB' ? '\\t' : ',');
+      handleInspectStructure(group.sampleFile.fullPath);
+    }
+    setActiveTab('file_type');
+  }, []);
+
+  // Helper to refresh ingested files list
+  const handleRefreshIngestedFiles = useCallback(async () => {
+    if (!resource?.id) return;
+    setIsLoadingIngestedFiles(true);
+    try {
+      const files = await api.getIngestedFtpFiles(resource.id);
+      setIngestedFilesList(files || []);
+      if (discoveredFiles.length > 0) {
+        const pathMap = new Map((files || []).map((i: any) => [i.filePath, i]));
+        setDiscoveredFiles(prev => prev.map(f => {
+          const ingested = pathMap.get(f.fullPath);
+          return {
+            ...f,
+            isIngested: !!ingested,
+            ingestedTargetTable: ingested?.targetTableName,
+            recordsStaged: ingested?.recordsStaged,
+            ingestedAt: ingested?.ingestedAt,
+            status: (ingested ? 'Ingested' : f.status === 'Ingested' ? 'Unconfigured' : f.status) as any
+          };
+        }));
+      }
+    } catch (err) {
+      console.warn('Failed to refresh ingested files:', err);
+    } finally {
+      setIsLoadingIngestedFiles(false);
+    }
+  }, [resource?.id, discoveredFiles.length]);
+
+  // Remove a file from the ingested storage ledger to allow re-ingestion
+  const handleRemoveIngestedFile = useCallback(async (id: string, name: string) => {
+    try {
+      await api.removeIngestedFtpFile(id);
+      setSaveSuccessNotice(`Removed "${name}" from Ingested Storage. It will be re-ingested on next cycle.`);
+      setTimeout(() => setSaveSuccessNotice(null), 5000);
+      await handleRefreshIngestedFiles();
+    } catch (err: any) {
+      alert(`Could not remove file: ${err.message}`);
+    }
+  }, [handleRefreshIngestedFiles]);
+
+  // Reset ledger for an entire pattern
+  const handleResetPatternLedger = useCallback(async (pattern: string) => {
+    if (!confirm(`Reset the ingested files ledger for pattern "${pattern}"?\n\nAll matching files will be re-ingested from the remote SFTP server during the next schedule or manual ingest.`)) {
+      return;
+    }
+    try {
+      const res = await api.resetFtpPatternLedger(resource.id, pattern);
+      setSaveSuccessNotice(`Ledger reset for pattern "${pattern}": ${res.count || 0} files marked for re-ingestion.`);
+      setTimeout(() => setSaveSuccessNotice(null), 5000);
+      await handleRefreshIngestedFiles();
+      await handleScanFolders(remoteFolderPath);
+    } catch (err: any) {
+      alert(`Could not reset ledger: ${err.message}`);
+    }
+  }, [resource?.id, remoteFolderPath, handleRefreshIngestedFiles, handleScanFolders]);
+
+  // Immediately stage all files for a pattern batch
+  const handleStagePatternBatchNow = useCallback(async (pattern: string, suggestedTable: string, sampleFile: string, fileType: string) => {
+    setIsStagingPattern(pattern);
+    try {
+      const isXls = fileType === 'EXCEL' || sampleFile.endsWith('.xls') || sampleFile.endsWith('.xlsx');
+      const activeMappings = columnMappings && columnMappings.length > 0
+        ? columnMappings.filter(m => m.included !== false && m.targetColumn && m.targetColumn.trim() !== '')
+        : undefined;
+
+      const stagingConfig = {
+        name: `${resource.name} - ${pattern}`,
+        sourceDirectoryPath: remoteFolderPath,
+        sampleFilePath: sampleFile,
+        fileNamePattern: pattern,
+        filePattern: pattern,
+        fileFormat: isXls ? 'EXCEL' : fileType === 'PIPE' ? 'PIPE' : 'CSV',
+        targetTableName: suggestedTable,
+        delimiter: fileType === 'PIPE' ? '|' : ',',
+        headerRowIndex: 1,
+        dataStartRow: 2,
+        stagingMode: 'APPEND',
+        fieldMappings: activeMappings
+      };
+
+      const res = await api.stageFtpFile({
+        connectionId: resource.id,
+        config: stagingConfig,
+        host: parsedHost,
+        port: parsedPort,
+        username: resource.username,
+        password: resource.password,
+        databaseName: resource.database
+      });
+
+      const stagedMsg = res?.success
+        ? `Staging completed for ${pattern}! ${res.stagedCount || 0} records staged into ${res.stagingTableName || suggestedTable}. (${res.filesProcessedCount || 0} files processed, ${res.filesAlreadyIngestedCount || 0} previously ingested skipped).`
+        : `Staging finished with notice: ${res?.message || 'Check logs'}`;
+
+      setSaveSuccessNotice(stagedMsg);
+      setTimeout(() => setSaveSuccessNotice(null), 8000);
+      await handleRefreshIngestedFiles();
+      await handleScanFolders(remoteFolderPath);
+    } catch (err: any) {
+      alert(`Staging failed: ${err.message}`);
+    } finally {
+      setIsStagingPattern(null);
+    }
+  }, [resource?.name, resource?.id, remoteFolderPath, parsedHost, parsedPort, resource?.username, resource?.password, resource?.database, handleRefreshIngestedFiles, handleScanFolders, columnMappings]);
+
+  // Filtered ingested files for Tab 4
+  const filteredIngestedFiles = useMemo(() => {
+    return ingestedFilesList.filter(f => {
+      const matchesSearch = !ingestedSearchFilter || 
+        f.fileName.toLowerCase().includes(ingestedSearchFilter.toLowerCase()) ||
+        f.filePath.toLowerCase().includes(ingestedSearchFilter.toLowerCase()) ||
+        f.targetTableName.toLowerCase().includes(ingestedSearchFilter.toLowerCase());
+      const matchesPattern = ingestedPatternFilter === 'ALL' || f.filePattern === ingestedPatternFilter;
+      return matchesSearch && matchesPattern;
+    });
+  }, [ingestedFilesList, ingestedSearchFilter, ingestedPatternFilter]);
+
+  // Distinct patterns for Tab 4 filter dropdown
+  const distinctIngestedPatterns = useMemo(() => {
+    const set = new Set<string>();
+    ingestedFilesList.forEach(f => {
+      if (f.filePattern) set.add(f.filePattern);
+    });
+    return Array.from(set);
+  }, [ingestedFilesList]);
 
   // Trigger dynamic folder discovery on mount for SFTP resources
   useEffect(() => {
@@ -294,21 +748,51 @@ export function ResourceDetailView({
     }
   }, [isSftp, resource?.id]);
 
+  // Toggle prune empty merged columns and refresh mappings
+  const handleTogglePruneEmptyColumns = (checked: boolean) => {
+    setPruneEmptyColumns(checked);
+    if (allColumnsAnalysis && allColumnsAnalysis.length > 0) {
+      setColumnMappings(buildColumnMappingFromAnalysis(allColumnsAnalysis, globalFields, checked));
+    }
+  };
+
   // Inspect Structure & Test Parse
-  const handleInspectStructure = async () => {
-    if (!resource?.id || !selectedFileForParser) return;
+  const handleInspectStructure = async (overrideFilePath?: string) => {
+    const fileToInspect = overrideFilePath || selectedFileForParser;
+    if (!resource?.id || !fileToInspect) return;
     setIsInspecting(true);
+    setInspectError(null);
     try {
+      const isXls = fileToInspect.endsWith('.xls') || fileToInspect.endsWith('.xlsx') || fileFormat === 'EXCEL';
+      const effectiveFormat = isXls ? 'EXCEL' : fileFormat;
+
       const configPayload = {
         sourceDirectoryPath: remoteFolderPath,
-        sampleFilePath: selectedFileForParser,
+        sampleFilePath: fileToInspect,
+        sampleFileName: fileToInspect,
+        fileNamePattern: filePattern || fileToInspect,
+        fileFormat: effectiveFormat,
+        fileType: effectiveFormat,
         delimiter: delimiter === '\\t' ? '\t' : delimiter,
         hasHeaders: true,
         headerRowIndex,
-        dataStartRow
+        dataStartRow,
+        pruneEmptyMergedColumns: pruneEmptyColumns,
+        onlyColumnsWithData: pruneEmptyColumns
       };
 
-      const res = await api.testFtpPreviewParse(resource.id, configPayload).catch(() => null);
+      const connDetails = {
+        host: parsedHost,
+        port: parsedPort,
+        username: resource.username,
+        password: resource.password,
+        databaseName: resource.database
+      };
+
+      const res = await api.testFtpPreviewParse(resource.id, configPayload, connDetails).catch((err) => {
+        console.warn('testFtpPreviewParse failed:', err);
+        return null;
+      });
 
       if (res && res.headersDetected && res.headersDetected.length > 0) {
         setSampleData({
@@ -319,43 +803,115 @@ export function ResourceDetailView({
           columnsFound: res.headersDetected.length,
           sampleCount: res.parsedRowsSample?.length || 0
         });
-        // Auto-generate target column mappings
-        setColumnMappings(res.headersDetected.map((h: string, idx: number) => ({
-          sourceHeader: h,
-          targetColumn: h.toLowerCase().replace(/[^a-z0-9_]/g, '_'),
-          dataType: idx === 0 ? 'VARCHAR(64)' : h.includes('amount') || h.includes('fee') ? 'NUMERIC(18,4)' : h.includes('date') || h.includes('time') ? 'TIMESTAMP' : 'VARCHAR(128)',
-          isPrimaryKey: idx === 0
-        })));
+        if (res.headerRowIndex && res.headerRowIndex !== headerRowIndex) {
+          setHeaderRowIndex(res.headerRowIndex);
+        }
+        if (res.dataStartRow && res.dataStartRow !== dataStartRow) {
+          setDataStartRow(res.dataStartRow);
+        }
+        if (res.fileType === 'EXCEL') {
+          setFileFormat('EXCEL');
+        }
+
+        let activeGlobalFields = globalFields;
+        if (!activeGlobalFields || activeGlobalFields.length <= 20) {
+          try {
+            const fetched = await api.getGlobalStandardDirectory();
+            if (Array.isArray(fetched) && fetched.length > 0) {
+              activeGlobalFields = fetched;
+              setGlobalFields(fetched);
+              globalMappingService.updateStandardFields(fetched);
+            }
+          } catch {
+            // fallback
+          }
+        }
+
+        if (res.allColumnsAnalysis && res.allColumnsAnalysis.length > 0) {
+          setAllColumnsAnalysis(res.allColumnsAnalysis);
+          setColumnMappings(buildColumnMappingFromAnalysis(res.allColumnsAnalysis, activeGlobalFields, pruneEmptyColumns));
+        } else {
+          // Auto-generate target column mappings using global fields
+          const autoMap = globalMappingService.autoGenerateColumnMapping(res.headersDetected, activeGlobalFields);
+          setColumnMappings(res.headersDetected.map((h: string, idx: number) => {
+            const matchedKey = autoMap[h];
+            const matchedField = matchedKey ? activeGlobalFields.find(f => f.key === matchedKey) : undefined;
+            const hasMatch = Boolean(matchedKey && matchedField);
+            const targetCol = hasMatch ? matchedKey : '';
+            const dataType = matchedField
+              ? mapGlobalTypeToPostgres(matchedField.dataType)
+              : (idx === 0 ? 'VARCHAR(64)' : h.toLowerCase().includes('amount') || h.toLowerCase().includes('fee') ? 'NUMERIC(18,4)' : h.toLowerCase().includes('date') || h.toLowerCase().includes('time') ? 'TIMESTAMP' : 'VARCHAR(128)');
+            return {
+              sourceHeader: h,
+              targetColumn: targetCol,
+              dataType,
+              isPrimaryKey: idx === 0 || targetCol === 'transaction_id' || targetCol === 'refnum',
+              included: hasMatch,
+              hasData: true,
+              globalFieldKey: hasMatch ? matchedKey : undefined
+            };
+          }));
+        }
       } else {
         // Fallback structure inspection
-        const structRes = await api.inspectFtpStructure(resource.id, selectedFileForParser).catch(() => null);
-        if (structRes && structRes.sampleLines && structRes.sampleLines.length > 0) {
-          const firstLine = structRes.sampleLines[0] || '';
-          const guessedDelim = structRes.detectedDelimiter || delimiter || ',';
-          const splitted = firstLine.split(guessedDelim).map((s: string) => s.trim().replace(/^["']|["']$/g, ''));
-          setSampleData({
-            headers: splitted,
-            rows: structRes.sampleLines.slice(1, 6).map((line: string) => {
-              const parts = line.split(guessedDelim);
-              const obj: Record<string, any> = {};
-              splitted.forEach((header: string, i: number) => {
-                obj[header] = parts[i] !== undefined ? parts[i].trim().replace(/^["']|["']$/g, '') : '';
-              });
-              return obj;
-            })
-          });
-          setInspectSummary({
-            columnsFound: splitted.length,
-            sampleCount: Math.min(structRes.sampleLines.length - 1, 5)
-          });
-          setColumnMappings(splitted.map((h: string, idx: number) => ({
-            sourceHeader: h,
-            targetColumn: h.toLowerCase().replace(/[^a-z0-9_]/g, '_'),
-            dataType: idx === 0 ? 'VARCHAR(64)' : 'VARCHAR(128)',
-            isPrimaryKey: idx === 0
-          })));
+        const structRes = await api.inspectFtpStructure(resource.id, fileToInspect, connDetails).catch((err) => {
+          console.warn('inspectFtpStructure failed:', err);
+          return null;
+        });
+        if (structRes) {
+          if (structRes.suggestedHeaderRow) setHeaderRowIndex(structRes.suggestedHeaderRow);
+          if (structRes.suggestedDataStartRow) setDataStartRow(structRes.suggestedDataStartRow);
+          if (structRes.fileType === 'EXCEL') setFileFormat('EXCEL');
+
+          const detectedHeaders = (structRes as any).headersDetected || (structRes.sampleLines && structRes.sampleLines.length > 0
+            ? structRes.sampleLines[0].split(structRes.detectedDelimiter || delimiter || ',').map((s: string) => s.trim().replace(/^["']|["']$/g, ''))
+            : []);
+
+          if (detectedHeaders.length > 0) {
+            setSampleData({
+              headers: detectedHeaders,
+              rows: structRes.sampleLines ? structRes.sampleLines.slice(1, 6).map((line: string) => {
+                const parts = line.split(structRes.detectedDelimiter || delimiter || ',');
+                const obj: Record<string, any> = {};
+                detectedHeaders.forEach((header: string, i: number) => {
+                  obj[header] = parts[i] !== undefined ? parts[i].trim().replace(/^["']|["']$/g, '') : '';
+                });
+                return obj;
+              }) : []
+            });
+            setInspectSummary({
+              columnsFound: detectedHeaders.length,
+              sampleCount: Math.min((structRes.sampleLines?.length || 1) - 1, 5)
+            });
+            const autoMap = globalMappingService.autoGenerateColumnMapping(detectedHeaders, globalFields);
+            setColumnMappings(detectedHeaders.map((h: string, idx: number) => {
+              const matchedKey = autoMap[h];
+              const matchedField = matchedKey ? globalFields.find(f => f.key === matchedKey) : undefined;
+              const hasMatch = Boolean(matchedKey && matchedField);
+              const targetCol = hasMatch ? matchedKey : '';
+              const dataType = matchedField
+                ? mapGlobalTypeToPostgres(matchedField.dataType)
+                : (idx === 0 ? 'VARCHAR(64)' : 'VARCHAR(128)');
+              return {
+                sourceHeader: h,
+                targetColumn: targetCol,
+                dataType,
+                isPrimaryKey: idx === 0 || targetCol === 'transaction_id' || targetCol === 'refnum',
+                included: hasMatch,
+                hasData: true,
+                globalFieldKey: hasMatch ? matchedKey : undefined
+              };
+            }));
+          } else {
+            setInspectError(structRes.error || 'No headers or tabular structure detected in selected file.');
+          }
+        } else {
+          setInspectError('Unable to inspect remote file structure. Check SFTP connection and permissions.');
         }
       }
+    } catch (err: any) {
+      console.error('Inspection failed:', err);
+      setInspectError(err?.message || 'Failed to inspect file structure');
     } finally {
       setIsInspecting(false);
     }
@@ -363,6 +919,12 @@ export function ResourceDetailView({
 
   // Dry-run parsing execution
   const handleDryRun = async () => {
+    const includedWithoutTarget = columnMappings.filter(m => m.included !== false && (!m.targetColumn || !m.targetColumn.trim()));
+    if (includedWithoutTarget.length > 0) {
+      alert(`There are ${includedWithoutTarget.length} columns included without a target Global Field selected. Please select a valid Global Field from the system directory or uncheck "Include in table".`);
+      return;
+    }
+    const activeMappings = columnMappings.filter(m => m.included !== false && m.targetColumn && m.targetColumn.trim() !== '');
     setIsDryRunning(true);
     setDryRunResult(null);
     try {
@@ -376,9 +938,16 @@ export function ResourceDetailView({
           delimiter: delimiter === '\\t' ? '\t' : delimiter,
           headerRowIndex,
           dataStartRow,
-          fieldMappings: columnMappings
-        }
-      }).catch(() => null);
+          fieldMappings: activeMappings
+        },
+        ...({
+          host: parsedHost,
+          port: parsedPort,
+          username: resource.username,
+          password: resource.password,
+          databaseName: resource.database
+        } as any)
+      } as any).catch(() => null);
 
       setDryRunResult({
         success: true,
@@ -400,22 +969,33 @@ export function ResourceDetailView({
 
   // Save and schedule feed configuration
   const handleSaveFeed = async () => {
+    const includedWithoutTarget = columnMappings.filter(m => m.included !== false && (!m.targetColumn || !m.targetColumn.trim()));
+    if (includedWithoutTarget.length > 0) {
+      alert(`There are ${includedWithoutTarget.length} columns included without a target Global Field selected. Please select a valid Global Field from the system directory or uncheck "Include in table".`);
+      return;
+    }
+    const activeMappings = columnMappings.filter(m => m.included !== false && m.targetColumn && m.targetColumn.trim() !== '');
     setIsSavingFeed(true);
     setSaveSuccessNotice(null);
     try {
       const payload = {
         name: `${resource.name} - ${filePattern} Feed`,
         connectionId: resource.id,
-        serverHost: resource.host?.split(':')[0] || resource.host,
-        serverPort: Number(resource.host?.split(':')[1]) || 22,
+        ftpConnectionId: resource.id,
+        serverHost: parsedHost,
+        serverPort: parsedPort,
         remoteDirectory: remoteFolderPath,
+        sourceDirectoryPath: remoteFolderPath,
+        fileNamePattern: filePattern,
         filePattern,
         fileFormat,
         delimiter: delimiter === '\\t' ? '\t' : delimiter,
         targetTableName,
+        headerRowIndex,
+        dataStartRow,
         pollingIntervalMinutes: scheduleMode === 'HOURLY' ? 60 : scheduleMode === 'INTRADAY' ? 15 : scheduleMode === 'DAILY' ? 1440 : 0,
         scheduleCron,
-        fieldMappings: columnMappings
+        fieldMappings: activeMappings
       };
 
       await api.createFtpStagingConfig(payload).catch(() => {});
@@ -450,10 +1030,19 @@ export function ResourceDetailView({
   const handleSelectFileToParse = (file: typeof discoveredFiles[0]) => {
     setSelectedFileForParser(file.fullPath);
     setFilePattern(file.name.replace(/\d{4,8}/g, '*'));
-    setFileFormat(file.format === 'PIPE' ? 'PIPE' : file.format === 'EXCEL' ? 'EXCEL' : file.format === 'TAB' ? 'TAB' : 'CSV');
+    const isXls = file.name.endsWith('.xls') || file.name.endsWith('.xlsx') || file.format === 'EXCEL';
+    setFileFormat(isXls ? 'EXCEL' : file.format === 'PIPE' ? 'PIPE' : file.format === 'TAB' ? 'TAB' : 'CSV');
     setDelimiter(file.format === 'PIPE' ? '|' : file.format === 'TAB' ? '\\t' : ',');
     setActiveTab('file_type');
+    handleInspectStructure(file.fullPath);
   };
+
+  // Auto-inspect structure on tab switch or initial file selection
+  useEffect(() => {
+    if (activeTab === 'file_type' && selectedFileForParser && sampleData.headers.length === 0 && !isInspecting) {
+      handleInspectStructure(selectedFileForParser);
+    }
+  }, [activeTab, selectedFileForParser, sampleData.headers.length, isInspecting]);
 
   // Filtered discovered files
   const filteredFiles = useMemo(() => {
@@ -463,9 +1052,9 @@ export function ResourceDetailView({
   }, [discoveredFiles, folderSearchFilter]);
 
   return (
-    <div className="flex-1 flex flex-col h-full bg-slate-50 overflow-y-auto text-slate-800 text-xs p-8" style={{ zoom: 0.9 }}>
+    <div className="flex-1 flex flex-col h-full bg-slate-50 overflow-hidden text-slate-800 text-xs p-6" style={{ zoom: 0.9 }}>
       {/* Top Breadcrumb & Navigation */}
-      <div className="flex items-center justify-between mb-4">
+      <div className="flex items-center justify-between mb-3 shrink-0 flex-none">
         <div className="flex items-center space-x-3">
           <button
             type="button"
@@ -619,6 +1208,23 @@ export function ResourceDetailView({
                 {scheduleMode}
               </span>
             </button>
+
+            <button
+              type="button"
+              onClick={() => setActiveTab('tables_feeds')}
+              className={`pb-3 border-b-2 transition cursor-pointer flex items-center gap-1.5 ${
+                activeTab === 'tables_feeds'
+                  ? 'border-orange-500 text-orange-600 font-bold'
+                  : 'border-transparent text-slate-500 hover:text-slate-800'
+              }`}
+            >
+              <span>4. Staged tables &amp; ingested storage</span>
+              {ingestedFilesList.length > 0 && (
+                <span className="px-1.5 py-0.2 bg-emerald-50 text-emerald-700 rounded text-[11px] font-mono">
+                  {ingestedFilesList.length}
+                </span>
+              )}
+            </button>
           </>
         ) : (
           <button
@@ -711,11 +1317,14 @@ export function ResourceDetailView({
         </div>
       )}
 
+      {/* Main Tab Content Area - Scroll Isolated */}
+      <div className="flex-1 min-h-0 flex flex-col mt-3 overflow-hidden">
+
       {/* =================================================================== */}
       {/* TAB 1: OVERVIEW & FEEDS SUMMARY                                    */}
       {/* =================================================================== */}
       {activeTab === 'overview' && (
-        <div className="space-y-6 mt-5">
+        <div className="space-y-6 flex-1 min-h-0 overflow-y-auto pr-1 pb-6">
           {/* 4 Metric Cards */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
             <div className="p-4 bg-white border border-slate-200/80 rounded-2xl shadow-xs space-y-1">
@@ -916,220 +1525,397 @@ export function ResourceDetailView({
       )}
 
       {/* =================================================================== */}
-      {/* TAB 2 (SFTP): FOLDER DISCOVERY & REMOTE SCANNER                     */}
+      {/* TAB 1 (SFTP): FOLDER DISCOVERY & REMOTE SCANNER                     */}
       {/* =================================================================== */}
       {activeTab === 'folders' && isSftp && (
-        <div className="space-y-6 mt-5">
-          {/* Top Scanner Bar */}
-          <div className="bg-white border border-slate-200/80 rounded-2xl p-5 shadow-xs space-y-3">
-            <div className="flex flex-wrap items-center justify-between gap-4">
-              <div className="flex items-center space-x-2.5 flex-1 min-w-[300px]">
-                <FolderOpen size={18} className="text-orange-500 shrink-0" />
-                <div className="flex-1">
-                  <label className="text-[11px] font-semibold text-slate-500 block mb-1">Remote Directory Path</label>
-                  <div className="flex items-center space-x-2">
-                    <input
-                      type="text"
-                      value={remoteFolderPath}
-                      onChange={(e) => setRemoteFolderPath(e.target.value)}
-                      placeholder="/"
-                      className="flex-1 px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-mono text-xs text-slate-900 focus:outline-none focus:border-orange-500"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => handleScanFolders(remoteFolderPath)}
-                      disabled={isScanningFolders}
-                      className="px-4 py-2 bg-[#0F142A] hover:bg-slate-800 text-white rounded-xl font-semibold text-xs transition cursor-pointer flex items-center space-x-1.5 shrink-0 shadow-xs"
-                    >
-                      <RefreshCw size={13} className={isScanningFolders ? 'animate-spin text-orange-400' : ''} />
-                      <span>{isScanningFolders ? 'Scanning...' : 'Scan Directory'}</span>
-                    </button>
+        <div className="grid grid-cols-1 lg:grid-cols-4 gap-4 flex-1 min-h-0 h-full overflow-hidden">
+          {/* ------------------------------------------------------------- */}
+          {/* LEFT PANEL (1 Col): DETECTED FILE PATTERNS                   */}
+          {/* ------------------------------------------------------------- */}
+          <div className="lg:col-span-1 space-y-3 flex flex-col min-h-0 h-full overflow-y-auto pr-1">
+            {/* Header / Summary Card */}
+            <div className="p-4 bg-white border border-slate-200/90 rounded-2xl shadow-2xs space-y-2 shrink-0">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center space-x-2">
+                  <div className="w-7 h-7 rounded-lg bg-orange-50 border border-orange-200 flex items-center justify-center text-orange-600">
+                    <Sparkles size={14} />
+                  </div>
+                  <div>
+                    <h3 className="font-bold text-slate-900 text-xs tracking-tight">Detected File Patterns</h3>
+                    <p className="text-[10px] text-slate-400">Semantic grouping across folders</p>
                   </div>
                 </div>
+                <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-slate-100 text-slate-700 border border-slate-200">
+                  {detectedPatterns.length}
+                </span>
               </div>
-
-              <div className="w-64">
-                <label className="text-[11px] font-semibold text-slate-500 block mb-1">Filter Discovered Files</label>
-                <div className="relative">
-                  <Search size={14} className="absolute left-3 top-2.5 text-slate-400" />
-                  <input
-                    type="text"
-                    value={folderSearchFilter}
-                    onChange={(e) => setFolderSearchFilter(e.target.value)}
-                    placeholder="Search by filename or subfolder..."
-                    className="w-full pl-8 pr-3 py-2 bg-white border border-slate-200 rounded-xl text-xs focus:outline-none focus:border-orange-500"
-                  />
-                </div>
-              </div>
+              <p className="text-[11px] text-slate-500 leading-relaxed">
+                Files sharing names or wildcards are grouped into staging feeds. One parser configuration stages all matching files into a dedicated PostgreSQL table.
+              </p>
             </div>
 
-            {scanError && (
-              <div className="p-3 bg-rose-50 border border-rose-200 rounded-xl flex items-center justify-between text-xs text-rose-900">
-                <div className="flex items-center space-x-2">
-                  <AlertCircle size={15} className="text-rose-600 shrink-0" />
-                  <span>{scanError}</span>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => handleScanFolders(remoteFolderPath)}
-                  className="px-2.5 py-1 bg-white border border-rose-200 hover:bg-rose-50 text-rose-900 rounded-lg text-xs font-semibold cursor-pointer"
-                >
-                  Retry Scan
-                </button>
+            {/* Rotating Folders Callout (if detected) */}
+            {detectedFolderGroups.length > 0 && (
+              <div className="space-y-2 shrink-0">
+                {detectedFolderGroups.map((grp, gIdx) => (
+                  <div key={gIdx} className="p-3 bg-orange-50/70 border border-orange-200/90 rounded-xl space-y-2 text-xs">
+                    <div className="flex items-center space-x-2">
+                      <FolderTree size={14} className="text-orange-600 shrink-0" />
+                      <span className="font-bold text-orange-950 text-[11px]">Rotating Date Folders:</span>
+                    </div>
+                    <div className="text-[10px] text-orange-900">
+                      <code className="font-mono bg-white px-1.5 py-0.5 rounded border border-orange-200">{grp.pattern}</code> ({grp.folders.length} subfolders, {grp.totalFiles} files).
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const wildcard = grp.pattern.replace(/\{[^}]+\}/g, '*') + '/*';
+                        setFilePattern(wildcard);
+                        setActiveTab('file_type');
+                      }}
+                      className="w-full px-2.5 py-1.5 bg-[#F97316] hover:bg-orange-600 text-white rounded-lg font-semibold text-[11px] transition cursor-pointer shadow-2xs text-center"
+                    >
+                      Apply Rotating Wildcard
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* List of Detected Patterns */}
+            {detectedPatterns.length === 0 ? (
+              <div className="p-6 bg-white border border-slate-200/80 rounded-2xl text-center space-y-2">
+                <Sparkles size={20} className="text-slate-300 mx-auto" />
+                <div className="font-bold text-slate-700 text-xs">No Patterns Detected</div>
+                <p className="text-[11px] text-slate-400">
+                  Scan the remote directory using the scanner on the right to discover incoming files and auto-detect patterns.
+                </p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                {detectedPatterns.map((grp, pIdx) => {
+                  const isAllIngested = grp.ingestedFileCount !== undefined && grp.ingestedFileCount >= grp.fileCount && grp.fileCount > 0;
+                  const isPartiallyIngested = grp.ingestedFileCount !== undefined && grp.ingestedFileCount > 0 && !isAllIngested;
+                  const isStaging = isStagingPattern === grp.pattern;
+
+                  return (
+                    <div
+                      key={pIdx}
+                      className="p-3.5 rounded-2xl border border-slate-200/90 bg-white hover:border-orange-300 hover:shadow-xs transition space-y-2.5 shadow-2xs"
+                    >
+                      <div className="flex items-start justify-between gap-1.5">
+                        <div className="space-y-1 min-w-0 flex-1">
+                          <div className="flex items-center space-x-1.5 flex-wrap gap-y-1">
+                            <span className="font-mono font-bold text-slate-900 text-[11px] bg-slate-50 px-2 py-0.5 rounded border border-slate-200 truncate max-w-[170px]" title={grp.pattern}>
+                              {grp.pattern}
+                            </span>
+                            <span className={`px-1.5 py-0.2 rounded text-[9px] font-mono font-bold ${
+                              grp.fileType === 'EXCEL' ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' :
+                              grp.fileType === 'PIPE' ? 'bg-purple-50 text-purple-700 border border-purple-200' :
+                              'bg-blue-50 text-blue-700 border border-blue-200'
+                            }`}>
+                              {grp.fileType}
+                            </span>
+                          </div>
+                          <div className="flex items-center space-x-1 text-[10px] text-slate-500">
+                            <Database size={11} className="text-blue-600 shrink-0" />
+                            <span className="text-slate-400">Table:</span>
+                            <code className="font-mono font-semibold text-slate-700 truncate" title={grp.suggestedTableName}>
+                              {grp.suggestedTableName}
+                            </code>
+                          </div>
+                        </div>
+
+                        {/* Status Badge */}
+                        {isAllIngested ? (
+                          <span className="px-2 py-0.5 rounded-full text-[9px] font-semibold bg-emerald-50 text-emerald-800 border border-emerald-300 inline-flex items-center space-x-0.5 shrink-0" title="All files staged">
+                            <CheckCircle2 size={10} className="text-emerald-600" />
+                            <span>{grp.fileCount} Staged</span>
+                          </span>
+                        ) : isPartiallyIngested ? (
+                          <span className="px-2 py-0.5 rounded-full text-[9px] font-semibold bg-amber-50 text-amber-800 border border-amber-300 inline-flex items-center space-x-0.5 shrink-0">
+                            <AlertCircle size={10} className="text-amber-600" />
+                            <span>{grp.ingestedFileCount}/{grp.fileCount}</span>
+                          </span>
+                        ) : (
+                          <span className="px-2 py-0.5 rounded-full text-[9px] font-semibold bg-blue-50 text-blue-700 border border-blue-200 inline-flex items-center space-x-0.5 shrink-0">
+                            <FileCheck size={10} className="text-blue-600" />
+                            <span>{grp.fileCount} Files</span>
+                          </span>
+                        )}
+                      </div>
+
+                      {/* Discovered in folders */}
+                      <div className="space-y-1">
+                        <div className="text-[10px] text-slate-400 flex items-center justify-between">
+                          <span>Across {grp.folders.length} folder{grp.folders.length > 1 ? 's' : ''}:</span>
+                          <span className="font-mono text-slate-500">{grp.fileCount} total</span>
+                        </div>
+                        <div className="flex flex-wrap gap-1 max-h-16 overflow-y-auto">
+                          {grp.folders.map((fld: string, fIdx: number) => (
+                            <span
+                              key={fIdx}
+                              className="px-1.5 py-0.2 rounded bg-slate-50 border border-slate-200 text-slate-600 text-[9px] font-mono flex items-center space-x-1"
+                              title={fld}
+                            >
+                              <Folder size={9} className="text-orange-400 shrink-0" />
+                              <span className="truncate max-w-[130px]">{fld}</span>
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Action buttons */}
+                      <div className="pt-2 border-t border-slate-100 flex items-center justify-between gap-1.5">
+                        <div className="flex items-center space-x-1">
+                          <button
+                            type="button"
+                            onClick={() => handleStagePatternBatchNow(
+                              grp.pattern,
+                              grp.suggestedTableName,
+                              grp.sampleFile?.fullPath || (grp.matchedFiles && grp.matchedFiles[0]?.fullPath) || '',
+                              grp.fileType
+                            )}
+                            disabled={isStaging}
+                            className="px-2.5 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300 rounded-lg font-semibold text-[10px] transition cursor-pointer flex items-center space-x-1 shadow-2xs disabled:opacity-50"
+                            title="Stage all matching files into dedicated table"
+                          >
+                            <Zap size={10} className={isStaging ? 'animate-spin text-emerald-600' : 'text-emerald-600'} />
+                            <span>{isStaging ? 'Staging...' : 'Stage Now'}</span>
+                          </button>
+
+                          {grp.ingestedFileCount !== undefined && grp.ingestedFileCount > 0 && (
+                            <button
+                              type="button"
+                              onClick={() => handleResetPatternLedger(grp.pattern)}
+                              className="px-1.5 py-1 bg-slate-50 hover:bg-rose-50 border border-slate-200 hover:border-rose-300 text-slate-500 hover:text-rose-700 rounded-lg text-[10px] font-medium transition cursor-pointer flex items-center space-x-0.5"
+                              title="Reset ledger to allow re-ingestion"
+                            >
+                              <RotateCcw size={9} />
+                              <span>Reset</span>
+                            </button>
+                          )}
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={() => handleSelectPatternToConfigure(grp)}
+                          className="px-2.5 py-1 bg-white hover:bg-orange-50 border border-slate-200 hover:border-orange-300 text-slate-700 hover:text-orange-700 rounded-lg font-semibold text-[10px] transition cursor-pointer flex items-center space-x-0.5 shadow-2xs"
+                        >
+                          <span>Configure &amp; Parse</span>
+                          <ChevronRight size={11} />
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             )}
           </div>
 
-          {/* Dynamic Rotating Date Folders Callout (Rendered ONLY if genuine rotating groups detected) */}
-          {detectedFolderGroups.length > 0 && (
-            <div className="space-y-3">
-              {detectedFolderGroups.map((grp, gIdx) => (
-                <div key={gIdx} className="p-4 bg-orange-50/50 border border-orange-200/80 rounded-2xl flex flex-col md:flex-row md:items-center justify-between gap-3 text-xs">
-                  <div className="flex items-start space-x-3">
-                    <FolderTree size={18} className="text-orange-600 shrink-0 mt-0.5" />
-                    <div>
-                      <span className="font-bold text-orange-950">Detected Rotating Folders:</span>
-                      <span className="text-orange-900 ml-1.5">
-                        Shared pattern <code className="font-mono bg-white px-1.5 py-0.5 rounded border border-orange-200">{grp.pattern}</code> ({grp.folders.length} subfolders, {grp.totalFiles} files).
-                      </span>
-                      <div className="text-[11px] text-orange-800 mt-1">
-                        A wildcard pattern like <code className="font-mono">{grp.pattern.replace(/\{[^}]+\}/g, '*')}/*</code> automatically stages files across rotating periods.
-                      </div>
+          {/* ------------------------------------------------------------- */}
+          {/* RIGHT PANEL (3 Cols): DISCOVERED REMOTE FILES TABLE           */}
+          {/* ------------------------------------------------------------- */}
+          <div className="lg:col-span-3 flex flex-col flex-1 min-h-0 h-full overflow-hidden">
+            {/* Top Directory Scanner & Filter Bar (Stationary shrink-0) */}
+            <div className="bg-white border border-slate-200/80 rounded-2xl p-4 shadow-2xs space-y-3 shrink-0 mb-3">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center space-x-2.5 flex-1 min-w-[280px]">
+                  <FolderOpen size={16} className="text-orange-500 shrink-0" />
+                  <div className="flex-1">
+                    <label className="text-[10px] font-semibold text-slate-400 block mb-0.5">Remote Directory Path</label>
+                    <div className="flex items-center space-x-2">
+                      <input
+                        type="text"
+                        value={remoteFolderPath}
+                        onChange={(e) => setRemoteFolderPath(e.target.value)}
+                        placeholder="/"
+                        className="flex-1 px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl font-mono text-xs text-slate-900 focus:outline-none focus:border-orange-500"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => handleScanFolders(remoteFolderPath)}
+                        disabled={isScanningFolders}
+                        className="px-3.5 py-1.5 bg-[#0F142A] hover:bg-slate-800 text-white rounded-xl font-semibold text-xs transition cursor-pointer flex items-center space-x-1.5 shrink-0 shadow-xs"
+                      >
+                        <RefreshCw size={12} className={isScanningFolders ? 'animate-spin text-orange-400' : ''} />
+                        <span>{isScanningFolders ? 'Scanning...' : 'Scan Directory'}</span>
+                      </button>
                     </div>
                   </div>
+                </div>
 
+                <div className="w-64">
+                  <label className="text-[10px] font-semibold text-slate-400 block mb-0.5">Filter Discovered Files</label>
+                  <div className="relative">
+                    <Search size={13} className="absolute left-3 top-2 text-slate-400" />
+                    <input
+                      type="text"
+                      value={folderSearchFilter}
+                      onChange={(e) => setFolderSearchFilter(e.target.value)}
+                      placeholder="Search filename or subfolder..."
+                      className="w-full pl-8 pr-3 py-1.5 bg-white border border-slate-200 rounded-xl text-xs focus:outline-none focus:border-orange-500"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Status Metrics Strip */}
+              <div className="flex items-center justify-between pt-2 border-t border-slate-100 text-[11px]">
+                <div className="flex items-center space-x-3 text-slate-500">
+                  <span>Found: <strong className="text-slate-900 font-mono">{discoveredFiles.length}</strong> files</span>
+                  <span>·</span>
+                  <span>Ingested: <strong className="text-emerald-700 font-mono">{ingestedFilesList.length}</strong></span>
+                  <span>·</span>
+                  <span>Unconfigured: <strong className="text-amber-700 font-mono">{discoveredFiles.filter(f => f.status === 'Unconfigured').length}</strong></span>
+                </div>
+                <div className="text-[10px] text-slate-400 font-mono">
+                  {isScanningFolders ? 'Scanning SFTP server...' : hasScanned ? `Path: ${remoteFolderPath || '/'}` : 'Scan required'}
+                </div>
+              </div>
+
+              {scanError && (
+                <div className="p-2.5 bg-rose-50 border border-rose-200 rounded-xl flex items-center justify-between text-xs text-rose-900">
+                  <div className="flex items-center space-x-2">
+                    <AlertCircle size={14} className="text-rose-600 shrink-0" />
+                    <span>{scanError}</span>
+                  </div>
                   <button
                     type="button"
-                    onClick={() => {
-                      const wildcard = grp.pattern.replace(/\{[^}]+\}/g, '*') + '/*';
-                      setFilePattern(wildcard);
-                      setActiveTab('file_type');
-                    }}
-                    className="px-3.5 py-1.5 bg-[#F97316] hover:bg-orange-600 text-white rounded-xl font-semibold text-xs transition cursor-pointer shrink-0 shadow-2xs whitespace-nowrap"
+                    onClick={() => handleScanFolders(remoteFolderPath)}
+                    className="px-2 py-0.5 bg-white border border-rose-200 hover:bg-rose-50 text-rose-900 rounded-lg text-xs font-semibold cursor-pointer"
                   >
-                    Apply Pattern
+                    Retry Scan
                   </button>
                 </div>
-              ))}
-            </div>
-          )}
-
-          {/* Discovered Files Table */}
-          <div className="bg-white border border-slate-200/80 rounded-2xl overflow-hidden shadow-xs">
-            <div className="p-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
-              <div className="flex items-center space-x-2">
-                <FileSpreadsheet size={16} className="text-slate-500" />
-                <h3 className="font-bold text-slate-900 text-xs">
-                  Discovered Remote Files {hasScanned ? `(${filteredFiles.length})` : ''}
-                </h3>
-              </div>
-              <span className="text-[11px] text-slate-400 font-mono">
-                {isScanningFolders ? 'Scanning SFTP server...' : hasScanned ? `Path: ${remoteFolderPath}` : 'Scan required'}
-              </span>
+              )}
             </div>
 
-            {isScanningFolders ? (
-              <div className="py-16 text-center space-y-3">
-                <RefreshCw size={24} className="animate-spin text-orange-500 mx-auto" />
-                <div className="font-bold text-slate-800 text-xs">Connecting to SFTP server and scanning folders...</div>
-                <p className="text-[11px] text-slate-400 font-mono">
-                  Inspecting directory structure under {remoteFolderPath}
-                </p>
+            {/* Discovered Remote Files Table Card (fills remaining height, scrolls internally) */}
+            <div className="bg-white rounded-2xl border border-slate-200 shadow-2xs overflow-hidden flex flex-col flex-1 min-h-0">
+              <div className="px-5 py-3 border-b border-slate-200 bg-slate-50/50 flex items-center justify-between shrink-0">
+                <div className="flex items-center space-x-2">
+                  <FileSpreadsheet size={15} className="text-slate-500" />
+                  <h3 className="font-bold text-slate-900 text-xs">
+                    Discovered Remote Files {hasScanned ? `(${filteredFiles.length})` : ''}
+                  </h3>
+                </div>
+                <span className="text-[10px] text-slate-400 font-mono">
+                  Showing {filteredFiles.length} of {discoveredFiles.length} files
+                </span>
               </div>
-            ) : !hasScanned ? (
-              <div className="py-16 text-center space-y-3">
-                <Folder size={28} className="text-slate-400 mx-auto" />
-                <div className="font-bold text-slate-800 text-xs">Remote Directory Not Scanned Yet</div>
-                <p className="text-[11px] text-slate-400 max-w-sm mx-auto">
-                  Click below to explore incoming files, inspect subfolders, and detect file types on this SFTP server.
-                </p>
-                <button
-                  type="button"
-                  onClick={() => handleScanFolders(remoteFolderPath)}
-                  className="px-4 py-2 bg-[#F97316] hover:bg-orange-600 text-white rounded-xl font-semibold text-xs transition cursor-pointer shadow-xs"
-                >
-                  Scan Remote Directory
-                </button>
+
+              {/* Internal Table Scroll Viewport */}
+              <div className="overflow-y-auto flex-1 min-h-0">
+                {isScanningFolders ? (
+                  <div className="py-16 text-center space-y-3">
+                    <RefreshCw size={24} className="animate-spin text-orange-500 mx-auto" />
+                    <div className="font-bold text-slate-800 text-xs">Connecting to SFTP server and scanning folders...</div>
+                    <p className="text-[11px] text-slate-400 font-mono">
+                      Inspecting directory structure under {remoteFolderPath || '/'}
+                    </p>
+                  </div>
+                ) : !hasScanned ? (
+                  <div className="py-16 text-center space-y-3">
+                    <Folder size={28} className="text-slate-400 mx-auto" />
+                    <div className="font-bold text-slate-800 text-xs">Remote Directory Not Scanned Yet</div>
+                    <p className="text-[11px] text-slate-400 max-w-sm mx-auto">
+                      Click below to explore incoming files, inspect subfolders, and detect file types on this SFTP server.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => handleScanFolders(remoteFolderPath)}
+                      className="px-4 py-2 bg-[#F97316] hover:bg-orange-600 text-white rounded-xl font-semibold text-xs transition cursor-pointer shadow-xs"
+                    >
+                      Scan Remote Directory
+                    </button>
+                  </div>
+                ) : filteredFiles.length === 0 ? (
+                  <div className="py-16 text-center space-y-2">
+                    <Folder size={28} className="text-slate-300 mx-auto" />
+                    <div className="font-bold text-slate-800 text-xs">No files discovered in {remoteFolderPath || '/'}</div>
+                    <p className="text-[11px] text-slate-400 max-w-sm mx-auto">
+                      The directory is empty or contains no files matching supported formats (.csv, .xlsx, .tsv, .dat, .txt).
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => handleScanFolders(remoteFolderPath)}
+                      className="px-3.5 py-1.5 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 rounded-xl font-semibold text-xs transition cursor-pointer shadow-2xs mt-2"
+                    >
+                      Refresh Scan
+                    </button>
+                  </div>
+                ) : (
+                  <table className="w-full text-left text-xs border-collapse">
+                    <thead className="sticky top-0 bg-slate-50 border-b border-slate-200 z-10 text-slate-400 font-medium text-[11px]">
+                      <tr>
+                        <th className="py-2.5 px-4">File Name &amp; Path</th>
+                        <th className="py-2.5 px-3">Size</th>
+                        <th className="py-2.5 px-3">Detected Format</th>
+                        <th className="py-2.5 px-3">Last Modified</th>
+                        <th className="py-2.5 px-3">Feed Status</th>
+                        <th className="py-2.5 px-4 text-right">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 text-xs">
+                      {filteredFiles.map((file, idx) => (
+                        <tr key={idx} className="hover:bg-slate-50/70 transition">
+                          <td className="py-2.5 px-4">
+                            <div className="flex items-center space-x-2.5">
+                              <FileCode size={15} className="text-slate-400 shrink-0" />
+                              <div>
+                                <div className="font-mono font-bold text-slate-900">{file.name}</div>
+                                <div className="text-[10px] text-slate-400 font-mono">{file.subfolder}</div>
+                              </div>
+                            </div>
+                          </td>
+                          <td className="py-2.5 px-3 font-mono text-slate-600">{file.size}</td>
+                          <td className="py-2.5 px-3">
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
+                              file.format === 'EXCEL' ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' :
+                              file.format === 'PIPE' ? 'bg-purple-50 text-purple-700 border border-purple-200' :
+                              file.format === 'TAB' ? 'bg-indigo-50 text-indigo-700 border border-indigo-200' :
+                              'bg-blue-50 text-blue-700 border border-blue-200'
+                            }`}>
+                              {file.format}
+                            </span>
+                          </td>
+                          <td className="py-2.5 px-3 text-slate-500 text-[11px]">{file.date}</td>
+                          <td className="py-2.5 px-3">
+                            {file.status === 'Ingested' ? (
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 text-emerald-800 border border-emerald-300 inline-flex items-center space-x-1">
+                                <CheckCircle2 size={11} className="text-emerald-600" />
+                                <span>Ingested ({file.recordsStaged || 0} rows)</span>
+                              </span>
+                            ) : file.status === 'Covered' ? (
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200 inline-flex items-center space-x-1">
+                                <Check size={11} />
+                                <span>Covered by Feed</span>
+                              </span>
+                            ) : (
+                              <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-50 text-amber-700 border border-amber-200 inline-flex items-center space-x-1">
+                                <AlertCircle size={11} />
+                                <span>Unconfigured</span>
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-2.5 px-4 text-right">
+                            <button
+                              type="button"
+                              onClick={() => handleSelectFileToParse(file)}
+                              className="px-3 py-1.5 bg-white hover:bg-orange-50 border border-slate-200 hover:border-orange-300 text-slate-700 hover:text-orange-700 rounded-xl font-semibold text-xs transition cursor-pointer flex items-center space-x-1 ml-auto shadow-2xs"
+                            >
+                              <span>Configure Feed</span>
+                              <ChevronRight size={13} />
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
               </div>
-            ) : filteredFiles.length === 0 ? (
-              <div className="py-16 text-center space-y-2">
-                <Folder size={28} className="text-slate-300 mx-auto" />
-                <div className="font-bold text-slate-800 text-xs">No files discovered in {remoteFolderPath}</div>
-                <p className="text-[11px] text-slate-400 max-w-sm mx-auto">
-                  The directory is empty or contains no files matching supported formats (.csv, .xlsx, .tsv, .dat, .txt).
-                </p>
-                <button
-                  type="button"
-                  onClick={() => handleScanFolders(remoteFolderPath)}
-                  className="px-3.5 py-1.5 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 rounded-xl font-semibold text-xs transition cursor-pointer shadow-2xs mt-2"
-                >
-                  Refresh Scan
-                </button>
-              </div>
-            ) : (
-              <table className="w-full text-left text-xs border-collapse">
-                <thead>
-                  <tr className="border-b border-slate-100 text-slate-400 font-medium text-[11px] bg-slate-50/20">
-                    <th className="py-3 px-5">File Name &amp; Path</th>
-                    <th className="py-3 px-4">Size</th>
-                    <th className="py-3 px-4">Detected Format</th>
-                    <th className="py-3 px-4">Last Modified</th>
-                    <th className="py-3 px-4">Feed Status</th>
-                    <th className="py-3 px-5 text-right">Action</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 text-xs">
-                  {filteredFiles.map((file, idx) => (
-                    <tr key={idx} className="hover:bg-slate-50/60 transition">
-                      <td className="py-3.5 px-5">
-                        <div className="flex items-center space-x-2.5">
-                          <FileCode size={16} className="text-slate-400 shrink-0" />
-                          <div>
-                            <div className="font-mono font-bold text-slate-900">{file.name}</div>
-                            <div className="text-[10px] text-slate-400 font-mono mt-0.5">{file.subfolder}</div>
-                          </div>
-                        </div>
-                      </td>
-                      <td className="py-3.5 px-4 font-mono text-slate-600">{file.size}</td>
-                      <td className="py-3.5 px-4">
-                        <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
-                          file.format === 'EXCEL' ? 'bg-emerald-50 text-emerald-700 border border-emerald-200' :
-                          file.format === 'PIPE' ? 'bg-purple-50 text-purple-700 border border-purple-200' :
-                          file.format === 'TAB' ? 'bg-indigo-50 text-indigo-700 border border-indigo-200' :
-                          'bg-blue-50 text-blue-700 border border-blue-200'
-                        }`}>
-                          {file.format}
-                        </span>
-                      </td>
-                      <td className="py-3.5 px-4 text-slate-500 text-[11px]">{file.date}</td>
-                      <td className="py-3.5 px-4">
-                        {file.status === 'Covered' ? (
-                          <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200 inline-flex items-center space-x-1">
-                            <Check size={11} />
-                            <span>Covered by Feed</span>
-                          </span>
-                        ) : (
-                          <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-50 text-amber-700 border border-amber-200 inline-flex items-center space-x-1">
-                            <AlertCircle size={11} />
-                            <span>Unconfigured</span>
-                          </span>
-                        )}
-                      </td>
-                      <td className="py-3.5 px-5 text-right">
-                        <button
-                          type="button"
-                          onClick={() => handleSelectFileToParse(file)}
-                          className="px-3 py-1.5 bg-white hover:bg-orange-50 border border-slate-200 hover:border-orange-300 text-slate-700 hover:text-orange-700 rounded-xl font-semibold text-xs transition cursor-pointer flex items-center space-x-1 ml-auto shadow-2xs"
-                        >
-                          <span>Configure Feed</span>
-                          <ChevronRight size={13} />
-                        </button>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
+            </div>
           </div>
         </div>
       )}
@@ -1138,110 +1924,453 @@ export function ResourceDetailView({
       {/* TAB 3 (SFTP): FILE TYPE IDENTIFICATION & PARSER INSPECTOR           */}
       {/* =================================================================== */}
       {activeTab === 'file_type' && isSftp && (
-        <div className="space-y-6 mt-5">
-          {/* File Format & Delimiter Settings */}
-          <div className="bg-white border border-slate-200/80 rounded-2xl p-6 shadow-xs space-y-6">
-            <div className="flex items-center justify-between border-b border-slate-100 pb-4">
+        <div className="grid grid-cols-1 lg:grid-cols-4 gap-4 flex-1 min-h-0 h-full overflow-hidden">
+          {/* ========================================================= */}
+          {/* LEFT 3 COLUMNS: KPI CARDS + PARSED DATA WORKSPACE         */}
+          {/* ========================================================= */}
+          <div className="lg:col-span-3 space-y-3 flex-1 min-h-0 flex flex-col">
+            {/* 4 Compact KPI Metric Cards Strip */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 shrink-0">
+              {/* Card 1: Selected File */}
+              <div className="px-3.5 py-2.5 bg-white rounded-xl border border-slate-200/90 shadow-2xs flex flex-col justify-between">
+                <span className="text-[11px] text-slate-500 font-sans font-medium block">Selected Remote File</span>
+                <span className="text-base font-bold font-mono text-slate-900 mt-0.5 truncate" title={selectedFileForParser}>
+                  {selectedFileForParser ? selectedFileForParser.split('/').pop() : 'No file selected'}
+                </span>
+                <span className="text-[10px] text-slate-400 mt-0.5 truncate">
+                  {selectedFileObj ? `${selectedFileObj.subfolder} · ${selectedFileObj.size}` : 'Scan folders in Tab 1'}
+                </span>
+              </div>
+
+              {/* Card 2: Detected Format */}
+              <div className="px-3.5 py-2.5 bg-white rounded-xl border border-slate-200/90 shadow-2xs flex flex-col justify-between">
+                <span className="text-[11px] text-slate-500 font-sans font-medium block">Detected Format</span>
+                <span className="text-base font-bold font-mono text-slate-900 mt-0.5">
+                  {fileFormat}
+                </span>
+                <span className="text-[10px] text-slate-400 mt-0.5 font-mono">
+                  {fileFormat === 'EXCEL' ? 'Excel Sheet' : `Delimiter: "${delimiter === '\t' ? '\t' : delimiter}"`}
+                </span>
+              </div>
+
+              {/* Card 3: Columns & Rows */}
+              <div className="px-3.5 py-2.5 bg-white rounded-xl border border-slate-200/90 shadow-2xs flex flex-col justify-between">
+                <span className="text-[11px] text-slate-500 font-sans font-medium block">Structure Found</span>
+                <span className="text-base font-bold font-mono text-emerald-700 mt-0.5">
+                  {sampleData.headers.length} Columns
+                </span>
+                <span className="text-[10px] text-slate-400 mt-0.5">
+                  {sampleData.rows.length} sample rows parsed
+                </span>
+              </div>
+
+              {/* Card 4: Empty Column Filter */}
+              <div className="px-3.5 py-2.5 bg-white rounded-xl border border-slate-200/90 shadow-2xs flex flex-col justify-between">
+                <span className="text-[11px] text-slate-500 font-sans font-medium block">Data Presence</span>
+                <span className="text-base font-bold font-mono text-purple-700 mt-0.5">
+                  {pruneEmptyColumns ? 'Pruning Empty' : 'All Merged Spans'}
+                </span>
+                <span className="text-[10px] text-purple-600 mt-0.5 font-medium">
+                  {allColumnsAnalysis && allColumnsAnalysis.some(c => c.isExcludedEmpty)
+                    ? `${allColumnsAnalysis.filter(c => c.isExcludedEmpty).length} empty columns pruned`
+                    : 'Extracting data columns'}
+                </span>
+              </div>
+            </div>
+
+            {/* Table Workspace Card */}
+            <div className="bg-white rounded-2xl border border-slate-200 shadow-2xs overflow-hidden flex flex-col flex-1 min-h-0">
+              {/* Tabs Row matching WorkspaceTaskCreator */}
+              <div className="border-b border-slate-200 px-5 flex items-center space-x-6 shrink-0 bg-white">
+                <button
+                  type="button"
+                  onClick={() => setParserSubTab('grid')}
+                  className={`py-3.5 text-xs font-semibold font-heading flex items-center space-x-2 border-b-2 transition-colors cursor-pointer ${
+                    parserSubTab === 'grid'
+                      ? 'border-[#F27421] text-slate-900 font-bold'
+                      : 'border-transparent text-slate-500 hover:text-slate-800'
+                  }`}
+                >
+                  <span>Live Parsed Data Grid</span>
+                  <span className={`px-1.5 py-0.2 text-[10px] font-mono font-bold rounded-full ${
+                    parserSubTab === 'grid' ? 'bg-[#F27421] text-white' : 'bg-slate-100 text-slate-700'
+                  }`}>
+                    {sampleData.rows.length}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setParserSubTab('columns')}
+                  className={`py-3.5 text-xs font-semibold font-heading flex items-center space-x-2 border-b-2 transition-colors cursor-pointer ${
+                    parserSubTab === 'columns'
+                      ? 'border-[#F27421] text-slate-900 font-bold'
+                      : 'border-transparent text-slate-500 hover:text-slate-800'
+                  }`}
+                >
+                  <span>Identified Column Headers</span>
+                  <span className={`px-1.5 py-0.2 text-[10px] font-mono font-bold rounded-full ${
+                    parserSubTab === 'columns' ? 'bg-[#F27421] text-white' : 'bg-slate-100 text-slate-700'
+                  }`}>
+                    {sampleData.headers.length}
+                  </span>
+                </button>
+              </div>
+
+              {/* Table Toolbar */}
+              <div className="p-3 border-b border-slate-200/80 bg-slate-50/60 flex flex-wrap items-center justify-between gap-3 shrink-0">
+                <div className="flex items-center space-x-3 flex-wrap gap-y-2">
+                  <div className="relative">
+                    <Search size={13} className="absolute left-3 top-2.5 text-slate-400" />
+                    <input
+                      type="text"
+                      value={parserSearchQuery}
+                      onChange={(e) => setParserSearchQuery(e.target.value)}
+                      placeholder="Find in parsed grid..."
+                      className="pl-8 pr-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs w-48 focus:outline-none focus:border-orange-500"
+                    />
+                  </div>
+
+                  {/* Prune Empty Merged Columns Toggle */}
+                  <label className="flex items-center space-x-1.5 text-xs font-semibold text-slate-700 bg-white border border-slate-200 px-3 py-1.5 rounded-lg cursor-pointer hover:bg-slate-50 transition shadow-2xs">
+                    <input
+                      type="checkbox"
+                      checked={pruneEmptyColumns}
+                      onChange={(e) => handleTogglePruneEmptyColumns(e.target.checked)}
+                      className="rounded text-orange-600 focus:ring-orange-500 h-3.5 w-3.5"
+                    />
+                    <span>Only columns with data</span>
+                  </label>
+
+                  {/* Detected Pattern Quick Switchers */}
+                  {detectedPatterns.length > 0 && (
+                    <div className="flex items-center space-x-1.5">
+                      <span className="text-[10px] font-bold text-slate-400 uppercase">Pattern:</span>
+                      {detectedPatterns.slice(0, 3).map(p => (
+                        <button
+                          key={p.pattern}
+                          type="button"
+                          onClick={() => handleSelectPatternToConfigure(p)}
+                          className={`px-2 py-1 rounded-md text-[10px] font-mono font-semibold transition cursor-pointer ${
+                            filePattern === p.pattern
+                              ? 'bg-orange-500 text-white'
+                              : 'bg-white border border-slate-200 text-slate-600 hover:border-slate-300'
+                          }`}
+                        >
+                          {p.pattern} ({p.fileCount})
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+
+                <div className="flex items-center space-x-2">
+                  <button
+                    type="button"
+                    onClick={() => handleInspectStructure()}
+                    disabled={isInspecting || !selectedFileForParser}
+                    className="px-3.5 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-semibold transition cursor-pointer flex items-center space-x-1.5 shadow-2xs disabled:opacity-50"
+                  >
+                    <Sparkles size={12} className={isInspecting ? 'animate-spin' : ''} />
+                    <span>{isInspecting ? 'Inspecting...' : 'Inspect Structure'}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setActiveTab('schedule_table')}
+                    className="px-3.5 py-1.5 bg-[#F27421] hover:bg-orange-600 text-white rounded-lg text-xs font-bold transition cursor-pointer flex items-center space-x-1 shadow-xs"
+                  >
+                    <span>Proceed to Mapping</span>
+                    <ArrowRight size={13} />
+                  </button>
+                </div>
+              </div>
+
+              {/* Error notice if inspection failed */}
+              {inspectError && (
+                <div className="p-3 bg-red-50 border-b border-red-200 text-red-700 text-xs flex items-center justify-between shrink-0">
+                  <div className="flex items-center space-x-2">
+                    <AlertCircle size={15} className="shrink-0 text-red-600" />
+                    <span>{inspectError}</span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => handleInspectStructure()}
+                    className="px-2.5 py-1 bg-red-100 hover:bg-red-200 text-red-800 rounded-lg text-xs font-semibold cursor-pointer"
+                  >
+                    Retry Inspection
+                  </button>
+                </div>
+              )}
+
+              {/* Main Grid Content */}
+              {parserSubTab === 'grid' && (
+                <div className="overflow-x-auto flex-1 min-h-0">
+                  {sampleData.headers.length === 0 ? (
+                    <div className="py-16 text-center space-y-2">
+                      <Table size={24} className="text-slate-300 mx-auto" />
+                      <div className="font-bold text-slate-700 text-xs">No Parsed Preview Data Yet</div>
+                      <p className="text-[11px] text-slate-400 max-w-sm mx-auto">
+                        Click &quot;Inspect Structure&quot; above to inspect the remote file and extract columns.
+                      </p>
+                    </div>
+                  ) : (
+                    <table className="w-full text-left text-xs border-collapse font-mono">
+                      <thead className="sticky top-0 bg-slate-50 border-b border-slate-200 z-10 text-slate-700 font-bold text-[11px]">
+                        <tr>
+                          <th className="py-2.5 px-3 text-slate-400 text-center w-10">#</th>
+                          {sampleData.headers.map((h, i) => (
+                            <th key={i} className="py-2.5 px-4 whitespace-nowrap">
+                              <div className="flex flex-col">
+                                <span className="text-slate-900 font-bold">{h}</span>
+                                <span className="text-[9px] text-slate-400 font-sans font-normal">col_{i + 1}</span>
+                              </div>
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-100 text-xs">
+                        {filteredSampleRows.map((row, rIdx) => (
+                          <tr key={rIdx} className="hover:bg-slate-50/60 transition">
+                            <td className="py-2 px-3 text-slate-400 text-center font-bold text-[11px] bg-slate-50/40">
+                              {rIdx + 1}
+                            </td>
+                            {sampleData.headers.map((h, cIdx) => (
+                              <td key={cIdx} className="py-2 px-4 text-slate-700 whitespace-nowrap">
+                                {row[h] !== undefined && row[h] !== null && String(row[h]).trim() !== '' ? (
+                                  String(row[h])
+                                ) : (
+                                  <span className="text-slate-300 italic text-[11px]">null</span>
+                                )}
+                              </td>
+                            ))}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                </div>
+              )}
+
+              {/* Identified Columns Subtab */}
+              {parserSubTab === 'columns' && (
+                <div className="overflow-x-auto flex-1 min-h-0">
+                  <table className="w-full text-left text-xs border-collapse">
+                    <thead className="sticky top-0 bg-slate-50 border-b border-slate-200 z-10 text-slate-600 font-semibold text-[11px]">
+                      <tr>
+                        <th className="py-2.5 px-3 text-center w-10">#</th>
+                        <th className="py-2.5 px-4">Header Name</th>
+                        <th className="py-2.5 px-4">Data Presence</th>
+                        <th className="py-2.5 px-4">Sample Values</th>
+                        <th className="py-2.5 px-4">Detected Type</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100 text-xs font-sans">
+                      {allColumnsAnalysis && allColumnsAnalysis.length > 0 ? (
+                        allColumnsAnalysis.map((col, idx) => (
+                          <tr key={idx} className="hover:bg-slate-50/60 transition">
+                            <td className="py-2.5 px-3 text-slate-400 text-center font-mono font-bold text-[11px]">
+                              {idx + 1}
+                            </td>
+                            <td className="py-2.5 px-4 font-mono font-bold text-slate-900">
+                              {col.header}
+                            </td>
+                            <td className="py-2.5 px-4">
+                              {col.hasData ? (
+                                <span className="inline-flex items-center space-x-1 text-emerald-700 font-mono text-[11px]">
+                                  <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+                                  <span>{col.nonEmptyCount} of {col.totalRows} ({Math.round((col.nonEmptyCount / (col.totalRows || 1)) * 100)}%)</span>
+                                </span>
+                              ) : (
+                                <span className="text-slate-400 italic">Empty merged column</span>
+                              )}
+                            </td>
+                            <td className="py-2.5 px-4 font-mono text-[11px] text-slate-600">
+                              {(col.sampleValues || []).slice(0, 3).join(', ') || '—'}
+                            </td>
+                            <td className="py-2.5 px-4 font-mono text-[11px] text-blue-600">
+                              {col.suggestedDataType || 'VARCHAR(128)'}
+                            </td>
+                          </tr>
+                        ))
+                      ) : (
+                        sampleData.headers.map((h, idx) => (
+                          <tr key={idx} className="hover:bg-slate-50/60 transition">
+                            <td className="py-2.5 px-3 text-slate-400 text-center font-mono font-bold text-[11px]">
+                              {idx + 1}
+                            </td>
+                            <td className="py-2.5 px-4 font-mono font-bold text-slate-900">{h}</td>
+                            <td className="py-2.5 px-4 text-emerald-700 font-mono">Present</td>
+                            <td className="py-2.5 px-4 font-mono text-[11px] text-slate-600">
+                              {sampleData.rows.slice(0, 3).map(r => r[h]).filter(Boolean).join(', ') || '—'}
+                            </td>
+                            <td className="py-2.5 px-4 font-mono text-[11px] text-blue-600">VARCHAR(128)</td>
+                          </tr>
+                        ))
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* ========================================================= */}
+          {/* RIGHT 1 COLUMN: PARSER SETTINGS & INSPECT ACTION          */}
+          {/* ========================================================= */}
+          <div className="lg:col-span-1 space-y-4 flex flex-col">
+            {/* Card 1: Remote Source File */}
+            <div className="bg-white rounded-xl border border-slate-200/80 p-4 shadow-2xs space-y-3 shrink-0">
+              <div className="flex items-center space-x-2">
+                <div className="w-7 h-7 rounded-lg bg-orange-50 border border-orange-200 flex items-center justify-center text-[#F27421] shrink-0">
+                  <FileSpreadsheet size={14} />
+                </div>
+                <div>
+                  <h4 className="font-bold text-slate-900 text-xs">Target File to Parse</h4>
+                  <p className="text-[10px] text-slate-400">Sample file from remote folder</p>
+                </div>
+              </div>
+
               <div>
-                <h3 className="font-bold text-slate-900 text-sm tracking-tight">File Format &amp; Delimiter Setup</h3>
-                <p className="text-xs text-slate-500 mt-0.5">
-                  Specify how the remote SFTP settlement files should be parsed and split into columns.
-                </p>
+                <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500 block mb-1">Select Remote File</label>
+                {discoveredFiles.length > 0 ? (
+                  <select
+                    value={selectedFileForParser}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setSelectedFileForParser(val);
+                      const match = discoveredFiles.find(f => f.fullPath === val);
+                      if (match) {
+                        setFilePattern(match.name.replace(/\d{4,8}/g, '*'));
+                        const isXls = match.name.endsWith('.xls') || match.name.endsWith('.xlsx') || match.format === 'EXCEL';
+                        setFileFormat(isXls ? 'EXCEL' : match.format === 'PIPE' ? 'PIPE' : match.format === 'TAB' ? 'TAB' : 'CSV');
+                        setDelimiter(match.format === 'PIPE' ? '|' : match.format === 'TAB' ? '\t' : ',');
+                      }
+                      if (val) {
+                        handleInspectStructure(val);
+                      }
+                    }}
+                    className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg font-mono text-xs text-slate-800 bg-white focus:outline-none focus:border-orange-500 truncate cursor-pointer"
+                  >
+                    <option value="">-- Choose discovered file --</option>
+                    {discoveredFiles.map(f => (
+                      <option key={f.fullPath} value={f.fullPath}>
+                        {f.name} ({f.format} · {f.size})
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <code className="text-xs font-mono font-bold text-slate-800 bg-slate-100 px-2.5 py-1 rounded-lg block truncate">
+                    {selectedFileForParser || 'No file selected (Scan Tab 1)'}
+                  </code>
+                )}
               </div>
 
               {selectedFileForParser && (
-                <div className="flex items-center space-x-2">
-                  <span className="text-[11px] text-slate-400 font-mono">Target File:</span>
-                  <code className="text-xs font-mono font-bold text-slate-800 bg-slate-100 px-2.5 py-1 rounded-lg">
+                <div className="p-2 bg-slate-50 border border-slate-200 rounded-lg space-y-0.5">
+                  <span className="text-[9px] font-bold text-slate-400 uppercase">Remote Path:</span>
+                  <p className="text-[10px] font-mono text-slate-700 truncate" title={selectedFileForParser}>
                     {selectedFileForParser}
-                  </code>
+                  </p>
                 </div>
               )}
             </div>
 
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-              {/* Pattern */}
+            {/* Card 2: Parser Settings */}
+            <div className="bg-white rounded-xl border border-slate-200/80 p-4 shadow-2xs space-y-3 shrink-0">
+              <div className="flex items-center space-x-2">
+                <div className="w-7 h-7 rounded-lg bg-blue-50 border border-blue-200 flex items-center justify-center text-blue-600 shrink-0">
+                  <Settings size={14} />
+                </div>
+                <div>
+                  <h4 className="font-bold text-slate-900 text-xs">Parser Settings</h4>
+                  <p className="text-[10px] text-slate-400">File format &amp; delimiter</p>
+                </div>
+              </div>
+
               <div>
-                <label className="text-[11px] font-semibold text-slate-700 block mb-1">File Matching Pattern</label>
+                <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500 block mb-1">File Matching Pattern</label>
                 <input
                   type="text"
                   value={filePattern}
                   onChange={(e) => setFilePattern(e.target.value)}
                   placeholder="*.csv"
-                  className="w-full px-3 py-2 border border-slate-200 rounded-xl font-mono text-xs focus:outline-none focus:border-orange-500"
+                  className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg font-mono text-xs focus:outline-none focus:border-orange-500"
                 />
                 <span className="text-[10px] text-slate-400 mt-1 block">Wildcard pattern for rotating batches</span>
               </div>
 
-              {/* Format */}
               <div>
-                <label className="text-[11px] font-semibold text-slate-700 block mb-1">Detected File Format</label>
+                <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500 block mb-1">File Format</label>
                 <select
                   value={fileFormat}
                   onChange={(e) => {
                     const f = e.target.value as any;
                     setFileFormat(f);
                     if (f === 'PIPE') setDelimiter('|');
-                    else if (f === 'TAB') setDelimiter('\\t');
+                    else if (f === 'TAB') setDelimiter('\t');
                     else if (f === 'SEMICOLON') setDelimiter(';');
                     else if (f === 'CSV') setDelimiter(',');
                   }}
-                  className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white font-mono text-xs focus:outline-none focus:border-orange-500"
+                  className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg bg-white font-mono text-xs focus:outline-none focus:border-orange-500"
                 >
                   <option value="CSV">CSV (Comma-separated)</option>
                   <option value="EXCEL">Excel (.xlsx, .xls)</option>
                   <option value="PIPE">Pipe-delimited (|)</option>
-                  <option value="TAB">Tab-delimited (\t)</option>
+                  <option value="TAB">Tab-delimited (	)</option>
                   <option value="SEMICOLON">Semicolon (;)</option>
                   <option value="FIXED">Fixed Width</option>
                   <option value="CUSTOM">Custom Delimiter</option>
                 </select>
               </div>
 
-              {/* Delimiter */}
               <div>
-                <label className="text-[11px] font-semibold text-slate-700 block mb-1">Column Delimiter</label>
+                <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500 block mb-1">Column Delimiter</label>
                 <input
                   type="text"
                   value={delimiter}
                   onChange={(e) => setDelimiter(e.target.value)}
                   disabled={fileFormat === 'EXCEL'}
-                  className="w-full px-3 py-2 border border-slate-200 rounded-xl font-mono text-xs text-center focus:outline-none focus:border-orange-500 disabled:bg-slate-50 disabled:text-slate-400"
+                  className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg font-mono text-xs text-center focus:outline-none focus:border-orange-500 disabled:bg-slate-50 disabled:text-slate-400"
                 />
-                <span className="text-[10px] text-slate-400 mt-1 block">e.g. , or | or \t</span>
               </div>
 
-              {/* Header & Data Rows */}
-              <div className="grid grid-cols-2 gap-2">
+              <div className="grid grid-cols-2 gap-2 pt-1">
                 <div>
-                  <label className="text-[11px] font-semibold text-slate-700 block mb-1">Header Row</label>
+                  <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500 block mb-1">Header Row</label>
                   <input
                     type="number"
                     min={1}
                     value={headerRowIndex}
                     onChange={(e) => setHeaderRowIndex(Number(e.target.value) || 1)}
-                    className="w-full px-3 py-2 border border-slate-200 rounded-xl font-mono text-xs text-center focus:outline-none"
+                    className="w-full px-2 py-1.5 border border-slate-200 rounded-lg font-mono text-xs text-center focus:outline-none"
                   />
                 </div>
                 <div>
-                  <label className="text-[11px] font-semibold text-slate-700 block mb-1">Data Start</label>
+                  <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500 block mb-1">Data Start</label>
                   <input
                     type="number"
                     min={2}
                     value={dataStartRow}
                     onChange={(e) => setDataStartRow(Number(e.target.value) || 2)}
-                    className="w-full px-3 py-2 border border-slate-200 rounded-xl font-mono text-xs text-center focus:outline-none"
+                    className="w-full px-2 py-1.5 border border-slate-200 rounded-lg font-mono text-xs text-center focus:outline-none"
                   />
                 </div>
               </div>
             </div>
 
-            <div className="flex items-center justify-between pt-2">
+            {/* Card 3: Actions & Next Steps */}
+            <div className="bg-white rounded-xl border border-slate-200/80 p-4 shadow-2xs space-y-2.5 shrink-0">
+              <h4 className="font-bold text-slate-900 text-xs flex items-center space-x-1.5">
+                <Zap size={13} className="text-[#F27421]" />
+                <span>Parser Actions</span>
+              </h4>
+
               <button
                 type="button"
-                onClick={handleInspectStructure}
+                onClick={() => handleInspectStructure()}
                 disabled={isInspecting || !selectedFileForParser}
-                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-semibold text-xs transition cursor-pointer flex items-center space-x-1.5 shadow-2xs disabled:opacity-50"
+                className="w-full py-2.5 px-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-bold text-xs transition cursor-pointer flex items-center justify-center space-x-1.5 shadow-xs disabled:opacity-50"
               >
                 <Sparkles size={13} className={isInspecting ? 'animate-spin' : ''} />
                 <span>{isInspecting ? 'Inspecting Structure...' : 'Inspect Structure & Test Parse'}</span>
@@ -1250,60 +2379,1244 @@ export function ResourceDetailView({
               <button
                 type="button"
                 onClick={() => setActiveTab('schedule_table')}
-                className="px-5 py-2 bg-[#F97316] hover:bg-orange-600 text-white rounded-xl font-semibold text-xs transition cursor-pointer flex items-center space-x-1.5 shadow-xs"
+                className="w-full py-2.5 px-3 bg-[#F27421] hover:bg-orange-600 text-white rounded-xl font-bold text-xs transition cursor-pointer flex items-center justify-center space-x-1.5 shadow-xs"
               >
-                <span>Proceed to Table Mapping &amp; Scheduling</span>
+                <span>Proceed to Table Mapping</span>
                 <ArrowRight size={13} />
+              </button>
+
+              {inspectSummary && (
+                <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl space-y-1 animate-in fade-in">
+                  <div className="flex items-center space-x-1.5 text-emerald-900 font-bold text-[11px]">
+                    <CheckCircle2 size={13} className="text-emerald-600 shrink-0" />
+                    <span>Inspection Succeeded</span>
+                  </div>
+                  <p className="text-[10px] text-emerald-800 font-mono leading-tight">
+                    {inspectSummary.columnsFound} columns identified · {inspectSummary.sampleCount} rows sampled
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* =================================================================== */}
+      {/* TAB 4 (SFTP): TARGET DEDICATED TABLE & SCHEDULED INGESTION          */}
+      {/* =================================================================== */}
+      {activeTab === 'schedule_table' && isSftp && (
+        <div className="grid grid-cols-1 lg:grid-cols-4 gap-4 flex-1 min-h-0 h-full overflow-hidden">
+          {/* ========================================================= */}
+          {/* LEFT 3 COLUMNS: KPI CARDS + DATA GRID WITH COLUMN MAPPING */}
+          {/* ========================================================= */}
+          <div className="lg:col-span-3 space-y-3 flex-1 min-h-0 flex flex-col">
+            {/* 4 Compact KPI Metric Cards Strip */}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 shrink-0">
+              {/* Card 1: File Pattern */}
+              <div className="px-3.5 py-2.5 bg-white rounded-xl border border-slate-200/90 shadow-2xs flex flex-col justify-between">
+                <span className="text-[11px] text-slate-500 font-sans font-medium block">File Pattern</span>
+                <span className="text-base font-bold font-mono text-slate-900 mt-0.5 truncate" title={filePattern}>
+                  {filePattern || '*.xls'}
+                </span>
+                <span className="text-[10px] text-slate-400 mt-0.5">{matchingPatternFiles.length} files matching</span>
+              </div>
+
+              {/* Card 2: Active Columns */}
+              <div className="px-3.5 py-2.5 bg-white rounded-xl border border-slate-200/90 shadow-2xs flex flex-col justify-between">
+                <span className="text-[11px] text-slate-500 font-sans font-medium block">Active Columns</span>
+                <span className="text-base font-bold font-mono text-slate-900 mt-0.5">
+                  {activeTotalCount} / {columnMappings.length}
+                </span>
+                <span className="text-[10px] text-slate-400 mt-0.5">{columnMappings.length - activeTotalCount} excluded</span>
+              </div>
+
+              {/* Card 3: Global Aligned */}
+              <div className="px-3.5 py-2.5 bg-white rounded-xl border border-slate-200/90 shadow-2xs flex flex-col justify-between">
+                <span className="text-[11px] text-slate-500 font-sans font-medium block">Global Aligned</span>
+                <span className="text-base font-bold font-mono text-purple-700 mt-0.5">
+                  {activeMappedCount} / {activeTotalCount}
+                </span>
+                <span className="text-[10px] text-purple-600 mt-0.5 font-medium">
+                  {activeTotalCount > 0 && activeMappedCount === activeTotalCount ? '✓ 100% Aligned' : `${activeTotalCount - activeMappedCount} unmapped`}
+                </span>
+              </div>
+
+              {/* Card 4: Sample Data */}
+              <div className="px-3.5 py-2.5 bg-white rounded-xl border border-slate-200/90 shadow-2xs flex flex-col justify-between">
+                <span className="text-[11px] text-slate-500 font-sans font-medium block">Sample Data</span>
+                <span className="text-base font-bold font-mono text-slate-900 mt-0.5">
+                  {sampleData.rows.length} Rows
+                </span>
+                <span className="text-[10px] text-slate-400 mt-0.5">PostgreSQL projection</span>
+              </div>
+            </div>
+
+            {/* Main Table Workspace Card */}
+            <div className="bg-white rounded-2xl border border-slate-200 shadow-2xs overflow-hidden flex flex-col flex-1 min-h-0">
+              {/* Tabs Row matching WorkspaceTaskCreator */}
+              <div className="border-b border-slate-200 px-5 flex items-center justify-between shrink-0 bg-white">
+                <div className="flex items-center space-x-6">
+                  <button
+                    type="button"
+                    onClick={() => setScheduleSubTab('mapping')}
+                    className={`py-3.5 text-xs font-semibold font-heading flex items-center space-x-2 border-b-2 transition-colors cursor-pointer ${
+                      scheduleSubTab === 'mapping'
+                        ? 'border-[#F27421] text-slate-900 font-bold'
+                        : 'border-transparent text-slate-500 hover:text-slate-800'
+                    }`}
+                  >
+                    <span>Data Grid &amp; Column Mapping</span>
+                    <span className={`px-1.5 py-0.2 text-[10px] font-mono font-bold rounded-full ${
+                      scheduleSubTab === 'mapping' ? 'bg-[#F27421] text-white' : 'bg-slate-100 text-slate-700'
+                    }`}>
+                      {activeTotalCount} cols · {sampleData.rows.length} rows
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setScheduleSubTab('preview')}
+                    className={`py-3.5 text-xs font-semibold font-heading flex items-center space-x-2 border-b-2 transition-colors cursor-pointer ${
+                      scheduleSubTab === 'preview'
+                        ? 'border-[#F27421] text-slate-900 font-bold'
+                        : 'border-transparent text-slate-500 hover:text-slate-800'
+                    }`}
+                  >
+                    <span>Final Stored Data Preview</span>
+                    <span className={`px-1.5 py-0.2 text-[10px] font-mono font-bold rounded-full ${
+                      scheduleSubTab === 'preview' ? 'bg-[#F27421] text-white' : 'bg-slate-100 text-slate-700'
+                    }`}>
+                      {sampleData.rows.length}
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setScheduleSubTab('files')}
+                    className={`py-3.5 text-xs font-semibold font-heading flex items-center space-x-2 border-b-2 transition-colors cursor-pointer ${
+                      scheduleSubTab === 'files'
+                        ? 'border-[#F27421] text-slate-900 font-bold'
+                        : 'border-transparent text-slate-500 hover:text-slate-800'
+                    }`}
+                  >
+                    <span>Pattern Files in Batch</span>
+                    <span className={`px-1.5 py-0.2 text-[10px] font-mono font-bold rounded-full ${
+                      scheduleSubTab === 'files' ? 'bg-[#F27421] text-white' : 'bg-slate-100 text-slate-700'
+                    }`}>
+                      {matchingPatternFiles.length}
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setScheduleSubTab('policy')}
+                    className={`py-3.5 text-xs font-semibold font-heading flex items-center space-x-2 border-b-2 transition-colors cursor-pointer ${
+                      scheduleSubTab === 'policy'
+                        ? 'border-[#F27421] text-slate-900 font-bold'
+                        : 'border-transparent text-slate-500 hover:text-slate-800'
+                    }`}
+                  >
+                    <span>Remote File Policy</span>
+                    <span className={`px-1.5 py-0.2 text-[10px] font-mono font-bold rounded-full ${
+                      scheduleSubTab === 'policy' ? 'bg-[#F27421] text-white' : 'bg-slate-100 text-slate-700'
+                    }`}>
+                      {fileCleanupAction === 'MOVE_ARCHIVE' ? 'Archive' : fileCleanupAction === 'RENAME_PROCESSED' ? 'Rename' : 'Retain'}
+                    </span>
+                  </button>
+                </div>
+
+                {/* Quick Policy Selector in Table Header */}
+                <div className="flex items-center space-x-2 py-1">
+                  <span className="text-[10px] font-semibold text-slate-400">Remote Action:</span>
+                  <select
+                    value={fileCleanupAction}
+                    onChange={(e) => setFileCleanupAction(e.target.value as any)}
+                    className="px-2.5 py-1 text-[11px] font-medium border border-slate-200 rounded-lg bg-slate-50 hover:bg-white text-slate-800 focus:outline-none focus:border-[#F27421] transition shadow-2xs"
+                  >
+                    <option value="MOVE_ARCHIVE">Move to Archive Folder</option>
+                    <option value="RENAME_PROCESSED">Rename (.processed)</option>
+                    <option value="RETAIN">Retain in Place on SFTP</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Sub-Tab 1: Data Grid & Column Mapping Directly on Table Columns */}
+              {scheduleSubTab === 'mapping' && (
+                <div className="flex-1 min-h-0 flex flex-col">
+                  {/* Table Toolbar matching WorkspaceTaskCreator */}
+                  <div className="p-3 border-b border-slate-200/80 bg-slate-50/60 flex flex-wrap items-center justify-between gap-3 shrink-0">
+                    <div className="flex items-center space-x-3 flex-wrap gap-y-2">
+                      {/* Search in grid / columns */}
+                      <div className="relative">
+                        <Search size={13} className="absolute left-3 top-2.5 text-slate-400" />
+                        <input
+                          type="text"
+                          value={columnSearchQuery}
+                          onChange={(e) => setColumnSearchQuery(e.target.value)}
+                          placeholder="Filter columns..."
+                          className="pl-8 pr-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs w-48 focus:outline-none focus:border-orange-500"
+                        />
+                      </div>
+
+                      {/* Filter Mode Pills */}
+                      <div className="flex items-center space-x-1 bg-white border border-slate-200 rounded-lg p-0.5">
+                        <button
+                          type="button"
+                          onClick={() => setColumnFilterMode('all')}
+                          className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition cursor-pointer ${
+                            columnFilterMode === 'all'
+                              ? 'bg-slate-900 text-white font-bold'
+                              : 'text-slate-600 hover:text-slate-900'
+                          }`}
+                        >
+                          All ({columnMappings.length})
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setColumnFilterMode('mapped')}
+                          className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition cursor-pointer ${
+                            columnFilterMode === 'mapped'
+                              ? 'bg-purple-600 text-white font-bold'
+                              : 'text-slate-600 hover:text-slate-900'
+                          }`}
+                        >
+                          Mapped ({activeMappedCount})
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setColumnFilterMode('unmapped')}
+                          className={`px-2.5 py-1 rounded-md text-[11px] font-medium transition cursor-pointer ${
+                            columnFilterMode === 'unmapped'
+                              ? 'bg-amber-500 text-white font-bold'
+                              : 'text-slate-600 hover:text-slate-900'
+                          }`}
+                        >
+                          Unmapped ({activeTotalCount - activeMappedCount})
+                        </button>
+                      </div>
+
+                      {/* Prune Empty Merged Columns Toggle */}
+                      <label className="flex items-center space-x-1.5 text-xs font-semibold text-slate-700 bg-white border border-slate-200 px-3 py-1.5 rounded-lg cursor-pointer hover:bg-slate-50 transition shadow-2xs">
+                        <input
+                          type="checkbox"
+                          checked={pruneEmptyColumns}
+                          onChange={(e) => handleTogglePruneEmptyColumns(e.target.checked)}
+                          className="rounded text-orange-600 focus:ring-orange-500 h-3.5 w-3.5"
+                        />
+                        <span>Only columns with data</span>
+                      </label>
+                    </div>
+
+                    <div className="flex items-center space-x-2">
+                      <button
+                        type="button"
+                        onClick={handleAutoMapAllToGlobal}
+                        className="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 text-white rounded-lg text-xs font-semibold flex items-center space-x-1.5 transition shadow-2xs cursor-pointer"
+                        title="Re-run fuzzy auto-mapping against Global Standard Directory"
+                      >
+                        <Sparkles size={12} />
+                        <span>Auto-Map to Global</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const allIncluded = columnMappings.every(m => m.included !== false);
+                          setColumnMappings(prev => prev.map(m => ({ ...m, included: !allIncluded })));
+                        }}
+                        className="px-2.5 py-1.5 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 rounded-lg text-xs font-medium transition shadow-2xs cursor-pointer"
+                      >
+                        {columnMappings.every(m => m.included !== false) ? 'Deselect All' : 'Select All'}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Global Standard Directory Alignment Banner */}
+                  <div className="px-4 py-2 border-b border-purple-100 bg-gradient-to-r from-purple-50/80 via-indigo-50/40 to-slate-50 flex items-center justify-between shrink-0">
+                    <div className="flex items-center space-x-2">
+                      <Sparkles size={14} className="text-purple-600 shrink-0" />
+                      <span className="text-xs font-bold text-slate-900">PostgreSQL Strict Mode:</span>
+                      <span className="text-[11px] text-slate-600">
+                        Map each table column directly below to a registered canonical Global Field.
+                      </span>
+                    </div>
+                    <span className="text-[10px] font-mono font-bold bg-purple-100 text-purple-800 px-2 py-0.5 rounded-full border border-purple-200">
+                      {activeMappedCount} of {activeTotalCount} Mapped
+                    </span>
+                  </div>
+
+                  {/* The Data Grid Table with Mapping Directly in the Column Headers */}
+                  <div className="overflow-x-auto flex-1 min-h-0">
+                    {displayedColumns.length === 0 ? (
+                      <div className="py-12 text-center space-y-2">
+                        <Layers size={22} className="text-slate-300 mx-auto" />
+                        <div className="font-bold text-slate-700 text-xs">No matching columns found</div>
+                        <p className="text-[11px] text-slate-400">Try clearing your search query or filter pill.</p>
+                      </div>
+                    ) : (
+                      <table className="w-full text-left text-xs border-collapse">
+                        <thead className="sticky top-0 bg-white border-b border-slate-200 z-10 font-sans shadow-2xs">
+                          <tr>
+                            {/* Sticky Row Number / Select All Header */}
+                            <th className="py-3 px-3 w-12 text-center text-slate-400 font-mono bg-slate-50 border-r border-slate-200">
+                              #
+                            </th>
+
+                            {/* Dynamic Column Headers with Mapping Selectors */}
+                            {displayedColumns.map((col) => {
+                              const origIdx = columnMappings.findIndex(m => m.sourceHeader === col.sourceHeader);
+                              const idx = origIdx >= 0 ? origIdx : 0;
+                              const isIncluded = col.included !== false;
+                              const isKnownGlobal = Boolean(col.targetColumn && globalFields.some(f => f.key === col.targetColumn));
+                              const matchedGlobalField = isKnownGlobal ? globalFields.find(f => f.key === col.targetColumn) : undefined;
+
+                              return (
+                                <th
+                                  key={col.sourceHeader || idx}
+                                  className={`p-3 min-w-[240px] max-w-[320px] font-sans border-r border-slate-200 transition-colors ${
+                                    !isIncluded
+                                      ? 'bg-slate-100/70 opacity-60'
+                                      : isKnownGlobal
+                                      ? 'bg-purple-50/30'
+                                      : 'bg-amber-50/20'
+                                  }`}
+                                >
+                                  {/* Row 1: Checkbox, Header Name, Type Pill, PK Toggle */}
+                                  <div className="flex items-center justify-between mb-2">
+                                    <label className="flex items-center space-x-1.5 cursor-pointer select-none min-w-0 flex-1">
+                                      <input
+                                        type="checkbox"
+                                        checked={isIncluded}
+                                        onChange={(e) => {
+                                          const checked = e.target.checked;
+                                          setColumnMappings(prev => {
+                                            const next = [...prev];
+                                            next[idx] = { ...next[idx], included: checked };
+                                            return next;
+                                          });
+                                        }}
+                                        className="rounded border-slate-300 text-orange-600 focus:ring-orange-500 h-3.5 w-3.5 cursor-pointer shrink-0"
+                                      />
+                                      <span className="font-bold text-slate-900 truncate text-xs" title={col.sourceHeader}>
+                                        {col.sourceHeader}
+                                      </span>
+                                      {col.isMergedSpan && (
+                                        <span className="px-1 py-0.2 rounded text-[8px] font-bold bg-amber-100 text-amber-800 border border-amber-200">
+                                          Merged
+                                        </span>
+                                      )}
+                                    </label>
+
+                                    <div className="flex items-center space-x-1 shrink-0 ml-2">
+                                      {/* Data Type Select */}
+                                      <select
+                                        value={col.dataType}
+                                        disabled={!isIncluded}
+                                        onChange={(e) => {
+                                          const val = e.target.value;
+                                          setColumnMappings(prev => {
+                                            const next = [...prev];
+                                            next[idx] = { ...next[idx], dataType: val };
+                                            return next;
+                                          });
+                                        }}
+                                        className="text-[10px] font-mono py-0.5 px-1.5 bg-white border border-slate-200 rounded text-slate-700 focus:outline-none disabled:bg-slate-100"
+                                      >
+                                        <option value="VARCHAR(64)">VARCHAR(64)</option>
+                                        <option value="VARCHAR(128)">VARCHAR(128)</option>
+                                        <option value="VARCHAR(256)">VARCHAR(256)</option>
+                                        <option value="NUMERIC(18,4)">NUMERIC(18,4)</option>
+                                        <option value="TIMESTAMP">TIMESTAMP</option>
+                                        <option value="BIGINT">BIGINT</option>
+                                        <option value="BOOLEAN">BOOLEAN</option>
+                                      </select>
+
+                                      {/* PK Button */}
+                                      <button
+                                        type="button"
+                                        disabled={!isIncluded}
+                                        onClick={() => {
+                                          setColumnMappings(prev => {
+                                            const next = [...prev];
+                                            next[idx] = { ...next[idx], isPrimaryKey: !next[idx].isPrimaryKey };
+                                            return next;
+                                          });
+                                        }}
+                                        className={`px-1.5 py-0.5 rounded text-[9px] font-mono font-bold border transition cursor-pointer ${
+                                          col.isPrimaryKey
+                                            ? 'bg-amber-100 text-amber-800 border-amber-300'
+                                            : 'bg-white text-slate-400 border-slate-200 hover:text-slate-700'
+                                        }`}
+                                        title={col.isPrimaryKey ? 'Primary Key / Deduplication Column' : 'Click to set as PK'}
+                                      >
+                                        PK
+                                      </button>
+                                    </div>
+                                  </div>
+
+                                  {/* Row 2: Standard Global Field Mapping Selector */}
+                                  <div className="relative mb-1.5">
+                                    <select
+                                      value={col.targetColumn || ''}
+                                      disabled={!isIncluded}
+                                      onChange={(e) => {
+                                        const val = e.target.value;
+                                        if (!val) {
+                                          setColumnMappings(prev => {
+                                            const next = [...prev];
+                                            next[idx] = {
+                                              ...next[idx],
+                                              targetColumn: '',
+                                              globalFieldKey: undefined,
+                                              included: false
+                                            };
+                                            return next;
+                                          });
+                                        } else {
+                                          const gField = globalFields.find(f => f.key === val);
+                                          setColumnMappings(prev => {
+                                            const next = [...prev];
+                                            next[idx] = {
+                                              ...next[idx],
+                                              targetColumn: val,
+                                              globalFieldKey: val,
+                                              included: true,
+                                              dataType: gField ? mapGlobalTypeToPostgres(gField.dataType, next[idx].dataType) : next[idx].dataType
+                                            };
+                                            return next;
+                                          });
+                                        }
+                                      }}
+                                      className={`w-full py-1.5 pl-2 pr-6 text-[11px] font-mono rounded-lg border appearance-none cursor-pointer focus:outline-none transition-colors ${
+                                        isKnownGlobal
+                                          ? 'bg-purple-50/90 border-purple-300 text-purple-950 font-semibold'
+                                          : 'bg-white border-amber-300 text-amber-800 focus:border-orange-500'
+                                      } disabled:bg-slate-100 disabled:text-slate-400`}
+                                    >
+                                      <option value="">-- Map to Global Field --</option>
+                                      {groupedGlobalFields.map(group => (
+                                        <optgroup key={group.category} label={`── ${group.category} ──`}>
+                                          {group.fields.map(f => (
+                                            <option key={f.key} value={f.key}>
+                                              {f.label ? `${f.label} (${f.key})` : f.key} {f.dataType ? `[${f.dataType}]` : ''}
+                                            </option>
+                                          ))}
+                                        </optgroup>
+                                      ))}
+                                    </select>
+                                    <ChevronDown size={11} className="absolute right-2 top-2.5 pointer-events-none text-slate-400" />
+                                  </div>
+
+                                  {/* Row 3: Subtext Pill */}
+                                  <div className="flex items-center justify-between text-[10px] text-slate-400 font-mono">
+                                    <span>col_{idx + 1}</span>
+                                    {isKnownGlobal && matchedGlobalField && (
+                                      <span className="text-purple-700 font-semibold text-[9px] truncate max-w-[150px]" title={matchedGlobalField.key}>
+                                        ✓ {matchedGlobalField.key}
+                                      </span>
+                                    )}
+                                  </div>
+                                </th>
+                              );
+                            })}
+                          </tr>
+                        </thead>
+
+                        {/* Live Sample Data Rows */}
+                        <tbody className="divide-y divide-slate-100 font-mono text-xs">
+                          {sampleData.rows.length === 0 ? (
+                            <tr>
+                              <td colSpan={displayedColumns.length + 1} className="py-12 text-center text-slate-400 text-xs">
+                                Inspect the file structure in Step 2 to generate live sample data.
+                              </td>
+                            </tr>
+                          ) : (
+                            sampleData.rows.slice(0, 25).map((row, rIdx) => (
+                              <tr key={rIdx} className="hover:bg-blue-50/20 transition">
+                                <td className="py-2.5 px-3 text-slate-400 text-center font-bold text-[11px] bg-slate-50/40 border-r border-slate-100">
+                                  {rIdx + 1}
+                                </td>
+                                {displayedColumns.map((col) => {
+                                  const val = row[col.sourceHeader];
+                                  const isNull = val === undefined || val === null || String(val).trim() === '';
+                                  const isIncluded = col.included !== false;
+
+                                  return (
+                                    <td
+                                      key={col.sourceHeader}
+                                      className={`py-2 px-3 whitespace-nowrap border-r border-slate-100 text-xs ${
+                                        !isIncluded
+                                          ? 'bg-slate-50/40 text-slate-300'
+                                          : col.dataType?.startsWith('NUMERIC')
+                                          ? 'text-emerald-700 font-semibold'
+                                          : col.dataType?.startsWith('TIMESTAMP')
+                                          ? 'text-purple-700'
+                                          : 'text-slate-800'
+                                      }`}
+                                    >
+                                      {isNull ? (
+                                        <span className="text-slate-300 italic text-[11px]">null</span>
+                                      ) : (
+                                        String(val)
+                                      )}
+                                    </td>
+                                  );
+                                })}
+                              </tr>
+                            ))
+                          )}
+                        </tbody>
+                      </table>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Sub-Tab 4: Remote File Policy */}
+              {scheduleSubTab === 'policy' && (
+                <div className="flex-1 min-h-0 flex flex-col overflow-y-auto p-6 space-y-6">
+                  {/* Top Policy Overview Banner */}
+                  <div className="p-4 bg-orange-50/60 border border-orange-200/90 rounded-2xl flex items-start justify-between gap-4">
+                    <div className="flex items-start space-x-3">
+                      <div className="w-8 h-8 rounded-xl bg-orange-100 text-orange-600 flex items-center justify-center shrink-0 mt-0.5">
+                        <FolderOpen size={16} />
+                      </div>
+                      <div>
+                        <h4 className="font-bold text-slate-900 text-sm">Remote File Policy (Post-Ingestion Cleanup)</h4>
+                        <p className="text-xs text-slate-600 mt-1 leading-relaxed">
+                          Determines what happens to remote files on the SFTP server after their contents are successfully parsed, deduplicated, and staged into PostgreSQL table <code className="font-mono font-bold text-slate-900 bg-white px-1.5 py-0.5 rounded border border-orange-200">{targetTableName}</code>.
+                        </p>
+                      </div>
+                    </div>
+                    <div className="px-3 py-1.5 rounded-xl bg-white border border-orange-200 shadow-2xs shrink-0 text-right">
+                      <div className="text-[10px] text-slate-400 uppercase font-semibold">Current Policy</div>
+                      <div className="font-bold text-xs text-orange-700 mt-0.5 font-mono">
+                        {fileCleanupAction === 'MOVE_ARCHIVE' ? 'MOVE TO ARCHIVE' : fileCleanupAction === 'RENAME_PROCESSED' ? 'RENAME (.PROCESSED)' : 'RETAIN IN PLACE'}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* 3 Interactive Policy Choice Cards */}
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    {/* Option 1: Move to Archive */}
+                    <div
+                      onClick={() => setFileCleanupAction('MOVE_ARCHIVE')}
+                      className={`p-4 rounded-2xl border-2 transition cursor-pointer flex flex-col justify-between space-y-3 ${
+                        fileCleanupAction === 'MOVE_ARCHIVE'
+                          ? 'border-[#F27421] bg-orange-50/30 shadow-xs'
+                          : 'border-slate-200 hover:border-slate-300 bg-white hover:bg-slate-50/50'
+                      }`}
+                    >
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between">
+                          <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                            fileCleanupAction === 'MOVE_ARCHIVE' ? 'bg-orange-500 text-white' : 'bg-slate-100 text-slate-600'
+                          }`}>
+                            Recommended
+                          </span>
+                          <div className={`w-5 h-5 rounded-full flex items-center justify-center border ${
+                            fileCleanupAction === 'MOVE_ARCHIVE' ? 'border-orange-500 bg-orange-500 text-white' : 'border-slate-300'
+                          }`}>
+                            {fileCleanupAction === 'MOVE_ARCHIVE' && <Check size={12} />}
+                          </div>
+                        </div>
+                        <h5 className="font-bold text-slate-900 text-xs">Move to Archive Folder</h5>
+                        <p className="text-[11px] text-slate-500 leading-relaxed">
+                          Immediately moves ingested files out of incoming directories into an archive folder. Keeps directories lightweight and fast.
+                        </p>
+                      </div>
+
+                      {fileCleanupAction === 'MOVE_ARCHIVE' && (
+                        <div className="pt-2 border-t border-orange-200/60 space-y-1.5" onClick={(e) => e.stopPropagation()}>
+                          <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500 block">Archive Destination Directory</label>
+                          <input
+                            type="text"
+                            value={archiveDirectory}
+                            onChange={(e) => setArchiveDirectory(e.target.value)}
+                            placeholder="/archive"
+                            className="w-full px-2.5 py-1.5 border border-orange-300 rounded-lg font-mono text-xs bg-white text-slate-900 focus:outline-none focus:border-[#F27421]"
+                          />
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Option 2: Rename (.processed) */}
+                    <div
+                      onClick={() => setFileCleanupAction('RENAME_PROCESSED')}
+                      className={`p-4 rounded-2xl border-2 transition cursor-pointer flex flex-col justify-between space-y-3 ${
+                        fileCleanupAction === 'RENAME_PROCESSED'
+                          ? 'border-[#F27421] bg-orange-50/30 shadow-xs'
+                          : 'border-slate-200 hover:border-slate-300 bg-white hover:bg-slate-50/50'
+                      }`}
+                    >
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between">
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-600">
+                            In-Place Rename
+                          </span>
+                          <div className={`w-5 h-5 rounded-full flex items-center justify-center border ${
+                            fileCleanupAction === 'RENAME_PROCESSED' ? 'border-orange-500 bg-orange-500 text-white' : 'border-slate-300'
+                          }`}>
+                            {fileCleanupAction === 'RENAME_PROCESSED' && <Check size={12} />}
+                          </div>
+                        </div>
+                        <h5 className="font-bold text-slate-900 text-xs">Rename with .processed</h5>
+                        <p className="text-[11px] text-slate-500 leading-relaxed">
+                          Files remain in their original folders but are renamed with a <code className="font-mono text-[10px]">.processed</code> extension so future directory scans skip them.
+                        </p>
+                      </div>
+                      <div className="text-[10px] text-slate-400 font-mono bg-slate-50 p-2 rounded-lg border border-slate-200/80">
+                        Example: file.xlsx → file.xlsx.processed
+                      </div>
+                    </div>
+
+                    {/* Option 3: Retain in Place */}
+                    <div
+                      onClick={() => setFileCleanupAction('RETAIN')}
+                      className={`p-4 rounded-2xl border-2 transition cursor-pointer flex flex-col justify-between space-y-3 ${
+                        fileCleanupAction === 'RETAIN'
+                          ? 'border-[#F27421] bg-orange-50/30 shadow-xs'
+                          : 'border-slate-200 hover:border-slate-300 bg-white hover:bg-slate-50/50'
+                      }`}
+                    >
+                      <div className="space-y-2">
+                        <div className="flex items-center justify-between">
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-slate-100 text-slate-600">
+                            Read-Only Remote
+                          </span>
+                          <div className={`w-5 h-5 rounded-full flex items-center justify-center border ${
+                            fileCleanupAction === 'RETAIN' ? 'border-orange-500 bg-orange-500 text-white' : 'border-slate-300'
+                          }`}>
+                            {fileCleanupAction === 'RETAIN' && <Check size={12} />}
+                          </div>
+                        </div>
+                        <h5 className="font-bold text-slate-900 text-xs">Retain Unmodified in Place</h5>
+                        <p className="text-[11px] text-slate-500 leading-relaxed">
+                          Leaves remote files 100% untouched. Duplicate ingestion prevention relies entirely on the PostgreSQL <code className="font-mono text-[10px]">ftp_ingested_files</code> ledger.
+                        </p>
+                      </div>
+                      <div className="text-[10px] text-slate-400 font-mono bg-slate-50 p-2 rounded-lg border border-slate-200/80">
+                        No write/delete permissions required on SFTP.
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Impact on Pattern Files Strip */}
+                  <div className="p-4 bg-slate-50 rounded-2xl border border-slate-200 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <span className="font-bold text-slate-900 text-xs">Scope of Application</span>
+                      <span className="text-[11px] font-mono text-slate-500 font-semibold">{matchingPatternFiles.length} matching files in batch</span>
+                    </div>
+                    <p className="text-xs text-slate-600">
+                      When recurring ingestion runs for pattern <code className="font-mono font-bold text-slate-900">{filePattern || '*.xls'}</code>, each matching file will be processed into <code className="font-mono font-bold text-slate-900">{targetTableName}</code>, recorded in the PostgreSQL ledger, and then subjected to this policy.
+                    </p>
+                  </div>
+                </div>
+              )}
+
+              {/* Sub-Tab 2: Final Stored Data Preview */}
+              {scheduleSubTab === 'preview' && (
+                <div className="flex-1 min-h-0 flex flex-col">
+                  <div className="p-3.5 border-b border-slate-100 flex items-center justify-between bg-slate-50/50 shrink-0">
+                    <div className="flex items-center space-x-2.5">
+                      <div className="w-7 h-7 rounded-lg bg-blue-50 border border-blue-200 flex items-center justify-center text-blue-600">
+                        <Table size={14} />
+                      </div>
+                      <div>
+                        <div className="flex items-center space-x-2">
+                          <h4 className="font-bold text-slate-900 text-xs">Final Stored Data Preview (PostgreSQL Projection)</h4>
+                          <span className="px-2 py-0.2 rounded text-[10px] font-mono font-bold bg-slate-100 text-slate-700 border border-slate-200">
+                            {targetTableName}
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-slate-500">
+                          Live reactive preview of actual physical columns committed to PostgreSQL
+                        </p>
+                      </div>
+                    </div>
+                    <span className="px-2.5 py-1 rounded-full text-[10px] font-mono font-bold bg-blue-50 text-blue-700 border border-blue-200">
+                      {columnMappings.filter(m => m.included !== false).length} Columns Active · {sampleData.rows.length} Rows Sampled
+                    </span>
+                  </div>
+
+                  <div className="overflow-x-auto flex-1 min-h-0">
+                    {columnMappings.filter(m => m.included !== false).length === 0 ? (
+                      <div className="py-12 text-center text-xs text-slate-400">
+                        Select at least one column above to preview final database output.
+                      </div>
+                    ) : sampleData.rows.length === 0 ? (
+                      <div className="py-12 text-center text-xs text-slate-400">
+                        Inspect the file structure in Step 2 to generate sample preview data.
+                      </div>
+                    ) : (
+                      <table className="w-full text-left text-xs border-collapse">
+                        <thead className="sticky top-0 bg-slate-100/90 border-b border-slate-200 z-10 font-mono font-bold text-[11px] text-slate-700">
+                          <tr>
+                            <th className="py-2.5 px-3 text-slate-400 text-center w-10">#</th>
+                            {columnMappings.filter(m => m.included !== false).map((m, i) => {
+                              const isGlobal = globalFields.some(f => f.key === m.targetColumn);
+                              return (
+                                <th key={i} className="py-2.5 px-4 whitespace-nowrap">
+                                  <div className="flex flex-col">
+                                    <div className="flex items-center space-x-1">
+                                      <span className="text-slate-900 font-bold">{m.targetColumn}</span>
+                                      {isGlobal && (
+                                        <span className="inline-flex items-center px-1.5 py-0.2 rounded text-[8px] font-bold bg-purple-100 text-purple-700 border border-purple-200">
+                                          GLOBAL
+                                        </span>
+                                      )}
+                                    </div>
+                                    <span className="text-[10px] text-slate-400 font-normal">← {m.sourceHeader}</span>
+                                    <span className="text-[10px] font-normal text-blue-600 font-mono">{m.dataType}</span>
+                                  </div>
+                                </th>
+                              );
+                            })}
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100 font-mono text-xs">
+                          {sampleData.rows.slice(0, 15).map((row, rIdx) => (
+                            <tr key={rIdx} className="hover:bg-blue-50/20 transition">
+                              <td className="py-2.5 px-3 text-slate-400 text-center font-bold text-[11px]">{rIdx + 1}</td>
+                              {columnMappings.filter(m => m.included !== false).map((m, cIdx) => {
+                                let val = row[m.sourceHeader];
+                                if (val === undefined || val === null || val === '') {
+                                  val = row[m.targetColumn];
+                                }
+                                const isNull = val === undefined || val === null || String(val).trim() === '';
+                                return (
+                                  <td key={cIdx} className="py-2.5 px-4 whitespace-nowrap">
+                                    {isNull ? (
+                                      <span className="text-slate-300 italic text-[11px]">null</span>
+                                    ) : m.dataType.startsWith('NUMERIC') ? (
+                                      <span className="text-emerald-700 font-semibold">{val}</span>
+                                    ) : m.dataType.startsWith('TIMESTAMP') ? (
+                                      <span className="text-purple-700">{val}</span>
+                                    ) : (
+                                      <span className="text-slate-800">{String(val)}</span>
+                                    )}
+                                  </td>
+                                );
+                              })}
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Sub-Tab 3: Pattern Files in Batch */}
+              {scheduleSubTab === 'files' && (
+                <div className="flex-1 min-h-0 flex flex-col">
+                  <div className="p-3.5 border-b border-slate-100 flex items-center justify-between bg-slate-50/50 shrink-0">
+                    <div className="flex items-center space-x-2.5">
+                      <div className="w-7 h-7 rounded-lg bg-emerald-50 border border-emerald-200 flex items-center justify-center text-emerald-700">
+                        <FolderTree size={14} />
+                      </div>
+                      <div>
+                        <div className="flex items-center space-x-2">
+                          <h4 className="font-bold text-slate-900 text-xs">Pattern Matching Batch Files</h4>
+                          <span className="px-2 py-0.2 rounded text-[10px] font-mono font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                            {matchingPatternFiles.length} Files Matching
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-slate-500">
+                          Discovered across all remote folders. Pattern: <code className="font-mono text-emerald-700 font-bold">{filePattern || '*.xls'}</code>
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="overflow-x-auto flex-1 min-h-0">
+                    {matchingPatternFiles.length === 0 ? (
+                      <div className="py-12 text-center text-xs text-slate-400">
+                        No files matching "{filePattern}" found in remote scan.
+                      </div>
+                    ) : (
+                      <table className="w-full text-left text-xs border-collapse">
+                        <thead className="sticky top-0 bg-slate-100/90 border-b border-slate-200 z-10 text-slate-600 font-semibold text-[11px]">
+                          <tr>
+                            <th className="py-2.5 px-4">Remote Subfolder</th>
+                            <th className="py-2.5 px-4">File Name</th>
+                            <th className="py-2.5 px-4">Size</th>
+                            <th className="py-2.5 px-4">Modified Date</th>
+                            <th className="py-2.5 px-4">Status</th>
+                            <th className="py-2.5 px-4 text-right">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-100 font-sans text-xs">
+                          {matchingPatternFiles.map((file, fIdx) => (
+                            <tr key={fIdx} className="hover:bg-slate-50/80 transition">
+                              <td className="py-2.5 px-4 font-mono text-slate-500 text-[11px]">
+                                {file.subfolder}
+                              </td>
+                              <td className="py-2.5 px-4 font-mono font-bold text-slate-900">
+                                {file.name}
+                              </td>
+                              <td className="py-2.5 px-4 text-slate-600 font-mono text-[11px]">
+                                {file.size}
+                              </td>
+                              <td className="py-2.5 px-4 text-slate-500 text-[11px]">
+                                {file.date}
+                              </td>
+                              <td className="py-2.5 px-4">
+                                {file.isIngested ? (
+                                  <span className="inline-flex items-center space-x-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                    <Check size={10} />
+                                    <span>Ingested ({file.recordsStaged || 0} rows)</span>
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex items-center space-x-1 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-blue-50 text-blue-700 border border-blue-200">
+                                    <span>Pending Ingest</span>
+                                  </span>
+                                )}
+                              </td>
+                              <td className="py-2.5 px-4 text-right">
+                                <button
+                                  type="button"
+                                  onClick={() => handleStagePatternBatchNow(file.name, targetTableName, file.fullPath, fileFormat)}
+                                  disabled={isStagingPattern === file.name}
+                                  className="px-2.5 py-1 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 rounded-lg text-xs font-medium transition cursor-pointer shadow-2xs"
+                                >
+                                  {isStagingPattern === file.name ? 'Staging...' : 'Stage File'}
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* ========================================================= */}
+          {/* RIGHT 1 COLUMN: SCHEDULE SETTINGS & TARGET CONFIGURATION   */}
+          {/* ========================================================= */}
+          <div className="lg:col-span-1 space-y-4 flex flex-col">
+            {/* Card 1: Target Dedicated PostgreSQL Table */}
+            <div className="bg-white rounded-xl border border-slate-200/80 p-4 shadow-2xs space-y-3.5 shrink-0">
+              <div className="flex items-center space-x-2">
+                <div className="w-7 h-7 rounded-lg bg-blue-50 border border-blue-200 flex items-center justify-center text-blue-600 shrink-0">
+                  <Database size={14} />
+                </div>
+                <div>
+                  <h4 className="font-bold text-slate-900 text-xs">Target Dedicated Table</h4>
+                  <p className="text-[10px] text-slate-400">PostgreSQL staging destination</p>
+                </div>
+              </div>
+
+              <div>
+                <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500 block mb-1">Local Database</label>
+                <div className="flex items-center justify-between px-2.5 py-1.5 bg-slate-50 border border-slate-200 rounded-lg font-mono text-xs text-slate-800">
+                  <div className="flex items-center space-x-1.5 truncate">
+                    <Database size={12} className="text-blue-600 shrink-0" />
+                    <span className="truncate">{targetDatabase}</span>
+                  </div>
+                  <span className="text-[9px] font-bold px-1.5 py-0.5 bg-blue-100 text-blue-700 rounded">WAL-Logged</span>
+                </div>
+              </div>
+
+              <div>
+                <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500 block mb-1">Staging Table Mode</label>
+                <div className="grid grid-cols-2 gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setTargetTableMode('MIRROR_AUTO');
+                      setTargetTableName(`mirror_sftp_${(resource.name || 'feed').toLowerCase().replace(/[^a-z0-9_]/g, '_')}`);
+                    }}
+                    className={`p-2 rounded-lg border text-center transition cursor-pointer text-[11px] font-semibold leading-tight ${
+                      targetTableMode === 'MIRROR_AUTO'
+                        ? 'border-orange-500 bg-orange-50 text-orange-700 ring-1 ring-orange-500/20'
+                        : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300'
+                    }`}
+                  >
+                    Auto Mirror
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setTargetTableMode('EXISTING_TABLE');
+                      setTargetTableName('uploaded_transaction_records');
+                    }}
+                    className={`p-2 rounded-lg border text-center transition cursor-pointer text-[11px] font-semibold leading-tight ${
+                      targetTableMode === 'EXISTING_TABLE'
+                        ? 'border-orange-500 bg-orange-50 text-orange-700 ring-1 ring-orange-500/20'
+                        : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300'
+                    }`}
+                  >
+                    Existing Table
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500 block mb-1">Dedicated Table Name</label>
+                <input
+                  type="text"
+                  value={targetTableName}
+                  onChange={(e) => setTargetTableName(e.target.value)}
+                  className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg font-mono text-xs focus:outline-none focus:border-orange-500"
+                />
+                <p className="text-[10px] text-slate-400 mt-1 leading-normal">
+                  {targetTableMode === 'MIRROR_AUTO'
+                    ? 'Adheres to Rule 1: Dedicated typed UNLOGGED mirror table for zero-overhead reconciliation.'
+                    : 'Ingests directly into registered system transactions table.'}
+                </p>
+              </div>
+            </div>
+
+            {/* Card 2: Ingestion Schedule & Polling */}
+            <div className="bg-white rounded-xl border border-slate-200/80 p-4 shadow-2xs space-y-3.5 shrink-0">
+              <div className="flex items-center space-x-2">
+                <div className="w-7 h-7 rounded-lg bg-orange-50 border border-orange-200 flex items-center justify-center text-[#F27421] shrink-0">
+                  <Clock size={14} />
+                </div>
+                <div>
+                  <h4 className="font-bold text-slate-900 text-xs">Schedule &amp; Polling</h4>
+                  <p className="text-[10px] text-slate-400">Automated ingestion frequency</p>
+                </div>
+              </div>
+
+              <div>
+                <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500 block mb-1">Schedule Mode</label>
+                <select
+                  value={scheduleMode}
+                  onChange={(e) => {
+                    const m = e.target.value as any;
+                    setScheduleMode(m);
+                    if (m === 'DAILY') setScheduleCron('0 2 * * *');
+                    else if (m === 'HOURLY') setScheduleCron('0 * * * *');
+                    else if (m === 'INTRADAY') setScheduleCron('*/15 * * * *');
+                  }}
+                  className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg bg-white text-xs font-medium focus:outline-none focus:border-orange-500"
+                >
+                  <option value="DAILY">Daily Settlement (02:00 UTC)</option>
+                  <option value="HOURLY">Hourly Ingestion</option>
+                  <option value="INTRADAY">Intraday (Every 15 min)</option>
+                  <option value="CUSTOM_CRON">Custom Cron Expression</option>
+                  <option value="MANUAL">On-Demand / Manual Only</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500 block mb-1">Cron Expression</label>
+                <input
+                  type="text"
+                  value={scheduleCron}
+                  onChange={(e) => setScheduleCron(e.target.value)}
+                  disabled={scheduleMode === 'MANUAL'}
+                  className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg font-mono text-xs focus:outline-none focus:border-orange-500 disabled:bg-slate-50 disabled:text-slate-400"
+                  placeholder="0 2 * * *"
+                />
+              </div>
+
+              <div>
+                <label className="text-[10px] font-bold uppercase tracking-wider text-slate-500 block mb-1">Duplicate Record Policy</label>
+                <select
+                  value={deduplicationPolicy}
+                  onChange={(e) => setDeduplicationPolicy(e.target.value as any)}
+                  className="w-full px-2.5 py-1.5 border border-slate-200 rounded-lg bg-white text-xs focus:outline-none"
+                >
+                  <option value="SKIP">ON CONFLICT DO NOTHING (Skip)</option>
+                  <option value="UPDATE">ON CONFLICT DO UPDATE (Overwrite)</option>
+                </select>
+                <p className="text-[10px] text-slate-400 mt-1 leading-normal">
+                  Files recorded in the ledger are skipped on repeat scans.
+                </p>
+              </div>
+            </div>
+
+            {/* Card 3: Execution & Actions */}
+            <div className="bg-white rounded-xl border border-slate-200/80 p-4 shadow-2xs space-y-2.5 shrink-0">
+              <h4 className="font-bold text-slate-900 text-xs flex items-center space-x-1.5">
+                <Zap size={13} className="text-[#F27421]" />
+                <span>Execution &amp; Staging</span>
+              </h4>
+
+              <button
+                type="button"
+                onClick={handleSaveFeed}
+                disabled={isSavingFeed}
+                className="w-full py-2.5 px-3 bg-[#F27421] hover:bg-orange-600 text-white rounded-xl font-bold text-xs transition cursor-pointer flex items-center justify-center space-x-1.5 shadow-xs disabled:opacity-50"
+              >
+                <Check size={14} />
+                <span>{isSavingFeed ? 'Saving Configuration...' : 'Save & Schedule Feed'}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleStagePatternBatchNow(filePattern, targetTableName, selectedFileForParser, fileFormat)}
+                disabled={isStagingPattern === filePattern || !selectedFileForParser}
+                className="w-full py-2 px-3 bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-300 rounded-xl font-semibold text-xs transition cursor-pointer flex items-center justify-center space-x-1.5 shadow-2xs disabled:opacity-50"
+                title="Stage all matching files across folders into dedicated table"
+              >
+                <Zap size={13} className={isStagingPattern === filePattern ? 'animate-spin text-emerald-600' : 'text-emerald-600'} />
+                <span>{isStagingPattern === filePattern ? 'Staging Files...' : 'Stage All Pattern Files Now'}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={handleDryRun}
+                disabled={isDryRunning}
+                className="w-full py-2 px-3 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 rounded-xl font-semibold text-xs transition cursor-pointer flex items-center justify-center space-x-1.5 shadow-2xs disabled:opacity-50"
+              >
+                <Play size={13} className={isDryRunning ? 'animate-spin text-orange-500' : 'text-slate-500'} />
+                <span>{isDryRunning ? 'Simulating Dry-Run...' : 'Test Ingest Run (5 Rows)'}</span>
+              </button>
+
+              {dryRunResult && (
+                <div className="p-3 bg-emerald-50 border border-emerald-200 rounded-xl space-y-1 animate-in fade-in">
+                  <div className="flex items-center space-x-1.5 text-emerald-900 font-bold text-[11px]">
+                    <CheckCircle2 size={13} className="text-emerald-600 shrink-0" />
+                    <span>Dry-Run Success ({dryRunResult.rowsStaged} rows)</span>
+                  </div>
+                  <p className="text-[10px] text-emerald-800 font-mono leading-tight">
+                    {dryRunResult.latencyMs} ms · {dryRunResult.message}
+                  </p>
+                </div>
+              )}
+
+              {saveSuccessNotice && (
+                <div className="p-3 bg-blue-50 border border-blue-200 rounded-xl space-y-1 animate-in fade-in">
+                  <div className="flex items-center space-x-1.5 text-blue-900 font-bold text-[11px]">
+                    <CheckCircle2 size={13} className="text-blue-600 shrink-0" />
+                    <span>{saveSuccessNotice}</span>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* =================================================================== */}
+      {/* TAB 4 (SFTP): STAGED TABLES & INGESTED STORAGE LEDGER               */}
+      {/* =================================================================== */}
+      {activeTab === 'tables_feeds' && isSftp && (
+        <div className="space-y-6 flex-1 min-h-0 overflow-y-auto pr-1 pb-6">
+          {/* Header Card */}
+          <div className="bg-white border border-slate-200/80 rounded-2xl p-6 shadow-xs flex flex-wrap items-center justify-between gap-4">
+            <div>
+              <div className="flex items-center space-x-2">
+                <HardDrive size={18} className="text-orange-500" />
+                <h2 className="font-bold text-slate-900 text-sm tracking-tight">Staged Tables &amp; Ingested Storage Ledger</h2>
+              </div>
+              <p className="text-xs text-slate-500 mt-1 max-w-2xl">
+                Persistent storage of ingested remote files (<code className="font-mono bg-slate-100 px-1 py-0.5 rounded text-slate-700">ftp_ingested_files</code>) and dedicated PostgreSQL staging tables (<code className="font-mono bg-slate-100 px-1 py-0.5 rounded text-slate-700">mirror_ftp_*</code>).
+                When recurring schedules run, files recorded in this ledger are automatically skipped to prevent duplicate records.
+              </p>
+            </div>
+            <div className="flex items-center space-x-2">
+              <button
+                type="button"
+                onClick={handleRefreshIngestedFiles}
+                disabled={isLoadingIngestedFiles}
+                className="px-3.5 py-2 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 rounded-xl font-semibold text-xs transition cursor-pointer flex items-center space-x-1.5 shadow-2xs"
+              >
+                <RefreshCw size={13} className={isLoadingIngestedFiles ? 'animate-spin text-orange-500' : ''} />
+                <span>Refresh Ledger</span>
               </button>
             </div>
           </div>
 
-          {/* Live Parsed Preview Table */}
-          <div className="bg-white border border-slate-200/80 rounded-2xl overflow-hidden shadow-xs">
-            <div className="p-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
+          {/* Section 1: Dedicated PostgreSQL Staging Tables */}
+          <div className="bg-white border border-slate-200/80 rounded-2xl p-6 shadow-xs space-y-4">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
               <div className="flex items-center space-x-2">
-                <Table size={16} className="text-slate-600" />
-                <h3 className="font-bold text-slate-900 text-xs">Live Parsed Data Preview</h3>
-                {inspectSummary && (
-                  <span className="px-2 py-0.5 rounded-full text-[10px] font-mono font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
-                    {inspectSummary.columnsFound} columns identified · {inspectSummary.sampleCount} rows sampled
-                  </span>
-                )}
+                <Database size={16} className="text-blue-600" />
+                <h3 className="font-bold text-slate-900 text-xs">Dedicated PostgreSQL Staging Tables</h3>
               </div>
-              <span className="text-[11px] text-slate-400 font-mono">Live File Parser</span>
+              <span className="text-[11px] text-slate-400 font-mono">
+                operational_workflow_db · Permanent WAL-Logged Tables
+              </span>
             </div>
 
-            {sampleData.headers.length === 0 ? (
+            {stagingConfigs.length === 0 && detectedPatterns.length === 0 ? (
+              <div className="py-8 text-center text-slate-400 text-xs">
+                No dedicated tables configured yet. Scan folders in Tab 1 and configure a pattern.
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {(stagingConfigs.length > 0 ? stagingConfigs : detectedPatterns).map((item: any, idx: number) => {
+                  const tblName = item.targetTableName || item.suggestedTableName;
+                  const pattern = item.filePattern || item.pattern;
+                  const filesForPattern = ingestedFilesList.filter(f => f.targetTableName === tblName || f.filePattern === pattern);
+                  const totalRowsStaged = filesForPattern.reduce((acc, curr) => acc + (curr.recordsStaged || 0), 0);
+
+                  return (
+                    <div key={idx} className="p-4 rounded-xl border border-slate-200 bg-slate-50/50 hover:bg-slate-50 transition space-y-3">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center space-x-2">
+                          <Table size={15} className="text-orange-500 shrink-0" />
+                          <span className="font-mono font-bold text-slate-900 text-xs">{tblName}</span>
+                        </div>
+                        <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-emerald-50 text-emerald-700 border border-emerald-200">
+                          LOGGED TABLE
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-3 gap-2 text-[11px] pt-1">
+                        <div>
+                          <span className="text-slate-400 block text-[10px]">Pattern Bound</span>
+                          <span className="font-mono font-bold text-slate-700">{pattern}</span>
+                        </div>
+                        <div>
+                          <span className="text-slate-400 block text-[10px]">Ingested Files</span>
+                          <span className="font-mono font-bold text-slate-700">{filesForPattern.length} files</span>
+                        </div>
+                        <div>
+                          <span className="text-slate-400 block text-[10px]">Total Staged</span>
+                          <span className="font-mono font-bold text-emerald-700">{totalRowsStaged.toLocaleString()} rows</span>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center justify-between pt-2 border-t border-slate-200/60">
+                        <button
+                          type="button"
+                          onClick={() => handleResetPatternLedger(pattern)}
+                          className="text-[11px] font-semibold text-rose-600 hover:text-rose-800 transition cursor-pointer flex items-center space-x-1"
+                        >
+                          <RotateCcw size={12} />
+                          <span>Reset Pattern Ledger</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setFilePattern(pattern);
+                            setTargetTableName(tblName);
+                            setActiveTab('schedule_table');
+                          }}
+                          className="px-2.5 py-1 bg-white border border-slate-200 hover:bg-orange-50 hover:border-orange-300 text-slate-700 hover:text-orange-700 rounded-lg text-xs font-semibold transition cursor-pointer"
+                        >
+                          Configure Schedule
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* Section 2: FTP Ingested File Storage & Ledger */}
+          <div className="bg-white border border-slate-200/80 rounded-2xl overflow-hidden shadow-xs space-y-0">
+            <div className="p-4 border-b border-slate-100 flex flex-wrap items-center justify-between gap-3 bg-slate-50/50">
+              <div className="flex items-center space-x-2">
+                <FileCheck size={16} className="text-emerald-600" />
+                <h3 className="font-bold text-slate-900 text-xs">
+                  FTP Ingested File Name Storage Ledger ({filteredIngestedFiles.length} of {ingestedFilesList.length})
+                </h3>
+              </div>
+
+              {/* Filters */}
+              <div className="flex items-center space-x-2.5">
+                <div className="relative">
+                  <Search size={13} className="absolute left-2.5 top-2.5 text-slate-400" />
+                  <input
+                    type="text"
+                    value={ingestedSearchFilter}
+                    onChange={(e) => setIngestedSearchFilter(e.target.value)}
+                    placeholder="Search ingested files..."
+                    className="pl-7 pr-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs focus:outline-none focus:border-orange-500 w-44"
+                  />
+                </div>
+
+                {distinctIngestedPatterns.length > 0 && (
+                  <select
+                    value={ingestedPatternFilter}
+                    onChange={(e) => setIngestedPatternFilter(e.target.value)}
+                    className="px-2.5 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-mono focus:outline-none focus:border-orange-500"
+                  >
+                    <option value="ALL">All Patterns</option>
+                    {distinctIngestedPatterns.map(p => (
+                      <option key={p} value={p}>{p}</option>
+                    ))}
+                  </select>
+                )}
+              </div>
+            </div>
+
+            {isLoadingIngestedFiles ? (
+              <div className="py-12 text-center text-slate-500 text-xs flex items-center justify-center space-x-2">
+                <RefreshCw size={14} className="animate-spin text-orange-500" />
+                <span>Loading ingested storage ledger...</span>
+              </div>
+            ) : filteredIngestedFiles.length === 0 ? (
               <div className="py-16 text-center space-y-2">
-                <Table size={24} className="text-slate-300 mx-auto" />
-                <div className="font-bold text-slate-700 text-xs">No Parsed Preview Data Yet</div>
-                <p className="text-[11px] text-slate-400 max-w-sm mx-auto">
-                  Click &quot;Inspect Structure &amp; Test Parse&quot; above to inspect the remote file and extract columns.
+                <FileCheck size={28} className="text-slate-300 mx-auto" />
+                <div className="font-bold text-slate-700 text-xs">No Ingested Files Recorded in Storage Ledger Yet</div>
+                <p className="text-[11px] text-slate-400 max-w-md mx-auto">
+                  When incoming files are staged, their file path, size, and timestamp are saved into the <code className="font-mono">ftp_ingested_files</code> ledger so recurring schedules will automatically skip them and prevent duplicate records.
                 </p>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('folders')}
+                  className="mt-2 px-3.5 py-1.5 bg-[#F97316] hover:bg-orange-600 text-white rounded-xl text-xs font-semibold cursor-pointer shadow-xs inline-flex items-center space-x-1"
+                >
+                  <span>Go to Folder Discovery</span>
+                </button>
               </div>
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full text-left text-xs border-collapse">
                   <thead>
-                    <tr className="border-b border-slate-200 text-slate-700 font-mono font-bold text-[11px] bg-slate-50/80">
-                      {sampleData.headers.map((h, i) => (
-                        <th key={i} className="py-3 px-4 whitespace-nowrap">
-                          <div className="flex items-center space-x-1 text-slate-900">
-                            <span>{h}</span>
-                            <span className="text-[9px] text-slate-400 font-sans font-normal">col_{i+1}</span>
-                          </div>
-                        </th>
-                      ))}
+                    <tr className="border-b border-slate-100 text-slate-400 font-medium text-[11px] bg-slate-50/20">
+                      <th className="py-3 px-5">Remote File Path &amp; Name</th>
+                      <th className="py-3 px-4">Relative Folder</th>
+                      <th className="py-3 px-4">File Pattern</th>
+                      <th className="py-3 px-4">Target Staged Table</th>
+                      <th className="py-3 px-4">Records Staged</th>
+                      <th className="py-3 px-4">Ingested At</th>
+                      <th className="py-3 px-4">Deduplication Status</th>
+                      <th className="py-3 px-5 text-right">Action</th>
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-slate-100 font-mono text-xs">
-                    {sampleData.rows.map((row, rIdx) => (
-                      <tr key={rIdx} className="hover:bg-slate-50/60 transition">
-                        {sampleData.headers.map((h, cIdx) => (
-                          <td key={cIdx} className="py-3 px-4 text-slate-700 whitespace-nowrap">
-                            {row[h] !== undefined ? String(row[h]) : '—'}
-                          </td>
-                        ))}
+                  <tbody className="divide-y divide-slate-100 text-xs font-sans">
+                    {filteredIngestedFiles.map((f) => (
+                      <tr key={f.id} className="hover:bg-slate-50/60 transition">
+                        <td className="py-3 px-5">
+                          <div className="font-mono font-bold text-slate-900">{f.fileName}</div>
+                          <div className="text-[10px] text-slate-400 font-mono truncate max-w-xs">{f.filePath}</div>
+                        </td>
+                        <td className="py-3 px-4 font-mono text-slate-600 text-[11px]">{f.relativeFolder}</td>
+                        <td className="py-3 px-4">
+                          <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-orange-50 text-orange-700 border border-orange-200">
+                            {f.filePattern}
+                          </span>
+                        </td>
+                        <td className="py-3 px-4 font-mono font-semibold text-slate-800 text-[11px]">
+                          {f.targetTableName}
+                        </td>
+                        <td className="py-3 px-4 font-mono font-bold text-emerald-700">
+                          {f.recordsStaged.toLocaleString()} rows
+                        </td>
+                        <td className="py-3 px-4 text-slate-500 text-[11px] whitespace-nowrap">
+                          {formatDate(f.ingestedAt)}
+                        </td>
+                        <td className="py-3 px-4">
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 text-emerald-800 border border-emerald-300 inline-flex items-center space-x-1">
+                            <CheckCircle2 size={11} className="text-emerald-600" />
+                            <span>Skipped on Re-run</span>
+                          </span>
+                        </td>
+                        <td className="py-3 px-5 text-right whitespace-nowrap">
+                          <button
+                            type="button"
+                            onClick={() => handleRemoveIngestedFile(f.id, f.fileName)}
+                            className="px-2.5 py-1 bg-white hover:bg-rose-50 border border-slate-200 hover:border-rose-300 text-slate-600 hover:text-rose-700 rounded-lg text-xs font-semibold transition cursor-pointer flex items-center space-x-1 ml-auto shadow-2xs"
+                            title="Remove from ledger to allow re-ingestion"
+                          >
+                            <RotateCcw size={11} />
+                            <span>Re-ingest</span>
+                          </button>
+                        </td>
                       </tr>
                     ))}
                   </tbody>
@@ -1314,303 +3627,30 @@ export function ResourceDetailView({
         </div>
       )}
 
-      {/* =================================================================== */}
-      {/* TAB 4 (SFTP): TARGET DEDICATED TABLE & SCHEDULED INGESTION          */}
-      {/* =================================================================== */}
-      {activeTab === 'schedule_table' && isSftp && (
-        <div className="space-y-6 mt-5">
-          {/* Target Local Database & Table Configuration */}
-          <div className="bg-white border border-slate-200/80 rounded-2xl p-6 shadow-xs space-y-5">
-            <div>
-              <h3 className="font-bold text-slate-900 text-sm tracking-tight">Dedicated Target Table in Local DB</h3>
-              <p className="text-xs text-slate-500 mt-0.5">
-                Configure which PostgreSQL table will receive and stage records parsed from this SFTP incoming feed.
-              </p>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <label className="text-[11px] font-semibold text-slate-700 block mb-1">Local Database</label>
-                <div className="flex items-center space-x-2 px-3 py-2 bg-slate-50 border border-slate-200 rounded-xl font-mono text-xs text-slate-800">
-                  <Database size={14} className="text-blue-600 shrink-0" />
-                  <span>{targetDatabase}</span>
+      {/* Relational DB Tables & Mapping (when !isSftp and activeTab === 'tables_feeds') */}
+      {activeTab === 'tables_feeds' && !isSftp && (
+        <div className="bg-white border border-slate-200/80 rounded-2xl p-6 shadow-xs mt-5 space-y-4">
+          <h3 className="font-bold text-slate-900 text-sm tracking-tight">Tables and mapping</h3>
+          <div className="divide-y divide-slate-100">
+            {tables.map(tbl => (
+              <div key={tbl.name} className="py-3.5 flex items-center justify-between hover:bg-slate-50/50 px-2 rounded-xl transition">
+                <div className="w-44 font-mono font-bold text-slate-900 truncate">{tbl.name}</div>
+                <div className="flex items-center space-x-3 flex-1 px-4">
+                  <div className="w-28 h-1.5 bg-slate-200 rounded-full overflow-hidden">
+                    <div className="h-full bg-emerald-500 rounded-full" style={{ width: `${tbl.percent}%` }} />
+                  </div>
+                  <span className="text-[11px] text-slate-500 font-sans">{tbl.mapped}</span>
                 </div>
-              </div>
-
-              <div>
-                <label className="text-[11px] font-semibold text-slate-700 block mb-1">Target Table Mode</label>
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setTargetTableMode('MIRROR_AUTO');
-                      setTargetTableName(`mirror_sftp_${(resource.name || 'feed').toLowerCase().replace(/[^a-z0-9_]/g, '_')}`);
-                    }}
-                    className={`p-2 rounded-xl border text-center transition cursor-pointer text-xs font-semibold ${
-                      targetTableMode === 'MIRROR_AUTO'
-                        ? 'border-orange-500 bg-orange-50/30 text-orange-700 ring-1 ring-orange-500/20'
-                        : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300'
-                    }`}
-                  >
-                    Auto-create Mirror Table
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setTargetTableMode('EXISTING_TABLE');
-                      setTargetTableName('uploaded_transaction_records');
-                    }}
-                    className={`p-2 rounded-xl border text-center transition cursor-pointer text-xs font-semibold ${
-                      targetTableMode === 'EXISTING_TABLE'
-                        ? 'border-orange-500 bg-orange-50/30 text-orange-700 ring-1 ring-orange-500/20'
-                        : 'border-slate-200 bg-white text-slate-600 hover:border-slate-300'
-                    }`}
-                  >
-                    Existing Local Table
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            <div>
-              <label className="text-[11px] font-semibold text-slate-700 block mb-1">Dedicated Table Name</label>
-              <input
-                type="text"
-                value={targetTableName}
-                onChange={(e) => setTargetTableName(e.target.value)}
-                className="w-full px-3 py-2 border border-slate-200 rounded-xl font-mono text-xs focus:outline-none focus:border-orange-500"
-              />
-              <span className="text-[10px] text-slate-400 mt-1 block">
-                {targetTableMode === 'MIRROR_AUTO'
-                  ? 'Dedicated typed UNLOGGED mirror table adhering to Rule 1 for zero-overhead reconciliation.'
-                  : 'Ingests directly into registered system transactions table.'}
-              </span>
-            </div>
-          </div>
-
-          {/* Column Mapping Matrix */}
-          <div className="bg-white border border-slate-200/80 rounded-2xl overflow-hidden shadow-xs">
-            <div className="p-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/50">
-              <div className="flex items-center space-x-2">
-                <Layers size={16} className="text-slate-600" />
-                <h3 className="font-bold text-slate-900 text-xs">File Column to Database Column Mapping ({columnMappings.length})</h3>
-              </div>
-              <span className="text-[11px] text-slate-400 font-mono">ANSI-Quoted Identifiers Protected</span>
-            </div>
-
-            {columnMappings.length === 0 ? (
-              <div className="py-12 text-center space-y-2">
-                <Layers size={22} className="text-slate-300 mx-auto" />
-                <div className="font-bold text-slate-700 text-xs">No Columns Mapped Yet</div>
-                <p className="text-[11px] text-slate-400 max-w-sm mx-auto">
-                  Go to Step 2 (File Identification) and click &quot;Inspect Structure&quot; to auto-detect columns from the file.
-                </p>
+                <div className="w-32 text-slate-500 text-[11px] truncate">{tbl.translations}</div>
                 <button
                   type="button"
-                  onClick={() => setActiveTab('file_type')}
-                  className="px-3 py-1.5 bg-[#0F142A] hover:bg-slate-800 text-white rounded-lg text-xs font-semibold cursor-pointer mt-1"
+                  onClick={() => onEditSetup(3)}
+                  className="px-3 py-1.5 border border-slate-200 hover:bg-slate-50 text-slate-700 rounded-xl font-semibold text-xs transition cursor-pointer"
                 >
-                  Go to File Identification
+                  Edit mapping
                 </button>
               </div>
-            ) : (
-              <table className="w-full text-left text-xs border-collapse">
-                <thead>
-                  <tr className="border-b border-slate-100 text-slate-400 font-medium text-[11px] bg-slate-50/20">
-                    <th className="py-3 px-5">Source File Column</th>
-                    <th className="py-3 px-5">Target PostgreSQL Column</th>
-                    <th className="py-3 px-4">PostgreSQL Data Type</th>
-                    <th className="py-3 px-4 text-center">Primary Key</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100 text-xs">
-                  {columnMappings.map((col, idx) => (
-                    <tr key={idx} className="hover:bg-slate-50/50 transition">
-                      <td className="py-3 px-5 font-mono font-bold text-slate-800">
-                        {col.sourceHeader}
-                      </td>
-                      <td className="py-3 px-5">
-                        <input
-                          type="text"
-                          value={col.targetColumn}
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            setColumnMappings(prev => {
-                              const next = [...prev];
-                              next[idx] = { ...next[idx], targetColumn: val };
-                              return next;
-                            });
-                          }}
-                          className="px-2.5 py-1.5 border border-slate-200 rounded-lg font-mono text-xs w-full max-w-xs focus:outline-none focus:border-orange-500"
-                        />
-                      </td>
-                      <td className="py-3 px-4">
-                        <select
-                          value={col.dataType}
-                          onChange={(e) => {
-                            const val = e.target.value;
-                            setColumnMappings(prev => {
-                              const next = [...prev];
-                              next[idx] = { ...next[idx], dataType: val };
-                              return next;
-                            });
-                          }}
-                          className="px-2.5 py-1.5 border border-slate-200 rounded-lg font-mono text-xs bg-white focus:outline-none"
-                        >
-                          <option value="VARCHAR(64)">VARCHAR(64)</option>
-                          <option value="VARCHAR(128)">VARCHAR(128)</option>
-                          <option value="VARCHAR(256)">VARCHAR(256)</option>
-                          <option value="NUMERIC(18,4)">NUMERIC(18,4)</option>
-                          <option value="TIMESTAMP">TIMESTAMP</option>
-                          <option value="BIGINT">BIGINT</option>
-                          <option value="BOOLEAN">BOOLEAN</option>
-                        </select>
-                      </td>
-                      <td className="py-3 px-4 text-center">
-                        <input
-                          type="checkbox"
-                          checked={col.isPrimaryKey}
-                          onChange={(e) => {
-                            const checked = e.target.checked;
-                            setColumnMappings(prev => {
-                              const next = [...prev];
-                              next[idx] = { ...next[idx], isPrimaryKey: checked };
-                              return next;
-                            });
-                          }}
-                          className="rounded text-orange-600 focus:ring-orange-500 h-4 w-4"
-                        />
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            )}
-          </div>
-
-          {/* Schedule & Post-Ingestion Policy */}
-          <div className="bg-white border border-slate-200/80 rounded-2xl p-6 shadow-xs space-y-6">
-            <div>
-              <h3 className="font-bold text-slate-900 text-sm tracking-tight">Ingestion Schedule &amp; Execution Policy</h3>
-              <p className="text-xs text-slate-500 mt-0.5">
-                Set automatic cron polling, conflict deduplication, and remote file archive actions.
-              </p>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-              {/* Schedule Mode */}
-              <div>
-                <label className="text-[11px] font-semibold text-slate-700 block mb-1">Automated Schedule</label>
-                <select
-                  value={scheduleMode}
-                  onChange={(e) => {
-                    const m = e.target.value as any;
-                    setScheduleMode(m);
-                    if (m === 'DAILY') setScheduleCron('0 2 * * *');
-                    else if (m === 'HOURLY') setScheduleCron('0 * * * *');
-                    else if (m === 'INTRADAY') setScheduleCron('*/15 * * * *');
-                  }}
-                  className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white font-mono text-xs focus:outline-none focus:border-orange-500"
-                >
-                  <option value="DAILY">Daily Settlement Cycle (02:00 UTC)</option>
-                  <option value="HOURLY">Hourly Ingestion</option>
-                  <option value="INTRADAY">Intraday (Every 15 min)</option>
-                  <option value="CUSTOM_CRON">Custom Cron Expression</option>
-                  <option value="MANUAL">On-Demand / Manual Only</option>
-                </select>
-              </div>
-
-              {/* Cron Expression */}
-              <div>
-                <label className="text-[11px] font-semibold text-slate-700 block mb-1">Cron Expression</label>
-                <input
-                  type="text"
-                  value={scheduleCron}
-                  onChange={(e) => setScheduleCron(e.target.value)}
-                  disabled={scheduleMode === 'MANUAL'}
-                  className="w-full px-3 py-2 border border-slate-200 rounded-xl font-mono text-xs focus:outline-none focus:border-orange-500 disabled:bg-slate-50 disabled:text-slate-400"
-                />
-              </div>
-
-              {/* Deduplication */}
-              <div>
-                <label className="text-[11px] font-semibold text-slate-700 block mb-1">Duplicate Record Policy</label>
-                <select
-                  value={deduplicationPolicy}
-                  onChange={(e) => setDeduplicationPolicy(e.target.value as any)}
-                  className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white text-xs focus:outline-none"
-                >
-                  <option value="SKIP">ON CONFLICT DO NOTHING (Skip duplicates)</option>
-                  <option value="UPDATE">ON CONFLICT DO UPDATE (Overwrite)</option>
-                </select>
-              </div>
-            </div>
-
-            {/* Remote File Post-Ingestion Cleanup */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 pt-2 border-t border-slate-100">
-              <div>
-                <label className="text-[11px] font-semibold text-slate-700 block mb-1">Remote File Action After Ingest</label>
-                <select
-                  value={fileCleanupAction}
-                  onChange={(e) => setFileCleanupAction(e.target.value as any)}
-                  className="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white text-xs focus:outline-none"
-                >
-                  <option value="MOVE_ARCHIVE">Move to Archive Subfolder</option>
-                  <option value="RENAME_PROCESSED">Rename with .processed Extension</option>
-                  <option value="RETAIN">Retain in Place on SFTP Server</option>
-                </select>
-              </div>
-
-              {fileCleanupAction === 'MOVE_ARCHIVE' && (
-                <div>
-                  <label className="text-[11px] font-semibold text-slate-700 block mb-1">Archive Folder Path</label>
-                  <input
-                    type="text"
-                    value={archiveDirectory}
-                    onChange={(e) => setArchiveDirectory(e.target.value)}
-                    className="w-full px-3 py-2 border border-slate-200 rounded-xl font-mono text-xs focus:outline-none"
-                  />
-                </div>
-              )}
-            </div>
-
-            {/* Dry Run Result Box */}
-            {dryRunResult && (
-              <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-2xl space-y-1.5 animate-in fade-in">
-                <div className="flex items-center space-x-2 text-emerald-900 font-bold text-xs">
-                  <CheckCircle2 size={16} className="text-emerald-600" />
-                  <span>Dry-Run Ingestion Succeeded ({dryRunResult.rowsStaged} sample rows staged)</span>
-                </div>
-                <p className="text-[11px] text-emerald-800 font-mono">
-                  {dryRunResult.message} · Latency: {dryRunResult.latencyMs} ms
-                </p>
-              </div>
-            )}
-
-            {/* Action Bar */}
-            <div className="flex flex-wrap items-center justify-between gap-4 pt-4 border-t border-slate-100">
-              <button
-                type="button"
-                onClick={handleDryRun}
-                disabled={isDryRunning}
-                className="px-4 py-2.5 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 rounded-xl font-semibold text-xs transition cursor-pointer flex items-center space-x-1.5 shadow-2xs"
-              >
-                <Play size={13} className={isDryRunning ? 'animate-spin text-orange-500' : 'text-slate-500'} />
-                <span>{isDryRunning ? 'Simulating Dry-Run...' : 'Test Ingest Run (Dry-Run 5 Rows)'}</span>
-              </button>
-
-              <div className="flex items-center space-x-3">
-                <button
-                  type="button"
-                  onClick={handleSaveFeed}
-                  disabled={isSavingFeed}
-                  className="px-6 py-2.5 bg-[#F97316] hover:bg-orange-600 text-white rounded-xl font-semibold text-xs transition cursor-pointer flex items-center space-x-1.5 shadow-xs"
-                >
-                  <Check size={14} />
-                  <span>{isSavingFeed ? 'Saving Configuration...' : 'Save & Schedule Feed'}</span>
-                </button>
-              </div>
-            </div>
+            ))}
           </div>
         </div>
       )}
@@ -1670,6 +3710,7 @@ export function ResourceDetailView({
           </div>
         </div>
       )}
+      </div>
     </div>
   );
 }

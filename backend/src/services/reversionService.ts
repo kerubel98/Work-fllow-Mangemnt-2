@@ -144,7 +144,7 @@ export const reversionService = {
          SET first_level_mapped_data = $1,
              solution_executed = FALSE,
              solution_executed_at = NULL,
-             status = 'Investigating'
+             status = 'INVESTIGATING'
          WHERE id = $2;`,
         [JSON.stringify(canonicalRows), taskId]
       );
@@ -179,50 +179,51 @@ export const reversionService = {
    */
   async revertTransaction(taskId: string, transactionId: string, userId: string): Promise<{ success: boolean; transactionId: string; restoredRow: any }> {
     const pool = getPostgresPool();
+    const client = await pool.connect();
 
-    // Find latest snapshot containing this transaction
-    const snapRes = await pool.query(
-      `SELECT id, before_state
-       FROM transaction_reversion_snapshots
-       WHERE task_id = $1 AND reverted_at IS NULL
-       ORDER BY created_at DESC
-       LIMIT 1;`,
-      [taskId]
-    );
-
-    if (snapRes.rows.length === 0) {
-      throw new Error(`No pre-change snapshot found for task ${taskId}.`);
-    }
-
-    const { id: snapId, before_state } = snapRes.rows[0];
-    const originalRows: any[] = typeof before_state === 'string' ? JSON.parse(before_state) : before_state;
-
-    const matchedRow = originalRows.find(r => {
-      const c = r.canonical_data || r;
-      return (
-        c.transaction_id === transactionId ||
-        c.transactionId === transactionId ||
-        c.id === transactionId ||
-        c.Ref_Number === transactionId
-      );
-    });
-
-    if (!matchedRow) {
-      throw new Error(`Transaction ${transactionId} was not found in snapshot ${snapId}.`);
-    }
-
-    const canonical = matchedRow.canonical_data || matchedRow;
-    const raw = matchedRow.raw_data || matchedRow;
-
-    // Update in task_dataset_transactions atomically
-    await pool.query('BEGIN;');
     try {
-      await pool.query(
+      // Find latest snapshot containing this transaction
+      const snapRes = await client.query(
+        `SELECT id, before_state
+         FROM transaction_reversion_snapshots
+         WHERE task_id = $1 AND reverted_at IS NULL
+         ORDER BY created_at DESC
+         LIMIT 1;`,
+        [taskId]
+      );
+
+      if (snapRes.rows.length === 0) {
+        throw new Error(`No pre-change snapshot found for task ${taskId}.`);
+      }
+
+      const { id: snapId, before_state } = snapRes.rows[0];
+      const originalRows: any[] = typeof before_state === 'string' ? JSON.parse(before_state) : before_state;
+
+      const matchedRow = originalRows.find(r => {
+        const c = r.canonical_data || r;
+        return (
+          c.transaction_id === transactionId ||
+          c.transactionId === transactionId ||
+          c.id === transactionId ||
+          c.Ref_Number === transactionId
+        );
+      });
+
+      if (!matchedRow) {
+        throw new Error(`Transaction ${transactionId} was not found in snapshot ${snapId}.`);
+      }
+
+      const canonical = matchedRow.canonical_data || matchedRow;
+      const raw = matchedRow.raw_data || matchedRow;
+
+      // Update in task_dataset_transactions atomically within client transaction
+      await client.query('BEGIN;');
+      await client.query(
         `SELECT pg_advisory_xact_lock(('x' || substr(md5('task_revert_' || $1), 1, 16))::bit(64)::bigint)`,
         [taskId]
       );
 
-      await pool.query(
+      await client.query(
         `UPDATE task_dataset_transactions
          SET canonical_data = $1, raw_data = $2
          WHERE task_id = $3 AND (
@@ -234,40 +235,45 @@ export const reversionService = {
       );
 
       // Update in issues table
-      const issue = await repo.getIssueById(taskId);
-      if (issue && Array.isArray(issue.firstLevelMappedData)) {
-        const updatedList = issue.firstLevelMappedData.map(item => {
+      const issueRes = await client.query(`SELECT first_level_mapped_data FROM issues WHERE id = $1;`, [taskId]);
+      if (issueRes.rows.length > 0 && Array.isArray(issueRes.rows[0].first_level_mapped_data)) {
+        const updatedList = issueRes.rows[0].first_level_mapped_data.map((item: any) => {
           if (item.transaction_id === transactionId || item.transactionId === transactionId || item.id === transactionId) {
             return canonical;
           }
           return item;
         });
-        await repo.updateIssue(taskId, { firstLevelMappedData: updatedList });
+        await client.query(
+          `UPDATE issues SET first_level_mapped_data = $1 WHERE id = $2;`,
+          [JSON.stringify(updatedList), taskId]
+        );
       }
 
       // Log specific transaction reversion in snapshots
       const rowSnapId = `snap-tx-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
-      await pool.query(
+      await client.query(
         `INSERT INTO transaction_reversion_snapshots 
          (id, task_id, transaction_id, process_type, before_state, reason, created_by, created_at, reverted_at, reverted_by)
          VALUES ($1, $2, $3, 'INTERNAL_STAGED_FIX', $4, 'Single-transaction granular rollback', $5, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, $5);`,
         [rowSnapId, taskId, transactionId, JSON.stringify([matchedRow]), userId]
       );
 
-      await pool.query('COMMIT;');
+      await client.query('COMMIT;');
+
+      const result = {
+        success: true,
+        transactionId,
+        restoredRow: canonical
+      };
+
+      eventService.broadcastEvent('reversion:transaction_reverted', { taskId, transactionId, revertedBy: userId });
+      return result;
     } catch (revertErr) {
-      await pool.query('ROLLBACK;');
+      await client.query('ROLLBACK;').catch(() => {});
       throw revertErr;
+    } finally {
+      client.release();
     }
-
-    const result = {
-      success: true,
-      transactionId,
-      restoredRow: canonical
-    };
-
-    eventService.broadcastEvent('reversion:transaction_reverted', { taskId, transactionId, revertedBy: userId });
-    return result;
   },
 
   /**

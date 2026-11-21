@@ -4,7 +4,7 @@ const { Pool } = pg;
 
 async function testDiscovery() {
   const pool = new Pool({
-    connectionString: 'postgresql://postgres:123456@localhost:5432/operational_workflow_db'
+    connectionString: (process.env.DATABASE_URL || 'postgresql://postgres@localhost:5432/operational_workflow_db')
   });
 
   try {

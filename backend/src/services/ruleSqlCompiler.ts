@@ -59,6 +59,12 @@ export function sanitizeSqlConditionPredicate(sql: string, tablePrefix = 'm'): s
     /\b(SELECT)\b/i, // Subquery injection prevention
     /\b(EXEC|EXECUTE)\b/i,
     /\b(PG_SLEEP|PG_TERMINATE_BACKEND|PG_CANCEL_BACKEND|CURRENT_SETTING|SET_CONFIG)\b/i,
+    /\b(PG_READ_FILE|PG_READ_BINARY_FILE|PG_LS_DIR|PG_STAT_FILE)\b/i,
+    /\b(QUERY_TO_XML|QUERY_TO_JSON|TABLE_TO_XML|TABLE_TO_JSON)\b/i,
+    /\b(DBLINK|DBLINK_EXEC|DBLINK_CONNECT)\b/i,
+    /\b(LO_IMPORT|LO_EXPORT|LO_GET|LO_PUT|LO_UNLINK)\b/i,
+    /\b(VERSION|CURRENT_USER|SESSION_USER)\b/i,
+    /\b(PG_BACKEND_PID|PG_NOTIFICATION_QUEUE_USAGE)\b/i,
     /\b(INTO|COPY|LOAD)\b/i
   ];
 

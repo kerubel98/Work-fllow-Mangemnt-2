@@ -1,8 +1,41 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { resolveUserAdminCapabilities } from '../../utils/capabilityHelper.js';
+import { generateToken } from '../../utils/auth.js';
 
 describe('Team Delegated Administration & Operational Governance', () => {
   const BASE_URL = 'http://localhost:5002/api';
+
+  const adminToken = generateToken({
+    id: 'usr-1',
+    username: 'admin',
+    email: 'admin@paymentops.com',
+    role: 'admin',
+    isApproved: true,
+    canExecuteSelect: true,
+    canExecuteUpdate: true
+  });
+
+  const authFetch = (url: string, options: any = {}) => {
+    const callerId = options.headers?.['x-user-id'] || 'usr-1';
+    const callerRole = options.headers?.['x-user-role'] || 'admin';
+    const token = generateToken({
+      id: callerId,
+      username: callerId,
+      email: `${callerId}@paymentops.com`,
+      role: callerRole,
+      isApproved: true,
+      canExecuteSelect: true,
+      canExecuteUpdate: true
+    });
+    return fetch(url, {
+      ...options,
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+        ...(options.headers || {})
+      }
+    });
+  };
 
   const adminUserId = `usr-admin-${Date.now()}`;
   const dbaUserId = `usr-dba-${Date.now()}`;
@@ -16,7 +49,7 @@ describe('Team Delegated Administration & Operational Governance', () => {
 
   beforeAll(async () => {
     // 1. Create DB Team
-    const resDbaTeam = await fetch(`${BASE_URL}/teams`, {
+    const resDbaTeam = await authFetch(`${BASE_URL}/teams`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -33,7 +66,7 @@ describe('Team Delegated Administration & Operational Governance', () => {
     expect(resDbaTeam.status).toBe(201);
 
     // 2. Create Ops Team
-    const resOpsTeam = await fetch(`${BASE_URL}/teams`, {
+    const resOpsTeam = await authFetch(`${BASE_URL}/teams`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -52,19 +85,19 @@ describe('Team Delegated Administration & Operational Governance', () => {
 
   afterAll(async () => {
     if (createdConfigId) {
-      await fetch(`${BASE_URL}/db/column-configurations/${createdConfigId}`, {
+      await authFetch(`${BASE_URL}/db/column-configurations/${createdConfigId}`, {
         method: 'DELETE',
         headers: { 'x-user-id': opsUserId }
       }).catch(() => {});
     }
     if (createdDbId) {
-      await fetch(`${BASE_URL}/db/databases/${createdDbId}`, {
+      await authFetch(`${BASE_URL}/db/databases/${createdDbId}`, {
         method: 'DELETE',
         headers: { 'x-user-id': adminUserId, 'x-user-role': 'admin' }
       }).catch(() => {});
     }
-    await fetch(`${BASE_URL}/teams/${dbaTeamId}`, { method: 'DELETE' }).catch(() => {});
-    await fetch(`${BASE_URL}/teams/${opsTeamId}`, { method: 'DELETE' }).catch(() => {});
+    await authFetch(`${BASE_URL}/teams/${dbaTeamId}`, { method: 'DELETE' }).catch(() => {});
+    await authFetch(`${BASE_URL}/teams/${opsTeamId}`, { method: 'DELETE' }).catch(() => {});
   });
 
   describe('1. Capability Resolution Helper Unit Tests', () => {
@@ -91,7 +124,7 @@ describe('Team Delegated Administration & Operational Governance', () => {
 
   describe('2. Admin Granting Delegated Privileges to Teams', () => {
     it('rejects non-admin from updating team admin privileges', async () => {
-      const res = await fetch(`${BASE_URL}/teams/${dbaTeamId}/admin-privileges`, {
+      const res = await authFetch(`${BASE_URL}/teams/${dbaTeamId}/admin-privileges`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -109,7 +142,7 @@ describe('Team Delegated Administration & Operational Governance', () => {
     });
 
     it('allows Admin to grant DBA Preset privileges to DB team', async () => {
-      const res = await fetch(`${BASE_URL}/teams/${dbaTeamId}/admin-privileges`, {
+      const res = await authFetch(`${BASE_URL}/teams/${dbaTeamId}/admin-privileges`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -133,7 +166,7 @@ describe('Team Delegated Administration & Operational Governance', () => {
     });
 
     it('allows Admin to grant Ops Preset privileges to Operational team', async () => {
-      const res = await fetch(`${BASE_URL}/teams/${opsTeamId}/admin-privileges`, {
+      const res = await authFetch(`${BASE_URL}/teams/${opsTeamId}/admin-privileges`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -179,7 +212,7 @@ describe('Team Delegated Administration & Operational Governance', () => {
 
   describe('3. Separation of Responsibilities in API Endpoints', () => {
     it('allows DB team member to create a database connection', async () => {
-      const res = await fetch(`${BASE_URL}/db/databases`, {
+      const res = await authFetch(`${BASE_URL}/db/databases`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -204,7 +237,7 @@ describe('Team Delegated Administration & Operational Governance', () => {
     });
 
     it('rejects Ops team member from creating a database connection', async () => {
-      const res = await fetch(`${BASE_URL}/db/databases`, {
+      const res = await authFetch(`${BASE_URL}/db/databases`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -227,7 +260,7 @@ describe('Team Delegated Administration & Operational Governance', () => {
 
     it('allows DB team member to allocate the connection to Ops team', async () => {
       expect(createdDbId).toBeDefined();
-      const res = await fetch(`${BASE_URL}/teams/${opsTeamId}/allocated-databases`, {
+      const res = await authFetch(`${BASE_URL}/teams/${opsTeamId}/allocated-databases`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -245,7 +278,7 @@ describe('Team Delegated Administration & Operational Governance', () => {
 
     it('STRICT GOVERNANCE: blocks DB team member from creating column configuration', async () => {
       expect(createdDbId).toBeDefined();
-      const res = await fetch(`${BASE_URL}/db/column-configurations`, {
+      const res = await authFetch(`${BASE_URL}/db/column-configurations`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -269,7 +302,7 @@ describe('Team Delegated Administration & Operational Governance', () => {
 
     it('allows Ops team member to configure column mapping on allocated DB', async () => {
       expect(createdDbId).toBeDefined();
-      const res = await fetch(`${BASE_URL}/db/column-configurations`, {
+      const res = await authFetch(`${BASE_URL}/db/column-configurations`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

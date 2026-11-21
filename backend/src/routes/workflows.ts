@@ -237,6 +237,12 @@ workflowsRouter.put('/:id', async (req: Request, res: Response) => {
     const updates = req.body || {};
     if (updates.stages && Array.isArray(updates.stages)) {
       updates.stages = updates.stages.filter(Boolean);
+      if (!updates.targetDbId && updates.stages.length > 0) {
+        updates.targetDbId = updates.stages.find((s: any) => s.targetDbId)?.targetDbId;
+      }
+      if (!updates.targetTable && updates.stages.length > 0) {
+        updates.targetTable = updates.stages.find((s: any) => s.targetDataSource)?.targetDataSource;
+      }
     }
     if (updates.steps && Array.isArray(updates.steps)) {
       updates.steps = updates.steps.filter(Boolean);

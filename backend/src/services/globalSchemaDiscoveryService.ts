@@ -5,7 +5,6 @@
 
 import { getPostgresPool, isPostgresConnected } from '../config/postgres.js';
 import { postgresRepo } from '../store/postgresRepo.js';
-import { store } from '../store/dataStore.js';
 import { GlobalStandardDirectoryRecord, DatabaseConnection } from '../types.js';
 import { discoverTablesForDb, getTableColumnsForDb, ColumnMetadata } from './dbConnectionManager.js';
 
@@ -35,58 +34,9 @@ export function classifyColumn(key: string, label: string = '', dataType: string
   const l = (label || '').toLowerCase().trim();
   const combo = `${k} ${l}`;
 
-  // 1. Identity & Reference
+  // 1. Audit & Timestamps
   if (
-    /(^|_)(id|txnid|txn_id|utrnno|utrn|fe_utrnno|rrn|retrieval|stan|trace|auth_?id|auth_?code|authidresp|ref_?num|match_?num|recno|posting_?recno|record_?no|batch_?id|batch_?seq|seq_?num|uuid|guid)($|_)/i.test(k) ||
-    combo.includes('transaction id') ||
-    combo.includes('reference') ||
-    combo.includes('retrieval ref') ||
-    combo.includes('trace number') ||
-    combo.includes('auth id') ||
-    combo.includes('authorization id')
-  ) {
-    return 'Identity & Reference';
-  }
-
-  // 2. Card & Payment Instrument
-  if (
-    /(^|_)(pan|hpan|card|pan_?masked|card_?number|card_?num|acc_?num|account|acct|iban|bban|bin|cvv|cvc|exp_?date|expiry|wallet|token)($|_)/i.test(k) ||
-    combo.includes('card number') ||
-    combo.includes('card pan') ||
-    combo.includes('account number') ||
-    combo.includes('cardholder')
-  ) {
-    return 'Card & Account';
-  }
-
-  // 3. Financial & Amounts
-  if (
-    /(^|_)(amt|amount|reqamt|conamt|fee|fee_?amt|charge|rate|convertrate|bal|balance|tax|surcharge|interchange|price|curr|currency|val|cost)($|_)/i.test(k) ||
-    combo.includes('amount') ||
-    combo.includes('fee') ||
-    combo.includes('balance') ||
-    combo.includes('rate') ||
-    combo.includes('currency') ||
-    (dataType === 'number' && (k.includes('amt') || k.includes('usd') || k.includes('val')))
-  ) {
-    return 'Financial & Amounts';
-  }
-
-  // 4. Lifecycle & Status
-  if (
-    /(^|_)(status|state|status_?state|response|responce|resp_?code|response_?code|action|result|verdict|dispute|chargeback|phase|stage|flag)($|_)/i.test(k) ||
-    combo.includes('status') ||
-    combo.includes('response code') ||
-    combo.includes('iso response') ||
-    combo.includes('dispute') ||
-    combo.includes('lifecycle')
-  ) {
-    return 'Lifecycle & Status';
-  }
-
-  // 5. Audit & Timestamps
-  if (
-    /(^|_)(date|time|timestamp|datetime|created|updated|settlement_?date|val_?date|posting_?date|auth_?time|post_?date|sys_?date|hour|year|month|day)($|_)/i.test(k) ||
+    /(^|_)(date|time|timestamp|datetime|created|updated|settlement_?date|val_?date|posting_?date|auth_?time|post_?date|sys_?date|hour|year|month|day|c012|c015|c030|c031)($|_)/i.test(k) ||
     dataType === 'date' ||
     combo.includes('date') ||
     combo.includes('timestamp') ||
@@ -96,43 +46,126 @@ export function classifyColumn(key: string, label: string = '', dataType: string
     return 'Audit & Timestamps';
   }
 
-  // 6. Merchant & Terminal
+  // 2. Financial & Amounts
   if (
-    /(^|_)(merchant|mid|mcc|term|terminal|tid|pos|store|shop|retailer|outlet)($|_)/i.test(k) ||
-    combo.includes('merchant') ||
-    combo.includes('terminal') ||
-    combo.includes('store') ||
-    combo.includes('point of sale')
+    /(^|_)(amt|amount|reqamt|conamt|fee|fee_?amt|charge|rate|convertrate|bal|balance|acctbal|netbal|tax|surcharge|interchange|price|curr|currency|val|cost|addlamt|repamts|unpaid_amnt|bills|moneytp|loy_multiplier|institacctcurr|c004|c005|c006|c049|c050|c051|c054)($|_)/i.test(k) ||
+    k.startsWith('amnt') ||
+    k.startsWith('acctbal') ||
+    k.startsWith('netbal') ||
+    k.startsWith('bills') ||
+    k.includes('cur_exp') ||
+    k.includes('pres_cur') ||
+    k.includes('tran_cur') ||
+    k.includes('pay_cur') ||
+    combo.includes('amount') ||
+    combo.includes('fee') ||
+    combo.includes('balance') ||
+    combo.includes('rate') ||
+    combo.includes('currency') ||
+    (dataType === 'number' && (k.includes('amt') || k.includes('usd') || k.includes('val') || k.includes('bal')))
   ) {
-    return 'Merchant & POS';
+    return 'Financial & Amounts';
   }
 
-  // 7. Network & Institution
+  // 3. Card & Account
   if (
-    /(^|_)(acquirer|acq|issuer|iss|bank|switch|channel|network|source_?feed|gateway|institution|bic|routing)($|_)/i.test(k) ||
+    /(^|_)(pan|hpan|card|pan_?masked|card_?number|card_?num|acc_?num|account|acct|iban|bban|bin|cvv|cvc|exp_?date|expiry|wallet|token|track1|track2|panext|pinblk|pin_captcode|bertlv|chip_pin|visa_data|emv|cardtp|cardaccidc|cardissid|cardseqno|c002|c022|c023|c037|c048|c055|c071)($|_)/i.test(k) ||
+    k.startsWith('acct1') ||
+    k.startsWith('acct2') ||
+    k.startsWith('dest_acct') ||
+    k.startsWith('emv_') ||
+    k.startsWith('cup_emv') ||
+    k.startsWith('p0148') ||
+    k.startsWith('p0159') ||
+    combo.includes('card number') ||
+    combo.includes('card pan') ||
+    combo.includes('account number') ||
+    combo.includes('cardholder') ||
+    combo.includes('track') ||
+    combo.includes('emv')
+  ) {
+    return 'Card & Account';
+  }
+
+  // 4. Network & Clearing
+  if (
+    /(^|_)(acquirer|acq|issuer|iss|bank|switch|channel|network|source_?feed|gateway|institution|bic|routing|acqinstcc|acqinstid|finst_cc|forinstid|inst_id|institution|issinstcc|netcode|netdata|ntwkseqno|nwindicator|othinstid|settlement_type|sttl|sttt|iin|ain|c032|c033|c093|c094|c095|c100|c102|c103)($|_)/i.test(k) ||
+    k.startsWith('inst_') ||
+    k.startsWith('institution') ||
     combo.includes('acquirer') ||
     combo.includes('issuer') ||
     combo.includes('switch') ||
     combo.includes('network') ||
+    combo.includes('clearing') ||
     combo.includes('channel')
   ) {
     return 'Network & Clearing';
   }
 
-  // 8. Customer & User
+  // 5. Merchant & POS
   if (
-    /(^|_)(customer|user|client|buyer|holder|email|phone|mobile|name|fname|lname|address|city|country)($|_)/i.test(k) ||
+    /(^|_)(merchant|mid|mcc|term|terminal|tid|pos|store|shop|retailer|outlet|agent|poscondc|posentrycc|posgeog|tran_place|c014|c024|c025|c026|c043)($|_)/i.test(k) ||
+    k.startsWith('agent') ||
+    k.startsWith('c043_') ||
+    combo.includes('merchant') ||
+    combo.includes('terminal') ||
+    combo.includes('store') ||
+    combo.includes('point of sale') ||
+    combo.includes('pos')
+  ) {
+    return 'Merchant & POS';
+  }
+
+  // 6. Customer & Account Holder
+  if (
+    /(^|_)(customer|user|client|buyer|holder|email|phone|mobile|name|fname|lname|address|city|country|postal_code|cdhldr|lang_code)($|_)/i.test(k) ||
     combo.includes('customer') ||
     combo.includes('user') ||
     combo.includes('email') ||
-    combo.includes('client')
+    combo.includes('client') ||
+    combo.includes('address')
   ) {
     return 'Customer & Account Holder';
   }
 
+  // 7. Lifecycle & Status
+  if (
+    /(^|_)(status|state|status_?state|response|responce|resp|resp_?code|response_?code|action|result|verdict|dispute|chargeback|phase|stage|flag|atm_resp|auth_end|auth_flags|auth_scheme|auth_start|canceled|cb_reason|check_type|completecode|declined|deleted|down|eci|fe_type|final_stat|fintran|fn|format_code|fraud_type|host_ind|host_rcvd|host_tape|impact|incoming|incremental|invalid|matc_reason|msgtype|mtid|multinat|origmsgtp|prcode|program_ind|reason|reject|rejected|respone_code|respreq|reversal|rjctrtn|rpt|service_code|stood_in_for|trans_stat|trans_type|validation_code|c039)($|_)/i.test(k) ||
+    k.startsWith('resp') ||
+    k.startsWith('reversal') ||
+    k.includes('reason') ||
+    combo.includes('status') ||
+    combo.includes('response') ||
+    combo.includes('code') ||
+    combo.includes('dispute') ||
+    combo.includes('lifecycle') ||
+    combo.includes('declined')
+  ) {
+    return 'Lifecycle & Status';
+  }
+
+  // 8. Identity & Reference
+  if (
+    /(^|_)(id|txnid|txn_id|utrnno|utrn|fe_utrnno|rrn|retrieval|stan|trace|auth_?id|auth_?code|authidresp|ref_?num|match_?num|recno|posting_?recno|record_?no|batch_?id|batch_?seq|seq_?num|seqno|uuid|guid|atmid|cancel_rn|destid|fin_rn|invoice_number|netrefnum|order_number|orgdata|orgdev|orgid|other_ref|proc_number|receiveid|rej_ref|shipment_no|smsgno|tr_log_ref|row_number|task_id|c011|c038|c041|c042)($|_)/i.test(k) ||
+    k.startsWith('p100') ||
+    k.startsWith('p200') ||
+    k.startsWith('p201') ||
+    k.startsWith('_raw_') ||
+    k.startsWith('_row_') ||
+    combo.includes('transaction id') ||
+    combo.includes('reference') ||
+    combo.includes('retrieval ref') ||
+    combo.includes('trace number') ||
+    combo.includes('auth id') ||
+    combo.includes('sequence') ||
+    combo.includes('authorization id')
+  ) {
+    return 'Identity & Reference';
+  }
+
   // 9. Reconciliation & Operational
   if (
-    /(^|_)(recon|match|discrepancy|variance|tolerance|rule|job|batch)($|_)/i.test(k) ||
+    /(^|_)(recon|match|discrepancy|variance|tolerance|rule|job|batch|staged)($|_)/i.test(k) ||
     combo.includes('recon') ||
     combo.includes('reconciliation') ||
     combo.includes('match')
@@ -163,8 +196,6 @@ export class GlobalSchemaDiscoveryService {
       } catch (err: any) {
         console.warn('[Discovery] Failed to read existing directory from PG:', err.message);
       }
-    } else {
-      existingFields = [...store.globalStandardDirectory];
     }
     for (const f of existingFields) {
       fieldsMap.set(f.key.toLowerCase(), { ...f });
@@ -178,9 +209,6 @@ export class GlobalSchemaDiscoveryService {
       } catch (err: any) {
         console.warn('[Discovery] Failed to read databases from PG:', err.message);
       }
-    }
-    if (databases.length === 0 && store.databases.length > 0) {
-      databases = [...store.databases];
     }
 
     // 3. Scan each registered database connection
@@ -253,11 +281,6 @@ export class GlobalSchemaDiscoveryService {
       await postgresRepo.syncDirectoryToGlobalSchemaConfig();
     }
 
-    store.globalStandardDirectory = finalFields;
-    if (store.globalSchema) {
-      store.globalSchema.standardFields = finalFields;
-    }
-
     return {
       discoveredCount: finalFields.length,
       fields: finalFields,
@@ -280,9 +303,6 @@ export class GlobalSchemaDiscoveryService {
     let db: DatabaseConnection | null = null;
     if (isPostgresConnected) {
       db = await postgresRepo.getDatabaseConnectionById(dbId);
-    }
-    if (!db) {
-      db = store.databases.find(d => d.id === dbId) || null;
     }
 
     let columns: ColumnMetadata[] = [];
@@ -309,8 +329,6 @@ export class GlobalSchemaDiscoveryService {
     let existingFields: GlobalStandardDirectoryRecord[] = [];
     if (isPostgresConnected) {
       existingFields = await postgresRepo.getGlobalStandardDirectory();
-    } else {
-      existingFields = [...store.globalStandardDirectory];
     }
     for (const f of existingFields) {
       fieldsMap.set(f.key.toLowerCase(), { ...f });
@@ -332,11 +350,6 @@ export class GlobalSchemaDiscoveryService {
 
     if (isPostgresConnected) {
       await postgresRepo.syncDirectoryToGlobalSchemaConfig();
-    }
-
-    store.globalStandardDirectory = Array.from(fieldsMap.values());
-    if (store.globalSchema) {
-      store.globalSchema.standardFields = store.globalStandardDirectory;
     }
 
     return {
@@ -425,8 +438,6 @@ export class GlobalSchemaDiscoveryService {
       } catch (err: any) {
         console.warn('[BatchImport] Error reading existing directory:', err.message);
       }
-    } else {
-      existingFields = [...store.globalStandardDirectory];
     }
 
     const fieldsMap = new Map<string, GlobalStandardDirectoryRecord>();
@@ -485,10 +496,6 @@ export class GlobalSchemaDiscoveryService {
     }
 
     const allFields = Array.from(fieldsMap.values());
-    store.globalStandardDirectory = allFields;
-    if (store.globalSchema) {
-      store.globalSchema.standardFields = allFields;
-    }
 
     return {
       importedCount: importedRecords.length,
@@ -506,8 +513,6 @@ export class GlobalSchemaDiscoveryService {
     let fields: GlobalStandardDirectoryRecord[] = [];
     if (isPostgresConnected) {
       fields = await postgresRepo.getGlobalStandardDirectory();
-    } else {
-      fields = [...store.globalStandardDirectory];
     }
 
     let changedCount = 0;
@@ -528,11 +533,6 @@ export class GlobalSchemaDiscoveryService {
 
     if (isPostgresConnected) {
       await postgresRepo.syncDirectoryToGlobalSchemaConfig();
-    }
-
-    store.globalStandardDirectory = updatedFields;
-    if (store.globalSchema) {
-      store.globalSchema.standardFields = updatedFields;
     }
 
     return {

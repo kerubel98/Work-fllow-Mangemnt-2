@@ -337,16 +337,18 @@ export interface EscalationAgreement {
 }
 
 export type IssueStatus = 
+  | 'OPEN' 
+  | 'IN_PROGRESS' 
+  | 'INVESTIGATING' 
+  | 'RESOLVED' 
+  | 'CLOSED' 
+  | 'FAILED' 
+  | 'ESCALATED'
   | 'Open' 
   | 'Investigating' 
   | 'Resolved' 
   | 'Closed' 
-  | 'Escalated' 
-  | 'OPEN' 
-  | 'INVESTIGATING' 
-  | 'RESOLVED' 
-  | 'CLOSED' 
-  | 'ESCALATED';
+  | 'Escalated';
 export type IssuePriority = 'Low' | 'Medium' | 'High' | 'Critical';
 
 export interface Issue {
@@ -539,6 +541,12 @@ export interface HashtagPreset {
     mappingTemplate?: any;
     validationPipeline?: any;
     escalationAgreement?: any;
+    fileSchemaName?: string;
+    mappingRecipeName?: string;
+    validationStageName?: string;
+    slaTerms?: string;
+    fileHeaders?: string[];
+    [key: string]: any;
   } | null;
   /** Checker approval gateway status */
   checkerStatus?: 'PENDING_APPROVAL' | 'APPROVED' | 'REJECTED';
@@ -913,6 +921,12 @@ export interface FtpFileStagingConfig {
   xmlRecordElement?: string;
   fieldMappings: FtpFieldMapping[];
   stagingTableName?: string;
+  targetTableName?: string;
+  sampleFilePath?: string;
+  filePattern?: string;
+  delimiter?: string;
+  pruneEmptyMergedColumns?: boolean;
+  onlyColumnsWithData?: boolean;
   stagingMode?: 'APPEND' | 'REPLACE';
   isPermanentTable?: boolean;
   sampleFileName?: string;
@@ -923,6 +937,47 @@ export interface FtpFileStagingConfig {
   lastSkippedMismatches?: FtpSkippedMismatch[];
   createdAt?: string;
   updatedAt?: string;
+}
+
+export interface FtpIngestedFile {
+  id: string;
+  ftpConnectionId: string;
+  fileName: string;
+  filePath: string;
+  relativeFolder: string;
+  fileSize?: number;
+  fileModifiedAt?: string;
+  fileFormat: string;
+  filePattern: string;
+  stagingConfigId?: string;
+  targetTableName: string;
+  recordsStaged: number;
+  ingestionStatus: 'INGESTED' | 'FAILED' | 'SKIPPED';
+  ingestedAt: string;
+  lastCheckedAt?: string;
+}
+
+export interface SemanticPatternGroup {
+  pattern: string;
+  cleanPattern: string;
+  fileType: 'EXCEL' | 'CSV' | 'XML' | 'TXT' | 'OTHER';
+  fileCount: number;
+  folders: string[];
+  suggestedTableName: string;
+  sampleFile: {
+    name: string;
+    fullPath: string;
+    relativeFolder: string;
+    size: number;
+    fileType: string;
+  };
+  matchedFiles: {
+    name: string;
+    fullPath: string;
+    relativeFolder: string;
+    size: number;
+    fileType: string;
+  }[];
 }
 
 export interface DbAccessRequest {

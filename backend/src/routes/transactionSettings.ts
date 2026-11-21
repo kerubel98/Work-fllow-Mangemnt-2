@@ -10,49 +10,41 @@ export const transactionSettingsRouter = Router();
 
 // GET /api/transactions/settings - Retrieve global transaction schema config and mapping templates
 transactionSettingsRouter.get('/settings', async (_req: Request, res: Response) => {
-  if (isPostgresConnected) {
-    try {
-      const schema = await postgresRepo.getGlobalSchemaConfig();
-      const templates = await postgresRepo.getTransactionTemplates();
-      return res.json({
-        schema: schema || store.globalSchema,
-        templates: templates && templates.length > 0 ? templates : store.transactionTemplates
-      });
-    } catch (e: any) {
-      console.warn('Error fetching settings from PostgreSQL, using store:', e.message);
-    }
+  try {
+    const schema = await postgresRepo.getGlobalSchemaConfig();
+    const templates = await postgresRepo.getTransactionTemplates();
+    return res.json({
+      schema: schema || { customFields: [], updatedAt: new Date().toISOString() },
+      templates: templates || []
+    });
+  } catch (e: any) {
+    return res.status(500).json({ error: e.message });
   }
-
-  return res.json({
-    schema: store.globalSchema,
-    templates: store.transactionTemplates
-  });
 });
 
 // POST /api/transactions/settings/schema - Update global transaction schema custom fields
 transactionSettingsRouter.post('/settings/schema', async (req: Request, res: Response) => {
   const { customFields, defaultTemplateId, updatedBy } = req.body;
-  if (customFields && Array.isArray(customFields)) {
-    store.globalSchema.customFields = customFields;
-  }
-  if (defaultTemplateId !== undefined) {
-    store.globalSchema.defaultTemplateId = defaultTemplateId;
-  }
-  store.globalSchema.updatedAt = new Date().toISOString();
-  store.globalSchema.updatedBy = updatedBy || 'system';
-
-  if (isPostgresConnected) {
-    try {
-      await postgresRepo.saveGlobalSchemaConfig(store.globalSchema);
-    } catch (e: any) {
-      console.warn('Could not update schema in PostgreSQL:', e.message);
+  try {
+    const current = (await postgresRepo.getGlobalSchemaConfig()) || { customFields: [] };
+    if (customFields && Array.isArray(customFields)) {
+      current.customFields = customFields;
     }
-  }
+    if (defaultTemplateId !== undefined) {
+      current.defaultTemplateId = defaultTemplateId;
+    }
+    current.updatedAt = new Date().toISOString();
+    current.updatedBy = updatedBy || 'system';
 
-  return res.json({
-    message: 'Global transaction schema updated successfully',
-    schema: store.globalSchema
-  });
+    await postgresRepo.saveGlobalSchemaConfig(current);
+
+    return res.json({
+      message: 'Global transaction schema updated successfully',
+      schema: current
+    });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
 });
 
 // =========================================================

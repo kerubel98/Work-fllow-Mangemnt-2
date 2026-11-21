@@ -24,9 +24,9 @@ import { WorkspaceNotificationsTab } from './settings/WorkspaceNotificationsTab'
 import { WorkspaceDataTab } from './settings/WorkspaceDataTab';
 import { WorkspaceAuthTab } from './settings/WorkspaceAuthTab';
 
-const DatabaseColumnConfigurationStudio = lazyWithRetry(() => import('./settings/DatabaseColumnConfiguration'), 'DatabaseColumnConfiguration');
-const ValidationBoxManager = lazyWithRetry(() => import('./settings/ValidationBoxManager').then(m => ({ default: m.ValidationBoxManager })), 'ValidationBoxManager');
-const WorkflowStudioFlowchart = lazyWithRetry(() => import('./settings/WorkflowStudioFlowchart').then(m => ({ default: m.WorkflowStudioFlowchart })), 'WorkflowStudioFlowchart');
+const DatabaseColumnConfigurationStudio = lazyWithRetry(() => import('./settings/DatabaseColumnConfiguration'));
+const ValidationBoxManager = lazyWithRetry(() => import('./settings/ValidationBoxManager').then(m => ({ default: m.ValidationBoxManager })));
+const WorkflowStudioFlowchart = lazyWithRetry(() => import('./settings/WorkflowStudioFlowchart').then(m => ({ default: m.WorkflowStudioFlowchart })));
 
 function StudioLoadingFallback() {
   return (
@@ -158,35 +158,34 @@ export default function WorkspaceSettings({
   const handleApplyChanges = async () => {
     setIsApplying(true);
     try {
-      // 1. Optimistic local cache update
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
-
-      // 2. Persist proposal to PostgreSQL backend (Rule 7 & Rule 23)
+      const userDisplayName = currentUser.name || currentUser.username || 'Operator';
       const userTeam = teams.find(t => t.id === currentUser.teamId) || teams[0];
+
+      // Submit proposal to PostgreSQL backend first (Rule 7 & Rule 23)
       await api.submitWorkspaceSettingProposal({
         settingType: 'WORKSPACE_CONFIG',
         settingKey: STORAGE_KEY,
         title: `Workspace Configuration Update (${config.environmentMode})`,
         proposedChanges: config,
         currentSnapshot: DEFAULT_WORKSPACE_CONFIG,
-        justification: `Configuration updated by ${currentUser.name} (${currentUser.role})`,
+        justification: `Configuration updated by ${userDisplayName} (${currentUser.role || 'user'})`,
         makerId: currentUser.id,
-        makerName: currentUser.name,
+        makerName: userDisplayName,
         teamId: currentUser.teamId || userTeam?.id || 'GLOBAL'
       });
 
       setFeedbackBanner({ 
         type: 'success', 
-        text: 'Workspace configuration submitted for governance review & applied to active session.' 
+        text: 'Workspace configuration proposal submitted for governance review.' 
       });
       setTimeout(() => setFeedbackBanner(null), 4000);
     } catch (err: any) {
-      console.warn('Could not submit workspace proposal:', err);
+      console.error('Could not submit workspace proposal:', err);
       setFeedbackBanner({ 
-        type: 'success', 
-        text: `Workspace configuration saved locally (${err.message || 'offline buffer active'}).` 
+        type: 'error', 
+        text: `Failed to submit workspace proposal: ${err?.message || 'Server connection error'}. Draft retained.` 
       });
-      setTimeout(() => setFeedbackBanner(null), 4000);
+      setTimeout(() => setFeedbackBanner(null), 5000);
     } finally {
       setIsApplying(false);
     }

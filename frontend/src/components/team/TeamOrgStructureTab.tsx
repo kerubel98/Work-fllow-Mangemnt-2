@@ -26,7 +26,7 @@ export function TeamOrgStructureTab({
   const [targetTeam, setTargetTeam] = useState('Core Operations & Settlement Division');
 
   const teamName = currentTeam?.name || 'Card Disputes & Chargebacks Unit';
-  const teamLead = currentTeam?.lead || '@manager_alex';
+  const teamLead = currentTeam?.managerName || (currentTeam as any)?.lead || '@manager_alex';
 
   return (
     <div className="flex-1 flex flex-col h-full bg-slate-50 overflow-hidden text-slate-800 text-xs" style={{ zoom: 0.9 }}>

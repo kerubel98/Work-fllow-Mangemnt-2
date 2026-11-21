@@ -12,8 +12,10 @@ describe('Domain 10: Technician Solution Flow (Screens 38–44)', () => {
       const mockIssue: Issue = {
         id: 'iss-test-01',
         title: 'CBE Settlement Amount Discrepancy',
+        description: 'Discrepancy test',
+        type: 'single',
         status: 'Investigating',
-        priority: 'HIGH',
+        priority: 'High',
         creatorId: 'usr-ops-1',
         creatorName: 'Operator One',
         createdAt: new Date().toISOString(),

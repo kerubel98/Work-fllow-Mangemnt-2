@@ -79,11 +79,11 @@ export const analyticsService = {
     const issueSummaryRes = await queryPg(`
       SELECT 
         COUNT(*) as total,
-        COUNT(*) FILTER (WHERE status = 'Open') as open,
-        COUNT(*) FILTER (WHERE status = 'Investigating') as investigating,
-        COUNT(*) FILTER (WHERE status = 'Resolved') as resolved,
-        COUNT(*) FILTER (WHERE status = 'Closed') as closed,
-        COUNT(*) FILTER (WHERE priority = 'Critical' AND status NOT IN ('Resolved', 'Closed')) as sla_at_risk
+        COUNT(*) FILTER (WHERE status IN ('OPEN', 'Open')) as open,
+        COUNT(*) FILTER (WHERE status IN ('INVESTIGATING', 'Investigating', 'IN_PROGRESS', 'In Progress')) as investigating,
+        COUNT(*) FILTER (WHERE status IN ('RESOLVED', 'Resolved')) as resolved,
+        COUNT(*) FILTER (WHERE status IN ('CLOSED', 'Closed')) as closed,
+        COUNT(*) FILTER (WHERE UPPER(priority) = 'CRITICAL' AND status NOT IN ('RESOLVED', 'Resolved', 'CLOSED', 'Closed')) as sla_at_risk
       FROM issues;
     `);
 

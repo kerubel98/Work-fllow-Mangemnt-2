@@ -874,11 +874,11 @@ export interface FileIngestionMappingTemplate {
   sourceType: 'csv' | 'xlsx' | 'xls' | 'xml';
   headerMode: 'ROW_INDEX' | 'HEADERLESS_MANUAL';
   headerRowIndex: number;
-  manualHeaders: Record<string, string>;
-  deletedColumns: string[];
+  manualHeaders?: Record<string, string>;
+  deletedColumns?: string[];
   requiredColumns: string[];
   columnMappings: Record<string, string>;
-  cleaningRecipe: FileIngestionCleaningRecipe;
+  cleaningRecipe?: FileIngestionCleaningRecipe;
   splitOperations?: SplitOperation[];
   mergeOperations?: MergeOperation[];
   transformOperations?: TransformOperation[];
@@ -887,8 +887,8 @@ export interface FileIngestionMappingTemplate {
   createdBy?: string;
   teamId?: string;
   isDefault?: boolean;
-  createdAt: string;
-  updatedAt: string;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface IngestionDatasetPayload {
@@ -1199,7 +1199,7 @@ export interface GlobalTransactionSchemaField {
   id?: string;
   key: string;
   label: string;
-  description: string;
+  description?: string;
   dataType: 'string' | 'number' | 'date' | 'boolean';
   required: boolean;
   isStandard?: boolean;

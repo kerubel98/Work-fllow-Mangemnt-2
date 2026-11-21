@@ -1215,6 +1215,77 @@ export class GlobalMappingService {
       }
 
       // 2. Domain-aware synonym matching
+      // Debtor Institution / Bank
+      if (/debtor/i.test(slugH) && /inst|bank/i.test(slugH)) {
+        const target = fields.find(f => f.key.toLowerCase() === 'debtor_inst')
+          || fields.find(f => f.key.toLowerCase() === 'debtor_institution')
+          || fields.find(f => f.key.toLowerCase() === 'acq_inst')
+          || fields.find(f => f.key.toLowerCase() === 'acqinstid')
+          || fields.find(f => f.key.toLowerCase() === 'inst_id2')
+          || fields.find(f => f.key.toLowerCase() === 'institution1')
+          || fields.find(f => /debtor/i.test(f.key));
+        if (target) { map[rawH] = target.key; return; }
+      }
+
+      // Creditor Institution / Bank
+      if (/creditor/i.test(slugH) && /inst|bank/i.test(slugH)) {
+        const target = fields.find(f => f.key.toLowerCase() === 'creditor_inst')
+          || fields.find(f => f.key.toLowerCase() === 'creditor_institution')
+          || fields.find(f => f.key.toLowerCase() === 'issuer_id')
+          || fields.find(f => f.key.toLowerCase() === 'isser_bank')
+          || fields.find(f => f.key.toLowerCase() === 'issinstcc')
+          || fields.find(f => f.key.toLowerCase() === 'institution2')
+          || fields.find(f => /creditor/i.test(f.key));
+        if (target) { map[rawH] = target.key; return; }
+      }
+
+      // End to End ID / UTRN / Transfer ID
+      if (/endtoend|end_to_end|e2e|utrn/i.test(slugH)) {
+        const target = fields.find(f => f.key.toLowerCase() === 'end_to_end_id')
+          || fields.find(f => f.key.toLowerCase() === 'utrnno')
+          || fields.find(f => f.key.toLowerCase() === 'fe_utrnno')
+          || fields.find(f => f.key.toLowerCase() === 'refnum')
+          || fields.find(f => f.key.toLowerCase() === 'transaction_id');
+        if (target) { map[rawH] = target.key; return; }
+      }
+
+      // STAN / Trace (ISO 8583 F11)
+      if (/^(stan|trace|stan_f11|stanf11|sys_trace|audit_num|f11)$/i.test(slugH) || slugH.includes('stan') || slugH.includes('trace')) {
+        const target = fields.find(f => f.key.toLowerCase() === 'trace')
+          || fields.find(f => f.key.toLowerCase() === 'stan')
+          || fields.find(f => /trace|stan/i.test(f.key));
+        if (target) { map[rawH] = target.key; return; }
+      }
+
+      // Response code / ATM Resp
+      if (/^(atm_resp|atmresp|response_code|resp_code|respcode|response|action_code)$/i.test(slugH) || slugH.includes('resp')) {
+        const target = fields.find(f => f.key.toLowerCase() === 'atm_resp')
+          || fields.find(f => f.key.toLowerCase() === 'response_code')
+          || fields.find(f => f.key.toLowerCase() === 'resp')
+          || fields.find(f => /atm_resp|resp/i.test(f.key));
+        if (target) { map[rawH] = target.key; return; }
+      }
+
+      // Acquirer Bank / Institution
+      if (/^(acquirer|acq|acq_inst|acq_instname|aquirer|aquirer_bank|acquirer_bank|acq_bank)$/i.test(slugH) || slugH.includes('acq') || slugH.includes('aquir')) {
+        const target = fields.find(f => f.key.toLowerCase() === 'acq_inst')
+          || fields.find(f => f.key.toLowerCase() === 'aquirer_bank')
+          || fields.find(f => f.key.toLowerCase() === 'acqinstid')
+          || fields.find(f => f.key.toLowerCase() === 'acq_instname')
+          || fields.find(f => /acq|aquir/i.test(f.key));
+        if (target) { map[rawH] = target.key; return; }
+      }
+
+      // Issuer Bank / Institution
+      if (/^(issuer|iss|iss_inst|issuer_bank|iss_bank|issuer_id|isser_bank)$/i.test(slugH) || slugH.includes('issu') || slugH.includes('isser')) {
+        const target = fields.find(f => f.key.toLowerCase() === 'issuer_id')
+          || fields.find(f => f.key.toLowerCase() === 'isser_bank')
+          || fields.find(f => f.key.toLowerCase() === 'issinstcc')
+          || fields.find(f => f.key.toLowerCase() === 'iss_inst')
+          || fields.find(f => /issuer|isser|iss_inst/i.test(f.key));
+        if (target) { map[rawH] = target.key; return; }
+      }
+
       // Reference Number / Retrieval Ref Num / Transaction ID (prioritize refnum)
       if (/^(refnum|reference_no|reference_num|referenceno|referencenum|ref_no|refno|ref_num|ref|rrn|retrieval_ref_num|retrieval_ref_no|utrnno|fe_utrnno|trans_id|tran_id|transaction_id|txnid|tx_id)$/i.test(slugH)
         || slugH.includes('refnum') || slugH.includes('reference') || slugH.includes('retrieval') || slugH.includes('utrnno')) {
@@ -1227,8 +1298,8 @@ export class GlobalMappingService {
       }
 
       // Amount / Currency Amount (prioritize reqamt)
-      if (/^(reqamt|request_amt|requested_amount|req_amount|tran_amt|trans_amt|transaction_amount|txn_amount|amount|amt|val|value|interchangeamt|conamt)$/i.test(slugH)
-        || slugH.includes('amount') || slugH.includes('reqamt') || slugH.includes('amt')) {
+      if (/^(reqamt|request_amt|requested_amount|req_amount|tran_amt|trans_amt|transaction_amount|txn_amount|amount|amt|val|value|interchangeamt|conamt|reqamnt|req_amnt|amnt)$/i.test(slugH)
+        || slugH.includes('amount') || slugH.includes('reqamt') || slugH.includes('reqamnt') || slugH.includes('amt') || slugH.includes('amnt')) {
         const target = fields.find(f => f.key.toLowerCase() === 'reqamt')
           || fields.find(f => f.key.toLowerCase() === 'amount')
           || fields.find(f => /reqamt|amount|amt/i.test(f.key))
@@ -1236,21 +1307,25 @@ export class GlobalMappingService {
         if (target) { map[rawH] = target.key; return; }
       }
 
-      // Card / PAN / Account (prioritize hpan)
+      // Card / PAN / Account (prioritize pan or hpan)
       if (/^(hpan|pan|card|card_no|card_num|card_number|cardnumber|account|acct|acct_no|acct_num|account_number|primary_account_number)$/i.test(slugH)
         || slugH.includes('card') || slugH.includes('pan')) {
-        const target = fields.find(f => f.key.toLowerCase() === 'hpan')
-          || fields.find(f => f.key.toLowerCase() === 'pan')
-          || fields.find(f => /hpan|pan|card|acct_num/i.test(f.key));
+        const target = fields.find(f => f.key.toLowerCase() === 'pan')
+          || fields.find(f => f.key.toLowerCase() === 'hpan')
+          || fields.find(f => f.key.toLowerCase() === 'card_number')
+          || fields.find(f => /pan|card|acct_num/i.test(f.key));
         if (target) { map[rawH] = target.key; return; }
       }
 
-      // Date / Timestamp / Time (prioritize ttime)
-      if (/^(ttime|tran_time|trans_time|txn_time|datetime|timestamp|tr_date|trans_date|txn_date|valuedate|value_date|date|created_at|authtime)$/i.test(slugH)
+      // Date / Timestamp / Time (prioritize trans_date or ttime or sttl_date)
+      if (/^(sttl_date|settlement_date|settledate|ttime|tran_date|trandate|tran_time|trans_time|txn_time|datetime|timestamp|tr_date|trans_date|txn_date|valuedate|value_date|date|created_at|authtime)$/i.test(slugH)
         || slugH.includes('date') || slugH.includes('time')) {
-        const target = fields.find(f => f.key.toLowerCase() === 'ttime')
+        const target = fields.find(f => f.key.toLowerCase() === 'sttl_date')
+          || fields.find(f => f.key.toLowerCase() === 'trans_date')
+          || fields.find(f => f.key.toLowerCase() === 'ttime')
+          || fields.find(f => f.key.toLowerCase() === 'transaction_date')
           || fields.find(f => f.key.toLowerCase() === 'tr_date')
-          || fields.find(f => /ttime|tr_date|value_date|timestamp|created_at/i.test(f.key));
+          || fields.find(f => /sttl_date|trans_date|ttime|value_date|timestamp|created_at/i.test(f.key));
         if (target) { map[rawH] = target.key; return; }
       }
 
@@ -1285,14 +1360,18 @@ export class GlobalMappingService {
 
       // Institution / Bank
       if (/^(inst|institution|institution1|bank|bankref)$/i.test(slugH) || slugH.includes('inst')) {
-        const target = fields.find(f => /institution|bank/i.test(f.key));
+        const target = fields.find(f => f.key.toLowerCase() === 'inst_id2')
+          || fields.find(f => f.key.toLowerCase() === 'institution1')
+          || fields.find(f => /institution|inst_id/i.test(f.key));
         if (target) { map[rawH] = target.key; return; }
       }
 
-      // 3. Substring containment match (minimum 3 characters)
+      // 3. Substring containment match (minimum 4 characters, avoiding collisions)
       const subMatch = fields.find(f => {
         const slugKey = f.key.toLowerCase().replace(/[-_.\s]/g, '');
-        if (slugKey.length < 3) return false;
+        if (slugKey.length < 4) return false;
+        // Don't match date fields against non-date headers
+        if ((slugKey.includes('date') || slugKey.includes('time')) && !slugH.includes('date') && !slugH.includes('time')) return false;
         return slugH.includes(slugKey) || slugKey.includes(slugH);
       });
       if (subMatch) {

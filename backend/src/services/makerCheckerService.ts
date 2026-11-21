@@ -84,7 +84,7 @@ export const makerCheckerService = {
 
     const row = res.rows[0];
 
-    // Lock transaction status to PENDING_CHECKER_REVIEW
+    // Lock transaction status to PENDING_CHECKER_REVIEW across both investigation_transactions and task_dataset_transactions
     try {
       await queryPg(
         `UPDATE investigation_transactions 
@@ -92,7 +92,21 @@ export const makerCheckerService = {
              status_flag_text = 'Pending Checker Approval',
              status_flag_color = 'amber',
              updated_at = NOW()
-         WHERE task_id = $1 AND transaction_id = $2;`,
+         WHERE (task_id = $1 OR task_id IN (SELECT id FROM investigation_tasks WHERE issue_id = $1))
+           AND transaction_id = $2;`,
+        [input.taskId, input.transactionId]
+      );
+      await queryPg(
+        `UPDATE task_dataset_transactions
+         SET canonical_data = jsonb_set(
+           jsonb_set(canonical_data, '{_validation_status}', '"PENDING_CHECKER_REVIEW"'::jsonb),
+           '{_investigation_status}', '"PENDING_CHECKER_REVIEW"'::jsonb
+         )
+         WHERE task_id = $1 AND (
+           canonical_data->>'transaction_id' = $2 OR
+           canonical_data->>'transactionId' = $2 OR
+           canonical_data->>'id' = $2
+         );`,
         [input.taskId, input.transactionId]
       );
     } catch (err: any) {
@@ -180,7 +194,7 @@ export const makerCheckerService = {
 
       const updatedRow = updateRes.rows[0];
 
-      // 4. Update transaction status in PostgreSQL
+      // 4. Update transaction status in PostgreSQL across both investigation_transactions and task_dataset_transactions
       if (isApprove) {
         // Commit resolution
         const targetStatus = proposal.proposed_status || 'VERIFIED_MATCH';
@@ -192,8 +206,22 @@ export const makerCheckerService = {
                status_flag_text = $2,
                status_flag_color = 'emerald',
                updated_at = NOW()
-           WHERE task_id = $3 AND transaction_id = $4;`,
+           WHERE (task_id = $3 OR task_id IN (SELECT id FROM investigation_tasks WHERE issue_id = $3))
+             AND transaction_id = $4;`,
           [targetStatus, `Approved by ${input.checkerName}`, proposal.task_id, proposal.transaction_id]
+        );
+        await client.query(
+          `UPDATE task_dataset_transactions
+           SET canonical_data = jsonb_set(
+             jsonb_set(canonical_data, '{_validation_status}', to_jsonb($1::text)),
+             '{_investigation_status}', to_jsonb($1::text)
+           )
+           WHERE task_id = $2 AND (
+             canonical_data->>'transaction_id' = $3 OR
+             canonical_data->>'transactionId' = $3 OR
+             canonical_data->>'id' = $3
+           );`,
+          [targetStatus, proposal.task_id, proposal.transaction_id]
         );
       } else {
         // Reject & revert to FLAGGED_DISCREPANCY
@@ -204,8 +232,22 @@ export const makerCheckerService = {
                status_flag_text = $1,
                status_flag_color = 'rose',
                updated_at = NOW()
-           WHERE task_id = $2 AND transaction_id = $3;`,
+           WHERE (task_id = $2 OR task_id IN (SELECT id FROM investigation_tasks WHERE issue_id = $2))
+             AND transaction_id = $3;`,
           [`Rejected by ${input.checkerName}`, proposal.task_id, proposal.transaction_id]
+        );
+        await client.query(
+          `UPDATE task_dataset_transactions
+           SET canonical_data = jsonb_set(
+             jsonb_set(canonical_data, '{_validation_status}', '"FLAGGED_DISCREPANCY"'::jsonb),
+             '{_investigation_status}', '"FLAGGED_DISCREPANCY"'::jsonb
+           )
+           WHERE task_id = $1 AND (
+             canonical_data->>'transaction_id' = $2 OR
+             canonical_data->>'transactionId' = $2 OR
+             canonical_data->>'id' = $2
+           );`,
+          [proposal.task_id, proposal.transaction_id]
         );
       }
 
@@ -240,7 +282,10 @@ export const makerCheckerService = {
   /**
    * Retrieves pending resolution approval requests for a specific team.
    */
-  async getTeamPendingResolutions(teamId?: string): Promise<ResolutionApprovalRequest[]> {
+  async getTeamPendingResolutions(teamId?: string, limit: number = 100, offset: number = 0): Promise<ResolutionApprovalRequest[]> {
+    const clampedLimit = Math.max(1, Math.min(limit || 100, 500));
+    const clampedOffset = Math.max(0, offset || 0);
+
     let sql = `SELECT ${RESOLUTION_REQUEST_COLUMNS} FROM resolution_approval_requests WHERE status = 'PENDING'`;
     const params: any[] = [];
 
@@ -249,7 +294,9 @@ export const makerCheckerService = {
       params.push(teamId);
     }
 
-    sql += ` ORDER BY created_at DESC;`;
+    params.push(clampedLimit);
+    params.push(clampedOffset);
+    sql += ` ORDER BY created_at DESC LIMIT $${params.length - 1} OFFSET $${params.length};`;
 
     const res = await queryPg(sql, params);
     return res.rows.map((r: any) => ({

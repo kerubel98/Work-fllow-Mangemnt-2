@@ -8,10 +8,11 @@ import * as XLSX from 'xlsx';
 import { 
   Plus, ArrowLeft, Layers, FileText, Upload, Trash2, CheckCircle2, 
   Sparkles, Eraser, CheckCheck, ListFilter, Undo2, Wand2, BookmarkCheck, 
-  Search, Check, X, MoreHorizontal, Edit3, Type, SlidersHorizontal, 
+  Search, Check, X, MoreHorizontal, MoreVertical, Edit3, Type, SlidersHorizontal, 
   ShieldCheck, CheckSquare, RefreshCw, Save, AlertTriangle, GitBranch,
   FileSpreadsheet, Split, Combine, Sliders, Shield, Mail, Users, Lock, ChevronDown,
-  ChevronRight, AlertCircle, Eye, HelpCircle
+  ChevronRight, AlertCircle, Eye, HelpCircle, Terminal, PanelRightClose, PanelRightOpen,
+  Paperclip, Download, RotateCcw, Link2, CircleDot, Clock, ChevronLeft, FolderOpen, Play, Hash
 } from 'lucide-react';
 import { 
   IssuePriority, 
@@ -25,8 +26,9 @@ import {
   FileIngestionMappingTemplate
 } from '../../types';
 import { api } from '../../api/client';
-import { globalMappingService } from '../../services/globalMappingService';
+import { globalMappingService, DEFAULT_GLOBAL_STANDARD_FIELDS } from '../../services/globalMappingService';
 import { DataTablePagination } from '../common/DataTablePagination';
+import { generateFallbackAttachmentDataset } from '../common/StandardFileIngestionWorkspace';
 
 export interface ColumnDef {
   id: string;
@@ -43,6 +45,7 @@ export interface RecipeStep {
   desc: string;
   type?: 'INSPECT_HEADER' | 'MAP_FIELDS' | 'REQUIRED_COLUMNS' | 'DEDUPLICATE' | 'TRIM' | 'EMPTY_ROWS' | 'MERGE' | 'SPLIT' | 'TRANSFORM' | 'CUSTOM';
   details?: Record<string, any>;
+  appliedAt?: string;
 }
 
 export interface WorkspaceTaskCreatorProps {
@@ -57,60 +60,6 @@ export interface WorkspaceTaskCreatorProps {
   onTaskCreated?: (taskId?: string) => void;
   initialPreFill?: TaskPreFillFromMessage | null;
 }
-
-// Fallback sample rows if none provided
-const DEFAULT_SAMPLE_ROWS = [
-  {
-    currency: 'ETB',
-    tr_date: '05.04.2026',
-    terminal_id: '074\\\\BISRATEGABRIEL',
-    tran_place: 'SAHLI GETANEH',
-    refnum_f37: 'REF-8091',
-    fe_utrnno: '2633613984',
-    amount: '1,500.00',
-    status: 'Settled'
-  },
-  {
-    currency: 'ETB',
-    tr_date: '22.01.2026',
-    terminal_id: '142\\\\BISRATEGABRIEL',
-    tran_place: 'SAHLI GETANEH',
-    refnum_f37: 'REF-8092',
-    fe_utrnno: '2579312260',
-    amount: '820.00',
-    status: 'Settled'
-  },
-  {
-    currency: 'ETB',
-    tr_date: '13.04.2026',
-    terminal_id: '243\\\\AMAKELECH LULU TEFERA',
-    tran_place: 'ADDIS ABABA MAIN',
-    refnum_f37: 'REF-8093',
-    fe_utrnno: '2639706114',
-    amount: '2,010.50',
-    status: 'Pending'
-  },
-  {
-    currency: 'ETB',
-    tr_date: '16.01.2026',
-    terminal_id: '077\\\\BISRATEGABRIEL',
-    tran_place: 'SAHLI GETANEH',
-    refnum_f37: 'REF-8094',
-    fe_utrnno: '2574255967',
-    amount: '640.00',
-    status: 'Settled'
-  },
-  {
-    currency: 'ETB',
-    tr_date: '18.01.2026',
-    terminal_id: '109\\\\BOLE MEDHANIALEM',
-    tran_place: 'BOLE FINANCIAL CENTER',
-    refnum_f37: 'REF-8095',
-    fe_utrnno: '2581102941',
-    amount: '95.00',
-    status: 'Pending'
-  }
-];
 
 function inferType(name: string, sampleVal: any): 'Text' | 'Date' | 'Number' {
   const n = name.toLowerCase();
@@ -151,12 +100,20 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
     return isMemberOfPermanentTeam ? 'TEAM_PUBLIC' : 'PERSONAL_PRIVATE';
   });
 
-  // Basic Task Information
-  const [createTitle, setCreateTitle] = useState(() => initialPreFill?.title || 'Chargeback Reconciliation Batch #801');
+  // Basic Task Information (dynamic, never hardcoded)
+  const [createTitle, setCreateTitle] = useState(() => {
+    if (initialPreFill?.title) return initialPreFill.title;
+    if (initialPreFill?.subject) return initialPreFill.subject;
+    return '';
+  });
   const [createDesc, setCreateDesc] = useState(() => initialPreFill?.description || '');
   const [createPriority, setCreatePriority] = useState<IssuePriority>('Medium');
   const [createAssigneeId, setCreateAssigneeId] = useState(currentUser.id);
   const [createHashtag, setCreateHashtag] = useState('Untagged');
+
+  // Inline Hashtag management
+  const [showAddTag, setShowAddTag] = useState(false);
+  const [newTagInput, setNewTagInput] = useState('');
 
   // File & Data States
   const [createFileName, setCreateFileName] = useState('');
@@ -166,17 +123,8 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
   const [activeAttachment, setActiveAttachment] = useState<any>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  // Dynamic Columns State for Grid View
-  const [columns, setColumns] = useState<ColumnDef[]>(() => {
-    return ['currency', 'tr_date', 'terminal_id', 'tran_place', 'refnum_f37', 'fe_utrnno'].map(h => ({
-      id: h,
-      name: h,
-      type: inferType(h, null),
-      mapping: h,
-      selected: false,
-      unmapped: false
-    }));
-  });
+  // Dynamic Columns State for Grid View (populated on file upload / attachment ingestion)
+  const [columns, setColumns] = useState<ColumnDef[]>([]);
 
   // Standard Fields & Templates
   const [standardFields, setStandardFields] = useState<GlobalTransactionSchemaField[]>([]);
@@ -186,8 +134,16 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
   // Custom Recipe steps dynamic tracking: Step 1 = Inspect header, Step 2 = Map target fields, Custom steps, Step Final = Required columns
   const [customRecipeSteps, setCustomRecipeSteps] = useState<RecipeStep[]>([]);
 
-  // Step Required Columns Collapsed state in right panel (default collapsed as requested)
-  const [requiredColumnsExpanded, setRequiredColumnsExpanded] = useState(false);
+  // Layout View States matching Case page
+  const [isSidePanelCollapsed, setIsSidePanelCollapsed] = useState(false);
+  const [activeTab, setActiveTab] = useState<'grid' | 'schema' | 'recipes'>('grid');
+  const [filterMode, setFilterMode] = useState<'all' | 'duplicates' | 'unique'>('all');
+  const [showMoreMenu, setShowMoreMenu] = useState(false);
+  const [showTableActionsMenu, setShowTableActionsMenu] = useState(false);
+  const [showColumnFilter, setShowColumnFilter] = useState(false);
+  const [columnSearchQuery, setColumnSearchQuery] = useState('');
+  const [visibleColumnIds, setVisibleColumnIds] = useState<string[]>([]);
+  const columnFilterRef = useRef<HTMLDivElement | null>(null);
 
   // Modals
   const [metadataModalOpen, setMetadataModalOpen] = useState(false);
@@ -233,17 +189,29 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
       setStandardFields(cached);
     } else {
       api.getGlobalStandardDirectory().then(f => {
-        if (Array.isArray(f)) {
+        if (Array.isArray(f) && f.length > 0) {
           setStandardFields(f);
           globalMappingService.updateStandardFields(f);
+        } else {
+          setStandardFields(DEFAULT_GLOBAL_STANDARD_FIELDS);
         }
-      }).catch(err => console.warn('Could not fetch global standard directory:', err));
+      }).catch(err => {
+        console.warn('Could not fetch global standard directory, using default:', err);
+        setStandardFields(DEFAULT_GLOBAL_STANDARD_FIELDS);
+      });
     }
 
     api.getFileMappingTemplates().then(res => {
       if (Array.isArray(res)) setTemplates(res);
     }).catch(err => console.warn('Could not fetch templates:', err));
   }, []);
+
+  // Sync visible column IDs when columns change
+  useEffect(() => {
+    if (columns.length > 0 && visibleColumnIds.length === 0) {
+      setVisibleColumnIds(columns.map(c => c.id));
+    }
+  }, [columns, visibleColumnIds.length]);
 
   const selectedTagPreset = useMemo(() => {
     if (!createHashtag || createHashtag === 'Untagged') return null;
@@ -265,7 +233,8 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
       reqCols = selectedTagPreset.expectedFileStructure;
     } else {
       // Look up required columns from registered standard fields in directory
-      const requiredFromStandard = standardFields.filter(f => f.required).map(f => f.key || f.label);
+      const activeFields = standardFields.length > 0 ? standardFields : DEFAULT_GLOBAL_STANDARD_FIELDS;
+      const requiredFromStandard = activeFields.filter(f => f.required).map(f => f.key || f.label);
       if (requiredFromStandard.length > 0) {
         reqCols = requiredFromStandard;
       }
@@ -297,6 +266,23 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
     });
   }, [selectedTagPreset, columns, standardFields]);
 
+  // Duplicate detection & counting
+  const duplicateIndices = useMemo(() => {
+    const seen = new Set<string>();
+    const dupSet = new Set<number>();
+    createParsedRows.forEach((r, idx) => {
+      const fp = columns.map(c => String(r[c.id] ?? '')).join('|');
+      if (seen.has(fp)) {
+        dupSet.add(idx);
+      } else {
+        seen.add(fp);
+      }
+    });
+    return dupSet;
+  }, [createParsedRows, columns]);
+
+  const duplicateCount = duplicateIndices.size;
+
   // Step 1 completion status
   const isStep1Complete = Boolean(createFileName && createParsedRows.length > 0);
 
@@ -319,8 +305,9 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
       title: 'Inspect header structure',
       desc: createFileName 
         ? `Loaded "${createFileName}" (${createParsedRows.length} rows, ${columns.length} columns)` 
-        : `Auto-detected column schema (${createParsedRows.length} rows, ${columns.length} columns)`,
+        : `Awaiting spreadsheet upload (${createParsedRows.length} rows, ${columns.length} columns)`,
       type: 'INSPECT_HEADER',
+      appliedAt: 'Initial load',
       details: {
         fileName: createFileName,
         rows: createParsedRows.length,
@@ -333,6 +320,7 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
       title: 'Map target fields',
       desc: `${mappedCount} of ${columns.length} columns aligned with Global Standard Directory`,
       type: 'MAP_FIELDS',
+      appliedAt: 'Standard alignment',
       details: {
         mappedCount,
         totalColumns: columns.length,
@@ -354,6 +342,7 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
         ? `${readyRequiredCount} of ${requiredColumnsList.length} mandatory columns satisfied`
         : 'No mandatory column constraints configured for this feed',
       type: 'REQUIRED_COLUMNS',
+      appliedAt: 'Validation check',
       details: {
         requiredColumns: requiredColumnsList,
         readyCount: readyRequiredCount,
@@ -367,7 +356,15 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
   // Handle switching intake attachment
   const handleSelectAttachment = (att: any) => {
     setActiveAttachment(att);
-    setCreateFileName(att.filename || 'attached_feed.xlsx');
+    const fileName = att.filename || 'attached_feed.xlsx';
+    setCreateFileName(fileName);
+
+    if (att.filename) {
+      const baseName = att.filename.replace(/\.[^/.]+$/, '').replace(/[-_]/g, ' ');
+      const formattedTitle = baseName.charAt(0).toUpperCase() + baseName.slice(1);
+      setCreateTitle(prev => (!prev || prev === 'New Task' || prev === 'Untitled Task' ? formattedTitle : prev));
+    }
+
     let rows: Record<string, any>[] = [];
     let headers: string[] = [];
 
@@ -398,9 +395,16 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
       }
     }
 
+    if (headers.length === 0 && att.filename) {
+      const fallback = generateFallbackAttachmentDataset(att.filename);
+      headers = fallback.headers;
+      rows = fallback.rows;
+    }
+
     if (headers.length > 0) {
       setCreateRawHeaders(headers);
-      const autoMap = globalMappingService.autoGenerateColumnMapping(headers, standardFields);
+      const activeFields = standardFields.length > 0 ? standardFields : DEFAULT_GLOBAL_STANDARD_FIELDS;
+      const autoMap = globalMappingService.autoGenerateColumnMapping(headers, activeFields);
       setCreateFileMapping(autoMap);
       setCreateParsedRows(rows);
 
@@ -417,6 +421,7 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
         };
       });
       setColumns(newCols);
+      setVisibleColumnIds(newCols.map(c => c.id));
       setCurrentPage(1);
     }
   };
@@ -424,7 +429,11 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
   // Hydrate from initialPreFill (e.g. from Team Mailbox or Chat)
   useEffect(() => {
     if (!initialPreFill) return;
-    if (initialPreFill.title) setCreateTitle(initialPreFill.title);
+    if (initialPreFill.title) {
+      setCreateTitle(initialPreFill.title);
+    } else if (initialPreFill.subject) {
+      setCreateTitle(initialPreFill.subject);
+    }
     if (initialPreFill.description) setCreateDesc(initialPreFill.description);
 
     if (initialPreFill.attachments && initialPreFill.attachments.length > 0) {
@@ -442,25 +451,6 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
       }
     }
   }, [initialPreFill]);
-
-  // Ensure default rows and columns are initialized if still empty
-  useEffect(() => {
-    if (createParsedRows.length === 0) {
-      setCreateParsedRows(DEFAULT_SAMPLE_ROWS);
-      const defaultHeaders = Object.keys(DEFAULT_SAMPLE_ROWS[0]);
-      setCreateRawHeaders(defaultHeaders);
-      const autoMap = globalMappingService.autoGenerateColumnMapping(defaultHeaders, standardFields);
-      setCreateFileMapping(autoMap);
-      setColumns(defaultHeaders.map(h => ({
-        id: h,
-        name: h,
-        type: inferType(h, DEFAULT_SAMPLE_ROWS[0][h]),
-        mapping: autoMap[h] || h,
-        selected: false,
-        unmapped: false
-      })));
-    }
-  }, [createParsedRows.length, standardFields]);
 
   // Record undo snapshot
   const recordSnapshot = () => {
@@ -506,7 +496,8 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
         if (json.length > 0) {
           const rawH = (json[0] || []).map(h => String(h || '').trim()).filter(Boolean);
           const parsed = XLSX.utils.sheet_to_json(worksheet) as Record<string, any>[];
-          const autoMap = globalMappingService.autoGenerateColumnMapping(rawH, standardFields);
+          const activeFields = standardFields.length > 0 ? standardFields : DEFAULT_GLOBAL_STANDARD_FIELDS;
+          const autoMap = globalMappingService.autoGenerateColumnMapping(rawH, activeFields);
 
           const newCols: ColumnDef[] = rawH.map(h => {
             const sampleVal = parsed[0] ? parsed[0][h] : undefined;
@@ -522,10 +513,14 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
           });
 
           setCreateFileName(file.name);
+          const baseName = file.name.replace(/\.[^/.]+$/, '').replace(/[-_]/g, ' ');
+          const formattedTitle = baseName.charAt(0).toUpperCase() + baseName.slice(1);
+          setCreateTitle(prev => (!prev || prev === 'New Task' || prev === 'Untitled Task' ? formattedTitle : prev));
           setCreateRawHeaders(rawH);
           setCreateParsedRows(parsed);
           setCreateFileMapping(autoMap);
           setColumns(newCols);
+          setVisibleColumnIds(newCols.map(c => c.id));
           setCurrentPage(1);
 
           setCustomRecipeSteps(prev => [
@@ -534,7 +529,8 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
               num: 3 + prev.length,
               title: `Loaded "${file.name}"`,
               desc: `Parsed ${parsed.length} rows and ${rawH.length} columns from sheet "${sheet}"`,
-              type: 'INSPECT_HEADER'
+              type: 'INSPECT_HEADER',
+              appliedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
             }
           ]);
           setFeedbackMessage(`Successfully loaded "${file.name}" with ${parsed.length} rows.`);
@@ -563,7 +559,6 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
         dupsCount++;
       } else {
         seen.add(fp);
-        uniqueRows.push(r);
       }
     });
 
@@ -574,7 +569,8 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
         num: 3 + prev.length,
         title: 'Deduplicate rows',
         desc: dupsCount > 0 ? `Removed ${dupsCount} duplicate records` : 'Checked for duplicates (0 found)',
-        type: 'DEDUPLICATE'
+        type: 'DEDUPLICATE',
+        appliedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       }
     ]);
     setFeedbackMessage(dupsCount > 0 ? `Deduplicated dataset: ${dupsCount} duplicate rows removed.` : 'No duplicate rows found.');
@@ -600,7 +596,8 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
         num: 3 + prev.length,
         title: 'Remove empty rows',
         desc: removedCount > 0 ? `Removed ${removedCount} blank rows` : 'Verified dataset has no empty rows',
-        type: 'EMPTY_ROWS'
+        type: 'EMPTY_ROWS',
+        appliedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       }
     ]);
     setFeedbackMessage(removedCount > 0 ? `Removed ${removedCount} empty rows from dataset.` : 'No empty rows found.');
@@ -629,7 +626,8 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
         num: 3 + prev.length,
         title: 'Trim whitespace',
         desc: `Sanitized leading and trailing whitespace (${cellsTrimmed} cells)`,
-        type: 'TRIM'
+        type: 'TRIM',
+        appliedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       }
     ]);
     setFeedbackMessage(`Trimmed whitespace across dataset (${cellsTrimmed} values adjusted).`);
@@ -667,6 +665,7 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
 
     setCreateParsedRows(updatedRows);
     setColumns(prev => [...prev, newColDef]);
+    setVisibleColumnIds(prev => [...prev, newColId]);
     setCreateRawHeaders(prev => [...prev, newColId]);
     setCustomRecipeSteps(prev => [
       ...prev,
@@ -674,7 +673,8 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
         num: 3 + prev.length,
         title: `Merge columns`,
         desc: `Merged ${selectedCols.map(c => c.name).join(', ')} into "${newColName}"`,
-        type: 'MERGE'
+        type: 'MERGE',
+        appliedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       }
     ]);
     setFeedbackMessage(`Merged ${selectedCols.length} columns into new column "${newColName}".`);
@@ -708,6 +708,7 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
 
     setCreateParsedRows(updatedRows);
     setColumns(updatedColumns);
+    setVisibleColumnIds(updatedColumns.map(c => c.id));
     setCreateRawHeaders(updatedColumns.map(c => c.id));
     setCustomRecipeSteps(prev => [
       ...prev,
@@ -715,7 +716,8 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
         num: 3 + prev.length,
         title: `Split column "${splitTargetCol}"`,
         desc: `Separated by "${splitDelimiter}" into "${col1}" and "${col2}"`,
-        type: 'SPLIT'
+        type: 'SPLIT',
+        appliedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       }
     ]);
     setSplitModalOpen(false);
@@ -727,6 +729,7 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
     recordSnapshot();
     const updatedCols = columns.filter(c => c.id !== colId);
     setColumns(updatedCols);
+    setVisibleColumnIds(prev => prev.filter(id => id !== colId));
     setCreateRawHeaders(updatedCols.map(c => c.id));
     setCustomRecipeSteps(prev => [
       ...prev,
@@ -734,7 +737,8 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
         num: 3 + prev.length,
         title: `Exclude column "${colId}"`,
         desc: `Removed from active mapping dataset`,
-        type: 'CUSTOM'
+        type: 'CUSTOM',
+        appliedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       }
     ]);
     setActiveMenuColumn(null);
@@ -813,7 +817,8 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
         num: 3 + prev.length,
         title: `Transform "${colId}" (${ruleTitles[rule] || rule})`,
         desc: `Applied ${ruleTitles[rule] || rule} across ${transformed} records`,
-        type: 'TRANSFORM'
+        type: 'TRANSFORM',
+        appliedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       }
     ]);
     setActiveMenuColumn(null);
@@ -821,30 +826,43 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
     setTimeout(() => setFeedbackMessage(null), 3500);
   };
 
-  // Fixed Auto-Map: Aligns headers against standardFields key and label with fuzzy matching
+  // Robust Auto-Map: Aligns headers against standardFields key and label with fuzzy fallback
   const handleAutoMapAll = () => {
     recordSnapshot();
     const headers = columns.map(c => c.name);
-    const autoMap = globalMappingService.autoGenerateColumnMapping(headers, standardFields);
+    const activeFields = standardFields.length > 0 ? standardFields : DEFAULT_GLOBAL_STANDARD_FIELDS;
+    const autoMap = globalMappingService.autoGenerateColumnMapping(headers, activeFields);
 
     let mapped = 0;
     const updatedCols = columns.map(c => {
       let targetField = autoMap[c.name] || autoMap[c.id];
 
-      // Robust fallback fuzzy matching against standardFields
-      if (!targetField || targetField === 'Unmapped') {
+      // Robust fallback matching against activeFields keys and labels
+      if (!targetField || targetField === 'Unmapped' || targetField === '') {
         const cClean = c.name.toLowerCase().replace(/[-_.\s]/g, '');
-        const matched = standardFields.find(f => {
+        
+        const matched = activeFields.find(f => {
           const fKey = (f.key || (f as any).fieldName || '').toLowerCase().replace(/[-_.\s]/g, '');
           const fLabel = (f.label || (f as any).displayName || '').toLowerCase().replace(/[-_.\s]/g, '');
           return fKey === cClean || fLabel === cClean || (fKey && cClean.includes(fKey)) || (fLabel && cClean.includes(fLabel));
         });
+        
         if (matched) {
           targetField = matched.key || (matched as any).fieldName;
+        } else {
+          // Domain heuristics fallback for common settlement feeds
+          if (/curr|ccy/i.test(cClean)) targetField = 'currency';
+          else if (/date|time|ttime/i.test(cClean)) targetField = 'tr_date';
+          else if (/term|tid/i.test(cClean)) targetField = 'terminal_id';
+          else if (/place|loc|merchant/i.test(cClean)) targetField = 'tran_place';
+          else if (/ref|rrn/i.test(cClean)) targetField = 'refnum_f37';
+          else if (/utrnno|fe_utrnno/i.test(cClean)) targetField = 'fe_utrnno';
+          else if (/amt|amount|fee/i.test(cClean)) targetField = 'amount';
+          else if (/status|state/i.test(cClean)) targetField = 'status';
         }
       }
 
-      if (targetField && targetField !== 'Unmapped') {
+      if (targetField && targetField !== 'Unmapped' && targetField !== '') {
         mapped++;
         return {
           ...c,
@@ -869,11 +887,12 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
       {
         num: 3 + prev.length,
         title: 'Auto-map standard columns',
-        desc: `Matched ${mapped} fields to Global Standard Directory`,
-        type: 'MAP_FIELDS'
+        desc: `Matched ${mapped} of ${columns.length} columns to Global Standard Directory`,
+        type: 'MAP_FIELDS',
+        appliedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
       }
     ]);
-    setFeedbackMessage(`Auto-mapped ${mapped} columns to standard directory fields.`);
+    setFeedbackMessage(`Auto-mapped ${mapped} of ${columns.length} columns to standard directory fields.`);
     setTimeout(() => setFeedbackMessage(null), 3500);
   };
 
@@ -897,12 +916,130 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
           num: 3 + prev.length,
           title: `Applied template "${templateName}"`,
           desc: `Loaded predefined column mappings`,
-          type: 'MAP_FIELDS'
+          type: 'MAP_FIELDS',
+          appliedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
         }
       ]);
       setFeedbackMessage(`Applied mapping template "${templateName}".`);
       setTimeout(() => setFeedbackMessage(null), 3500);
     }
+  };
+
+  // Run Hashtag Directive: applies hashtag's own column mappings, schema, and rules to task data
+  const handleRunHashtag = (tagToRun?: string) => {
+    const rawTag = tagToRun || createHashtag;
+    if (!rawTag || rawTag === 'Untagged' || rawTag === '#Untagged') {
+      setFeedbackMessage('Please select a specific hashtag directive to run.');
+      setTimeout(() => setFeedbackMessage(null), 3000);
+      return;
+    }
+
+    const cleanTag = rawTag.replace(/^#/, '');
+    const preset = hashtags.find(h => 
+      h.tag.replace(/^#/, '').toLowerCase() === cleanTag.toLowerCase()
+    );
+
+    if (!preset) {
+      setFeedbackMessage(`No configured directive preset found for #${cleanTag}`);
+      setTimeout(() => setFeedbackMessage(null), 3000);
+      return;
+    }
+
+    recordSnapshot();
+    setCreateHashtag(cleanTag);
+
+    let mappedCountLocal = 0;
+    const newMapping: Record<string, string> = { ...createFileMapping };
+
+    // 1. Resolve explicit template mappings if available
+    let templateMappings: Record<string, string> = {};
+    if (preset.mappingTemplateId) {
+      const tpl = templates.find(t => t.id === preset.mappingTemplateId);
+      if (tpl?.columnMappings) {
+        templateMappings = tpl.columnMappings;
+      }
+    }
+    if (Object.keys(templateMappings).length === 0) {
+      const tpl = templates.find(t => t.name.toLowerCase().includes(cleanTag.toLowerCase()));
+      if (tpl?.columnMappings) {
+        templateMappings = tpl.columnMappings;
+      }
+    }
+
+    // 2. Expected columns defined by the directive
+    const expectedCols = preset.expectedFileStructure || preset.expectedHeaders || preset.minimumRequiredColumns || [];
+    const activeFields = standardFields.length > 0 ? standardFields : DEFAULT_GLOBAL_STANDARD_FIELDS;
+
+    // 3. Map each incoming column to the directive's schema
+    const updatedCols = columns.map(c => {
+      const rawName = c.name.toLowerCase().replace(/[^a-z0-9]/g, '');
+      const colId = c.id.toLowerCase().replace(/[^a-z0-9]/g, '');
+
+      // Check template mappings
+      if (templateMappings[c.name] || templateMappings[c.id]) {
+        const target = templateMappings[c.name] || templateMappings[c.id];
+        mappedCountLocal++;
+        newMapping[c.id] = target;
+        return { ...c, mapping: target, unmapped: false };
+      }
+
+      // Check against directive expected columns
+      for (const exp of expectedCols) {
+        const normExp = exp.toLowerCase().replace(/[^a-z0-9]/g, '');
+        if (rawName === normExp || colId === normExp || rawName.includes(normExp) || normExp.includes(rawName)) {
+          const std = activeFields.find(f => {
+            const fn = (f.key || (f as any).fieldName || f.label).toLowerCase().replace(/[^a-z0-9]/g, '');
+            return fn === normExp || normExp.includes(fn) || fn.includes(normExp);
+          });
+          const mappedName = std?.key || (std as any)?.fieldName || exp;
+          mappedCountLocal++;
+          newMapping[c.id] = mappedName;
+          return { ...c, mapping: mappedName, unmapped: false };
+        }
+      }
+
+      // Check against standard directory fields
+      for (const field of activeFields) {
+        const fieldKey = (field.key || (field as any).fieldName || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+        const fieldLabel = (field.label || (field as any).displayName || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+        if (rawName === fieldKey || colId === fieldKey || rawName === fieldLabel ||
+            (fieldKey && rawName.includes(fieldKey)) || (fieldKey && fieldKey.includes(rawName))) {
+          const val = field.key || (field as any).fieldName || field.label;
+          mappedCountLocal++;
+          newMapping[c.id] = val;
+          return { ...c, mapping: val, unmapped: false };
+        }
+      }
+
+      return c;
+    });
+
+    setColumns(updatedCols);
+    setCreateFileMapping(newMapping);
+
+    // Auto-trim string columns as part of directive execution
+    setCreateParsedRows(prev => prev.map(row => {
+      const cleaned: Record<string, any> = {};
+      for (const [k, v] of Object.entries(row)) {
+        cleaned[k] = typeof v === 'string' ? v.trim() : v;
+      }
+      return cleaned;
+    }));
+
+    // Add entry to Applied Recipes history
+    setCustomRecipeSteps(prev => [
+      ...prev,
+      {
+        num: 3 + prev.length,
+        title: `Executed Directive #${cleanTag}`,
+        desc: `Mapped ${mappedCountLocal} columns to hashtag schema and applied validation rules`,
+        type: 'MAP_FIELDS',
+        appliedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      }
+    ]);
+
+    setFeedbackMessage(`Directive #${cleanTag} applied: ${mappedCountLocal} of ${columns.length} columns aligned.`);
+    setTimeout(() => setFeedbackMessage(null), 3500);
   };
 
   const handleSaveTemplateSubmit = async () => {
@@ -931,7 +1068,8 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
   // Final Task Creation Commit (PostgreSQL First)
   // -------------------------------------------------------------
   const handleCreateTaskSubmit = async () => {
-    if (!createTitle.trim()) {
+    const finalTitle = createTitle.trim() || (createFileName ? `${createFileName.replace(/\.[^/.]+$/, '').replace(/[-_]/g, ' ')} Task` : '');
+    if (!finalTitle) {
       setMetadataModalOpen(true);
       alert('Please enter a task title in the Task Metadata dialog.');
       return;
@@ -943,7 +1081,7 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
 
     const newIssuePayload: any = {
       id: generatedTaskId,
-      title: createTitle.trim(),
+      title: finalTitle,
       description: createDesc.trim() || (initialPreFill ? `Task converted from ${initialPreFill.channel || 'email'} by ${initialPreFill.senderName || initialPreFill.senderAddress || 'External Counterparty'}.` : 'Task created in Workspace.'),
       priority: createPriority,
       type: hasAttachedFile ? ('file' as const) : ('single' as const),
@@ -1008,72 +1146,77 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
 
   // Filtered and Paginated rows matching Case page layout
   const filteredRows = useMemo(() => {
-    if (!tableSearch.trim()) return createParsedRows;
+    let rows = createParsedRows;
+    if (filterMode === 'duplicates') {
+      rows = rows.filter((_, idx) => duplicateIndices.has(idx));
+    } else if (filterMode === 'unique') {
+      rows = rows.filter((_, idx) => !duplicateIndices.has(idx));
+    }
+
+    if (!tableSearch.trim()) return rows;
     const q = tableSearch.toLowerCase();
-    return createParsedRows.filter(r =>
+    return rows.filter(r =>
       columns.some(c => String(r[c.id] ?? '').toLowerCase().includes(q))
     );
-  }, [createParsedRows, columns, tableSearch]);
+  }, [createParsedRows, columns, tableSearch, filterMode, duplicateIndices]);
 
   const paginatedRows = useMemo(() => {
     const start = (currentPage - 1) * pageSize;
     return filteredRows.slice(start, start + pageSize);
   }, [filteredRows, currentPage, pageSize]);
 
+  // Active visible columns for table
+  const activeTableColumns = useMemo(() => {
+    if (visibleColumnIds.length === 0) return columns;
+    return columns.filter(c => visibleColumnIds.includes(c.id));
+  }, [columns, visibleColumnIds]);
+
+  const toggleColumnVisibility = (colId: string) => {
+    setVisibleColumnIds(prev =>
+      prev.includes(colId) ? prev.filter(id => id !== colId) : [...prev, colId]
+    );
+  };
+
   return (
-    <div className="h-full flex flex-col min-h-0 overflow-hidden font-sans bg-[#F8FAFC]">
+    <div className="flex-1 flex flex-col h-full min-h-0 bg-[#F8FAFC] font-sans p-4 sm:p-5 pb-4 overflow-hidden">
       {/* ========================================================= */}
-      {/* 1. TOP HEADER: Stationary, Change File on Top, Clean Nav   */}
+      {/* 1. HEADER SECTION: Matching Case Page Layout & Typography */}
       {/* ========================================================= */}
-      <div className="shrink-0 bg-white border-b border-slate-200/90 px-5 sm:px-6 py-2.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3 shadow-2xs z-20">
-        {/* Left: Back button + Title & File Details + Change File */}
-        <div className="flex items-center gap-3">
-          <button
-            type="button"
-            onClick={onBackToWorkspace}
-            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold text-slate-700 hover:text-slate-900 bg-white border border-slate-200/90 rounded-xl shadow-2xs hover:bg-slate-50 transition-all cursor-pointer shrink-0"
-            title="Back to Intake"
-          >
-            <ArrowLeft size={14} className="text-slate-500" />
-            <span>Back</span>
-          </button>
+      <div className="flex flex-col lg:flex-row lg:items-start lg:justify-between gap-4 pb-3 shrink-0">
+        <div className="space-y-2">
+          {/* Status Badges Row + Back Navigation + File Info */}
+          <div className="flex items-center space-x-2 text-xs flex-wrap gap-y-1.5">
+            {/* Back Button */}
+            <button
+              type="button"
+              onClick={onBackToWorkspace}
+              className="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-semibold text-slate-700 hover:text-slate-900 bg-white border border-slate-200/90 rounded-lg shadow-2xs hover:bg-slate-50 transition-all cursor-pointer"
+              title="Back to Intake"
+            >
+              <ArrowLeft size={13} className="text-slate-500" />
+              <span>Back</span>
+            </button>
 
-          <div className="space-y-0.5">
-            <div className="flex items-center gap-1.5 text-[11px] text-slate-500 font-medium">
-              <button 
-                type="button" 
-                onClick={onBackToWorkspace}
-                className="hover:text-slate-900 transition-colors cursor-pointer"
-              >
-                Intake
-              </button>
-              <span>/</span>
-              <span className="text-slate-800 font-semibold">New Task</span>
-            </div>
-            
-            <div className="flex items-center gap-2 flex-wrap">
-              <h1 className="text-base font-bold font-heading text-slate-900 tracking-tight leading-tight flex items-center gap-2">
-                <span>Clean in Grid View:</span>
-                <span className="text-[#F27421] font-mono text-sm">{createFileName || 'clearing_batch_feed.xlsx'}</span>
-              </h1>
-              
-              {createParsedRows.length > 0 && (
-                <span className="text-[11px] font-mono text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full border border-slate-200">
-                  {createParsedRows.length} Rows · {columns.length} Cols
-                </span>
-              )}
+            {/* Status Badge */}
+            <span className="inline-flex items-center space-x-1.5 px-2.5 py-0.5 rounded-full bg-amber-50 text-amber-700 border border-amber-200/60 font-medium">
+              <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+              <span>DRAFT</span>
+            </span>
 
-              {/* CHANGE FILE BUTTON ON THE TOP (eliminates redundant banner) */}
+            {/* File Info with Change File / Upload File */}
+            <div className="inline-flex items-center space-x-1.5 px-2.5 py-0.5 bg-white border border-slate-200 rounded-lg text-xs shadow-2xs">
+              <FileSpreadsheet size={13} className={createFileName ? "text-[#F27421]" : "text-slate-400"} />
+              <span className={`font-mono truncate max-w-[200px] ${createFileName ? 'font-bold text-slate-800' : 'text-slate-400 font-normal italic'}`}>
+                {createFileName || 'No file attached'}
+              </span>
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
-                className="inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold text-slate-700 bg-white hover:bg-slate-50 border border-slate-200 hover:border-[#F27421] rounded-lg shadow-2xs transition-all cursor-pointer ml-1"
-                title="Change or replace current file"
+                className="text-[11px] font-semibold text-[#F27421] hover:underline cursor-pointer ml-1"
+                title={createFileName ? "Replace spreadsheet file" : "Upload spreadsheet file"}
               >
-                <Upload size={12} className="text-[#F27421]" />
-                <span>Change File</span>
+                {createFileName ? 'Change File' : 'Upload File'}
               </button>
-
               {createFileName && (
                 <button
                   type="button"
@@ -1081,82 +1224,250 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
                     setCreateFileName('');
                     setCreateParsedRows([]);
                     setCreateRawHeaders([]);
+                    setColumns([]);
+                    setVisibleColumnIds([]);
                     setActiveAttachment(null);
                   }}
-                  className="p-1 text-slate-400 hover:text-rose-600 rounded-lg transition-colors cursor-pointer"
+                  className="p-0.5 text-slate-400 hover:text-rose-600 transition-colors cursor-pointer ml-0.5"
                   title="Remove data"
                 >
-                  <Trash2 size={13} />
+                  <Trash2 size={11} />
                 </button>
               )}
             </div>
+
+            {/* Provenance Badge (if ingested from email / channel) */}
+            {initialPreFill && (
+              <span className="inline-flex items-center space-x-1 px-2.5 py-0.5 rounded-full bg-blue-50 text-blue-700 border border-blue-200/60 text-[11px] font-medium">
+                <Mail size={11} className="text-blue-600" />
+                <span>Ingested from {initialPreFill.channel ? initialPreFill.channel.toUpperCase() : 'EMAIL'}</span>
+              </span>
+            )}
+
+            {/* Priority Badge */}
+            <span className={`inline-flex items-center space-x-1 px-2.5 py-0.5 rounded-full text-[11px] font-medium border ${
+              createPriority === 'Critical' || createPriority === 'High'
+                ? 'bg-rose-50 text-rose-700 border-rose-200/60'
+                : 'bg-amber-50 text-amber-700 border-amber-200/60'
+            }`}>
+              <span>Priority: {createPriority}</span>
+            </span>
+
+            {/* Visibility Badge */}
+            <span className={`inline-flex items-center space-x-1 px-2.5 py-0.5 rounded-full text-[11px] font-medium border ${
+              taskVisibility === 'TEAM_PUBLIC'
+                ? 'bg-emerald-50 text-emerald-700 border-emerald-200/60'
+                : 'bg-indigo-50 text-indigo-700 border-indigo-200/60'
+            }`}>
+              <span className={`w-1.5 h-1.5 rounded-full ${taskVisibility === 'TEAM_PUBLIC' ? 'bg-emerald-500' : 'bg-indigo-500'}`} />
+              <span>{taskVisibility === 'TEAM_PUBLIC' ? 'Team Public' : 'Private'}</span>
+            </span>
+          </div>
+
+          {/* H1 Task Title (Clean, elevated, no redundant technical wrappers) */}
+          <div className="flex items-center gap-2">
+            <h1 className="text-2xl font-bold font-heading text-slate-900 tracking-tight">
+              {createTitle || (createFileName ? `${createFileName.replace(/\.[^/.]+$/, '').replace(/[-_]/g, ' ')}` : 'New Task')}
+            </h1>
+            <button
+              type="button"
+              onClick={() => setMetadataModalOpen(true)}
+              className="p-1 text-slate-400 hover:text-[#F27421] rounded-lg transition cursor-pointer"
+              title="Edit task title and metadata"
+            >
+              <Edit3 size={15} />
+            </button>
+          </div>
+
+          {/* Subtitle */}
+          <p className="text-xs text-slate-500 font-sans">
+            {createFileName ? (
+              <>
+                <span className="font-mono text-slate-700 font-medium">{createFileName}</span> · {createParsedRows.length} {createParsedRows.length === 1 ? 'record' : 'records'} · {columns.length} columns · Ingested by @{currentUser.username || 'Operator'}
+              </>
+            ) : (
+              <>New Ingestion Task · Upload a file to begin data cleaning and validation · @{currentUser.username || 'Operator'}</>
+            )}
+          </p>
+
+          {/* Hashtags Row */}
+          <div className="flex items-center space-x-2 pt-1 flex-wrap gap-y-1">
+            {createHashtag && createHashtag !== 'Untagged' ? (
+              <span className="px-2 py-0.5 text-[11px] font-mono text-[#F27421] bg-orange-50 border border-orange-200 rounded-md shadow-2xs font-bold">
+                #{createHashtag}
+              </span>
+            ) : (
+              <span className="px-2 py-0.5 text-[11px] font-mono text-slate-500 bg-white border border-slate-200 rounded-md shadow-2xs">
+                #Untagged
+              </span>
+            )}
+
+            {showAddTag ? (
+              <div className="inline-flex items-center space-x-1 bg-white border border-[#F27421] rounded-md px-1.5 py-0.5">
+                <input
+                  type="text"
+                  value={newTagInput}
+                  onChange={(e) => setNewTagInput(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                      if (newTagInput.trim()) {
+                        setCreateHashtag(newTagInput.trim().replace(/^#/, ''));
+                        setShowAddTag(false);
+                        setNewTagInput('');
+                      }
+                    }
+                    if (e.key === 'Escape') setShowAddTag(false);
+                  }}
+                  placeholder="#TAG_NAME"
+                  className="text-[11px] font-mono text-slate-800 outline-none w-28 uppercase"
+                  autoFocus
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (newTagInput.trim()) {
+                      setCreateHashtag(newTagInput.trim().replace(/^#/, ''));
+                      setShowAddTag(false);
+                      setNewTagInput('');
+                    }
+                  }}
+                  className="text-emerald-600 hover:text-emerald-700 text-xs font-bold px-1 cursor-pointer"
+                >
+                  ✓
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setShowAddTag(false)}
+                  className="text-slate-400 hover:text-slate-600 text-xs px-1 cursor-pointer"
+                >
+                  ✕
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setShowAddTag(true)}
+                className="px-2 py-0.5 text-[11px] font-sans text-slate-500 hover:text-slate-800 hover:bg-slate-100 border border-dashed border-slate-300 rounded-md transition-colors cursor-pointer"
+              >
+                + Add tag
+              </button>
+            )}
           </div>
         </div>
 
-        {/* Hidden File Input */}
-        <input
-          ref={fileInputRef}
-          type="file"
-          accept=".csv, .xlsx, .xls, .xml"
-          onChange={e => {
-            if (e.target.files && e.target.files[0]) {
-              handleFileUpload(e.target.files[0]);
-            }
-          }}
-          className="hidden"
-        />
-
-        {/* Right: Metadata Button + Visibility + Primary Action Buttons */}
-        <div className="flex items-center gap-2.5">
-          {/* Metadata quick-access button */}
+        {/* Action Buttons Top Right matching Case page */}
+        <div className="flex items-center space-x-2 shrink-0 relative pt-1">
+          {/* Level / Mode badge */}
           <button
             type="button"
-            onClick={() => setMetadataModalOpen(true)}
-            className="px-3 py-1.5 bg-slate-50 hover:bg-orange-50/70 border border-slate-200 hover:border-orange-200 text-slate-700 hover:text-[#F27421] text-xs font-semibold rounded-xl shadow-2xs transition-all flex items-center space-x-1.5 cursor-pointer"
-            title="View or edit task metadata"
+            className="flex items-center space-x-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-lg shadow-2xs transition-colors cursor-pointer"
           >
-            <FileText size={13} className="text-[#F27421]" />
-            <span className="font-bold truncate max-w-[140px] sm:max-w-[200px]">
-              {createTitle || 'Task Metadata'}
-            </span>
-            <Edit3 size={11} className="text-slate-400 ml-1" />
+            <Terminal size={13} />
+            <span>Level 2 (SANDBOX)</span>
           </button>
 
-          {/* Visibility pill */}
-          <span className={`px-2.5 py-1 rounded-lg text-[11px] font-bold flex items-center gap-1.5 border ${
-            taskVisibility === 'TEAM_PUBLIC'
-              ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-              : 'bg-indigo-50 text-indigo-700 border-indigo-200'
-          }`}>
-            <span className={`w-1.5 h-1.5 rounded-full ${taskVisibility === 'TEAM_PUBLIC' ? 'bg-emerald-500' : 'bg-indigo-500'}`} />
-            <span>{taskVisibility === 'TEAM_PUBLIC' ? 'Team Public' : 'Private'}</span>
-          </span>
-
-          {/* Review Summary Modal button */}
+          {/* Review Summary button */}
           <button
             type="button"
             onClick={() => setReviewModalOpen(true)}
-            className="px-3 py-1.5 bg-white hover:bg-slate-50 border border-slate-200 text-slate-700 text-xs font-semibold rounded-xl shadow-2xs transition cursor-pointer"
-            title="Open review summary popup"
+            className="flex items-center space-x-1.5 px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-700 text-xs font-medium rounded-lg border border-slate-200 shadow-2xs transition-colors cursor-pointer"
+            title="Open review summary before launching"
           >
-            Review Summary
+            <CheckSquare size={13} className="text-slate-500" />
+            <span>Review Summary</span>
           </button>
 
-          {/* Primary Create Task button */}
+          {/* More options menu (...) */}
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setShowMoreMenu(!showMoreMenu)}
+              className="p-1.5 bg-white hover:bg-slate-50 text-slate-500 rounded-lg border border-slate-200 shadow-2xs transition-colors cursor-pointer"
+              title="More options"
+            >
+              <MoreHorizontal size={14} />
+            </button>
+
+            {showMoreMenu && (
+              <div className="absolute right-0 top-full mt-1.5 w-52 bg-white rounded-xl shadow-xl border border-slate-200 py-1.5 z-30 text-xs font-sans">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowMoreMenu(false);
+                    setSaveTemplateModalOpen(true);
+                  }}
+                  className="w-full text-left px-3.5 py-2 hover:bg-slate-50 flex items-center space-x-2 text-slate-700 cursor-pointer"
+                >
+                  <Save size={13} className="text-[#F27421]" />
+                  <span>Save as Template</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowMoreMenu(false);
+                    setMetadataModalOpen(true);
+                  }}
+                  className="w-full text-left px-3.5 py-2 hover:bg-slate-50 flex items-center space-x-2 text-slate-700 cursor-pointer"
+                >
+                  <FileText size={13} className="text-slate-500" />
+                  <span>Edit Task Metadata</span>
+                </button>
+                {history.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowMoreMenu(false);
+                      handleUndo();
+                    }}
+                    className="w-full text-left px-3.5 py-2 hover:bg-slate-50 flex items-center space-x-2 text-blue-600 cursor-pointer"
+                  >
+                    <Undo2 size={13} />
+                    <span>Undo Last Operation</span>
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowMoreMenu(false);
+                    fileInputRef.current?.click();
+                  }}
+                  className="w-full text-left px-3.5 py-2 hover:bg-slate-50 flex items-center space-x-2 text-slate-700 cursor-pointer"
+                >
+                  <Upload size={13} className="text-[#F27421]" />
+                  <span>Upload New File</span>
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* Primary Action Button (EthioPay Orange) */}
           <button
             type="button"
             onClick={handleCreateTaskSubmit}
-            className="px-4 py-2 bg-[#F27421] hover:bg-[#e06516] active:bg-[#c95712] text-white text-xs font-bold rounded-xl shadow-xs transition-all flex items-center space-x-1.5 cursor-pointer"
+            className="bg-[#F27421] hover:bg-[#E06310] text-white flex items-center space-x-2 px-4 py-2 text-xs font-bold rounded-lg shadow-xs cursor-pointer transition-colors"
           >
-            <Plus size={14} />
+            <Plus size={14} className="stroke-[2.5]" />
             <span>Create Task &amp; Launch</span>
           </button>
         </div>
       </div>
 
+      {/* Hidden File Input */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".csv, .xlsx, .xls, .xml"
+        onChange={e => {
+          if (e.target.files && e.target.files[0]) {
+            handleFileUpload(e.target.files[0]);
+          }
+        }}
+        className="hidden"
+      />
+
       {/* Undo Feedback Toast */}
       {feedbackMessage && (
-        <div className="bg-blue-50 border-b border-blue-200 px-6 py-2 text-xs text-blue-800 font-medium flex items-center justify-between shrink-0 animate-in fade-in duration-100">
+        <div className="bg-blue-50 border border-blue-200 px-4 py-2 text-xs text-blue-800 font-medium flex items-center justify-between shrink-0 mb-3 rounded-xl animate-in fade-in duration-100 shadow-2xs">
           <div className="flex items-center gap-2">
             <CheckCircle2 size={14} className="text-blue-600" />
             <span>{feedbackMessage}</span>
@@ -1171,737 +1482,1104 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
         </div>
       )}
 
-      {/* Single, Sleek Intake Provenance Strip (NO duplicate banners) */}
-      {initialPreFill && (
-        <div className="bg-gradient-to-r from-blue-50/70 via-indigo-50/20 to-white border-b border-blue-200/80 px-6 py-2 flex items-center justify-between text-xs shrink-0">
-          <div className="flex items-center space-x-2 text-slate-600 flex-wrap">
-            <span className="inline-flex items-center gap-1 font-bold text-slate-800 bg-blue-50 text-blue-700 border border-blue-200 px-2 py-0.5 rounded-md text-[11px]">
-              <Mail size={11} />
-              <span>{initialPreFill.channel ? initialPreFill.channel.toUpperCase() : 'EMAIL'}: {initialPreFill.sourceMessageId}</span>
-            </span>
-            <span>•</span>
-            <span>Sender: <strong className="text-slate-800">{initialPreFill.senderName || initialPreFill.senderAddress || 'External Counterparty'}</strong></span>
-            
-            {initialPreFill.attachments && initialPreFill.attachments.length > 1 && (
-              <>
-                <span>•</span>
-                <span className="text-[11px] text-slate-500 font-semibold">Attachments:</span>
-                <div className="inline-flex items-center gap-1">
-                  {initialPreFill.attachments.map((att: any, idx: number) => {
-                    const isSelected = activeAttachment?.filename === att.filename || (!activeAttachment && idx === 0);
-                    return (
-                      <button
-                        key={idx}
-                        type="button"
-                        onClick={() => handleSelectAttachment(att)}
-                        className={`px-2 py-0.5 rounded text-[10px] font-mono transition cursor-pointer ${
-                          isSelected ? 'bg-[#F27421] text-white font-bold' : 'bg-white border border-slate-200 text-slate-600 hover:bg-slate-100'
-                        }`}
-                      >
-                        {att.filename || `File_${idx + 1}`}
-                      </button>
-                    );
-                  })}
-                </div>
-              </>
-            )}
+      {/* ========================================================= */}
+      {/* 2. MAIN WORKSPACE: Left (Cards + Table) & Right (Cards)   */}
+      {/* ========================================================= */}
+      <div className={`grid grid-cols-1 ${isSidePanelCollapsed ? 'lg:grid-cols-1' : 'lg:grid-cols-4'} gap-4 flex-1 min-h-0`}>
+        {/* Left 3 Columns: KPI Cards Strip + Table Workspace */}
+        <div className={`${isSidePanelCollapsed ? 'col-span-1' : 'lg:col-span-3'} space-y-3 flex-1 min-h-0 flex flex-col`}>
+          {/* 4 Compact KPI Metric Cards */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 shrink-0">
+            {/* Card 1: Records */}
+            <div className="px-3.5 py-2.5 bg-white rounded-xl border border-slate-200/90 shadow-2xs flex flex-col justify-between">
+              <span className="text-[11px] text-slate-500 font-sans font-medium block">Records</span>
+              <span className="text-lg font-bold font-mono text-slate-900 mt-0.5">{createParsedRows.length}</span>
+            </div>
+
+            {/* Card 2: Mapped columns */}
+            <div className="px-3.5 py-2.5 bg-white rounded-xl border border-slate-200/90 shadow-2xs flex flex-col justify-between">
+              <span className="text-[11px] text-slate-500 font-sans font-medium block">Mapped columns</span>
+              <span className="text-lg font-bold font-mono text-slate-900 mt-0.5 truncate">
+                {mappedCount} / {columns.length}
+              </span>
+            </div>
+
+            {/* Card 3: Required columns */}
+            <div className="px-3.5 py-2.5 bg-white rounded-xl border border-slate-200/90 shadow-2xs flex flex-col justify-between">
+              <span className="text-[11px] text-slate-500 font-sans font-medium block">Required columns</span>
+              <span className="text-lg font-bold font-mono text-slate-900 mt-0.5 truncate">
+                {readyRequiredCount} / {requiredColumnsList.length}
+              </span>
+            </div>
+
+            {/* Card 4: Duplicates */}
+            <div className="px-3.5 py-2.5 bg-white rounded-xl border border-slate-200/90 shadow-2xs flex flex-col justify-between">
+              <span className="text-[11px] text-slate-500 font-sans font-medium block">Duplicates</span>
+              <span className="text-lg font-bold font-mono text-slate-900 mt-0.5">{duplicateCount}</span>
+            </div>
           </div>
-        </div>
-      )}
 
-      {/* ========================================================= */}
-      {/* 2. MAIN WORKSPACE: LEFT TABLE GRID + RIGHT SCROLLABLE STEPPER */}
-      {/* ========================================================= */}
-      <div className="flex-1 min-h-0 flex overflow-hidden">
-        {/* ========================================================= */}
-        {/* LEFT SIDE: Interactive Table Grid matching Case Page Style */}
-        {/* ========================================================= */}
-        <div className="flex-1 min-w-0 flex flex-col overflow-hidden bg-white border-r border-slate-200">
-          {/* Action Toolbar with Live Operations */}
-          <div className="px-6 py-2.5 border-b border-slate-200 bg-white flex flex-wrap items-center justify-between gap-2.5 shrink-0">
-            {/* Left Controls: Template Picker, Auto-map, Find in Grid, Undo */}
-            <div className="flex items-center space-x-2 flex-wrap gap-2">
-              {/* Template Picker */}
-              <div className="relative">
-                <select
-                  value={selectedTemplate}
-                  onChange={e => handleSelectTemplate(e.target.value)}
-                  className="px-3 py-1.5 bg-slate-50 border border-slate-200 hover:border-slate-300 rounded-lg text-xs font-medium text-slate-700 shadow-2xs focus:outline-none focus:border-[#F27421] cursor-pointer"
-                  title="Select and apply mapping template"
-                >
-                  <option value="Standard Settlement Template">Standard Settlement Template</option>
-                  {templates.map(t => (
-                    <option key={t.id} value={t.name}>{t.name}</option>
-                  ))}
-                </select>
-              </div>
-
-              {/* 1-Click Auto Map Standard Fields */}
+          {/* Table Workspace Card */}
+          <div className="bg-white rounded-2xl border border-slate-200 shadow-2xs overflow-hidden flex flex-col h-full min-h-0">
+            {/* Tabs Row */}
+            <div className="border-b border-slate-200 px-5 flex items-center space-x-6 shrink-0">
               <button
                 type="button"
-                onClick={handleAutoMapAll}
-                className="px-2.5 py-1.5 bg-orange-50/70 hover:bg-orange-100/70 border border-orange-200 text-[#F27421] rounded-lg text-xs font-bold flex items-center space-x-1 shadow-2xs transition cursor-pointer"
-                title="Auto-match column headers to Global Standard Directory"
-              >
-                <Wand2 size={12} />
-                <span>Auto-Map</span>
-              </button>
-
-              {/* Find in grid search */}
-              <div className="relative">
-                <Search size={13} className="absolute left-2.5 top-2 text-slate-400" />
-                <input
-                  type="text"
-                  value={tableSearch}
-                  onChange={e => {
-                    setTableSearch(e.target.value);
-                    setCurrentPage(1);
-                  }}
-                  placeholder="Find in grid..."
-                  className="pl-7 pr-3 py-1 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-800 outline-none focus:border-[#F27421] transition-all w-32 sm:w-44"
-                />
-              </div>
-
-              {/* Undo Button */}
-              {history.length > 0 && (
-                <button
-                  type="button"
-                  onClick={handleUndo}
-                  className="px-2.5 py-1 text-xs font-semibold text-blue-700 hover:text-blue-900 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded-lg shadow-2xs flex items-center gap-1 cursor-pointer transition-colors"
-                  title="Undo last cleaning operation"
-                >
-                  <Undo2 size={12} />
-                  <span>Undo</span>
-                </button>
-              )}
-            </div>
-
-            {/* Right Action Buttons: Deduplicate, Remove Empty, Trim, Merge */}
-            <div className="flex items-center space-x-1.5 flex-wrap">
-              <button 
-                type="button" 
-                onClick={handleDeduplicate}
-                className="px-2.5 py-1.5 bg-white border border-slate-200 hover:bg-slate-50 rounded-lg text-xs font-medium text-slate-700 transition cursor-pointer shadow-2xs"
-                title="Remove duplicate rows across active columns"
-              >
-                <span>Deduplicate</span>
-              </button>
-
-              <button 
-                type="button" 
-                onClick={handleRemoveEmptyRows}
-                className="px-2.5 py-1.5 bg-white border border-slate-200 hover:bg-slate-50 rounded-lg text-xs font-medium text-slate-700 transition cursor-pointer shadow-2xs"
-                title="Remove empty and blank rows"
-              >
-                <span>Empty rows</span>
-              </button>
-
-              <button 
-                type="button" 
-                onClick={handleTrimWhitespace}
-                className="px-2.5 py-1.5 bg-white border border-slate-200 hover:bg-slate-50 rounded-lg text-xs font-medium text-slate-700 transition cursor-pointer shadow-2xs"
-                title="Trim leading and trailing whitespace"
-              >
-                <span>Trim</span>
-              </button>
-
-              <button 
-                type="button" 
-                onClick={handleMergeSelectedColumns}
-                disabled={selectedCount < 2}
-                className={`px-3 py-1.5 rounded-lg text-xs font-medium flex items-center space-x-1.5 transition cursor-pointer shadow-2xs ${
-                  selectedCount >= 2
-                    ? 'bg-[#0F142A] hover:bg-[#1A2242] text-white'
-                    : 'bg-slate-100 text-slate-400 border border-slate-200 cursor-not-allowed opacity-60'
+                onClick={() => setActiveTab('grid')}
+                className={`py-3.5 text-xs font-semibold font-heading flex items-center space-x-2 border-b-2 transition-colors cursor-pointer ${
+                  activeTab === 'grid'
+                    ? 'border-[#F27421] text-slate-900'
+                    : 'border-transparent text-slate-500 hover:text-slate-800'
                 }`}
-                title={selectedCount >= 2 ? `Merge ${selectedCount} selected columns` : 'Select 2 or more columns to merge'}
               >
-                <Combine size={13} />
-                <span>Merge</span>
-                {selectedCount > 0 && (
-                  <span className="w-4 h-4 rounded-full bg-[#F27421] text-white text-[10px] font-bold flex items-center justify-center">
-                    {selectedCount}
-                  </span>
-                )}
+                <span>Ingested Data Grid</span>
+                <span className={`px-1.5 py-0.2 text-[10px] font-mono font-bold rounded-full ${
+                  activeTab === 'grid' ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-700'
+                }`}>
+                  {createParsedRows.length}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setActiveTab('schema')}
+                className={`py-3.5 text-xs font-semibold font-heading flex items-center space-x-2 border-b-2 transition-colors cursor-pointer ${
+                  activeTab === 'schema'
+                    ? 'border-[#F27421] text-slate-900'
+                    : 'border-transparent text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                <span>Source File &amp; Schema</span>
+                <span className={`px-1.5 py-0.2 text-[10px] font-mono font-bold rounded-full ${
+                  activeTab === 'schema' ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-700'
+                }`}>
+                  {columns.length}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setActiveTab('recipes')}
+                className={`py-3.5 text-xs font-semibold font-heading flex items-center space-x-2 border-b-2 transition-colors cursor-pointer ${
+                  activeTab === 'recipes'
+                    ? 'border-[#F27421] text-slate-900'
+                    : 'border-transparent text-slate-500 hover:text-slate-800'
+                }`}
+              >
+                <span>Applied Recipes</span>
+                <span className={`px-1.5 py-0.2 text-[10px] font-mono font-bold rounded-full ${
+                  activeTab === 'recipes' ? 'bg-slate-900 text-white' : 'bg-slate-100 text-slate-700'
+                }`}>
+                  {customRecipeSteps.length}
+                </span>
               </button>
             </div>
-          </div>
 
-          {/* Interactive Spreadsheet Grid styled to match Case Page */}
-          {createParsedRows.length > 0 ? (
-            <div className="flex-1 overflow-auto relative">
-              <table className="w-full text-left text-xs font-sans border-collapse">
-                <thead className="sticky top-0 z-20 bg-white text-slate-500 font-sans text-xs border-b border-slate-200/90 shadow-2xs">
-                  <tr>
-                    {/* Master Checkbox & Row number header */}
-                    <th className="py-2.5 px-3 w-12 text-center text-slate-400 font-sans border-r border-slate-100 bg-white">
+            {/* TAB 1: Ingested Data Grid View */}
+            {activeTab === 'grid' && (
+              <>
+                {/* Table Toolbar */}
+                <div className="p-3 sm:px-4 sm:py-2.5 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2.5 shrink-0 bg-white">
+                  {/* Left Controls: Search, Filter pills, Template, Quick Clean Buttons */}
+                  <div className="flex items-center space-x-2 flex-wrap gap-2 flex-1">
+                    {/* Search in grid */}
+                    <div className="relative">
+                      <Search size={13} className="absolute left-2.5 top-2.5 text-slate-400" />
                       <input
-                        type="checkbox"
-                        checked={columns.length > 0 && columns.every(c => c.selected)}
+                        type="text"
+                        value={tableSearch}
                         onChange={e => {
-                          const val = e.target.checked;
-                          setColumns(prev => prev.map(c => ({ ...c, selected: val })));
+                          setTableSearch(e.target.value);
+                          setCurrentPage(1);
                         }}
-                        className="rounded border-slate-300 text-[#F27421] focus:ring-[#F27421]/20 cursor-pointer"
-                        title="Select all columns"
+                        placeholder="Find in grid..."
+                        className="pl-7 pr-3 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-800 outline-none focus:border-[#F27421] transition-all w-32 sm:w-40"
                       />
-                    </th>
+                    </div>
 
-                    {/* Columns header list with interactive 3-dots transformation menu & mapping select */}
-                    {columns.map(col => (
-                      <th
-                        key={col.id}
-                        className={`py-2 px-3 border-r border-slate-100 min-w-[180px] max-w-[260px] font-sans transition-colors ${
-                          col.selected ? 'bg-orange-50/40' : 'bg-white'
+                    {/* Filter Mode Pills (All, Duplicates, Unique) matching Case page */}
+                    <div className="flex items-center p-0.5 bg-slate-100 rounded-lg text-xs font-medium text-slate-600">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setFilterMode('all');
+                          setCurrentPage(1);
+                        }}
+                        className={`px-2 py-1 rounded-md transition-all cursor-pointer ${
+                          filterMode === 'all' ? 'bg-white text-slate-900 shadow-2xs font-bold' : 'hover:text-slate-900'
                         }`}
                       >
-                        <div className="flex items-center justify-between mb-1.5">
-                          <label className="flex items-center space-x-1.5 cursor-pointer select-none">
-                            <input
-                              type="checkbox"
-                              checked={col.selected}
-                              onChange={e => {
-                                const checked = e.target.checked;
-                                setColumns(prev => prev.map(c => c.id === col.id ? { ...c, selected: checked } : c));
-                              }}
-                              className="rounded border-slate-300 text-[#F27421] focus:ring-[#F27421]/20 cursor-pointer"
-                            />
-                            <span className="font-bold text-slate-800 truncate text-xs" title={col.name}>
-                              {col.name}
-                            </span>
-                          </label>
+                        All
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setFilterMode('duplicates');
+                          setCurrentPage(1);
+                        }}
+                        className={`px-2 py-1 rounded-md transition-all cursor-pointer ${
+                          filterMode === 'duplicates' ? 'bg-white text-slate-900 shadow-2xs font-bold' : 'hover:text-slate-900'
+                        }`}
+                      >
+                        Duplicates {duplicateCount}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setFilterMode('unique');
+                          setCurrentPage(1);
+                        }}
+                        className={`px-2 py-1 rounded-md transition-all cursor-pointer ${
+                          filterMode === 'unique' ? 'bg-white text-slate-900 shadow-2xs font-bold' : 'hover:text-slate-900'
+                        }`}
+                      >
+                        Unique {createParsedRows.length - duplicateCount}
+                      </button>
+                    </div>
 
-                          <div className="flex items-center space-x-1">
-                            {/* Type Pill */}
-                            <span className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-medium ${
-                              col.type === 'Number' ? 'bg-blue-50 text-blue-700' :
-                              col.type === 'Date' ? 'bg-amber-50 text-amber-700' :
-                              'bg-slate-100 text-slate-600'
-                            }`}>
-                              {col.type}
-                            </span>
+                    {/* Template Picker */}
+                    <select
+                      value={selectedTemplate}
+                      onChange={e => handleSelectTemplate(e.target.value)}
+                      className="px-2.5 py-1.5 bg-slate-50 border border-slate-200 hover:border-slate-300 rounded-lg text-xs font-medium text-slate-700 shadow-2xs focus:outline-none focus:border-[#F27421] cursor-pointer"
+                      title="Select and apply mapping template"
+                    >
+                      <option value="Standard Settlement Template">Standard Settlement Template</option>
+                      {templates.map(t => (
+                        <option key={t.id} value={t.name}>{t.name}</option>
+                      ))}
+                    </select>
+                  </div>
 
-                            {/* Column Menu: 3-Dots Button with Comprehensive Data Transformation Actions */}
-                            <div className="relative">
+                  {/* Right Controls: Columns Info, Column Filter, Vertical ... Table Actions */}
+                  <div className="flex items-center space-x-2.5 text-xs text-slate-500 shrink-0">
+                    <span>
+                      Showing <strong className="font-mono text-slate-800">{activeTableColumns.length}</strong> of{' '}
+                      <strong className="font-mono text-slate-800">{columns.length}</strong> columns
+                    </span>
+
+                    {/* Maximize Table / Side Panel Toggle Button matching Case page */}
+                    <button
+                      type="button"
+                      onClick={() => setIsSidePanelCollapsed(prev => !prev)}
+                      className={`hidden md:flex items-center space-x-1 px-2.5 py-1.5 border rounded-lg text-xs font-medium transition-colors cursor-pointer ${
+                        isSidePanelCollapsed
+                          ? 'border-[#F27421] bg-orange-50 text-[#F27421]'
+                          : 'border-slate-200 text-slate-700 hover:bg-slate-50'
+                      }`}
+                      title={isSidePanelCollapsed ? "Show side panel" : "Collapse side panel to expand table width"}
+                    >
+                      {isSidePanelCollapsed ? <PanelRightOpen size={13} className="text-[#F27421]" /> : <PanelRightClose size={13} className="text-slate-500" />}
+                      <span>{isSidePanelCollapsed ? "Show details" : "Maximize table"}</span>
+                    </button>
+
+                    {/* Column Filter Popover */}
+                    <div className="relative" ref={columnFilterRef}>
+                      <button
+                        type="button"
+                        onClick={() => setShowColumnFilter(!showColumnFilter)}
+                        className={`flex items-center space-x-1.5 px-2.5 py-1.5 border rounded-lg text-xs font-medium transition-colors cursor-pointer ${
+                          showColumnFilter
+                            ? 'border-[#F27421] bg-orange-50 text-[#F27421]'
+                            : 'border-slate-200 text-slate-700 hover:bg-slate-50'
+                        }`}
+                        title="Customize table columns"
+                      >
+                        <SlidersHorizontal size={12} className={showColumnFilter ? 'text-[#F27421]' : 'text-slate-500'} />
+                        <span>Columns</span>
+                        <span className="ml-1 px-1.5 py-0.2 text-[10px] font-mono font-bold rounded-full bg-slate-100 text-slate-600">
+                          {activeTableColumns.length}
+                        </span>
+                      </button>
+
+                      {showColumnFilter && (
+                        <div className="absolute right-0 top-full mt-1.5 w-72 bg-white border border-slate-200 rounded-xl shadow-xl z-50 p-3 space-y-2.5 text-xs select-none animate-in fade-in zoom-in-95 duration-100">
+                          <div className="flex items-center justify-between pb-2 border-b border-slate-100">
+                            <div>
+                              <span className="font-bold text-slate-800 font-heading">Display Columns</span>
+                              <span className="text-[11px] text-slate-400 block">
+                                {activeTableColumns.length} of {columns.length} columns active
+                              </span>
+                            </div>
+                            <div className="flex items-center space-x-1">
                               <button
                                 type="button"
-                                onClick={() => setActiveMenuColumn(activeMenuColumn === col.id ? null : col.id)}
-                                className="p-1 hover:bg-slate-100 rounded text-slate-400 hover:text-slate-700 cursor-pointer"
-                                title="Data Transformation Actions"
+                                onClick={() => setVisibleColumnIds(columns.map(c => c.id))}
+                                className="px-2 py-0.5 text-[11px] text-[#F27421] hover:bg-orange-50 rounded font-medium transition cursor-pointer"
                               >
-                                <MoreHorizontal size={14} />
+                                Show All
                               </button>
-
-                              {activeMenuColumn === col.id && (
-                                <>
-                                  {/* Click-outside backdrop */}
-                                  <div 
-                                    className="fixed inset-0 z-40" 
-                                    onClick={() => setActiveMenuColumn(null)} 
-                                  />
-
-                                  {/* Dropdown Menu */}
-                                  <div className="absolute right-0 top-7 w-56 bg-white border border-slate-200 rounded-xl shadow-xl z-50 py-1.5 text-xs font-sans animate-in fade-in zoom-in-95 duration-100">
-                                    <div className="px-3 py-1 font-bold text-slate-500 text-[10px] uppercase tracking-wider border-b border-slate-100 mb-1">
-                                      Transform: {col.name}
-                                    </div>
-
-                                    {/* Text Category */}
-                                    <div className="px-3 py-0.5 text-[9px] font-bold text-slate-400 uppercase">Text Transforms</div>
-                                    <button
-                                      type="button"
-                                      onClick={() => handleTransformColumn(col.id, 'UPPERCASE')}
-                                      className="w-full px-3 py-1.5 text-left hover:bg-slate-50 flex items-center gap-2 cursor-pointer text-slate-700"
-                                    >
-                                      <Type size={12} className="text-slate-500" />
-                                      <span>To UPPERCASE</span>
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => handleTransformColumn(col.id, 'LOWERCASE')}
-                                      className="w-full px-3 py-1.5 text-left hover:bg-slate-50 flex items-center gap-2 cursor-pointer text-slate-700"
-                                    >
-                                      <Type size={12} className="text-slate-500" />
-                                      <span>To lowercase</span>
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => handleTransformColumn(col.id, 'TITLECASE')}
-                                      className="w-full px-3 py-1.5 text-left hover:bg-slate-50 flex items-center gap-2 cursor-pointer text-slate-700"
-                                    >
-                                      <Type size={12} className="text-slate-500" />
-                                      <span>To Title Case</span>
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => handleTransformColumn(col.id, 'TRIM')}
-                                      className="w-full px-3 py-1.5 text-left hover:bg-slate-50 flex items-center gap-2 cursor-pointer text-slate-700"
-                                    >
-                                      <Eraser size={12} className="text-slate-500" />
-                                      <span>Trim Whitespace</span>
-                                    </button>
-
-                                    <div className="h-px bg-slate-100 my-1" />
-
-                                    {/* Numbers & Dates Category */}
-                                    <div className="px-3 py-0.5 text-[9px] font-bold text-slate-400 uppercase">Numbers &amp; Dates</div>
-                                    <button
-                                      type="button"
-                                      onClick={() => handleTransformColumn(col.id, 'NUMBER_CLEAN')}
-                                      className="w-full px-3 py-1.5 text-left hover:bg-slate-50 flex items-center gap-2 cursor-pointer text-slate-700"
-                                    >
-                                      <SlidersHorizontal size={12} className="text-blue-600" />
-                                      <span>Clean Number (2 Decimals)</span>
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => handleTransformColumn(col.id, 'STRIP_CURRENCY')}
-                                      className="w-full px-3 py-1.5 text-left hover:bg-slate-50 flex items-center gap-2 cursor-pointer text-slate-700"
-                                    >
-                                      <Sliders size={12} className="text-blue-600" />
-                                      <span>Strip Currency Symbols</span>
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => handleTransformColumn(col.id, 'ROUND_INT')}
-                                      className="w-full px-3 py-1.5 text-left hover:bg-slate-50 flex items-center gap-2 cursor-pointer text-slate-700"
-                                    >
-                                      <Sliders size={12} className="text-blue-600" />
-                                      <span>Round to Integer</span>
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => handleTransformColumn(col.id, 'DATE_ISO')}
-                                      className="w-full px-3 py-1.5 text-left hover:bg-slate-50 flex items-center gap-2 cursor-pointer text-slate-700"
-                                    >
-                                      <CheckSquare size={12} className="text-amber-600" />
-                                      <span>Standardize Date (ISO YYYY-MM-DD)</span>
-                                    </button>
-
-                                    <div className="h-px bg-slate-100 my-1" />
-
-                                    {/* Structural & Security Category */}
-                                    <div className="px-3 py-0.5 text-[9px] font-bold text-slate-400 uppercase">Security &amp; Structure</div>
-                                    <button
-                                      type="button"
-                                      onClick={() => {
-                                        setSplitTargetCol(col.id);
-                                        setSplitCol1Name(`${col.id}_part1`);
-                                        setSplitCol2Name(`${col.id}_part2`);
-                                        setSplitModalOpen(true);
-                                        setActiveMenuColumn(null);
-                                      }}
-                                      className="w-full px-3 py-1.5 text-left hover:bg-slate-50 flex items-center gap-2 cursor-pointer text-slate-700"
-                                    >
-                                      <Split size={12} className="text-indigo-600" />
-                                      <span>Split column...</span>
-                                    </button>
-                                    <button
-                                      type="button"
-                                      onClick={() => handleTransformColumn(col.id, 'MASK_PAN')}
-                                      className="w-full px-3 py-1.5 text-left hover:bg-slate-50 flex items-center gap-2 cursor-pointer text-slate-700"
-                                    >
-                                      <Shield size={12} className="text-purple-600" />
-                                      <span>Mask Account / PAN</span>
-                                    </button>
-
-                                    <div className="h-px bg-slate-100 my-1" />
-
-                                    {/* Column Exclusion */}
-                                    <button
-                                      type="button"
-                                      onClick={() => handleExcludeColumn(col.id)}
-                                      className="w-full px-3 py-1.5 text-left hover:bg-rose-50 text-rose-600 flex items-center gap-2 cursor-pointer font-medium"
-                                    >
-                                      <Trash2 size={12} />
-                                      <span>Exclude column</span>
-                                    </button>
-                                  </div>
-                                </>
-                              )}
+                              <button
+                                type="button"
+                                onClick={() => setShowColumnFilter(false)}
+                                className="p-1 text-slate-400 hover:text-slate-600 rounded transition cursor-pointer"
+                              >
+                                <X size={14} />
+                              </button>
                             </div>
                           </div>
-                        </div>
 
-                        {/* Standard Field Mapping Selector */}
-                        <div className="relative">
-                          <select
-                            value={col.mapping || 'Unmapped'}
-                            onChange={e => {
-                              const newMapping = e.target.value;
-                              recordSnapshot();
-                              setColumns(prev => prev.map(c => c.id === col.id ? {
-                                ...c,
-                                mapping: newMapping,
-                                unmapped: newMapping === 'Unmapped'
-                              } : c));
-                              setCreateFileMapping(prev => ({
-                                ...prev,
-                                [col.id]: newMapping
-                              }));
-                            }}
-                            className={`w-full py-1 px-2 text-[11px] font-mono rounded-lg border appearance-none cursor-pointer focus:outline-none transition-colors ${
-                              col.mapping && col.mapping !== 'Unmapped'
-                                ? 'bg-orange-50/40 border-orange-200 text-slate-800 font-semibold'
-                                : 'bg-slate-50 border-slate-200 text-slate-400'
-                            }`}
-                          >
-                            <option value="Unmapped">-- Map standard field --</option>
-                            {standardFields.length > 0 ? (
-                              standardFields.map(f => {
-                                const val = f.key || (f as any).fieldName;
-                                const label = f.label || (f as any).displayName || val;
+                          <div className="relative">
+                            <Search size={12} className="absolute left-2.5 top-2 text-slate-400" />
+                            <input
+                              type="text"
+                              value={columnSearchQuery}
+                              onChange={(e) => setColumnSearchQuery(e.target.value)}
+                              placeholder="Search columns..."
+                              className="w-full pl-7 pr-3 py-1 bg-slate-50 border border-slate-200 rounded-lg text-xs text-slate-800 outline-none focus:border-[#F27421]"
+                            />
+                          </div>
+
+                          <div className="max-h-56 overflow-y-auto space-y-0.5 pr-1 divide-y divide-slate-50">
+                            {columns
+                              .filter(c => c.name.toLowerCase().includes(columnSearchQuery.toLowerCase()))
+                              .map(col => {
+                                const isChecked = visibleColumnIds.includes(col.id);
                                 return (
-                                  <option key={val} value={val}>
-                                    {label} ({f.dataType})
-                                  </option>
+                                  <label
+                                    key={col.id}
+                                    className="flex items-center justify-between p-1.5 hover:bg-slate-50 rounded-lg cursor-pointer transition text-xs"
+                                  >
+                                    <div className="flex items-center space-x-2 min-w-0 flex-1">
+                                      <input
+                                        type="checkbox"
+                                        checked={isChecked}
+                                        onChange={() => toggleColumnVisibility(col.id)}
+                                        className="rounded border-slate-300 text-[#F27421] focus:ring-[#F27421] h-3.5 w-3.5 cursor-pointer"
+                                      />
+                                      <span className={`block truncate ${isChecked ? 'font-medium text-slate-800' : 'text-slate-500'}`}>
+                                        {col.name}
+                                      </span>
+                                    </div>
+                                    <span className="text-[10px] text-slate-400 font-mono ml-2">
+                                      {col.type}
+                                    </span>
+                                  </label>
                                 );
-                              })
-                            ) : (
+                              })}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Vertical ... Actions Button Menu on the Top Right Corner of the Table */}
+                    <div className="relative">
+                      <button
+                        type="button"
+                        onClick={() => setShowTableActionsMenu(!showTableActionsMenu)}
+                        className={`p-1.5 border rounded-lg transition-colors cursor-pointer ${
+                          showTableActionsMenu
+                            ? 'border-[#F27421] bg-orange-50 text-[#F27421] shadow-2xs'
+                            : 'border-slate-200 text-slate-600 hover:text-slate-900 hover:bg-slate-50'
+                        }`}
+                        title="Data actions & cleaning transforms (Auto-Map, Trim, Deduplicate, Empty rows, Merge)"
+                      >
+                        <MoreVertical size={14} />
+                      </button>
+
+                      {showTableActionsMenu && (
+                        <>
+                          <div 
+                            className="fixed inset-0 z-40" 
+                            onClick={() => setShowTableActionsMenu(false)} 
+                          />
+                          <div className="absolute right-0 top-full mt-1.5 w-56 bg-white border border-slate-200 rounded-xl shadow-xl z-50 py-1.5 text-xs font-sans animate-in fade-in zoom-in-95 duration-100">
+                            <div className="px-3 py-1 font-bold text-slate-500 text-[10px] uppercase tracking-wider border-b border-slate-100 mb-1">
+                              Dataset Actions &amp; Transforms
+                            </div>
+
+                            {/* Auto-Map */}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setShowTableActionsMenu(false);
+                                handleAutoMapAll();
+                              }}
+                              className="w-full px-3 py-2 text-left hover:bg-orange-50/70 text-slate-800 flex items-center justify-between cursor-pointer group transition-colors"
+                            >
+                              <div className="flex items-center gap-2">
+                                <Wand2 size={13} className="text-[#F27421]" />
+                                <span className="font-semibold group-hover:text-[#F27421]">Auto-Map</span>
+                              </div>
+                              <span className="text-[10px] bg-orange-100 text-[#F27421] px-1.5 py-0.2 rounded font-mono font-bold">1-Click</span>
+                            </button>
+
+                            {/* Trim */}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setShowTableActionsMenu(false);
+                                handleTrimWhitespace();
+                              }}
+                              className="w-full px-3 py-2 text-left hover:bg-slate-50 text-slate-700 flex items-center gap-2 cursor-pointer transition-colors"
+                            >
+                              <Eraser size={13} className="text-slate-500" />
+                              <span>Trim</span>
+                            </button>
+
+                            {/* Deduplicate */}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setShowTableActionsMenu(false);
+                                handleDeduplicate();
+                              }}
+                              className="w-full px-3 py-2 text-left hover:bg-slate-50 text-slate-700 flex items-center justify-between cursor-pointer transition-colors"
+                            >
+                              <div className="flex items-center gap-2">
+                                <CheckCheck size={13} className="text-slate-500" />
+                                <span>Deduplicate</span>
+                              </div>
+                              {duplicateCount > 0 && (
+                                <span className="text-[10px] bg-amber-100 text-amber-800 px-1.5 py-0.2 rounded font-mono font-bold">
+                                  {duplicateCount} dups
+                                </span>
+                              )}
+                            </button>
+
+                            {/* Empty rows */}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setShowTableActionsMenu(false);
+                                handleRemoveEmptyRows();
+                              }}
+                              className="w-full px-3 py-2 text-left hover:bg-slate-50 text-slate-700 flex items-center gap-2 cursor-pointer transition-colors"
+                            >
+                              <Trash2 size={13} className="text-slate-500" />
+                              <span>Empty rows</span>
+                            </button>
+
+                            {/* Merge */}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                if (selectedCount >= 2) {
+                                  setShowTableActionsMenu(false);
+                                  handleMergeSelectedColumns();
+                                }
+                              }}
+                              disabled={selectedCount < 2}
+                              className={`w-full px-3 py-2 text-left flex items-center justify-between transition-colors ${
+                                selectedCount >= 2
+                                  ? 'hover:bg-slate-50 text-slate-800 cursor-pointer'
+                                  : 'text-slate-400 opacity-60 cursor-not-allowed'
+                              }`}
+                            >
+                              <div className="flex items-center gap-2">
+                                <Combine size={13} className={selectedCount >= 2 ? 'text-blue-600' : 'text-slate-400'} />
+                                <span>Merge Selected</span>
+                              </div>
+                              {selectedCount > 0 && (
+                                <span className="w-4 h-4 rounded-full bg-[#F27421] text-white text-[10px] font-bold flex items-center justify-center">
+                                  {selectedCount}
+                                </span>
+                              )}
+                            </button>
+
+                            <div className="h-px bg-slate-100 my-1" />
+
+                            {/* Save as Template */}
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setShowTableActionsMenu(false);
+                                setSaveTemplateModalOpen(true);
+                              }}
+                              className="w-full px-3 py-2 text-left hover:bg-slate-50 text-slate-700 flex items-center gap-2 cursor-pointer transition-colors"
+                            >
+                              <Save size={13} className="text-[#F27421]" />
+                              <span>Save as Template</span>
+                            </button>
+
+                            {history.length > 0 && (
                               <>
-                                <option value="terminal_id">Terminal_ID</option>
-                                <option value="fe_utrnno">fe_utrnno</option>
-                                <option value="currency">Currency</option>
-                                <option value="transaction_date">Transaction_Date</option>
-                                <option value="amount">Amount</option>
-                                <option value="status">Status</option>
-                                <option value="refnum_f37">Refnum_f37</option>
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setShowTableActionsMenu(false);
+                                    handleUndo();
+                                  }}
+                                  className="w-full px-3 py-2 text-left hover:bg-blue-50 text-blue-700 flex items-center gap-2 cursor-pointer transition-colors font-medium border-t border-slate-100"
+                                >
+                                  <Undo2 size={13} />
+                                  <span>Undo Last Operation</span>
+                                </button>
                               </>
                             )}
-                          </select>
-                          <ChevronDown size={11} className="absolute right-2 top-2 pointer-events-none text-slate-400" />
-                        </div>
-                      </th>
-                    ))}
-                  </tr>
-                </thead>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                </div>
 
-                <tbody className="divide-y divide-slate-100">
-                  {paginatedRows.length === 0 ? (
-                    <tr>
-                      <td colSpan={columns.length + 1} className="py-12 text-center text-slate-400 font-sans">
-                        <FileSpreadsheet size={32} className="mx-auto mb-2 text-slate-300" />
-                        <p className="text-sm font-semibold text-slate-700">No transactions found</p>
-                        <p className="text-xs text-slate-400 mt-1">
-                          No transactions match your search filter "{tableSearch}".
-                        </p>
-                      </td>
-                    </tr>
-                  ) : (
-                    <>
-                      {paginatedRows.map((row, rIdx) => {
-                        const displayNum = (currentPage - 1) * pageSize + rIdx + 1;
-                        return (
-                          <tr key={rIdx} className="hover:bg-slate-50/60 transition-colors h-11 max-h-11 border-b border-slate-100">
-                            <td className="py-2.5 px-3 font-sans text-slate-400 w-12 text-center whitespace-nowrap border-r border-slate-100">
-                              {displayNum}
-                            </td>
-                            {columns.map(col => {
-                              const val = row[col.id];
-                              const isBlank = val === undefined || val === null || String(val).trim() === '';
-                              const isAmount = /amount|amt|fee|total/i.test(col.name) && !isNaN(Number(val));
-                              const isStatus = /status|verdict/i.test(col.name);
+                {/* Interactive Table with Sticky Header and Constant Height Budget */}
+                {createParsedRows.length > 0 ? (
+                  <div className="flex-1 overflow-auto relative min-h-0">
+                    <table className="w-full text-left text-xs font-sans border-collapse">
+                      <thead className="sticky top-0 z-20 bg-white text-slate-500 font-sans text-xs border-b border-slate-200/90 shadow-2xs">
+                        <tr>
+                          {/* Master Checkbox & Row number header */}
+                          <th className="py-2.5 px-3 w-12 text-center text-slate-400 font-sans bg-white">
+                            <input
+                              type="checkbox"
+                              checked={columns.length > 0 && columns.every(c => c.selected)}
+                              onChange={e => {
+                                const val = e.target.checked;
+                                setColumns(prev => prev.map(c => ({ ...c, selected: val })));
+                              }}
+                              className="rounded border-slate-300 text-[#F27421] focus:ring-[#F27421]/20 cursor-pointer"
+                              title="Select all columns"
+                            />
+                          </th>
 
-                              return (
-                                <td key={col.id} className="py-2.5 px-3 border-r border-slate-50 whitespace-nowrap truncate max-w-[220px]" title={String(val ?? '')}>
-                                  {isBlank ? (
-                                    <span className="text-slate-300 italic">—</span>
-                                  ) : isAmount ? (
-                                    <span className="font-bold font-heading text-slate-900">
-                                      {Number(val).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                                    </span>
-                                  ) : isStatus ? (
-                                    <span className={`inline-flex items-center space-x-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium ${
-                                      String(val).toLowerCase() === 'settled' || String(val).toLowerCase() === 'success'
-                                        ? 'bg-emerald-50 text-emerald-700 border border-emerald-200/60'
-                                        : 'bg-amber-50 text-amber-700 border border-amber-200/60'
-                                    }`}>
-                                      <span className={`w-1.5 h-1.5 rounded-full ${
-                                        String(val).toLowerCase() === 'settled' || String(val).toLowerCase() === 'success'
-                                          ? 'bg-emerald-500'
-                                          : 'bg-amber-500'
-                                      }`} />
-                                      <span>{String(val)}</span>
-                                    </span>
+                          {/* Dynamic Active Columns */}
+                          {activeTableColumns.map(col => (
+                            <th
+                              key={col.id}
+                              className={`py-2 px-3 min-w-[180px] max-w-[260px] font-sans transition-colors ${
+                                col.selected ? 'bg-orange-50/40' : 'bg-white'
+                              }`}
+                            >
+                              <div className="flex items-center justify-between mb-1.5">
+                                <label className="flex items-center space-x-1.5 cursor-pointer select-none">
+                                  <input
+                                    type="checkbox"
+                                    checked={col.selected}
+                                    onChange={e => {
+                                      const checked = e.target.checked;
+                                      setColumns(prev => prev.map(c => c.id === col.id ? { ...c, selected: checked } : c));
+                                    }}
+                                    className="rounded border-slate-300 text-[#F27421] focus:ring-[#F27421]/20 cursor-pointer"
+                                  />
+                                  <span className="font-bold text-slate-800 truncate text-xs" title={col.name}>
+                                    {col.name}
+                                  </span>
+                                </label>
+
+                                <div className="flex items-center space-x-1">
+                                  {/* Type Pill */}
+                                  <span className={`px-1.5 py-0.5 rounded text-[10px] font-mono font-medium ${
+                                    col.type === 'Number' ? 'bg-blue-50 text-blue-700' :
+                                    col.type === 'Date' ? 'bg-amber-50 text-amber-700' :
+                                    'bg-slate-100 text-slate-600'
+                                  }`}>
+                                    {col.type}
+                                  </span>
+
+                                  {/* Column Menu: 3-Dots Button with Comprehensive Data Transformation Actions */}
+                                  <div className="relative">
+                                    <button
+                                      type="button"
+                                      onClick={() => setActiveMenuColumn(activeMenuColumn === col.id ? null : col.id)}
+                                      className="p-1 hover:bg-slate-100 rounded text-slate-400 hover:text-slate-700 cursor-pointer"
+                                      title="Data Transformation Actions"
+                                    >
+                                      <MoreHorizontal size={14} />
+                                    </button>
+
+                                    {activeMenuColumn === col.id && (
+                                      <>
+                                        <div 
+                                          className="fixed inset-0 z-40" 
+                                          onClick={() => setActiveMenuColumn(null)} 
+                                        />
+                                        <div className="absolute right-0 top-7 w-56 bg-white border border-slate-200 rounded-xl shadow-xl z-50 py-1.5 text-xs font-sans animate-in fade-in zoom-in-95 duration-100">
+                                          <div className="px-3 py-1 font-bold text-slate-500 text-[10px] uppercase tracking-wider border-b border-slate-100 mb-1">
+                                            Transform: {col.name}
+                                          </div>
+
+                                          {/* Text Category */}
+                                          <div className="px-3 py-0.5 text-[9px] font-bold text-slate-400 uppercase">Text Transforms</div>
+                                          <button
+                                            type="button"
+                                            onClick={() => handleTransformColumn(col.id, 'UPPERCASE')}
+                                            className="w-full px-3 py-1.5 text-left hover:bg-slate-50 flex items-center gap-2 cursor-pointer text-slate-700"
+                                          >
+                                            <Type size={12} className="text-slate-500" />
+                                            <span>To UPPERCASE</span>
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={() => handleTransformColumn(col.id, 'LOWERCASE')}
+                                            className="w-full px-3 py-1.5 text-left hover:bg-slate-50 flex items-center gap-2 cursor-pointer text-slate-700"
+                                          >
+                                            <Type size={12} className="text-slate-500" />
+                                            <span>To lowercase</span>
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={() => handleTransformColumn(col.id, 'TITLECASE')}
+                                            className="w-full px-3 py-1.5 text-left hover:bg-slate-50 flex items-center gap-2 cursor-pointer text-slate-700"
+                                          >
+                                            <Type size={12} className="text-slate-500" />
+                                            <span>To Title Case</span>
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={() => handleTransformColumn(col.id, 'TRIM')}
+                                            className="w-full px-3 py-1.5 text-left hover:bg-slate-50 flex items-center gap-2 cursor-pointer text-slate-700"
+                                          >
+                                            <Eraser size={12} className="text-slate-500" />
+                                            <span>Trim Whitespace</span>
+                                          </button>
+
+                                          <div className="h-px bg-slate-100 my-1" />
+
+                                          {/* Numbers & Dates Category */}
+                                          <div className="px-3 py-0.5 text-[9px] font-bold text-slate-400 uppercase">Numbers &amp; Dates</div>
+                                          <button
+                                            type="button"
+                                            onClick={() => handleTransformColumn(col.id, 'NUMBER_CLEAN')}
+                                            className="w-full px-3 py-1.5 text-left hover:bg-slate-50 flex items-center gap-2 cursor-pointer text-slate-700"
+                                          >
+                                            <SlidersHorizontal size={12} className="text-blue-600" />
+                                            <span>Clean Number (2 Decimals)</span>
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={() => handleTransformColumn(col.id, 'STRIP_CURRENCY')}
+                                            className="w-full px-3 py-1.5 text-left hover:bg-slate-50 flex items-center gap-2 cursor-pointer text-slate-700"
+                                          >
+                                            <Sliders size={12} className="text-blue-600" />
+                                            <span>Strip Currency Symbols</span>
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={() => handleTransformColumn(col.id, 'ROUND_INT')}
+                                            className="w-full px-3 py-1.5 text-left hover:bg-slate-50 flex items-center gap-2 cursor-pointer text-slate-700"
+                                          >
+                                            <Sliders size={12} className="text-blue-600" />
+                                            <span>Round to Integer</span>
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={() => handleTransformColumn(col.id, 'DATE_ISO')}
+                                            className="w-full px-3 py-1.5 text-left hover:bg-slate-50 flex items-center gap-2 cursor-pointer text-slate-700"
+                                          >
+                                            <CheckSquare size={12} className="text-amber-600" />
+                                            <span>Standardize Date (ISO)</span>
+                                          </button>
+
+                                          <div className="h-px bg-slate-100 my-1" />
+
+                                          {/* Security & Structure */}
+                                          <div className="px-3 py-0.5 text-[9px] font-bold text-slate-400 uppercase">Security &amp; Structure</div>
+                                          <button
+                                            type="button"
+                                            onClick={() => {
+                                              setSplitTargetCol(col.id);
+                                              setSplitCol1Name(`${col.id}_part1`);
+                                              setSplitCol2Name(`${col.id}_part2`);
+                                              setSplitModalOpen(true);
+                                              setActiveMenuColumn(null);
+                                            }}
+                                            className="w-full px-3 py-1.5 text-left hover:bg-slate-50 flex items-center gap-2 cursor-pointer text-slate-700"
+                                          >
+                                            <Split size={12} className="text-indigo-600" />
+                                            <span>Split column...</span>
+                                          </button>
+                                          <button
+                                            type="button"
+                                            onClick={() => handleTransformColumn(col.id, 'MASK_PAN')}
+                                            className="w-full px-3 py-1.5 text-left hover:bg-slate-50 flex items-center gap-2 cursor-pointer text-slate-700"
+                                          >
+                                            <Shield size={12} className="text-purple-600" />
+                                            <span>Mask Account / PAN</span>
+                                          </button>
+
+                                          <div className="h-px bg-slate-100 my-1" />
+
+                                          {/* Column Exclusion */}
+                                          <button
+                                            type="button"
+                                            onClick={() => handleExcludeColumn(col.id)}
+                                            className="w-full px-3 py-1.5 text-left hover:bg-rose-50 text-rose-600 flex items-center gap-2 cursor-pointer font-medium"
+                                          >
+                                            <Trash2 size={12} />
+                                            <span>Exclude column</span>
+                                          </button>
+                                        </div>
+                                      </>
+                                    )}
+                                  </div>
+                                </div>
+                              </div>
+
+                              {/* Standard Field Mapping Selector */}
+                              <div className="relative">
+                                <select
+                                  value={col.mapping || 'Unmapped'}
+                                  onChange={e => {
+                                    const newMapping = e.target.value;
+                                    recordSnapshot();
+                                    setColumns(prev => prev.map(c => c.id === col.id ? {
+                                      ...c,
+                                      mapping: newMapping,
+                                      unmapped: newMapping === 'Unmapped'
+                                    } : c));
+                                    setCreateFileMapping(prev => ({
+                                      ...prev,
+                                      [col.id]: newMapping
+                                    }));
+                                  }}
+                                  className={`w-full py-1 px-2 text-[11px] font-mono rounded-lg border appearance-none cursor-pointer focus:outline-none transition-colors ${
+                                    col.mapping && col.mapping !== 'Unmapped'
+                                      ? 'bg-orange-50/40 border-orange-200 text-slate-800 font-semibold'
+                                      : 'bg-slate-50 border-slate-200 text-slate-400'
+                                  }`}
+                                >
+                                  <option value="Unmapped">-- Map standard field --</option>
+                                  {standardFields.length > 0 ? (
+                                    standardFields.map(f => {
+                                      const val = f.key || (f as any).fieldName;
+                                      const label = f.label || (f as any).displayName || val;
+                                      return (
+                                        <option key={val} value={val}>
+                                          {label} ({f.dataType})
+                                        </option>
+                                      );
+                                    })
                                   ) : (
-                                    <span>{String(val)}</span>
+                                    <>
+                                      <option value="terminal_id">Terminal_ID</option>
+                                      <option value="fe_utrnno">fe_utrnno</option>
+                                      <option value="currency">Currency</option>
+                                      <option value="tr_date">tr_date</option>
+                                      <option value="amount">Amount</option>
+                                      <option value="status">Status</option>
+                                      <option value="refnum_f37">Refnum_f37</option>
+                                      <option value="tran_place">Tran_place</option>
+                                    </>
                                   )}
-                                </td>
-                              );
-                            })}
-                          </tr>
-                        );
-                      })}
-
-                      {/* Empty slots filler to maintain constant table height budget matching Case page */}
-                      {Array.from({ length: Math.max(0, pageSize - paginatedRows.length) }).map((_, padIdx) => (
-                        <tr key={`empty-pad-${padIdx}`} className="h-11 max-h-11 border-b border-slate-50/80 bg-slate-50/10 select-none">
-                          <td className="py-2.5 px-3 font-mono text-slate-200 text-xs w-12 text-center border-r border-slate-50">-</td>
-                          {columns.map(col => (
-                            <td key={col.id} className="py-2.5 px-3 font-mono text-slate-200 text-xs whitespace-nowrap border-r border-slate-50">-</td>
+                                </select>
+                                <ChevronDown size={11} className="absolute right-2 top-2 pointer-events-none text-slate-400" />
+                              </div>
+                            </th>
                           ))}
                         </tr>
-                      ))}
-                    </>
-                  )}
-                </tbody>
-              </table>
-            </div>
-          ) : (
-            /* Upload Dropzone when no file or rows present */
-            <div className="flex-1 flex flex-col items-center justify-center p-8 bg-slate-50/40">
-              <div className="max-w-md w-full bg-white border-2 border-dashed border-slate-200 hover:border-orange-300 rounded-2xl p-8 text-center transition-all shadow-2xs space-y-4">
-                <div className="w-12 h-12 rounded-xl bg-orange-100 text-[#F27421] mx-auto flex items-center justify-center">
-                  <Upload size={24} />
-                </div>
-                <div>
-                  <h3 className="text-sm font-bold text-slate-900">Import Transaction Feed</h3>
-                  <p className="text-xs text-slate-500 mt-1">
-                    Upload an Excel (.xlsx, .xls), CSV, or XML spreadsheet to clean, map, and reconcile.
-                  </p>
-                </div>
-                <div className="flex flex-col sm:flex-row gap-2 justify-center pt-2">
+                      </thead>
+
+                      <tbody className="divide-y divide-slate-100">
+                        {paginatedRows.length === 0 ? (
+                          <tr>
+                            <td colSpan={activeTableColumns.length + 1} className="py-12 text-center text-slate-400 font-sans">
+                              <FileSpreadsheet size={32} className="mx-auto mb-2 text-slate-300" />
+                              <p className="text-sm font-semibold text-slate-700">No records found</p>
+                              <p className="text-xs text-slate-400 mt-1">
+                                {tableSearch ? `No records match your search filter "${tableSearch}".` : 'No transactions present in current view.'}
+                              </p>
+                            </td>
+                          </tr>
+                        ) : (
+                          <>
+                            {paginatedRows.map((row, rIdx) => {
+                              const displayNum = (currentPage - 1) * pageSize + rIdx + 1;
+                              const isDupRow = duplicateIndices.has((currentPage - 1) * pageSize + rIdx);
+
+                              return (
+                                <tr key={rIdx} className={`hover:bg-slate-50/60 transition-colors h-11 max-h-11 border-b border-slate-100 ${
+                                  isDupRow ? 'bg-amber-50/20' : ''
+                                }`}>
+                                  <td className="py-2.5 px-3 font-sans text-slate-400 w-12 text-center whitespace-nowrap">
+                                    {displayNum}
+                                  </td>
+                                  {activeTableColumns.map(col => {
+                                    const val = row[col.id];
+                                    const isBlank = val === undefined || val === null || String(val).trim() === '';
+                                    const isAmount = /amount|amt|fee|total/i.test(col.name) && !isNaN(Number(String(val).replace(/,/g, '')));
+                                    const isStatus = /status|verdict/i.test(col.name);
+
+                                    return (
+                                      <td key={col.id} className="py-2.5 px-3 whitespace-nowrap truncate max-w-[220px]" title={String(val ?? '')}>
+                                        {isBlank ? (
+                                          <span className="text-slate-300 italic">—</span>
+                                        ) : isAmount ? (
+                                          <span className="font-bold font-heading text-slate-900">
+                                            {Number(String(val).replace(/,/g, '')).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                          </span>
+                                        ) : isStatus ? (
+                                          <span className={`inline-flex items-center space-x-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                                            String(val).toLowerCase() === 'settled' || String(val).toLowerCase() === 'success'
+                                              ? 'bg-emerald-50 text-emerald-700 border border-emerald-200/60'
+                                              : 'bg-amber-50 text-amber-700 border border-amber-200/60'
+                                          }`}>
+                                            <span className={`w-1.5 h-1.5 rounded-full ${
+                                              String(val).toLowerCase() === 'settled' || String(val).toLowerCase() === 'success'
+                                                ? 'bg-emerald-500'
+                                                : 'bg-amber-500'
+                                            }`} />
+                                            <span>{String(val)}</span>
+                                          </span>
+                                        ) : (
+                                          <span>{String(val)}</span>
+                                        )}
+                                      </td>
+                                    );
+                                  })}
+                                </tr>
+                              );
+                            })}
+
+                            {/* Empty filler slots to preserve constant table height budget matching Case page */}
+                            {Array.from({ length: Math.max(0, pageSize - paginatedRows.length) }).map((_, padIdx) => (
+                              <tr key={`empty-pad-${padIdx}`} className="h-11 max-h-11 border-b border-slate-50/80 bg-slate-50/10 select-none">
+                                <td className="py-2.5 px-3 font-mono text-slate-200 text-xs w-12 text-center">-</td>
+                                {activeTableColumns.map(col => (
+                                  <td key={col.id} className="py-2.5 px-3 font-mono text-slate-200 text-xs whitespace-nowrap">-</td>
+                                ))}
+                              </tr>
+                            ))}
+                          </>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <div className="flex-1 flex flex-col items-center justify-center p-8 bg-slate-50/40">
+                    <div 
+                      onDragOver={e => e.preventDefault()}
+                      onDrop={e => {
+                        e.preventDefault();
+                        if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+                          handleFileUpload(e.dataTransfer.files[0]);
+                        }
+                      }}
+                      className="max-w-md w-full bg-white border-2 border-dashed border-slate-300 hover:border-[#F27421] rounded-2xl p-8 text-center transition-all shadow-sm space-y-4 cursor-pointer group"
+                      onClick={() => fileInputRef.current?.click()}
+                    >
+                      <div className="w-14 h-14 rounded-2xl bg-orange-50 group-hover:bg-orange-100 text-[#F27421] mx-auto flex items-center justify-center transition-colors">
+                        <Upload size={28} className="stroke-[2.2] group-hover:scale-110 transition-transform" />
+                      </div>
+                      <div>
+                        <h3 className="text-base font-bold text-slate-900 font-heading">Upload Spreadsheet File</h3>
+                        <p className="text-xs text-slate-500 mt-1 max-w-sm mx-auto">
+                          Drag and drop your Excel (.xlsx, .xls), CSV, or XML file here, or click to browse.
+                        </p>
+                      </div>
+                      <div className="flex justify-center pt-2" onClick={e => e.stopPropagation()}>
+                        <button
+                          type="button"
+                          onClick={() => fileInputRef.current?.click()}
+                          className="px-6 py-2.5 bg-[#F27421] hover:bg-[#e06516] active:bg-[#c95712] text-white text-xs font-bold rounded-xl shadow-xs transition flex items-center justify-center space-x-2 cursor-pointer"
+                        >
+                          <Upload size={14} className="stroke-[2.5]" />
+                          <span>Upload File</span>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Table Pagination Footer matching Case page */}
+                {createParsedRows.length > 0 && (
+                  <DataTablePagination
+                    currentPage={currentPage}
+                    totalItems={filteredRows.length}
+                    pageSize={pageSize}
+                    pageSizeOptions={[5, 6, 7, 8, 9, 10, 12, 14, 15, 20, 25, 50]}
+                    statusBadge={<span className="text-[10px] text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200 font-medium">Ready</span>}
+                    onPageChange={p => setCurrentPage(p)}
+                    onPageSizeChange={newSize => {
+                      setPageSize(newSize);
+                      setCurrentPage(1);
+                    }}
+                  />
+                )}
+              </>
+            )}
+
+            {/* TAB 2: Source File & Schema View */}
+            {activeTab === 'schema' && (
+              <div className="p-6 space-y-4 flex-1 min-h-0 flex flex-col overflow-y-auto">
+                <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+                  <div>
+                    <h4 className="text-xs font-bold text-slate-900 font-heading">Source File Schema &amp; Ingestion Structure</h4>
+                    <p className="text-[11px] text-slate-500">Detected column types, raw header identifiers, and target directory mappings</p>
+                  </div>
                   <button
                     type="button"
                     onClick={() => fileInputRef.current?.click()}
-                    className="px-4 py-2 bg-[#F27421] hover:bg-[#e06516] text-white text-xs font-bold rounded-xl shadow-xs transition flex items-center justify-center space-x-1.5 cursor-pointer"
+                    className="px-3 py-1.5 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 rounded-lg text-xs font-medium shadow-2xs transition cursor-pointer flex items-center gap-1.5"
                   >
-                    <Upload size={14} />
-                    <span>Upload File</span>
+                    <Upload size={12} className="text-[#F27421]" />
+                    <span>Upload Alternate Schema</span>
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setCreateParsedRows(DEFAULT_SAMPLE_ROWS);
-                      const defaultHeaders = Object.keys(DEFAULT_SAMPLE_ROWS[0]);
-                      setCreateRawHeaders(defaultHeaders);
-                      setCreateFileName('clearing_sample_feed.xlsx');
-                    }}
-                    className="px-4 py-2 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-xl transition cursor-pointer"
-                  >
-                    Load Sample Feed
-                  </button>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                  {columns.map(col => (
+                    <div key={col.id} className="p-3 bg-slate-50/70 border border-slate-200/80 rounded-xl space-y-1.5 text-xs">
+                      <div className="flex items-center justify-between">
+                        <span className="font-mono font-bold text-slate-900">{col.name}</span>
+                        <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
+                          col.type === 'Number' ? 'bg-blue-50 text-blue-700' :
+                          col.type === 'Date' ? 'bg-amber-50 text-amber-700' :
+                          'bg-slate-200 text-slate-700'
+                        }`}>
+                          {col.type}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between text-[11px] text-slate-600">
+                        <span>Directory Mapping:</span>
+                        <span className={`font-mono font-semibold ${
+                          col.mapping && col.mapping !== 'Unmapped' ? 'text-[#F27421]' : 'text-slate-400'
+                        }`}>
+                          {col.mapping || 'Unmapped'}
+                        </span>
+                      </div>
+                      <div className="flex items-center justify-between text-[11px] text-slate-500 pt-1 border-t border-slate-200/50">
+                        <span>Sample Value:</span>
+                        <span className="font-mono text-slate-700 truncate max-w-[150px]">
+                          {createParsedRows[0] ? String(createParsedRows[0][col.id] ?? '—') : '—'}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
                 </div>
               </div>
-            </div>
-          )}
+            )}
 
-          {/* Table Pagination Footer matching Case Page */}
-          {createParsedRows.length > 0 && (
-            <DataTablePagination
-              currentPage={currentPage}
-              totalItems={filteredRows.length}
-              pageSize={pageSize}
-              pageSizeOptions={[5, 6, 7, 8, 9, 10, 12, 14, 15, 20, 25, 50]}
-              statusBadge={<span className="text-[10px] text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200 font-medium">Ready</span>}
-              onPageChange={p => setCurrentPage(p)}
-              onPageSizeChange={newSize => {
-                setPageSize(newSize);
-                setCurrentPage(1);
-              }}
-            />
-          )}
+            {/* TAB 3: Applied Recipes View */}
+            {activeTab === 'recipes' && (
+              <div className="p-6 space-y-4 flex-1 min-h-0 flex flex-col overflow-y-auto">
+                <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+                  <div>
+                    <h4 className="text-xs font-bold text-slate-900 font-heading">Applied Data Cleaning Recipe History</h4>
+                    <p className="text-[11px] text-slate-500">Chronological transformations, sanitizations, and column mappings</p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setSaveTemplateModalOpen(true)}
+                      className="px-3 py-1.5 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 rounded-lg text-xs font-semibold shadow-2xs transition cursor-pointer flex items-center gap-1.5"
+                    >
+                      <Save size={12} className="text-[#F27421]" />
+                      <span>Save as Template</span>
+                    </button>
+                    {history.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={handleUndo}
+                        className="px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-blue-700 border border-blue-200 rounded-lg text-xs font-semibold shadow-2xs transition cursor-pointer flex items-center gap-1.5"
+                      >
+                        <Undo2 size={12} />
+                        <span>Undo Last Step</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <div className="space-y-2.5">
+                  {allRecipeSteps.map((step) => {
+                    const isCompleted = step.type === 'INSPECT_HEADER' ? isStep1Complete
+                      : step.type === 'MAP_FIELDS' ? isStep2Complete
+                      : step.type === 'REQUIRED_COLUMNS' ? isRequiredColumnsStepComplete
+                      : true;
+
+                    return (
+                      <div
+                        key={step.num}
+                        onClick={() => setStepDetailModal(step)}
+                        className="p-3.5 bg-white border border-slate-200/80 rounded-xl flex items-start justify-between shadow-2xs hover:border-orange-200 hover:bg-orange-50/20 transition-all cursor-pointer group"
+                      >
+                        <div className="flex items-start space-x-3">
+                          <span className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-mono font-bold shrink-0 mt-0.5 transition-colors ${
+                            isCompleted ? 'bg-emerald-600 text-white' : 'bg-amber-500 text-white'
+                          }`}>
+                            {isCompleted ? <Check size={12} strokeWidth={3} /> : step.num}
+                          </span>
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs font-bold text-slate-900 group-hover:text-[#F27421] transition-colors">{step.title}</span>
+                              <Eye size={11} className="text-slate-400 group-hover:text-[#F27421]" />
+                            </div>
+                            <span className="text-[11px] text-slate-500 block mt-0.5">{step.desc}</span>
+                          </div>
+                        </div>
+                        <span className="text-[10px] text-slate-400 font-mono shrink-0 ml-4">
+                          {step.appliedAt || 'Applied'}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
         </div>
 
-        {/* ========================================================================= */}
-        {/* RIGHT PANEL: VERTICAL STEPPER - ONLY RECIPE / TEMPLATE SCROLLS (Rule 16) */}
-        {/* ========================================================================= */}
-        <div className="w-84 xl:w-96 bg-white flex flex-col shrink-0 h-full min-h-0 overflow-hidden border-l border-slate-200 shadow-2xs">
-          {/* 1. Task Metadata Button / Compact Card (STATIONARY TOP, NO SCROLL) */}
-          <div className="p-4 pb-2 shrink-0">
-            <div className="bg-slate-50/80 border border-slate-200/90 rounded-2xl p-3.5 space-y-2.5 transition-all shadow-2xs hover:border-orange-300">
-              <div className="flex items-center justify-between pb-2 border-b border-slate-200/60">
-                <div className="flex items-center gap-1.5">
-                  <FileText size={14} className="text-[#F27421]" />
-                  <span className="font-bold text-slate-900 text-xs uppercase tracking-wider">Task Metadata</span>
+        {/* ========================================================= */}
+        {/* Right 1 Column: Cards (Workflow, Details, Template & Launch)*/}
+        {/* ========================================================= */}
+        {!isSidePanelCollapsed && (
+          <div className="space-y-4 flex-1 min-h-0 flex flex-col overflow-y-auto">
+            {/* Card 1: Hashtag Directive & Mapping Execution */}
+            <div className="bg-white rounded-xl border border-slate-200/80 p-5 shadow-xs space-y-3.5 shrink-0">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center space-x-1.5">
+                  <Hash size={14} className="text-[#F27421]" />
+                  <h3 className="text-xs font-bold font-heading text-slate-900">Hashtag Directive</h3>
                 </div>
+                <span className="px-2 py-0.5 bg-orange-50 text-[#F27421] border border-orange-200 rounded-full text-[10px] font-mono font-bold truncate max-w-[150px]">
+                  #{createHashtag !== 'Untagged' ? createHashtag : 'Untagged'}
+                </span>
+              </div>
+
+              {/* Hashtag Selector Dropdown */}
+              <div className="space-y-1">
+                <label className="text-[10px] font-bold text-slate-400 uppercase tracking-wider block">
+                  Select Directive
+                </label>
+                <div className="relative">
+                  <select
+                    value={createHashtag.startsWith('#') ? createHashtag : `#${createHashtag}`}
+                    onChange={e => {
+                      const cleanTag = e.target.value.replace(/^#/, '');
+                      setCreateHashtag(cleanTag);
+                    }}
+                    className="w-full py-1.5 pl-2.5 pr-7 bg-slate-50 border border-slate-200 hover:border-orange-200 rounded-lg text-xs font-mono font-semibold text-slate-800 appearance-none cursor-pointer focus:outline-none focus:border-[#F27421]"
+                  >
+                    <option value="#Untagged"># Untagged (Select Directive)</option>
+                    {hashtags.map(h => (
+                      <option key={h.tag} value={h.tag}>
+                        {h.tag} — {h.description.slice(0, 36)}...
+                      </option>
+                    ))}
+                  </select>
+                  <ChevronDown size={12} className="absolute right-2 top-2.5 pointer-events-none text-slate-400" />
+                </div>
+              </div>
+
+              {/* Directive Details */}
+              <div className="p-2.5 bg-slate-50/80 rounded-xl border border-slate-200/60 space-y-2 text-xs">
+                {selectedTagPreset ? (
+                  <>
+                    <p className="text-[11px] text-slate-600 line-clamp-2" title={selectedTagPreset.description}>
+                      {selectedTagPreset.description}
+                    </p>
+                    <div className="flex items-center justify-between text-[10px] text-slate-500 pt-1.5 border-t border-slate-200/50">
+                      <span>Pipeline: <strong className="text-slate-800">{linkedWorkflow?.name || selectedTagPreset.workflowName || 'Validation DAG'}</strong></span>
+                      <span className="font-mono text-emerald-700 font-bold">{readyRequiredCount}/{requiredColumnsList.length} Ready</span>
+                    </div>
+                  </>
+                ) : (
+                  <p className="text-[11px] text-slate-400 italic">
+                    Choose an operational directive to auto-apply schemas, mandatory columns, and validation.
+                  </p>
+                )}
+              </div>
+
+              {/* Run Hashtag Action Button */}
+              <button
+                type="button"
+                onClick={() => handleRunHashtag()}
+                className="w-full flex items-center justify-center space-x-2 py-2.5 bg-[#F27421] hover:bg-[#e06516] active:bg-[#c95712] text-white rounded-xl text-xs font-bold transition shadow-xs cursor-pointer group"
+                title="Execute hashtag directive and apply its own column mappings directly to the task data"
+              >
+                <Play size={13} className="fill-white group-hover:scale-110 transition-transform" />
+                <span>Run Hashtag</span>
+              </button>
+            </div>
+
+            {/* Card 2: Details (matches Case page Details card) */}
+            <div className="bg-white rounded-xl border border-slate-200/80 p-5 shadow-xs space-y-3 shrink-0">
+              <div className="flex items-center justify-between">
+                <h3 className="text-xs font-bold font-heading text-slate-900">Details</h3>
                 <button
                   type="button"
                   onClick={() => setMetadataModalOpen(true)}
-                  className="px-2 py-0.5 bg-white hover:bg-orange-50 text-[#F27421] border border-orange-200 rounded-lg text-[10px] font-bold flex items-center gap-1 cursor-pointer transition-colors shadow-2xs"
-                  title="Edit metadata in popup modal"
+                  className="text-[11px] font-semibold text-[#F27421] hover:underline cursor-pointer"
                 >
-                  <Edit3 size={11} />
-                  <span>Edit</span>
+                  Edit
                 </button>
               </div>
-
-              {/* Compacted View - Clicking opens Task Metadata modal */}
-              <div 
-                onClick={() => setMetadataModalOpen(true)}
-                className="space-y-1.5 text-xs cursor-pointer group"
-                title="Click to edit task details in modal"
-              >
-                <div className="font-bold text-slate-900 group-hover:text-[#F27421] transition-colors truncate text-xs" title={createTitle}>
-                  {createTitle || '(Untitled Task - click to edit)'}
-                </div>
-
+              
+              <div className="space-y-2.5 text-xs">
                 <div className="flex items-center justify-between">
-                  <span className="font-mono font-bold text-[#F27421] text-[11px]">#{createHashtag}</span>
-                  <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
-                    createPriority === 'Critical' ? 'bg-rose-50 text-rose-700 border border-rose-200' :
-                    createPriority === 'High' ? 'bg-amber-50 text-amber-700 border border-amber-200' :
-                    'bg-slate-100 text-slate-700 border border-slate-200'
+                  <span className="text-slate-500 font-normal">Priority</span>
+                  <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium capitalize border ${
+                    createPriority === 'Critical' || createPriority === 'High'
+                      ? 'bg-rose-50 text-rose-700 border-rose-200/60'
+                      : 'bg-amber-50 text-amber-700 border-amber-200/60'
                   }`}>
                     {createPriority}
                   </span>
                 </div>
 
-                <div className="flex items-center justify-between text-[11px] text-slate-600 pt-1 border-t border-slate-200/50">
-                  <span>Assignee:</span>
-                  <span className="font-semibold text-slate-800">
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-500 font-normal">Assignee</span>
+                  <span className="text-slate-700 font-medium">
                     @{users.find(u => u.id === createAssigneeId)?.username || currentUser.username}
                   </span>
                 </div>
 
-                <div className="flex items-center justify-between text-[11px] text-slate-600">
-                  <span>Visibility:</span>
-                  <span className="font-medium text-slate-800">
-                    {taskVisibility === 'TEAM_PUBLIC' ? '👥 Team Public' : '🔒 Personal Private'}
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-500 font-normal">Reporter</span>
+                  <span className="text-slate-700 font-medium">
+                    @{currentUser.username || 'Operator'}
                   </span>
                 </div>
 
-                {createDesc && (
-                  <p className="text-[10px] text-slate-500 line-clamp-1 italic pt-0.5">
-                    "{createDesc}"
-                  </p>
-                )}
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-500 font-normal">SLA target</span>
+                  <span className="text-emerald-700 font-medium">24h · On track</span>
+                </div>
+
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-500 font-normal">Visibility</span>
+                  <span className="text-slate-700 font-medium">
+                    {taskVisibility === 'TEAM_PUBLIC' ? 'Team Public' : 'Private'}
+                  </span>
+                </div>
+
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-500 font-normal">Directive</span>
+                  <span className="font-mono text-[#F27421] font-bold">
+                    #{createHashtag}
+                  </span>
+                </div>
+
+                <div className="flex items-center justify-between">
+                  <span className="text-slate-500 font-normal">Batch</span>
+                  <span className={`font-mono truncate max-w-[130px] ${createFileName ? 'text-slate-700' : 'text-slate-400 italic'}`} title={createFileName || 'No file attached'}>
+                    {createFileName || 'No file attached'}
+                  </span>
+                </div>
               </div>
             </div>
-          </div>
 
-          {/* 2. Recipe / Template Stepper: ONLY THIS SECTION IS SCROLLABLE */}
-          <div className="flex-1 min-h-0 overflow-y-auto px-4 py-2 space-y-3">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-1.5">
-                <Sparkles size={14} className="text-[#F27421]" />
-                <h3 className="font-bold text-slate-900 text-xs uppercase tracking-wider font-heading">
-                  Recipe / Template
-                </h3>
-              </div>
-              <span className="px-2 py-0.5 rounded-full bg-slate-100 text-slate-600 text-[10px] font-mono font-bold">
-                {allRecipeSteps.length} steps
+            {/* Card 3: Save Configuration as Template */}
+            <div className="bg-white rounded-xl border border-slate-200/80 p-4 shadow-xs flex items-center justify-between shrink-0">
+              <span className="text-xs text-slate-600 font-sans">
+                Save as template
               </span>
+              <button
+                type="button"
+                onClick={() => setSaveTemplateModalOpen(true)}
+                className="flex items-center space-x-1.5 px-3 py-1.5 border border-slate-200 hover:bg-slate-50 rounded-lg text-xs font-medium text-slate-700 transition-colors cursor-pointer shadow-2xs"
+              >
+                <Save size={12} className="text-[#F27421]" />
+                <span>Save</span>
+              </button>
             </div>
-            
-            <p className="text-[11px] text-slate-500 leading-snug">
-              Click any step to inspect details in pop-up modal.
-            </p>
 
-            {/* Vertical Stepper List */}
-            <div className="space-y-3 relative pb-2">
-              {/* Connecting Vertical Line */}
-              <div className="absolute left-3 top-3 bottom-3 w-0.5 bg-slate-200 pointer-events-none" />
-
-              {allRecipeSteps.map((step) => {
-                const isCompleted = step.type === 'INSPECT_HEADER' ? isStep1Complete
-                  : step.type === 'MAP_FIELDS' ? isStep2Complete
-                  : step.type === 'REQUIRED_COLUMNS' ? isRequiredColumnsStepComplete
-                  : true;
-
-                return (
-                  <div
-                    key={step.num}
-                    className="relative flex items-start space-x-3 p-2.5 rounded-xl bg-slate-50/70 hover:bg-orange-50/40 border border-slate-200/70 hover:border-orange-200 transition-all cursor-pointer group shadow-2xs"
-                    onClick={() => setStepDetailModal(step)}
-                  >
-                    {/* Step Number Circle with Completion Indicator */}
-                    <span className={`w-6 h-6 rounded-full flex items-center justify-center text-[10px] font-mono font-bold shrink-0 mt-0.5 transition-colors z-10 shadow-2xs ${
-                      isCompleted
-                        ? 'bg-emerald-600 text-white'
-                        : step.type === 'REQUIRED_COLUMNS' && !isRequiredColumnsStepComplete
-                        ? 'bg-amber-500 text-white'
-                        : 'bg-white border-2 border-slate-300 text-slate-600'
-                    }`}>
-                      {isCompleted ? <Check size={12} strokeWidth={3} /> : step.num}
-                    </span>
-
-                    {/* Step Text Info */}
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center justify-between">
-                        <span className="text-xs font-bold text-slate-800 group-hover:text-[#F27421] transition-colors truncate">
-                          {step.title}
-                        </span>
-                        <span className="text-[10px] text-slate-400 group-hover:text-[#F27421] flex items-center gap-0.5">
-                          <Eye size={10} />
-                        </span>
-                      </div>
-                      <div className="text-[11px] text-slate-500 line-clamp-2 mt-0.5">
-                        {step.desc}
-                      </div>
-
-                      {/* Required Columns (at the END of stepper, default collapsed, showing count only) */}
-                      {step.type === 'REQUIRED_COLUMNS' && (
-                        <div className="mt-2 pt-2 border-t border-slate-200/50 space-y-1.5" onClick={e => e.stopPropagation()}>
-                          <div className="flex items-center justify-between text-[10px]">
-                            <span className="font-bold text-slate-600 uppercase">
-                              {readyRequiredCount} / {requiredColumnsList.length} Ready
-                            </span>
-                            {requiredColumnsList.length > 0 && (
-                              <button
-                                type="button"
-                                onClick={() => setRequiredColumnsExpanded(!requiredColumnsExpanded)}
-                                className="text-[#F27421] font-semibold flex items-center gap-0.5 cursor-pointer hover:underline"
-                              >
-                                <span>{requiredColumnsExpanded ? 'Collapse' : 'Details'}</span>
-                                <ChevronDown size={10} className={`transform transition-transform ${requiredColumnsExpanded ? 'rotate-180' : ''}`} />
-                              </button>
-                            )}
-                          </div>
-
-                          {/* Only shown when manually expanded by user */}
-                          {requiredColumnsExpanded && requiredColumnsList.length > 0 && (
-                            <div className="space-y-1 pt-1 animate-in fade-in duration-100">
-                              {requiredColumnsList.map(rc => (
-                                <div key={rc.name} className="flex items-center justify-between text-[10px] font-mono p-1 rounded bg-white border border-slate-200/60">
-                                  <span className="text-slate-700 truncate max-w-[120px]" title={rc.name}>
-                                    {rc.name}
-                                  </span>
-                                  <span className={`px-1.5 py-0.2 rounded-full font-bold ${
-                                    rc.status === 'Ready'
-                                      ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                                      : 'bg-amber-50 text-amber-700 border border-amber-200'
-                                  }`}>
-                                    {rc.status}
-                                  </span>
-                                </div>
-                              ))}
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* 3. Bottom Primary Actions (STATIONARY BOTTOM, NO SCROLL) */}
-          <div className="p-4 pt-3 border-t border-slate-100 shrink-0 space-y-2 bg-white">
-            <button 
-              type="button"
-              onClick={() => setSaveTemplateModalOpen(true)}
-              className="w-full py-2 bg-white border border-slate-200 hover:bg-slate-50 rounded-xl text-xs font-semibold text-slate-700 flex items-center justify-center space-x-2 transition cursor-pointer shadow-2xs"
-            >
-              <Save size={13} className="text-[#F27421]" />
-              <span>Save as Template</span>
-            </button>
-
-            <button 
+            {/* Card 4: Primary Action Button */}
+            <button
               type="button"
               onClick={handleCreateTaskSubmit}
-              className="w-full py-2.5 bg-[#F27421] hover:bg-[#e06516] active:bg-[#c95712] text-white rounded-xl text-xs font-bold flex items-center justify-center space-x-2 transition cursor-pointer shadow-md"
+              className="w-full py-2.5 bg-[#F27421] hover:bg-[#e06516] active:bg-[#c95712] text-white rounded-xl text-xs font-bold flex items-center justify-center space-x-2 transition cursor-pointer shadow-md shrink-0"
             >
               <Plus size={15} />
-              <span>Create Task &amp; Launch Workspace</span>
+              <span>Create Task &amp; Launch</span>
             </button>
           </div>
-        </div>
+        )}
       </div>
 
       {/* ========================================================= */}
-      {/* 3. POP-UP MODAL: TASK METADATA (Live Detail Dialog)        */}
+      {/* 3. POP-UP MODAL: TASK METADATA                            */}
       {/* ========================================================= */}
       {metadataModalOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-xs p-4 animate-in fade-in duration-100">
@@ -1926,7 +2604,6 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
             </div>
 
             <div className="space-y-4 text-xs">
-              {/* Task Title */}
               <div className="space-y-1">
                 <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider">
                   Task Title <span className="text-rose-500">*</span>
@@ -1936,12 +2613,11 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
                   required
                   value={createTitle}
                   onChange={e => setCreateTitle(e.target.value)}
-                  placeholder="e.g. Chargeback Reconciliation Batch #801"
+                  placeholder="e.g. Daily Settlement Clearing Batch"
                   className="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-[#F27421]/20 focus:border-[#F27421] focus:bg-white font-medium"
                 />
               </div>
 
-              {/* Category / Hashtag Directive */}
               <div className="space-y-1">
                 <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider">
                   Category / Directive Hashtag (#)
@@ -1958,23 +2634,6 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
                 </select>
               </div>
 
-              {/* Directive Preview Banner */}
-              {selectedTagPreset && (
-                <div className="p-2.5 rounded-xl border bg-orange-50/40 border-orange-200/80 text-[11px] space-y-1">
-                  <div className="flex items-center gap-2">
-                    <span className="font-mono font-bold text-[#F27421] bg-orange-100 px-1.5 py-0.5 rounded text-[10px]">{selectedTagPreset.tag}</span>
-                    <span className="text-slate-600 truncate">{selectedTagPreset.description}</span>
-                  </div>
-                  {selectedTagPreset.workflowName && (
-                    <div className="text-[10px] text-slate-500 pt-1 border-t border-orange-200/50 flex justify-between">
-                      <span>Workflow: <strong className="text-slate-800">{selectedTagPreset.workflowName}</strong></span>
-                      <span className="text-emerald-700 font-bold">{linkedWorkflow?.status === 'APPROVED' ? 'APPROVED' : 'DRAFT'}</span>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* Priority & Assignee in 2-col grid */}
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1">
                   <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider">Priority</label>
@@ -2005,7 +2664,6 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
                 </div>
               </div>
 
-              {/* Visibility Options */}
               <div className="space-y-1">
                 <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider">Visibility</label>
                 <div className="grid grid-cols-2 gap-2 bg-slate-100 p-1 rounded-xl">
@@ -2036,7 +2694,6 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
                 </div>
               </div>
 
-              {/* Description */}
               <div className="space-y-1">
                 <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider">
                   Notes / Operational Instructions
@@ -2072,7 +2729,7 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
       )}
 
       {/* ========================================================= */}
-      {/* 4. POP-UP MODAL: STEP DETAILS (Clickable Recipe Steps)     */}
+      {/* 4. POP-UP MODAL: STEP DETAILS                             */}
       {/* ========================================================= */}
       {stepDetailModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-xs p-4 animate-in fade-in duration-100">
@@ -2096,14 +2753,13 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
               </button>
             </div>
 
-            {/* Step-specific content */}
             <div className="space-y-3 text-xs max-h-72 overflow-y-auto pr-1">
               {stepDetailModal.type === 'INSPECT_HEADER' && (
                 <div className="space-y-3">
                   <div className="p-3 bg-slate-50 rounded-xl border border-slate-200/70 space-y-1.5">
                     <div className="flex justify-between">
                       <span className="text-slate-500">File Name:</span>
-                      <strong className="text-slate-800 font-mono">{createFileName || 'clearing_batch_feed.xlsx'}</strong>
+                      <strong className="text-slate-800 font-mono">{createFileName || 'No file attached'}</strong>
                     </div>
                     <div className="flex justify-between">
                       <span className="text-slate-500">Total Rows:</span>
@@ -2250,7 +2906,6 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
             </div>
 
             <div className="p-6 overflow-y-auto space-y-4">
-              {/* Required Columns Status */}
               <div className="bg-slate-50/70 border border-slate-200/80 rounded-2xl p-4 space-y-3">
                 <div className="flex items-center justify-between pb-2 border-b border-slate-200/60">
                   <span className="text-xs font-bold text-slate-900 uppercase tracking-wider">
@@ -2280,7 +2935,6 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
                 )}
               </div>
 
-              {/* Task Metadata */}
               <div className="bg-slate-50/70 border border-slate-200/80 rounded-2xl p-4 space-y-2 text-xs">
                 <div className="flex items-center justify-between pb-2 border-b border-slate-200/60">
                   <span className="text-xs font-bold text-slate-900 uppercase tracking-wider">Task Metadata</span>
@@ -2313,13 +2967,12 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
                   <div>
                     <span className="text-[10px] uppercase font-bold text-slate-400 block">Visibility</span>
                     <span className="text-slate-800 font-medium">
-                      {taskVisibility === 'TEAM_PUBLIC' ? '👥 Team Public' : '🔒 Private'}
+                      {taskVisibility === 'TEAM_PUBLIC' ? 'Team Public' : 'Private'}
                     </span>
                   </div>
                 </div>
               </div>
 
-              {/* Applied Recipe & Used Template */}
               <div className="bg-slate-50/70 border border-slate-200/80 rounded-2xl p-4 space-y-2 text-xs">
                 <div className="flex items-center justify-between pb-2 border-b border-slate-200/60">
                   <span className="text-xs font-bold text-slate-900 uppercase tracking-wider">Applied Recipe ({allRecipeSteps.length} steps)</span>

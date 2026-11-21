@@ -74,6 +74,31 @@ export const datasetIngestionService = {
     const normalizedRows: Record<string, any>[] = [];
     const centralRecords: CentralTransactionRecord[] = [];
 
+    // Pre-extract all transaction keys to batch query Central Repository (BE-15)
+    const candidateKeys: string[] = [];
+    for (let i = 0; i < sanitizedRows.length; i++) {
+      const r = sanitizedRows[i] || {};
+      const rowNum = i + 1;
+      const k = String(
+        r.tran_ref ||
+        r.transaction_id ||
+        r.tran_id ||
+        r.transactionId ||
+        r.id ||
+        r.ref ||
+        r.reference ||
+        `TASK_${taskId}_ROW_${rowNum}`
+      ).trim();
+      candidateKeys.push(k);
+    }
+
+    let centralMap = new Map<string, CentralTransactionRecord>();
+    try {
+      centralMap = await repo.getCentralTransactionsByKeys(candidateKeys);
+    } catch (err: any) {
+      console.warn('[DatasetIngestion] Central repository batch lookup warning:', err.message);
+    }
+
     for (let i = 0; i < sanitizedRows.length; i++) {
       const rawRow = rows[i] || {};
       const rowNum = i + 1;
@@ -119,7 +144,7 @@ export const datasetIngestionService = {
       let allTaskIds: string[] = [taskId];
 
       try {
-        const existingCentral = await repo.getCentralTransaction(transactionKey);
+        const existingCentral = centralMap.get(transactionKey);
         if (existingCentral && existingCentral.originalTaskId !== taskId) {
           allTaskIds = Array.from(new Set([...(existingCentral.allTaskIds || [existingCentral.originalTaskId]), taskId]));
 

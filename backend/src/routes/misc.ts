@@ -361,8 +361,12 @@ miscRouter.post('/hashtags/:tag/execute-file', async (req: Request, res: Respons
         createdAt: new Date().toISOString()
       } as any;
       try {
-        await repo.createHashtag(preset);
+        await repo.createHashtag(preset!);
       } catch {}
+    }
+
+    if (!preset) {
+      return res.status(404).json({ error: 'Hashtag preset could not be found or initialized.' });
     }
 
     const result = await executeFileIngestionHashtag(preset, fileRows);

@@ -22,6 +22,7 @@ import {
 } from './chat/MessageChatActions';
 import { ForwardMessageModal, ForwardDestination } from './chat/ForwardMessageModal';
 import { MessageReplyInfo, MessageForwardInfo } from '../types';
+import DOMPurify from 'dompurify';
 
 interface PersonalChatProps {
   currentUser: User;
@@ -1697,7 +1698,7 @@ export default function PersonalChat({
                           {msg.html_body ? (
                             <div
                               className="prose prose-xs max-w-none text-slate-800"
-                              dangerouslySetInnerHTML={{ __html: msg.html_body }}
+                              dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(msg.html_body) }}
                             />
                           ) : (
                             <p>{msg.text_body || 'Empty message content'}</p>

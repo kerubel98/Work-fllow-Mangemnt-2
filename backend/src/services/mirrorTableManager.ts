@@ -6,7 +6,7 @@
 
 import { DatabaseConnection } from '../types.js';
 import { getTableColumns, ColumnMetadata, discoverTablesForDb } from './dbConnectionManager.js';
-import { queryPg } from '../config/postgres.js';
+import { queryPg, getPostgresPool } from '../config/postgres.js';
 import { repo } from '../store/repository.js';
 
 export interface MirrorTableDefinition {
@@ -59,20 +59,30 @@ export function derive64BitAdvisoryLockSql(paramIndex: number = 1): string {
   return `('x' || substr(md5($${paramIndex}), 1, 16))::bit(64)::bigint`;
 }
 
-function sanitizeIdentifier(name: string): string {
-  return name.toLowerCase().replace(/[^a-z0-9_]/g, '_').substring(0, 50);
+import crypto from 'crypto';
+
+function sanitizeIdentifier(name: string, maxLen = 22): string {
+  return name.toLowerCase().replace(/[^a-z0-9_]/g, '_').substring(0, maxLen);
+}
+
+export function buildSafeIndexName(mirrorName: string, suffix: string): string {
+  const raw = `idx_${mirrorName}_${suffix}`;
+  if (raw.length <= 63) return raw;
+  const hash = crypto.createHash('md5').update(mirrorName).digest('hex').substring(0, 6);
+  const maxTableLen = 63 - (`idx__${hash}_${suffix}`.length);
+  return `idx_${mirrorName.substring(0, Math.max(10, maxTableLen))}_${hash}_${suffix}`;
 }
 
 export const mirrorTableManager = {
   /**
-   * Generates a deterministic, standard mirror table name.
+   * Generates a deterministic, standard mirror table name guaranteed <= 53 characters.
    */
   getMirrorTableName(dbName: string, tableName: string): string {
     if (tableName.startsWith('mirror_')) {
-      return tableName.toLowerCase().replace(/[^a-z0-9_]/g, '_').substring(0, 63);
+      return tableName.toLowerCase().replace(/[^a-z0-9_]/g, '_').substring(0, 53);
     }
-    const safeDb = sanitizeIdentifier(dbName);
-    const safeTable = sanitizeIdentifier(tableName);
+    const safeDb = sanitizeIdentifier(dbName, 22);
+    const safeTable = sanitizeIdentifier(tableName, 23);
     return `mirror_${safeDb}_${safeTable}`;
   },
 
@@ -87,40 +97,6 @@ export const mirrorTableManager = {
     if (isTableCached(mirrorName)) {
       return mirrorName;
     }
-
-    // Acquire 64-bit transaction-scoped advisory lock to prevent concurrent DDL catalog race conditions
-    try {
-      await queryPg(
-        `SELECT pg_advisory_xact_lock(('x' || substr(md5($1), 1, 16))::bit(64)::bigint)`,
-        [`mirror_ddl_${mirrorName}`]
-      );
-    } catch (lockErr: any) {
-      console.warn(`[MirrorManager] Advisory lock warning for ${mirrorName}:`, lockErr.message);
-    }
-
-    // Fast-path: Check if mirror table already exists in PostgreSQL
-    try {
-      const checkRes = await queryPg(
-        `SELECT 1 FROM information_schema.tables WHERE table_name = $1 AND table_schema = 'public'`,
-        [mirrorName]
-      );
-      if (checkRes.rows && checkRes.rows.length > 0) {
-        try {
-          await queryPg(`
-            ALTER TABLE ${mirrorName}
-            ADD COLUMN IF NOT EXISTS _row_number INT,
-            ADD COLUMN IF NOT EXISTS _task_id VARCHAR(64),
-            ADD COLUMN IF NOT EXISTS _batch_id VARCHAR(64),
-            ADD COLUMN IF NOT EXISTS _rule_block_id VARCHAR(64),
-            ADD COLUMN IF NOT EXISTS _validation_status VARCHAR(32) DEFAULT 'PENDING',
-            ADD COLUMN IF NOT EXISTS _validation_action VARCHAR(32) DEFAULT 'CONTINUE',
-            ADD COLUMN IF NOT EXISTS _validation_details JSONB DEFAULT '{}'::jsonb;
-          `);
-        } catch {}
-        setTableCached(mirrorName);
-        return mirrorName;
-      }
-    } catch {}
 
     // Inspect columns from external target database
     let columns: ColumnMetadata[] = [];
@@ -154,35 +130,78 @@ export const mirrorTableManager = {
     // Always include dynamic payload column for unstructured and custom rule fields
     colDefs.push(`payload JSONB DEFAULT '{}'::jsonb`);
 
-    // Create high-throughput UNLOGGED table in PostgreSQL
+    const idxBatch = buildSafeIndexName(mirrorName, 'batch');
+    const idxStatus = buildSafeIndexName(mirrorName, 'status');
+    const idxTaskRow = buildSafeIndexName(mirrorName, 'task_row');
+    const idxContext = buildSafeIndexName(mirrorName, 'context');
+
+    // Create high-throughput UNLOGGED table in PostgreSQL within a dedicated client transaction
     const ddl = `
       CREATE UNLOGGED TABLE IF NOT EXISTS ${mirrorName} (
         ${colDefs.join(',\n        ')}
       );
-      CREATE INDEX IF NOT EXISTS idx_${mirrorName}_batch ON ${mirrorName}(_batch_id);
-      CREATE INDEX IF NOT EXISTS idx_${mirrorName}_status ON ${mirrorName}(_rule_block_id, _validation_status);
-      CREATE INDEX IF NOT EXISTS idx_${mirrorName}_task_row ON ${mirrorName}(_task_id, _row_number);
-      CREATE INDEX IF NOT EXISTS idx_${mirrorName}_context ON ${mirrorName}(_batch_id, _task_id, _rule_block_id, _row_number);
+      CREATE INDEX IF NOT EXISTS ${idxBatch} ON ${mirrorName}(_batch_id);
+      CREATE INDEX IF NOT EXISTS ${idxStatus} ON ${mirrorName}(_rule_block_id, _validation_status);
+      CREATE INDEX IF NOT EXISTS ${idxTaskRow} ON ${mirrorName}(_task_id, _row_number);
+      CREATE INDEX IF NOT EXISTS ${idxContext} ON ${mirrorName}(_batch_id, _task_id, _rule_block_id, _row_number);
     `;
 
-    await queryPg(ddl);
+    const pool = getPostgresPool();
+    const client = await pool.connect();
     try {
-      await queryPg(`ALTER TABLE ${mirrorName} ADD COLUMN IF NOT EXISTS _mirror_id UUID DEFAULT gen_random_uuid();`);
-      await queryPg(`ALTER TABLE ${mirrorName} ADD COLUMN IF NOT EXISTS _task_id VARCHAR(64);`);
-      await queryPg(`ALTER TABLE ${mirrorName} ADD COLUMN IF NOT EXISTS _batch_id VARCHAR(64);`);
-      await queryPg(`ALTER TABLE ${mirrorName} ADD COLUMN IF NOT EXISTS _row_number INT;`);
-      await queryPg(`ALTER TABLE ${mirrorName} ADD COLUMN IF NOT EXISTS _rule_block_id VARCHAR(64);`);
-      await queryPg(`ALTER TABLE ${mirrorName} ADD COLUMN IF NOT EXISTS _validation_status VARCHAR(32) DEFAULT 'PENDING';`);
-      await queryPg(`ALTER TABLE ${mirrorName} ADD COLUMN IF NOT EXISTS _validation_action VARCHAR(32) DEFAULT 'CONTINUE';`);
-      await queryPg(`ALTER TABLE ${mirrorName} ADD COLUMN IF NOT EXISTS _validation_details JSONB DEFAULT '{}'::jsonb;`);
-      await queryPg(`ALTER TABLE ${mirrorName} ADD COLUMN IF NOT EXISTS _mirrored_at TIMESTAMPTZ DEFAULT NOW();`);
-      await queryPg(`ALTER TABLE ${mirrorName} ADD COLUMN IF NOT EXISTS payload JSONB DEFAULT '{}'::jsonb;`);
-      await queryPg(`CREATE INDEX IF NOT EXISTS idx_${mirrorName}_task_row ON ${mirrorName}(_task_id, _row_number);`);
-      await queryPg(`CREATE INDEX IF NOT EXISTS idx_${mirrorName}_context ON ${mirrorName}(_batch_id, _task_id, _rule_block_id, _row_number);`);
-    } catch {}
-    setTableCached(mirrorName);
-    console.log(`[MirrorManager] Mirror table verified: ${mirrorName} with ${columns.length} columns.`);
-    return mirrorName;
+      await client.query('BEGIN;');
+      // Acquire 64-bit transaction-scoped advisory lock on this connection to prevent concurrent DDL catalog race conditions
+      await client.query(
+        `SELECT pg_advisory_xact_lock(('x' || substr(md5($1), 1, 16))::bit(64)::bigint)`,
+        [`mirror_ddl_${mirrorName}`]
+      );
+
+      // Fast-path: Check if mirror table already exists in PostgreSQL
+      const checkRes = await client.query(
+        `SELECT 1 FROM information_schema.tables WHERE table_name = $1 AND table_schema = 'public'`,
+        [mirrorName]
+      );
+      if (checkRes.rows && checkRes.rows.length > 0) {
+        await client.query(`
+          ALTER TABLE ${mirrorName}
+          ADD COLUMN IF NOT EXISTS _row_number INT,
+          ADD COLUMN IF NOT EXISTS _task_id VARCHAR(64),
+          ADD COLUMN IF NOT EXISTS _batch_id VARCHAR(64),
+          ADD COLUMN IF NOT EXISTS _rule_block_id VARCHAR(64),
+          ADD COLUMN IF NOT EXISTS _validation_status VARCHAR(32) DEFAULT 'PENDING',
+          ADD COLUMN IF NOT EXISTS _validation_action VARCHAR(32) DEFAULT 'CONTINUE',
+          ADD COLUMN IF NOT EXISTS _validation_details JSONB DEFAULT '{}'::jsonb;
+        `);
+        await client.query('COMMIT;');
+        setTableCached(mirrorName);
+        return mirrorName;
+      }
+
+      await client.query(ddl);
+      await client.query(`ALTER TABLE ${mirrorName} ADD COLUMN IF NOT EXISTS _mirror_id UUID DEFAULT gen_random_uuid();`);
+      await client.query(`ALTER TABLE ${mirrorName} ADD COLUMN IF NOT EXISTS _task_id VARCHAR(64);`);
+      await client.query(`ALTER TABLE ${mirrorName} ADD COLUMN IF NOT EXISTS _batch_id VARCHAR(64);`);
+      await client.query(`ALTER TABLE ${mirrorName} ADD COLUMN IF NOT EXISTS _row_number INT;`);
+      await client.query(`ALTER TABLE ${mirrorName} ADD COLUMN IF NOT EXISTS _rule_block_id VARCHAR(64);`);
+      await client.query(`ALTER TABLE ${mirrorName} ADD COLUMN IF NOT EXISTS _validation_status VARCHAR(32) DEFAULT 'PENDING';`);
+      await client.query(`ALTER TABLE ${mirrorName} ADD COLUMN IF NOT EXISTS _validation_action VARCHAR(32) DEFAULT 'CONTINUE';`);
+      await client.query(`ALTER TABLE ${mirrorName} ADD COLUMN IF NOT EXISTS _validation_details JSONB DEFAULT '{}'::jsonb;`);
+      await client.query(`ALTER TABLE ${mirrorName} ADD COLUMN IF NOT EXISTS _mirrored_at TIMESTAMPTZ DEFAULT NOW();`);
+      await client.query(`ALTER TABLE ${mirrorName} ADD COLUMN IF NOT EXISTS payload JSONB DEFAULT '{}'::jsonb;`);
+      await client.query(`CREATE INDEX IF NOT EXISTS ${idxTaskRow} ON ${mirrorName}(_task_id, _row_number);`);
+      await client.query(`CREATE INDEX IF NOT EXISTS ${idxContext} ON ${mirrorName}(_batch_id, _task_id, _rule_block_id, _row_number);`);
+
+      await client.query('COMMIT;');
+      setTableCached(mirrorName);
+      console.log(`[MirrorManager] Mirror table verified: ${mirrorName} with ${columns.length} columns.`);
+      return mirrorName;
+    } catch (err: any) {
+      await client.query('ROLLBACK;').catch(() => {});
+      console.error(`[MirrorManager] Error provisioning mirror table ${mirrorName}:`, err);
+      throw err;
+    } finally {
+      client.release();
+    }
   },
 
   /**

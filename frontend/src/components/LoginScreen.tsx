@@ -5,7 +5,8 @@
 
 import React, { useState } from 'react';
 import { User, UserRole } from '../types';
-import { Shield, Key, Mail, UserPlus, LogIn, Check, Info, Users, Database, HelpCircle } from 'lucide-react';
+import { Shield, Key, Mail, UserPlus, LogIn, Check, Info, Users, Database, HelpCircle, Loader2 } from 'lucide-react';
+import { api } from '../api/client';
 
 interface LoginScreenProps {
   users: User[];
@@ -30,53 +31,72 @@ export default function LoginScreen({ users, onLoginSuccess, onRegisterUser }: L
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
   // Quick switch logins helper
-  const handleQuickLogin = (user: User) => {
-    // Standard normal user login without role blocking
-    const approvedUser = { ...user, isApproved: true };
+  const handleQuickLogin = async (user: User) => {
     setError(null);
-    setSuccess(`Successfully signed in as ${approvedUser.username}!`);
-    setTimeout(() => {
-      onLoginSuccess(approvedUser);
-    }, 400);
+    setIsSubmitting(true);
+    try {
+      const pwd = user.username === 'admin' ? 'admin123' : (password || 'admin123');
+      const res = await api.login(user.username, pwd);
+      if (res && res.token) {
+        localStorage.setItem('operational_workflow_jwt_token', res.token);
+      }
+      const activeUser: User = res.user || { ...user, isApproved: true };
+      setSuccess(`Successfully signed in as ${activeUser.username}!`);
+      setTimeout(() => {
+        onLoginSuccess(activeUser);
+      }, 300);
+    } catch (err: any) {
+      setError(err?.message || `Authentication failed for ${user.username}.`);
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
-  const handleLoginSubmit = (e: React.FormEvent) => {
+  const handleLoginSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
     setSuccess(null);
 
-    if (!username.trim()) {
+    const cleanUsername = username.trim();
+    if (!cleanUsername) {
       setError('Please provide a username.');
       return;
     }
 
-    const matchedUser = users.find(
-      (u) => u.username.toLowerCase() === username.trim().toLowerCase()
-    );
+    if (!password) {
+      setError('Please provide your password (e.g. admin123).');
+      return;
+    }
 
-    if (!matchedUser) {
-      // Auto-create & login as normal user if not found
-      const newUser: User = {
+    setIsSubmitting(true);
+    try {
+      // 1. Authenticate against real backend JWT endpoint
+      const res = await api.login(cleanUsername, password);
+      if (res && res.token) {
+        localStorage.setItem('operational_workflow_jwt_token', res.token);
+      }
+
+      const activeUser: User = res.user || users.find(u => u.username.toLowerCase() === cleanUsername.toLowerCase()) || {
         id: `usr-${Date.now()}`,
-        username: username.trim(),
-        email: `${username.trim().toLowerCase()}@company.com`,
+        username: cleanUsername,
+        email: `${cleanUsername.toLowerCase()}@company.com`,
         role: 'user',
         isApproved: true,
         createdAt: new Date().toISOString()
       };
-      setSuccess(`Signed in as normal user '${newUser.username}'!`);
-      setTimeout(() => {
-        onLoginSuccess(newUser);
-      }, 500);
-      return;
-    }
 
-    const activeUser = { ...matchedUser, isApproved: true };
-    setSuccess(`Welcome back ${activeUser.username}! Signed in as normal user.`);
-    setTimeout(() => {
-      onLoginSuccess(activeUser);
-    }, 500);
+      setSuccess(`Signed in successfully as ${activeUser.username}!`);
+      setTimeout(() => {
+        onLoginSuccess(activeUser);
+      }, 300);
+    } catch (err: any) {
+      setError(err?.message || 'Authentication failed: Invalid username or password.');
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const handleRegisterSubmit = (e: React.FormEvent) => {
@@ -92,24 +112,15 @@ export default function LoginScreen({ users, onLoginSuccess, onRegisterUser }: L
     const newUserObj = {
       username: regUsername.trim(),
       email: regEmail.trim() || `${regUsername.trim().toLowerCase()}@company.com`,
-      role: regRole || 'user',
-      isApproved: true, // Auto-approved as normal user
+      role: 'user' as UserRole, // Security: self-registration defaults strictly to user role
+      isApproved: false, // Security: requires administrator approval before granting access
     };
 
     onRegisterUser(newUserObj);
-
-    setSuccess(`Account registered and approved! Logging in as ${regUsername}...`);
-    setTimeout(() => {
-      onLoginSuccess({
-        ...newUserObj,
-        id: `usr-${Date.now()}`,
-        createdAt: new Date().toISOString()
-      });
-    }, 600);
+    setSuccess('Registration request submitted. A system administrator must approve your account.');
     setRegUsername('');
     setRegEmail('');
     setRegPassword('');
-    setActiveTab('login');
   };
 
   const getRoleBadgeColor = (_r: UserRole) => {
@@ -246,6 +257,7 @@ export default function LoginScreen({ users, onLoginSuccess, onRegisterUser }: L
                   />
                   <Key size={16} className="absolute right-3 top-2.5 text-slate-400" />
                 </div>
+                <span className="text-[10px] text-slate-500 mt-1 block">Default admin password: <code className="bg-slate-100 px-1 py-0.5 rounded text-blue-600 font-mono">admin123</code></span>
               </div>
 
               <button
@@ -318,17 +330,18 @@ export default function LoginScreen({ users, onLoginSuccess, onRegisterUser }: L
               </div>
 
               <div>
-                <label className="block text-xs font-semibold text-slate-700 mb-1.5 font-mono">ASSIGN SYSTEM ROLE</label>
+                <label className="block text-xs font-semibold text-slate-700 mb-1.5 font-mono">REQUESTED ROLE</label>
                 <select
                   value={regRole}
                   onChange={(e) => setRegRole(e.target.value as UserRole)}
                   className="w-full bg-slate-50 border border-slate-200 rounded-lg py-2 px-3 text-sm text-slate-800 focus:outline-none focus:border-blue-500 focus:ring-2 focus:ring-blue-100 transition-colors"
                 >
                   <option value="user">User (Standard Member)</option>
-                  <option value="admin">System Administrator (Full access & approvals)</option>
+                  <option value="operational">Operational Analyst</option>
+                  <option value="tech">Technician</option>
                 </select>
                 <p className="text-[10px] text-slate-500 mt-1.5 leading-relaxed">
-                  Note: For security audits, newly registered roles require manual activation by the System Administrator account (username: <strong className="text-slate-700">admin</strong>).
+                  Note: Administrative roles cannot be self-selected. Accounts require approval by an Administrator.
                 </p>
               </div>
 

@@ -161,6 +161,12 @@ export const reconciliationService = {
           FROM task_dataset_transactions
           WHERE task_id = $1
           ORDER BY row_number
+        ),
+        unique_mirror AS (
+          SELECT DISTINCT ON (investigation_id, data_source_id, record_key) *
+          FROM investigation_external_mirror
+          WHERE investigation_id = $1 AND data_source_id = $2
+          ORDER BY investigation_id, data_source_id, record_key, mirrored_at DESC
         )
         UPDATE investigation_transactions it
         SET 
@@ -191,7 +197,7 @@ export const reconciliationService = {
           END,
           updated_at = NOW()
         FROM unique_task_source t
-        LEFT JOIN investigation_external_mirror m 
+        LEFT JOIN unique_mirror m 
           ON m.investigation_id = $1 
          AND m.data_source_id = $2 
          AND ${keyJoinSql}
@@ -288,6 +294,9 @@ export const reconciliationService = {
     totalUpdated: number;
     passCount: number;
     failCount: number;
+    errorCount?: number;
+    status?: 'PASS' | 'FAIL' | 'ERROR';
+    error?: string;
     durationMs: number;
   }> {
     const startTime = Date.now();
@@ -384,11 +393,22 @@ export const reconciliationService = {
         totalUpdated,
         passCount,
         failCount,
+        status: 'PASS',
         durationMs: Date.now() - startTime,
       };
     } catch (err: any) {
-      console.warn(`[ReconciliationService] reconcileByRowNumber notice: ${err.message}`);
-      return { taskId, batchId, totalUpdated: 0, passCount: 0, failCount: 0, durationMs: Date.now() - startTime };
+      console.error(`[ReconciliationService] reconcileByRowNumber ERROR: ${err.message}`);
+      return {
+        taskId,
+        batchId,
+        totalUpdated: 0,
+        passCount: 0,
+        failCount: 0,
+        errorCount: 1,
+        status: 'ERROR',
+        error: err.message,
+        durationMs: Date.now() - startTime
+      };
     }
   }
 };

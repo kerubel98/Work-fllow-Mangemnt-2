@@ -74,6 +74,15 @@ export async function fetchApi<T>(endpoint: string, options?: RequestInit): Prom
   });
 
   if (!response.ok) {
+    if (response.status === 401) {
+      setAuthToken(null);
+      try {
+        localStorage.removeItem('it_session');
+      } catch {}
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new Event('auth_session_expired'));
+      }
+    }
     const errorData = await response.json().catch(() => ({ error: response.statusText }));
     throw new Error(errorData.error || `HTTP ${response.status}: ${response.statusText}`);
   }
@@ -106,7 +115,17 @@ export const api = {
   },
 
   getMe: () => fetchApi<{ user: any }>('/auth/me'),
-  logout: () => setAuthToken(null),
+  getAuthToken,
+  setAuthToken,
+  logout: () => {
+    setAuthToken(null);
+    try {
+      localStorage.removeItem('it_session');
+    } catch {}
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new Event('auth_session_expired'));
+    }
+  },
 
   getUsers: () => fetchApi<any[]>('/auth/users'),
 
@@ -278,8 +297,8 @@ export const api = {
     }),
   getAdminTeamResources: () =>
     fetchApi<any[]>('/db/admin/team-resources'),
-  testConnection: (data: { dbId?: string; type?: string; host?: string; port?: number; connectionString?: string; databaseName?: string; username?: string }) =>
-    fetchApi<{ success: boolean; message: string; pingMs: number; lastTestedAt: string; dbInfo?: any }>('/db/test-connection', {
+  testConnection: (data: { dbId?: string; type?: string; host?: string; port?: number; connectionString?: string; databaseName?: string; username?: string; password?: string }) =>
+    fetchApi<{ success: boolean; message: string; pingMs: number; latencyMs?: number; lastTestedAt: string; dbInfo?: any }>('/db/test-connection', {
       method: 'POST',
       body: JSON.stringify(data)
     }),
@@ -316,7 +335,7 @@ export const api = {
     fetchApi<{ success: boolean; message: string }>(`/db/ftp-staging-configs/${id}`, {
       method: 'DELETE'
     }),
-  inspectFtpFileStructure: (connectionId: string, filePath: string) =>
+  inspectFtpFileStructure: (connectionId: string, filePath: string, connectionDetails?: any) =>
     fetchApi<{
       fileName: string;
       fileType: 'EXCEL' | 'CSV' | 'XML' | 'TXT' | 'JSON' | 'OTHER';
@@ -332,9 +351,11 @@ export const api = {
       error?: string;
     }>('/db/ftp-staging/inspect-structure', {
       method: 'POST',
-      body: JSON.stringify({ connectionId, filePath })
+      body: JSON.stringify({ connectionId, filePath, ...(connectionDetails || {}) })
     }),
-  discoverFtpFilesRecursive: (connectionId: string, baseDir?: string) =>
+  inspectFtpStructure: (connectionId: string, filePath: string, connectionDetails?: any) =>
+    api.inspectFtpFileStructure(connectionId, filePath, connectionDetails),
+  discoverFtpFilesRecursive: (connectionId: string, baseDir?: string, connectionDetails?: any) =>
     fetchApi<{
       name: string;
       fullPath: string;
@@ -344,9 +365,9 @@ export const api = {
       fileType: 'EXCEL' | 'CSV' | 'XML' | 'TXT' | 'JSON' | 'OTHER';
     }[]>('/db/ftp-staging/discover-recursive', {
       method: 'POST',
-      body: JSON.stringify({ connectionId, baseDir })
+      body: JSON.stringify({ connectionId, baseDir, ...(connectionDetails || {}) })
     }),
-  testFtpPreviewParse: (connectionId: string, config: any) =>
+  testFtpPreviewParse: (connectionId: string, config: any, connectionDetails?: any) =>
     fetchApi<{
       success: boolean;
       fileName: string;
@@ -364,6 +385,20 @@ export const api = {
       rawLinesSample: string[];
       parsedRowsSample: Record<string, any>[];
       mappedRowsSample: Record<string, any>[];
+      allColumnsAnalysis?: Array<{
+        colIndex: number;
+        header: string;
+        cleanHeader: string;
+        hasData: boolean;
+        nonEmptyCount: number;
+        totalRows: number;
+        dataPercentage: number;
+        sampleValues: string[];
+        isMergedSpan: boolean;
+        isPrimaryDataColumn: boolean;
+        isExcludedEmpty: boolean;
+        suggestedDataType?: string;
+      }>;
       footerSkippedLines: string[];
       structureSummary?: {
         totalColumnsDetected: number;
@@ -374,15 +409,17 @@ export const api = {
       error?: string;
     }>('/db/ftp-staging/test-parse', {
       method: 'POST',
-      body: JSON.stringify({ connectionId, config })
+      body: JSON.stringify({ connectionId, config, ...(connectionDetails || {}) })
     }),
-  stageFtpFile: (data: { configId?: string; config?: any; connectionId?: string }) =>
+  stageFtpFile: (data: { configId?: string; config?: any; connectionId?: string; [key: string]: any }) =>
     fetchApi<{
       success: boolean;
       stagingTableName: string;
       stagedCount: number;
       filesProcessedCount?: number;
       filesProcessed?: string[];
+      filesAlreadyIngestedCount?: number;
+      filesAlreadyIngested?: string[];
       executionTimeMs: number;
       message: string;
       skippedMismatches?: any[];
@@ -402,6 +439,8 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(options)
     }),
+  triggerFtpScheduledIngestion: (options: { targetType?: string; connectionId?: string; forceAll?: boolean } = {}) =>
+    api.runScheduledFtpStaging(options),
   dispatchSimulatedExternalRequest: (data: { teamId: string; channel: string; senderAddress: string; rawBody: string }) =>
     fetchApi<{ success: boolean; id?: string }>('/messages/intake', {
       method: 'POST',
@@ -423,6 +462,83 @@ export const api = {
     fetchApi<{ success: boolean }>('/db/ftp-staging/resolve-unconfigured-folder', {
       method: 'POST',
       body: JSON.stringify({ folderPath, connectionId })
+    }),
+  detectFtpPatterns: (
+    params: {
+      connectionId: string;
+      files?: any[];
+      baseDir?: string;
+      host?: string;
+      port?: number;
+      username?: string;
+      password?: string;
+      databaseName?: string;
+    } | string,
+    files?: any[],
+    baseDir?: string,
+    connectionDetails?: any
+  ) => {
+    const bodyPayload = typeof params === 'object'
+      ? params
+      : { connectionId: params, files, baseDir, ...(connectionDetails || {}) };
+    return fetchApi<Array<{
+      pattern: string;
+      cleanPattern: string;
+      fileType: 'EXCEL' | 'CSV' | 'XML' | 'TXT' | 'OTHER';
+      fileCount: number;
+      folders: string[];
+      suggestedTableName: string;
+      ingestedFileCount?: number;
+      pendingFileCount?: number;
+      sampleFile: {
+        name: string;
+        fullPath: string;
+        relativeFolder: string;
+        size: number;
+        fileType: string;
+      };
+      matchedFiles: Array<{
+        name: string;
+        fullPath: string;
+        relativeFolder: string;
+        size: number;
+        fileType: string;
+        isIngested?: boolean;
+        ingestedAt?: string;
+        recordsStaged?: number;
+        targetTable?: string;
+      }>;
+    }>>('/db/ftp-staging/detect-patterns', {
+      method: 'POST',
+      body: JSON.stringify(bodyPayload)
+    });
+  },
+  getIngestedFtpFiles: (connectionId?: string, pattern?: string) =>
+    fetchApi<Array<{
+      id: string;
+      ftpConnectionId: string;
+      fileName: string;
+      filePath: string;
+      relativeFolder: string;
+      fileSize: number;
+      fileModifiedAt?: string;
+      fileFormat: string;
+      filePattern: string;
+      stagingConfigId?: string;
+      targetTableName: string;
+      recordsStaged: number;
+      ingestionStatus: string;
+      ingestedAt: string;
+      lastCheckedAt?: string;
+    }>>(`/db/ftp-staging/ingested-files?${connectionId ? `connectionId=${connectionId}` : ''}${pattern ? `&pattern=${encodeURIComponent(pattern)}` : ''}`),
+  removeIngestedFtpFile: (id: string) =>
+    fetchApi<{ success: boolean }>(`/db/ftp-staging/ingested-files/${id}`, {
+      method: 'DELETE'
+    }),
+  resetFtpPatternLedger: (connectionId: string, filePattern: string) =>
+    fetchApi<{ success: boolean; count: number }>('/db/ftp-staging/reset-pattern-ledger', {
+      method: 'POST',
+      body: JSON.stringify({ connectionId, filePattern })
     }),
   getSystems: () => fetchApi<any[]>('/systems'),
   createSystem: (sysData: any) =>
@@ -757,6 +873,8 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(template)
     }),
+  createFileMappingTemplate: (template: Partial<FileIngestionMappingTemplate>) =>
+    api.saveFileMappingTemplate(template),
   deleteFileMappingTemplate: (id: string) =>
     fetchApi<{ success: boolean; id: string }>(`/file-mapping-templates/${id}`, {
       method: 'DELETE'
@@ -1629,8 +1747,19 @@ export const api = {
       }
     ),
 
-  executeHashtagFile: (tag: string, payload: { executedBy: string; fileRows: any[]; taskId?: string; teamId?: string }) =>
-    fetchApi<{ runId: string; valid: boolean; missingColumns: string[]; enrichedRecords: any[]; errors: string[] }>(
+  executeHashtagFile: (tag: string, payload: { executedBy: string; fileRows: any[]; taskId?: string; teamId?: string; executionMode?: 'dry_run' | 'execute' }) =>
+    fetchApi<{ 
+      runId: string; 
+      valid: boolean; 
+      missingColumns: string[]; 
+      enrichedRecords: any[]; 
+      errors: string[];
+      newlyCollectedCount?: number;
+      fixedCount?: number;
+      waitingCount?: number;
+      failedCount?: number;
+      stats?: Record<string, any>;
+    }>(
       `/hashtags/${encodeURIComponent(tag)}/execute-file`,
       {
         method: 'POST',

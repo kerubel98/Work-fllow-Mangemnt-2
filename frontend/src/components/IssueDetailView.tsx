@@ -80,6 +80,11 @@ export default function IssueDetailView({
   const [workspaceSubView, setWorkspaceSubView] = useState<'sandbox' | 'investigation' | 'open_case'>(
     activeMode === 'open_case' ? 'open_case' : 'investigation'
   );
+  const [activeCasePreFill, setActiveCasePreFill] = useState<TaskPreFillFromMessage | null>(() => mailboxTaskPreFill || null);
+
+  useEffect(() => {
+    setActiveCasePreFill(mailboxTaskPreFill || null);
+  }, [mailboxTaskPreFill]);
 
   useEffect(() => {
     if (onWorkspaceSubViewChange) {
@@ -2704,35 +2709,15 @@ export default function IssueDetailView({
       )}
 
       {currentMode === 'workspace' && (
-        <div className={workspaceSubView === 'investigation' ? "h-full flex flex-col min-h-0" : "space-y-3.5"}>
-          {/* Simplified Workspace Header & Navigation Toolbar (Uniform White Theme, Single Row - shown for sandbox & case creation) */}
-          {workspaceSubView !== 'investigation' && (
+        <div className={workspaceSubView === 'investigation' || workspaceSubView === 'open_case' ? "h-full flex flex-col min-h-0" : "space-y-3.5"}>
+          {/* Simplified Workspace Header & Navigation Toolbar (Uniform White Theme, Single Row - shown for SQL Query Sandbox) */}
+          {workspaceSubView === 'sandbox' && (
             <div className="bg-white border border-slate-200/90 rounded-2xl px-3 py-1.5 text-slate-800 shadow-xs flex items-center justify-between gap-2 overflow-x-auto no-scrollbar">
               {/* Left: Compact Title & Active Context + DB & Table Selectors along the title */}
               <div className="flex items-center gap-2 min-w-0">
                 <span className="p-1.5 bg-blue-50 rounded-xl text-[#155DFC] border border-blue-100 shrink-0">
-                  {workspaceSubView === 'sandbox' ? (
-                    <Terminal size={15} />
-                  ) : workspaceSubView === 'open_case' ? (
-                    <Plus size={15} />
-                  ) : (
-                    <DatabaseZap size={15} />
-                  )}
+                  <Terminal size={15} />
                 </span>
-                {workspaceSubView !== 'sandbox' && (
-                  <div className="flex items-center gap-2 shrink-0">
-                    <h2 className="text-sm font-bold text-slate-900 tracking-tight">
-                      {workspaceSubView === 'open_case'
-                        ? 'New Case Intake'
-                        : 'Investigation Workspace'}
-                    </h2>
-                    {selectedIssue && workspaceSubView === 'investigation' && (
-                      <span className="px-2 py-0.5 rounded-lg bg-blue-50 text-blue-700 font-mono text-[11px] font-semibold border border-blue-200">
-                        Case #{selectedIssue.id}
-                      </span>
-                    )}
-                  </div>
-                )}
 
                 {/* DB/BO and Table Selectors (when in SQL Sandbox - Compact Single Row Widths) */}
                 {workspaceSubView === 'sandbox' && (
@@ -2903,25 +2888,15 @@ export default function IssueDetailView({
                 <button
                   type="button"
                   id="btn-workspace-open-case-nav"
-                  onClick={() => setWorkspaceSubView(workspaceSubView === 'open_case' ? 'investigation' : 'open_case')}
-                  className={`px-2.5 py-1 text-xs font-semibold rounded-lg flex items-center gap-1 transition-all cursor-pointer ${
-                    workspaceSubView === 'open_case'
-                      ? 'bg-emerald-600 text-white shadow-xs font-bold'
-                      : 'text-slate-600 hover:text-slate-900 hover:bg-white'
-                  }`}
-                  title={workspaceSubView === 'open_case' ? 'Back to Investigation' : 'Open New Case'}
+                  onClick={() => {
+                    setActiveCasePreFill(null);
+                    setWorkspaceSubView('open_case');
+                  }}
+                  className="px-2.5 py-1 text-xs font-semibold rounded-lg flex items-center gap-1 transition-all cursor-pointer text-slate-600 hover:text-slate-900 hover:bg-white"
+                  title="Open New Case"
                 >
-                  {workspaceSubView === 'open_case' ? (
-                    <>
-                      <ArrowLeft size={13} />
-                      <span>Back</span>
-                    </>
-                  ) : (
-                    <>
-                      <Plus size={13} />
-                      <span>Open Case</span>
-                    </>
-                  )}
+                  <Plus size={13} />
+                  <span>Open Case</span>
                 </button>
               </div>
             </div>
@@ -2954,7 +2929,7 @@ export default function IssueDetailView({
               systems={systems}
               teams={teams}
               onCreateIssue={onCreateIssue}
-              initialPreFill={mailboxTaskPreFill}
+              initialPreFill={activeCasePreFill}
               onBackToWorkspace={() => setWorkspaceSubView('investigation')}
               onTaskCreated={(generatedTaskId) => {
                 setWorkspaceSubView('investigation');
@@ -3448,7 +3423,10 @@ export default function IssueDetailView({
                 </button>
                 <button
                   type="button"
-                  onClick={() => setWorkspaceSubView('open_case')}
+                  onClick={() => {
+                    setActiveCasePreFill(null);
+                    setWorkspaceSubView('open_case');
+                  }}
                   className="px-4 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-semibold rounded-xl flex items-center space-x-1.5 border border-slate-200 transition-all cursor-pointer"
                 >
                   <Plus size={14} className="text-blue-600" />
@@ -3494,7 +3472,10 @@ export default function IssueDetailView({
                 onDeleteIssue={onDeleteIssue}
                 onSendChatMessage={onSendChatMessage}
                 onSubmitQueryApproval={onSubmitQueryApproval}
-                onOpenNewCase={() => setWorkspaceSubView('open_case')}
+                onOpenNewCase={() => {
+                  setActiveCasePreFill(null);
+                  setWorkspaceSubView('open_case');
+                }}
               />
             </ErrorBoundary>
           )}

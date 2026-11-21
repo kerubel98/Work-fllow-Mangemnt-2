@@ -33,6 +33,7 @@ export function DataSetupLandingView({
 
   // Active Resource for Resource Detail View (Screens 69 & 70)
   const [selectedResourceDetail, setSelectedResourceDetail] = useState<any | null>(null);
+  const [mappingCount, setMappingCount] = useState<number>(119);
 
   // Initial resources matching 61_resources_list.png
   const [resources, setResources] = useState<any[]>([
@@ -104,9 +105,13 @@ export function DataSetupLandingView({
     let isMounted = true;
     Promise.allSettled([
       api.getDatabases(),
-      api.getFtpStagingConfigs()
-    ]).then(([dbsRes, ftpRes]) => {
+      api.getFtpStagingConfigs(),
+      api.getGlobalStandardDirectory()
+    ]).then(([dbsRes, ftpRes, dirRes]) => {
       if (!isMounted) return;
+      if (dirRes.status === 'fulfilled' && Array.isArray(dirRes.value) && dirRes.value.length > 0) {
+        setMappingCount(dirRes.value.length);
+      }
       const loadedDbs = dbsRes.status === 'fulfilled' && Array.isArray(dbsRes.value) ? dbsRes.value : [];
       const loadedFtp = ftpRes.status === 'fulfilled' && Array.isArray(ftpRes.value) ? ftpRes.value : [];
 
@@ -114,19 +119,31 @@ export function DataSetupLandingView({
         setResources(prev => {
           const list = [...prev];
           loadedDbs.forEach(db => {
-            if (!list.some(r => r.id === db.id || r.name?.toLowerCase() === db.name?.toLowerCase())) {
-              list.push({
-                id: db.id,
-                name: db.name || db.database,
-                type: db.type?.toUpperCase() || 'POSTGRESQL',
-                host: `${db.host || '127.0.0.1'}:${db.port || 5432}`,
-                contents: `${(db.availableTables || db.allowedTables || []).length} tables`,
-                setupStep: 5,
-                totalSteps: 5,
-                status: db.status === 'ACTIVE' ? 'READY' : 'OFFLINE',
-                statusLabel: db.status === 'ACTIVE' ? 'Ready' : 'Offline',
-                isMapped: true
-              });
+            const isFtp = db.type?.toUpperCase() === 'SFTP' || db.type?.toUpperCase() === 'FTP';
+            const matchingFtp = loadedFtp.filter((c: any) => c.connectionId === db.id || c.ftpConnectionId === db.id);
+            const isOnline = db.status === 'online' || db.status === 'ACTIVE' || db.status === 'CONNECTED';
+            const mappedItem = {
+              id: db.id,
+              name: db.name || db.databaseName || db.database,
+              type: db.type?.toUpperCase() || (isFtp ? 'SFTP' : 'POSTGRESQL'),
+              host: `${db.host || '127.0.0.1'}:${db.port || (isFtp ? 22 : 5432)}`,
+              port: db.port || (isFtp ? 22 : 5432),
+              database: db.databaseName || db.database || (isFtp ? '/' : ''),
+              username: db.username,
+              password: db.password,
+              contents: isFtp ? `${matchingFtp.length} feeds` : `${(db.availableTables || db.allowedTables || []).length} tables`,
+              setupStep: 5,
+              totalSteps: 5,
+              status: isOnline ? 'READY' : 'OFFLINE',
+              statusLabel: isOnline ? 'Ready' : 'Offline',
+              isMapped: true
+            };
+
+            const existingIdx = list.findIndex(r => r.id === db.id || r.name?.toLowerCase() === db.name?.toLowerCase());
+            if (existingIdx !== -1) {
+              list[existingIdx] = { ...list[existingIdx], ...mappedItem, id: db.id };
+            } else {
+              list.push(mappedItem);
             }
           });
           return list;
@@ -225,7 +242,7 @@ export function DataSetupLandingView({
               : 'border-transparent text-slate-500 hover:text-slate-800'
           }`}
         >
-          Mapping dictionary <span className="ml-1 px-1.5 py-0.2 bg-slate-100 rounded text-slate-600">499</span>
+          Mapping dictionary <span className="ml-1 px-1.5 py-0.2 bg-slate-100 rounded text-slate-600">{mappingCount}</span>
         </button>
 
         <button

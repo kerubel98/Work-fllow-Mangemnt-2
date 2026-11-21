@@ -100,6 +100,7 @@ export const EscalationRoomView: React.FC<EscalationRoomViewProps> = ({
         await api.postIssueChat(destination.id, {
           senderId: currentUser?.id || 'curr-user',
           senderName: currentUser?.username || 'operator',
+          senderRole: currentUser?.role || 'user',
           text: payloadText
         });
       } catch (e) {
@@ -201,12 +202,12 @@ export const EscalationRoomView: React.FC<EscalationRoomViewProps> = ({
   }, [messages]);
 
   const defaultUsers: User[] = [
-    { id: 'u1', username: 'kirubel_ops', fullName: 'Kirubel Operations', role: 'operational' as any, status: 'active' },
-    { id: 'u2', username: 'manager_alex', fullName: 'Alex Manager', role: 'manager' as any, status: 'active' },
-    { id: 'u3', username: 'tech_sarah', fullName: 'Sarah Technician', role: 'tech' as any, status: 'active' },
-    { id: 'u4', username: 'samuel_tech', fullName: 'Samuel Technician', role: 'tech' as any, status: 'active' },
-    { id: 'u5', username: 'checker_ops_2', fullName: 'Checker Ops 2', role: 'operational' as any, status: 'active' },
-    { id: 'u6', username: 'admin', fullName: 'System Administrator', role: 'admin' as any, status: 'active' }
+    { id: 'u1', username: 'kirubel_ops', name: 'Kirubel Operations', email: 'kirubel@example.com', role: 'operational' as any, isApproved: true, createdAt: '2026-01-01T00:00:00Z' },
+    { id: 'u2', username: 'manager_alex', name: 'Alex Manager', email: 'alex@example.com', role: 'manager' as any, isApproved: true, createdAt: '2026-01-01T00:00:00Z' },
+    { id: 'u3', username: 'tech_sarah', name: 'Sarah Technician', email: 'sarah@example.com', role: 'tech' as any, isApproved: true, createdAt: '2026-01-01T00:00:00Z' },
+    { id: 'u4', username: 'samuel_tech', name: 'Samuel Technician', email: 'samuel@example.com', role: 'tech' as any, isApproved: true, createdAt: '2026-01-01T00:00:00Z' },
+    { id: 'u5', username: 'checker_ops_2', name: 'Checker Ops 2', email: 'checker@example.com', role: 'operational' as any, isApproved: true, createdAt: '2026-01-01T00:00:00Z' },
+    { id: 'u6', username: 'admin', name: 'System Administrator', email: 'admin@example.com', role: 'admin' as any, isApproved: true, createdAt: '2026-01-01T00:00:00Z' }
   ];
   const effectiveUsers = users && users.length > 0 ? users : defaultUsers;
 

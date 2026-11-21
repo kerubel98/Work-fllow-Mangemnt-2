@@ -64,7 +64,7 @@ investigationsRouter.post('/start', async (req: Request, res: Response) => {
       id: taskId,
       workflowId,
       workflowName: workflow.name,
-      issueId,
+      issueId: issueId || req.body.taskId || undefined,
       teamTaskId,
       totalTransactions: plan.transactionCount,
       processedTransactions: 0,

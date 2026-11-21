@@ -6,14 +6,34 @@ import { requireAuth, requireRole, AuthenticatedRequest } from '../middleware/au
 
 export const authRouter = Router();
 
-const PRESET_PASSWORDS: Record<string, string> = {
-  admin: 'admin123',
-  kirubel_ops: 'ops123',
-  tech_sarah: 'tech123',
-  manager_alex: 'mgr123',
-  david_ops: 'ops123',
-  samuel_tech: 'tech123'
-};
+const loginAttempts = new Map<string, { count: number; firstAttempt: number }>();
+const MAX_LOGIN_ATTEMPTS = 15;
+const LOGIN_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
+
+function checkLoginRateLimit(ip: string): boolean {
+  const now = Date.now();
+  const record = loginAttempts.get(ip);
+  if (!record) return true;
+  if (now - record.firstAttempt > LOGIN_WINDOW_MS) {
+    loginAttempts.delete(ip);
+    return true;
+  }
+  return record.count < MAX_LOGIN_ATTEMPTS;
+}
+
+function recordFailedAttempt(ip: string): void {
+  const now = Date.now();
+  const record = loginAttempts.get(ip);
+  if (!record || now - record.firstAttempt > LOGIN_WINDOW_MS) {
+    loginAttempts.set(ip, { count: 1, firstAttempt: now });
+  } else {
+    record.count++;
+  }
+}
+
+function clearLoginAttempts(ip: string): void {
+  loginAttempts.delete(ip);
+}
 
 /**
  * POST /api/auth/login
@@ -21,6 +41,11 @@ const PRESET_PASSWORDS: Record<string, string> = {
  */
 authRouter.post('/login', async (req: Request, res: Response) => {
   try {
+    const ip = req.ip || req.socket.remoteAddress || 'unknown';
+    if (!checkLoginRateLimit(ip)) {
+      return res.status(429).json({ error: 'Too many failed login attempts. Please try again in 5 minutes.' });
+    }
+
     const { username, password } = req.body;
     if (!username || !password) {
       return res.status(400).json({ error: 'Username and password are required.' });
@@ -28,6 +53,7 @@ authRouter.post('/login', async (req: Request, res: Response) => {
 
     const user = await repo.getUserByUsername(username);
     if (!user) {
+      recordFailedAttempt(ip);
       return res.status(401).json({ error: 'Invalid credentials or user does not exist.' });
     }
 
@@ -35,23 +61,24 @@ authRouter.post('/login', async (req: Request, res: Response) => {
       return res.status(403).json({ error: 'Account registration is pending administrator approval.' });
     }
 
-    // Password verification: Production mode strictly enforces database password_hash.
-    // Development mode allows preset passwords and dev backdoor per architectural policy.
-    const isDev = process.env.NODE_ENV !== 'production';
-    const expectedPass = isDev ? (PRESET_PASSWORDS[user.username] || 'password123') : null;
-    const isDevBackdoor = isDev && (password === 'admin123');
-
+    // Password verification strictly enforces database password_hash.
     let isValid = false;
     if (user.password_hash) {
       isValid = verifyPassword(password, user.password_hash);
-    }
-    if (!isValid && isDev) {
-      isValid = (expectedPass ? verifyPassword(password, expectedPass) : false) || isDevBackdoor;
+    } else if (process.env.NODE_ENV !== 'production') {
+      // In development, auto-initialize password_hash for legacy seeded accounts without a hash
+      const newHash = hashPassword(password);
+      user.password_hash = newHash;
+      await repo.createUser(user);
+      isValid = true;
     }
 
     if (!isValid) {
+      recordFailedAttempt(ip);
       return res.status(401).json({ error: 'Invalid password.' });
     }
+
+    clearLoginAttempts(ip);
 
     // Generate JWT token
     const token = generateToken({
@@ -81,8 +108,12 @@ authRouter.post('/login', async (req: Request, res: Response) => {
 authRouter.post('/register', async (req: Request, res: Response) => {
   try {
     const { username, email, role, password } = req.body;
-    if (!username || !email || !role) {
-      return res.status(400).json({ error: 'Username, email, and role are required.' });
+    if (!username || !email || !role || !password) {
+      return res.status(400).json({ error: 'Username, email, role, and password are required.' });
+    }
+
+    if (typeof password !== 'string' || password.length < 6) {
+      return res.status(400).json({ error: 'Password must be at least 6 characters long.' });
     }
 
     const users = await repo.getUsers();
@@ -94,6 +125,8 @@ authRouter.post('/register', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'User with this username or email already exists.' });
     }
 
+    const hashedPassword = hashPassword(password);
+
     const newUser: User = {
       id: `usr-${Date.now()}`,
       username,
@@ -102,7 +135,8 @@ authRouter.post('/register', async (req: Request, res: Response) => {
       isApproved: false,
       createdAt: new Date().toISOString(),
       canExecuteSelect: role === 'admin' || role === 'technical' || role === 'operational' || role === 'managerial',
-      canExecuteUpdate: role === 'admin' || role === 'technical'
+      canExecuteUpdate: role === 'admin' || role === 'technical',
+      password_hash: hashedPassword
     };
 
     const saved = await repo.createUser(newUser);

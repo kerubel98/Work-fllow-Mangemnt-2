@@ -7,9 +7,9 @@ import React, { useState, useEffect } from 'react';
 import { User, Team, AppNotification, NotificationType } from '../types';
 import {
   Briefcase, Inbox, Hash, Users, MessageSquare, BarChart3,
-  GitFork, Layers, UserCheck, Database, Sliders, ShieldCheck,
+  Layers, UserCheck, Database, Sliders, ShieldCheck,
   Settings, PanelLeftClose, PanelLeftOpen, Bell, ArrowRight,
-  CheckSquare, AlertCircle, X, CheckCheck, Trash2, Terminal
+  CheckSquare, AlertCircle, X, CheckCheck, Trash2
 } from 'lucide-react';
 import { isAuthorizedTabForUser } from '../utils/navigationPermissions';
 import { useGovernance } from '../context/GovernanceContext';
@@ -54,11 +54,11 @@ export default function SideNav({
   notifications = [],
   unreadDirectMessageCount = 0,
   pendingProposalsCount = 0,
-  openIssuesCount = 237,
-  intakeCount = 60,
-  automationsCount = 7,
-  onlineDatabasesCount = 3,
-  totalDatabasesCount = 4,
+  openIssuesCount = 0,
+  intakeCount = 0,
+  automationsCount = 0,
+  onlineDatabasesCount = 0,
+  totalDatabasesCount = 0,
   onMarkNotificationAsRead,
   onMarkAllNotificationsAsRead,
   onClearNotifications,
@@ -331,22 +331,10 @@ export default function SideNav({
           {/* GROUP 4: BUILD */}
           {groupHeader('BUILD')}
           {navButton(
-            ['workflows', 'workflow_studio'],
-            'workflows',
-            'Workflows',
-            <GitFork size={15} />
-          )}
-          {navButton(
-            ['rules', 'rules_library'],
+            ['rules', 'rules_library', 'workflows', 'workflow_studio', 'query_sandbox', 'sql_sandbox'],
             'rules',
             'Rules',
             <Layers size={15} />
-          )}
-          {navButton(
-            ['query_sandbox', 'sql_sandbox'],
-            'query_sandbox',
-            'Query sandbox',
-            <Terminal size={15} />
           )}
 
           {/* GROUP 5: ADMIN */}

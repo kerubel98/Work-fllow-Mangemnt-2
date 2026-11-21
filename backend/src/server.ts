@@ -6,6 +6,7 @@ import fs from 'fs';
 import os from 'os';
 
 import { connectPostgres, isPostgresConnected } from './config/postgres.js';
+import { runMigrations } from './database/migrate.js';
 import { seedPostgres } from './config/seedPostgres.js';
 import { authRouter } from './routes/auth.js';
 import { issuesRouter } from './routes/issues.js';
@@ -32,50 +33,41 @@ import { assetSharingRouter } from './routes/assetSharing.js';
 import { mirrorTableManager } from './services/mirrorTableManager.js';
 import { ftpFileStagingService } from './services/ftpFileStagingService.js';
 import { hashtagSchedulerService } from './services/hashtagSchedulerService.js';
+import { optionalAuth, requireAuth } from './middleware/auth.js';
 
 // dotenv/config auto-loads
 
 const app = express();
 const PORT = process.env.PORT || 5002;
 
-app.use(cors({ origin: '*' }));
+const allowedOrigins = process.env.ALLOWED_ORIGINS 
+  ? process.env.ALLOWED_ORIGINS.split(',').map(s => s.trim())
+  : ['http://localhost:3000', 'http://127.0.0.1:3000', 'http://localhost:5173'];
+
+app.use(cors({
+  origin: (origin, callback) => {
+    if (!origin || allowedOrigins.includes(origin) || process.env.NODE_ENV !== 'production') {
+      return callback(null, true);
+    }
+    return callback(new Error('CORS Not Allowed by Policy'), false);
+  },
+  credentials: true
+}));
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
-// Request logger middleware
+// Request logger middleware (logs req.path without query string to protect credentials and PII - BE-28)
 app.use((req, _res, next) => {
-  if (!req.url.startsWith('/api/events')) {
-    console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
+  if (!req.path.startsWith('/api/events')) {
+    console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
   }
   next();
 });
 
-// Route mounts
-app.use('/api/auth', authRouter);
-app.use('/api/issues', issuesRouter);
-app.use('/api/db', databaseRouter);
-app.use('/api/ai', aiRouter);
-app.use('/api/organizations', organizationRouter);
-app.use('/api/transactions', transactionSettingsRouter);
-app.use('/api/teams', teamsRouter);
-app.use('/api/workflows', workflowsRouter);
-app.use('/api/investigations', investigationsRouter);
-app.use('/api/validation-boxes', validationBoxesRouter);
-app.use('/api/resolutions', resolutionsRouter);
-app.use('/api/approvals', approvalsRouter);
-app.use('/api/workflow-bundles', workflowBundlesRouter);
-app.use('/api/assets', assetSharingRouter);
-app.use('/api/settings/proposals', workspaceSettingsProposalsRouter);
-app.use('/api/metrics', metricsRouter);
-app.use('/api/escalations', escalationsRouter);
-app.use('/api/sandbox', sandboxRouter);
-app.use('/api/messages', messagesRouter);
-app.use('/api/external-requests', messagesRouter);
-app.use('/api', eventsRouter);
-app.use('/api', collaborationRouter);
-app.use('/api', miscRouter);
+// Decodes JWT Bearer token into req.user for authenticated sessions
+app.use(optionalAuth);
 
-
+// 1. Public Unauthenticated Endpoints
 app.get('/api/health', (_req, res) => {
   res.json({
     status: 'OK',
@@ -83,6 +75,46 @@ app.get('/api/health', (_req, res) => {
     database: isPostgresConnected ? 'PostgreSQL (operational_workflow_db)' : 'Unavailable',
     uptimeSeconds: process.uptime(),
     timestamp: new Date().toISOString()
+  });
+});
+
+app.use('/api/auth', authRouter);
+app.use('/api', eventsRouter);
+
+// 2. Protected Operational Routes (Require Valid JWT Token)
+app.use('/api/issues', requireAuth, issuesRouter);
+app.use('/api/db', requireAuth, databaseRouter);
+app.use('/api/ai', requireAuth, aiRouter);
+app.use('/api/organizations', requireAuth, organizationRouter);
+app.use('/api/transactions', requireAuth, transactionSettingsRouter);
+app.use('/api/teams', requireAuth, teamsRouter);
+app.use('/api/workflows', requireAuth, workflowsRouter);
+app.use('/api/investigations', requireAuth, investigationsRouter);
+app.use('/api/validation-boxes', requireAuth, validationBoxesRouter);
+app.use('/api/resolutions', requireAuth, resolutionsRouter);
+app.use('/api/approvals', requireAuth, approvalsRouter);
+app.use('/api/workflow-bundles', requireAuth, workflowBundlesRouter);
+app.use('/api/assets', requireAuth, assetSharingRouter);
+app.use('/api/settings/proposals', requireAuth, workspaceSettingsProposalsRouter);
+app.use('/api/metrics', requireAuth, metricsRouter);
+app.use('/api/escalations', requireAuth, escalationsRouter);
+app.use('/api/sandbox', requireAuth, sandboxRouter);
+app.use('/api/messages', requireAuth, messagesRouter);
+app.use('/api/external-requests', requireAuth, messagesRouter);
+app.use('/api', requireAuth, collaborationRouter);
+app.use('/api', requireAuth, miscRouter);
+
+// API 404 Handler (BE-24)
+app.all('/api/*', (req, res) => {
+  res.status(404).json({ error: `Cannot ${req.method} ${req.path} - Endpoint not found.` });
+});
+
+// Global Express Error Handler (BE-24)
+app.use((err: any, req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  console.error(`[UnhandledError] ${req.method} ${req.path}:`, err.message || err);
+  const status = err.status || err.statusCode || 500;
+  res.status(status).json({
+    error: err.message || 'Internal Server Error'
   });
 });
 
@@ -100,10 +132,15 @@ function getLocalIpAddresses(): string[] {
   return ips;
 }
 
-// Initialize Database connections & seed data then start Express server
+// Initialize Database connections & run migrations then start Express server
 async function startServer() {
-  await connectPostgres();
-  await seedPostgres();
+  try {
+    await runMigrations();
+  } catch (migErr: any) {
+    console.error('❌ [ServerBoot] Fatal: Database migrations failed to execute cleanly:', migErr);
+    process.exit(1);
+  }
+
   await mirrorTableManager.provisionAllConnectedDbMirrors().catch(err => {
     console.warn('[ServerBoot] Error auto-provisioning mirror tables on boot:', err.message);
   });
@@ -117,9 +154,9 @@ async function startServer() {
       const { queryPg } = await import('./config/postgres.js');
       const sweepRes = await queryPg(`
         UPDATE issues i
-        SET status = 'Failed',
+        SET status = 'FAILED',
             description = COALESCE(description, '') || ' [Orphaned in-flight job swept on application restart: heartbeat expired]'
-        WHERE i.status = 'In Progress'
+        WHERE i.status IN ('IN_PROGRESS', 'In Progress')
           AND NOT EXISTS (
             SELECT 1 FROM task_batch_heartbeats h
             WHERE h.task_id = i.id 

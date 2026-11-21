@@ -7,14 +7,15 @@ import React, { useState, useEffect, useCallback, Suspense, lazy } from 'react';
 import {
   User, Issue, HashtagPreset, Plugin, DatabaseConnection,
   Transaction, ChatMessage, EnvironmentSystem, QueryApprovalRequest,
-  DbAccessRequest, ConnectionUsageLog, UserRole, Team, TeamTask, TeamInsight, TeamDiscussionMessage, AppNotification, DirectMessage, TaskPreFillFromMessage
+  DbAccessRequest, ConnectionUsageLog, UserRole, Team, TeamTask, TeamInsight, TeamDiscussionMessage, AppNotification, DirectMessage, TaskPreFillFromMessage,
+  MessageReplyInfo, MessageForwardInfo
 } from './types';
 import {
   INITIAL_USERS, INITIAL_HASHTAGS, INITIAL_PLUGINS,
   INITIAL_DBS, INITIAL_ISSUES, INITIAL_SYSTEMS, INITIAL_TEAMS,
   INITIAL_TEAM_TASKS, INITIAL_TEAM_INSIGHTS, INITIAL_TEAM_MESSAGES, INITIAL_NOTIFICATIONS, INITIAL_DIRECT_MESSAGES
 } from './mockData';
-import { api } from './api/client';
+import { api, getAuthToken } from './api/client';
 import LoginScreen from './components/LoginScreen';
 import SideNav from './components/SideNav';
 import ErrorBoundary from './components/ErrorBoundary';
@@ -203,7 +204,13 @@ export default function App() {
   useEffect(() => {
     let isMounted = true;
 
+    const handleExpired = () => {
+      setCurrentUser(null);
+    };
+    window.addEventListener('auth_session_expired', handleExpired);
+
     const hydrateFromBackend = async () => {
+      if (!getAuthToken()) return;
       try {
         // Stage 1: Critical Workspace Entities (authoritatively from PostgreSQL - Rule 23)
         const [
@@ -242,13 +249,13 @@ export default function App() {
         if (fetchedDatabases.status === 'fulfilled' && Array.isArray(fetchedDatabases.value)) {
           setDatabases(fetchedDatabases.value);
         }
-        if (fetchedSystems.status === 'fulfilled' && Array.isArray(fetchedSystems.value) && fetchedSystems.value.length > 0) {
+        if (fetchedSystems.status === 'fulfilled' && Array.isArray(fetchedSystems.value)) {
           setSystems(fetchedSystems.value);
         }
-        if (fetchedTeams.status === 'fulfilled' && Array.isArray(fetchedTeams.value) && fetchedTeams.value.length > 0) {
+        if (fetchedTeams.status === 'fulfilled' && Array.isArray(fetchedTeams.value)) {
           setTeams(fetchedTeams.value);
         }
-        if (fetchedHashtags.status === 'fulfilled' && Array.isArray(fetchedHashtags.value) && fetchedHashtags.value.length > 0) {
+        if (fetchedHashtags.status === 'fulfilled' && Array.isArray(fetchedHashtags.value)) {
           setHashtags(fetchedHashtags.value);
         }
 
@@ -286,31 +293,31 @@ export default function App() {
 
             if (!isMounted) return;
 
-            if (fetchedTeamTasks.status === 'fulfilled' && Array.isArray(fetchedTeamTasks.value) && fetchedTeamTasks.value.length > 0) {
+            if (fetchedTeamTasks.status === 'fulfilled' && Array.isArray(fetchedTeamTasks.value)) {
               setTeamTasks(fetchedTeamTasks.value);
             }
-            if (fetchedTeamInsights.status === 'fulfilled' && Array.isArray(fetchedTeamInsights.value) && fetchedTeamInsights.value.length > 0) {
+            if (fetchedTeamInsights.status === 'fulfilled' && Array.isArray(fetchedTeamInsights.value)) {
               setTeamInsights(fetchedTeamInsights.value);
             }
-            if (fetchedTeamMessages.status === 'fulfilled' && Array.isArray(fetchedTeamMessages.value) && fetchedTeamMessages.value.length > 0) {
+            if (fetchedTeamMessages.status === 'fulfilled' && Array.isArray(fetchedTeamMessages.value)) {
               setTeamMessages(fetchedTeamMessages.value);
             }
-            if (fetchedDirectMessages.status === 'fulfilled' && Array.isArray(fetchedDirectMessages.value) && fetchedDirectMessages.value.length > 0) {
+            if (fetchedDirectMessages.status === 'fulfilled' && Array.isArray(fetchedDirectMessages.value)) {
               setDirectMessages(fetchedDirectMessages.value);
             }
-            if (fetchedNotifications.status === 'fulfilled' && Array.isArray(fetchedNotifications.value) && fetchedNotifications.value.length > 0) {
+            if (fetchedNotifications.status === 'fulfilled' && Array.isArray(fetchedNotifications.value)) {
               setNotifications(fetchedNotifications.value);
             }
-            if (fetchedApprovals.status === 'fulfilled' && Array.isArray(fetchedApprovals.value) && fetchedApprovals.value.length > 0) {
+            if (fetchedApprovals.status === 'fulfilled' && Array.isArray(fetchedApprovals.value)) {
               setQueryApprovals(fetchedApprovals.value);
             }
-            if (fetchedDbRequests.status === 'fulfilled' && Array.isArray(fetchedDbRequests.value) && fetchedDbRequests.value.length > 0) {
+            if (fetchedDbRequests.status === 'fulfilled' && Array.isArray(fetchedDbRequests.value)) {
               setDbAccessRequests(fetchedDbRequests.value);
             }
-            if (fetchedLogs.status === 'fulfilled' && Array.isArray(fetchedLogs.value) && fetchedLogs.value.length > 0) {
+            if (fetchedLogs.status === 'fulfilled' && Array.isArray(fetchedLogs.value)) {
               setConnectionUsageLogs(fetchedLogs.value);
             }
-            if (fetchedPlugins.status === 'fulfilled' && Array.isArray(fetchedPlugins.value) && fetchedPlugins.value.length > 0) {
+            if (fetchedPlugins.status === 'fulfilled' && Array.isArray(fetchedPlugins.value)) {
               setPlugins(fetchedPlugins.value);
             }
           } catch {
@@ -323,7 +330,10 @@ export default function App() {
     };
 
     hydrateFromBackend();
-    return () => { isMounted = false; };
+    return () => {
+      isMounted = false;
+      window.removeEventListener('auth_session_expired', handleExpired);
+    };
   }, []);
 
   // Real-time EventSource (SSE) listener for multi-device cross-browser live push
@@ -1132,7 +1142,7 @@ export default function App() {
 
   return (
     <div className="h-full w-full overflow-hidden bg-[#F8FAFC] text-slate-900 flex flex-col font-sans" id="applet-viewport">
-      {!currentUser ? (
+      {(!currentUser || !getAuthToken()) ? (
         <div className="h-full w-full overflow-y-auto">
           <LoginScreen
             users={users}
@@ -1158,11 +1168,11 @@ export default function App() {
               notifications={notifications}
               unreadDirectMessageCount={unreadDirectMessageCount}
               pendingProposalsCount={queryApprovals.filter(q => q.status === 'pending').length}
-              openIssuesCount={issues.filter(i => i.status !== 'Closed').length || 237}
-              intakeCount={60}
-              automationsCount={hashtags.length || 7}
-              onlineDatabasesCount={onlineCount || 3}
-              totalDatabasesCount={databases.length || 4}
+              openIssuesCount={issues.filter(i => i.status !== 'Closed').length}
+              intakeCount={0}
+              automationsCount={hashtags.length}
+              onlineDatabasesCount={onlineCount}
+              totalDatabasesCount={databases.length}
               onMarkNotificationAsRead={handleMarkNotificationAsRead}
               onMarkAllNotificationsAsRead={handleMarkAllNotificationsAsRead}
               onClearNotifications={handleClearNotifications}
@@ -1277,89 +1287,99 @@ export default function App() {
                 )}
 
                 {(activeNavigation === 'direct_chat' || activeNavigation === 'messages') && (
-                  <PersonalChat
-                    currentUser={effectiveUser || currentUser}
-                    users={users}
-                    teams={teams}
-                    hashtags={hashtags}
-                    directMessages={directMessages}
-                    initialSelectedUserId={deepLinkDirectUserId}
-                    onSendDirectMessage={handleSendDirectMessage}
-                    onMarkDirectMessagesRead={handleMarkDirectMessagesRead}
-                    onNavigateToTeamWorkspace={() => setActiveNavigation('team_workspace')}
-                    onNavigateToTaskCreation={handleCreateTaskFromMessage}
-                  />
+                  <ErrorBoundary fallbackTitle="Chat Workspace Error">
+                    <PersonalChat
+                      currentUser={effectiveUser || currentUser}
+                      users={users}
+                      teams={teams}
+                      hashtags={hashtags}
+                      directMessages={directMessages}
+                      initialSelectedUserId={deepLinkDirectUserId}
+                      onSendDirectMessage={handleSendDirectMessage}
+                      onMarkDirectMessagesRead={handleMarkDirectMessagesRead}
+                      onNavigateToTeamWorkspace={() => setActiveNavigation('team_workspace')}
+                      onNavigateToTaskCreation={handleCreateTaskFromMessage}
+                    />
+                  </ErrorBoundary>
                 )}
 
                 {activeNavigation === 'db_explorer' && isAuthorizedTab('db_explorer') && (
-                  <DbQueryTool
-                    databases={databases}
-                    transactions={transactions}
-                    currentUser={effectiveUser || currentUser}
-                    onAddDatabase={handleAddDatabase}
-                    onRequestDbAccess={handleRequestDbAccess}
-                    onLogQueryExecution={handleLogQueryExecution}
-                    onImportToIssue={handleLinkTransactionToIssue}
-                  />
+                  <ErrorBoundary fallbackTitle="Database Explorer Error">
+                    <DbQueryTool
+                      databases={databases}
+                      transactions={transactions}
+                      currentUser={effectiveUser || currentUser}
+                      onAddDatabase={handleAddDatabase}
+                      onRequestDbAccess={handleRequestDbAccess}
+                      onLogQueryExecution={handleLogQueryExecution}
+                      onImportToIssue={handleLinkTransactionToIssue}
+                    />
+                  </ErrorBoundary>
                 )}
 
                 {activeNavigation === 'manager_analytics' && isAuthorizedTab('manager_analytics') && (
-                  <ManagerialDashboard
-                    issues={issues}
-                    hashtags={hashtags}
-                    currentUser={effectiveUser || currentUser}
-                    users={users}
-                    teams={teams}
-                    onCreateTeam={handleCreateTeam}
-                    onUpdateTeam={handleUpdateTeam}
-                    onDeleteTeam={handleDeleteTeam}
-                    onUpdateIssue={handleUpdateIssue}
-                    onChangeTab={handleTabChange}
-                  />
+                  <ErrorBoundary fallbackTitle="Managerial Analytics Error">
+                    <ManagerialDashboard
+                      issues={issues}
+                      hashtags={hashtags}
+                      currentUser={effectiveUser || currentUser}
+                      users={users}
+                      teams={teams}
+                      onCreateTeam={handleCreateTeam}
+                      onUpdateTeam={handleUpdateTeam}
+                      onDeleteTeam={handleDeleteTeam}
+                      onUpdateIssue={handleUpdateIssue}
+                      onChangeTab={handleTabChange}
+                    />
+                  </ErrorBoundary>
                 )}
 
                 {activeNavigation === 'admin_panel' && isAuthorizedTab('admin_panel') && (
-                  <AdminPanel
-                    currentUser={effectiveUser || currentUser}
-                    teams={teams}
-                    users={users}
-                    databases={databases}
-                    plugins={plugins}
-                    systems={systems}
-                    queryApprovals={queryApprovals}
-                    dbAccessRequests={dbAccessRequests}
-                    connectionUsageLogs={connectionUsageLogs}
-                    onResolveQueryApproval={handleResolveQueryApproval}
-                    onResolveDbAccessRequest={handleResolveDbAccessRequest}
-                    onApproveUser={handleApproveUser}
-                    onDeleteUser={handleDeleteUser}
-                    onTogglePlugin={handleTogglePlugin}
-                    onAddDatabase={handleAddDatabase}
-                    onToggleDbStatus={handleToggleDbStatus}
-                    onDeleteDb={handleDeleteDb}
-                    onUpdateDb={handleUpdateDatabase}
-                    onAddSystem={(sys) => setSystems(prev => [...prev, sys])}
-                    onDeleteSystem={(sysId) => setSystems(prev => prev.filter(s => s.id !== sysId))}
-                    onUpdateSystem={(updatedSys) => setSystems(prev => prev.map(s => s.id === updatedSys.id ? updatedSys : s))}
-                    onUpdateUserPrivileges={handleUpdateUserPrivileges}
-                    activeSubTab={adminPanelSubTab}
-                    onSelectSubTab={setAdminPanelSubTab}
-                  />
+                  <ErrorBoundary fallbackTitle="System Administration Error">
+                    <AdminPanel
+                      currentUser={effectiveUser || currentUser}
+                      teams={teams}
+                      users={users}
+                      databases={databases}
+                      plugins={plugins}
+                      systems={systems}
+                      queryApprovals={queryApprovals}
+                      dbAccessRequests={dbAccessRequests}
+                      connectionUsageLogs={connectionUsageLogs}
+                      onResolveQueryApproval={handleResolveQueryApproval}
+                      onResolveDbAccessRequest={handleResolveDbAccessRequest}
+                      onApproveUser={handleApproveUser}
+                      onDeleteUser={handleDeleteUser}
+                      onTogglePlugin={handleTogglePlugin}
+                      onAddDatabase={handleAddDatabase}
+                      onToggleDbStatus={handleToggleDbStatus}
+                      onDeleteDb={handleDeleteDb}
+                      onUpdateDb={handleUpdateDatabase}
+                      onAddSystem={(sys) => setSystems(prev => [...prev, sys])}
+                      onDeleteSystem={(sysId) => setSystems(prev => prev.filter(s => s.id !== sysId))}
+                      onUpdateSystem={(updatedSys) => setSystems(prev => prev.map(s => s.id === updatedSys.id ? updatedSys : s))}
+                      onUpdateUserPrivileges={handleUpdateUserPrivileges}
+                      activeSubTab={adminPanelSubTab}
+                      onSelectSubTab={setAdminPanelSubTab}
+                    />
+                  </ErrorBoundary>
                 )}
 
                 {activeNavigation === 'user_admin' && isAuthorizedTab('user_admin') && (
-                  <PeopleAccessView
-                    currentUser={effectiveUser || currentUser!}
-                    users={users}
-                    teams={teams}
-                    databases={databases}
-                    onApproveUser={handleApproveUser}
-                    onDeleteUser={handleDeleteUser}
-                    onUpdateUserPrivileges={handleUpdateUserPrivileges}
-                    onCreateTeam={handleCreateTeam}
-                    onUpdateTeam={handleUpdateTeam}
-                    onDeleteTeam={handleDeleteTeam}
-                  />
+                  <ErrorBoundary fallbackTitle="User Access Control Error">
+                    <PeopleAccessView
+                      currentUser={effectiveUser || currentUser!}
+                      users={users}
+                      teams={teams}
+                      databases={databases}
+                      onApproveUser={handleApproveUser}
+                      onDeleteUser={handleDeleteUser}
+                      onUpdateUserPrivileges={handleUpdateUserPrivileges}
+                      onCreateTeam={handleCreateTeam}
+                      onUpdateTeam={handleUpdateTeam}
+                      onDeleteTeam={handleDeleteTeam}
+                    />
+                  </ErrorBoundary>
                 )}
 
 
@@ -1433,12 +1453,16 @@ export default function App() {
                   </ErrorBoundary>
                 )}
 
-                {(activeNavigation === 'workflows' || activeNavigation === 'workflow_studio' || activeNavigation === 'rules' || activeNavigation === 'rules_library') && (
+                {(activeNavigation === 'workflows' || activeNavigation === 'workflow_studio' || activeNavigation === 'rules' || activeNavigation === 'rules_library' || activeNavigation === 'query_sandbox' || activeNavigation === 'sql_sandbox') && (
                   <ErrorBoundary fallbackTitle="Rules and Workflows Studio Error">
                     <ValidationBoxManager
                       currentUser={effectiveUser || currentUser!}
                       teams={teams}
-                      initialTab={(activeNavigation === 'workflows' || activeNavigation === 'workflow_studio') ? 'workflows' : 'validation_boxes'}
+                      initialTab={
+                        (activeNavigation === 'workflows' || activeNavigation === 'workflow_studio') ? 'workflows' :
+                        (activeNavigation === 'query_sandbox' || activeNavigation === 'sql_sandbox') ? 'query_sandbox' :
+                        'validation_boxes'
+                      }
                     />
                   </ErrorBoundary>
                 )}
@@ -1453,9 +1477,7 @@ export default function App() {
                         setActiveNavigation('workspace');
                       }}
                       onNavigateToCreateTask={(prefill) => {
-                        if (prefill) {
-                          setMailboxTaskPreFill(prefill);
-                        }
+                        setMailboxTaskPreFill(prefill || null);
                         setActiveNavigation('create_case');
                       }}
                     />
@@ -1509,12 +1531,6 @@ export default function App() {
                   </ErrorBoundary>
                 )}
 
-                {/* Query Sandbox */}
-                {(activeNavigation === 'query_sandbox' || activeNavigation === 'sql_sandbox') && (
-                  <ErrorBoundary fallbackTitle="Query Sandbox Error">
-                    <QuerySandboxStandaloneView currentUser={effectiveUser || currentUser!} />
-                  </ErrorBoundary>
-                )}
 
                 {activeNavigation === 'approvals' && (
                   <ErrorBoundary fallbackTitle="Approvals Error">

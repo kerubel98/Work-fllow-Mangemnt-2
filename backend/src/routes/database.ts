@@ -2,7 +2,6 @@ import { Router, Request, Response } from 'express';
 import net from 'net';
 import { isMongoConnected, getMongoStatus, connectDB, disconnectDB, mongoose } from '../config/db.js';
 import { queryPg } from '../config/postgres.js';
-import { store } from '../store/dataStore.js';
 import { repo } from '../store/repository.js';
 import { DatabaseConnection, ConnectionUsageLog, QueryApprovalRequest, DbAccessRequest, DatabaseColumnConfiguration, RuleColumnPriority, RuleAggregation, SemanticRowRoleConfig, SemanticCrossRowRule, TransactionTypeGroupConfig, TypeColumnCondition, ColumnValueLabelMapping, AllowedQueryType, Team, SavedQuery } from '../types.js';
 import { discoverTablesForDb, getTableColumnsForDb, executeLiveQueryOnDb, testExternalDbConnection, evictExternalDbPool } from '../services/dbConnectionManager.js';
@@ -193,25 +192,8 @@ databaseRouter.post('/mongo/query', async (req: Request, res: Response) => {
   }
 
   if (!isMongoConnected || !mongoose.connection.db) {
-    // In-memory query simulation
-    const colKey = collectionName.toLowerCase();
-    let data: any[] = [];
-    if (colKey.includes('user')) data = store.users;
-    else if (colKey.includes('issue')) data = store.issues;
-    else if (colKey.includes('db') || colKey.includes('database')) data = store.databases;
-    else if (colKey.includes('system')) data = store.systems;
-    else if (colKey.includes('team')) data = store.teams;
-    else if (colKey.includes('template')) data = store.transactionTemplates;
-    else if (colKey.includes('upload') || colKey.includes('transaction')) data = store.uploadedTransactions;
-    else if (colKey.includes('workspace')) data = store.workspaceTableRecords;
-    else if (colKey.includes('directory') || colKey.includes('standard') || colKey.includes('global')) data = store.globalStandardDirectory;
-    else data = store.users;
-
-    return res.json({
-      mode: 'in-memory',
-      collection: collectionName,
-      count: data.length,
-      documents: data.slice(0, limit)
+    return res.status(501).json({
+      error: 'MongoDB connector is not configured on this instance. Primary relational persistence is PostgreSQL.'
     });
   }
 
@@ -265,9 +247,6 @@ databaseRouter.post('/test-connection', async (req: Request, res: Response) => {
   let dbRecord: any = null;
   if (dbId) {
     dbRecord = await repo.getDatabaseById(dbId);
-    if (!dbRecord) {
-      dbRecord = store.databases.find(d => d.id === dbId);
-    }
     if (dbRecord) {
       if (!connectionString && dbRecord.connectionString) {
         const parsed = parseConnectionString(dbRecord.connectionString);
@@ -504,7 +483,7 @@ databaseRouter.post('/team-databases', async (req: Request, res: Response) => {
       host,
       port: targetPort || (type === 'MySQL' ? 3306 : type === 'Oracle' ? 1521 : type === 'MongoDB' ? 27017 : 5432),
       connectionString: connString,
-      databaseName: databaseName || '',
+      databaseName: databaseName || req.body.database || '',
       username: username || '',
       password: password || '',
       status: 'online',
@@ -656,7 +635,7 @@ databaseRouter.post('/databases', async (req: Request, res: Response) => {
       host: dbData.host,
       port: port || (dbData.type === 'MySQL' ? 3306 : dbData.type === 'Oracle' ? 1521 : dbData.type === 'MongoDB' ? 27017 : 5432),
       connectionString: connString,
-      databaseName: dbData.databaseName || '',
+      databaseName: dbData.databaseName || (dbData as any).database || '',
       username: dbData.username || '',
       password: dbData.password || '',
       status: dbData.status || 'online',
@@ -2249,13 +2228,84 @@ databaseRouter.put('/databases/:id/allowed-tables', async (req: Request, res: Re
 // FTP / SFTP FILE PARSING & STAGING ENDPOINTS
 // =============================================================================
 
+// Helper to resolve FTP/SFTP database connection from real ID, legacy alias, name, or in-memory credentials
+async function resolveFtpDatabaseConnection(connectionId?: string, fallbackBody?: any): Promise<DatabaseConnection | null> {
+  try {
+    if (connectionId) {
+      const directDb = await repo.getDatabaseById(connectionId);
+      if (directDb) {
+        if (fallbackBody?.password && fallbackBody.password !== '••••••••') {
+          directDb.password = fallbackBody.password;
+        }
+        return directDb;
+      }
+
+      const allDbs = await repo.getDatabases(false);
+      const cleanId = String(connectionId).toLowerCase().trim();
+      let matched = allDbs.find(d => 
+        d.id.toLowerCase() === cleanId ||
+        d.name?.toLowerCase() === cleanId ||
+        (cleanId === 'res-local-ftp' && (d.name?.toLowerCase().includes('localftp') || ((d.type === 'SFTP' || (d.type as any) === 'sftp') && d.host === '127.0.0.1'))) ||
+        (cleanId === 'res-settlem-ftp' && (d.name?.toLowerCase().includes('settlem') || d.type === 'SFTP' || (d.type as any) === 'sftp')) ||
+        (cleanId.startsWith('res-sftp') && (d.type === 'SFTP' || (d.type as any) === 'sftp' || d.type === 'FTP')) ||
+        (fallbackBody?.host && (d.host === fallbackBody.host || d.host === String(fallbackBody.host).split(':')[0]))
+      );
+
+      if (!matched && (cleanId.includes('ftp') || cleanId.includes('sftp'))) {
+        matched = allDbs.find(d => d.type === 'SFTP' || d.type === 'FTP' || (d.type as any) === 'sftp');
+      }
+
+      if (matched) {
+        if (fallbackBody?.password && fallbackBody.password !== '••••••••') {
+          matched.password = fallbackBody.password;
+        }
+        return matched;
+      }
+    }
+
+    // If in-memory connection parameters were supplied
+    if (fallbackBody?.host && (fallbackBody.type === 'SFTP' || fallbackBody.type === 'sftp' || fallbackBody.type === 'FTP' || !fallbackBody.type)) {
+      const hostStr = String(fallbackBody.host);
+      const hostOnly = hostStr.includes(':') ? hostStr.split(':')[0] : hostStr;
+      const portNum = Number(fallbackBody.port || (hostStr.includes(':') ? hostStr.split(':')[1] : 22));
+
+      return {
+        id: connectionId || `adhoc-ftp-${Date.now()}`,
+        name: fallbackBody.name || 'Ad-hoc SFTP Connection',
+        type: fallbackBody.type || 'SFTP',
+        host: hostOnly,
+        port: portNum,
+        databaseName: fallbackBody.databaseName || fallbackBody.database || fallbackBody.remoteDirectory || '/',
+        username: fallbackBody.username || 'root',
+        password: fallbackBody.password || '',
+        status: 'online',
+        apiEndpoint: '',
+        createdByAdmin: false,
+        requiresAccessApproval: false,
+        systemCategory: 'Custom_External',
+        environmentType: 'banking',
+        allowedRoles: [],
+        allowedTables: [],
+        availableTables: [],
+        scope: 'team'
+      };
+    }
+  } catch (err) {
+    console.warn('[resolveFtpDatabaseConnection] Resolution error:', err);
+  }
+
+  return null;
+}
+
 // GET /api/db/ftp-staging-configs - List all FTP file staging configurations
 databaseRouter.get('/ftp-staging-configs', async (req: Request, res: Response) => {
   try {
     let configs = await repo.getFtpStagingConfigs();
     const { connectionId } = req.query;
     if (connectionId && typeof connectionId === 'string') {
-      configs = configs.filter(c => c.ftpConnectionId === connectionId);
+      const resolved = await resolveFtpDatabaseConnection(connectionId);
+      const targetId = resolved?.id || connectionId;
+      configs = configs.filter(c => c.ftpConnectionId === connectionId || c.ftpConnectionId === targetId);
     }
     return res.json(configs);
   } catch (err: any) {
@@ -2267,12 +2317,17 @@ databaseRouter.get('/ftp-staging-configs', async (req: Request, res: Response) =
 databaseRouter.post('/ftp-staging-configs', async (req: Request, res: Response) => {
   try {
     const data = req.body;
-    if (!data.name || !data.ftpConnectionId || !data.fileNamePattern) {
+    const ftpConnId = data.ftpConnectionId || data.connectionId;
+    const pattern = data.fileNamePattern || data.filePattern;
+    if (!data.name || !ftpConnId || !pattern) {
       return res.status(400).json({ error: 'name, ftpConnectionId, and fileNamePattern are required' });
     }
 
     const newConfig = {
       ...data,
+      ftpConnectionId: ftpConnId,
+      fileNamePattern: pattern,
+      sourceDirectoryPath: data.sourceDirectoryPath || data.remoteDirectory || '/',
       id: data.id || `stg-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
@@ -2314,7 +2369,7 @@ databaseRouter.post('/ftp-staging/inspect-structure', async (req: Request, res: 
       return res.status(400).json({ error: 'connectionId and filePath are required' });
     }
 
-    const db = await repo.getDatabaseById(connectionId);
+    const db = await resolveFtpDatabaseConnection(connectionId, req.body);
     if (!db) {
       return res.status(404).json({ error: 'FTP Connection endpoint not found' });
     }
@@ -2334,7 +2389,7 @@ databaseRouter.post('/ftp-staging/discover-recursive', async (req: Request, res:
       return res.status(400).json({ error: 'connectionId is required' });
     }
 
-    const db = await repo.getDatabaseById(connectionId);
+    const db = await resolveFtpDatabaseConnection(connectionId, req.body);
     if (!db) {
       return res.status(404).json({ error: 'FTP Connection endpoint not found' });
     }
@@ -2358,7 +2413,8 @@ databaseRouter.post('/ftp-staging/test-parse', async (req: Request, res: Respons
       return res.status(400).json({ error: 'connectionId is required' });
     }
 
-    const db = await repo.getDatabaseById(connectionId);
+    const fallback = { ...(req.body || {}), ...(req.body?.config || {}) };
+    const db = await resolveFtpDatabaseConnection(connectionId, fallback);
     if (!db) {
       return res.status(404).json({ error: 'FTP Connection endpoint not found' });
     }
@@ -2385,7 +2441,8 @@ databaseRouter.post('/ftp-staging/stage-file', async (req: Request, res: Respons
     }
 
     const connId = connectionId || stagingConfig.ftpConnectionId;
-    const db = await repo.getDatabaseById(connId);
+    const fallback = { ...(req.body || {}), ...(stagingConfig || {}) };
+    const db = await resolveFtpDatabaseConnection(connId, fallback);
     if (!db) {
       return res.status(404).json({ error: 'Target FTP connection not found' });
     }
@@ -2416,7 +2473,12 @@ databaseRouter.post('/ftp-staging/run-scheduled', async (req: Request, res: Resp
 // GET /api/db/ftp-staging/unconfigured-folders - Get audit of detected unconfigured folders
 databaseRouter.get('/ftp-staging/unconfigured-folders', async (req: Request, res: Response) => {
   try {
-    const connectionId = req.query.connectionId as string | undefined;
+    const rawConnId = req.query.connectionId as string | undefined;
+    let connectionId = rawConnId;
+    if (rawConnId) {
+      const resolved = await resolveFtpDatabaseConnection(rawConnId);
+      if (resolved) connectionId = resolved.id;
+    }
     const folders = await repo.getUnconfiguredFolders(connectionId);
     return res.json(folders);
   } catch (err: any) {
@@ -2427,10 +2489,110 @@ databaseRouter.get('/ftp-staging/unconfigured-folders', async (req: Request, res
 // POST /api/db/ftp-staging/resolve-unconfigured-folder - Mark unconfigured folder resolved
 databaseRouter.post('/ftp-staging/resolve-unconfigured-folder', async (req: Request, res: Response) => {
   try {
-    const { folderPath, connectionId } = req.body;
+    let { folderPath, connectionId } = req.body;
     if (!folderPath || !connectionId) return res.status(400).json({ error: 'folderPath and connectionId are required' });
+    const resolved = await resolveFtpDatabaseConnection(connectionId, req.body);
+    if (resolved) connectionId = resolved.id;
     await repo.resolveUnconfiguredFolder(folderPath, connectionId);
     return res.json({ success: true });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/db/ftp-staging/detect-patterns - Analyzes discovered files and groups into File Patterns / Types across all folders
+databaseRouter.post('/ftp-staging/detect-patterns', async (req: Request, res: Response) => {
+  try {
+    const { connectionId, files: suppliedFiles, baseDir } = req.body;
+    if (!connectionId) {
+      return res.status(400).json({ error: 'connectionId is required' });
+    }
+
+    const fallback = { ...(req.body || {}) };
+    const db = await resolveFtpDatabaseConnection(connectionId, fallback);
+    if (!db) {
+      return res.status(404).json({ error: 'FTP Connection endpoint not found' });
+    }
+
+    let files = suppliedFiles;
+    if (!files || !Array.isArray(files) || files.length === 0) {
+      files = await discoverFtpFilesRecursive(db, baseDir || '/', 10);
+    }
+
+    const groups = (ftpFileStagingService as any).detectSemanticPatterns
+      ? (ftpFileStagingService as any).detectSemanticPatterns(files)
+      : await ftpFileStagingService.detectSemanticPatternsAcrossFolders(db, files, baseDir);
+    
+    // Enrich with ingested storage status
+    const ingestedFiles = await repo.getIngestedFtpFiles(db.id);
+    const ingestedPathMap = new Map(ingestedFiles.map((i: any) => [i.filePath, i]));
+
+    const enrichedGroups = groups.map((g: any) => {
+      let ingestedCount = 0;
+      const matchedWithStatus = (g.matchedFiles || []).map((f: any) => {
+        const ingested = ingestedPathMap.get(f.fullPath);
+        if (ingested) ingestedCount++;
+        return {
+          ...f,
+          isIngested: !!ingested,
+          ingestedAt: ingested?.ingestedAt,
+          recordsStaged: ingested?.recordsStaged || 0,
+          targetTable: ingested?.targetTableName
+        };
+      });
+
+      return {
+        ...g,
+        ingestedFileCount: ingestedCount,
+        pendingFileCount: g.fileCount - ingestedCount,
+        matchedFiles: matchedWithStatus
+      };
+    });
+
+    return res.json(enrichedGroups);
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/db/ftp-staging/ingested-files - Get all records from FTP Ingested File Name Storage
+databaseRouter.get('/ftp-staging/ingested-files', async (req: Request, res: Response) => {
+  try {
+    const { connectionId, pattern } = req.query;
+    let effectiveConnId = connectionId as string | undefined;
+    if (effectiveConnId) {
+      const resolved = await resolveFtpDatabaseConnection(effectiveConnId);
+      if (resolved) effectiveConnId = resolved.id;
+    }
+
+    const files = await repo.getIngestedFtpFiles(effectiveConnId, pattern as string | undefined);
+    return res.json(files);
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE /api/db/ftp-staging/ingested-files/:id - Remove a file from the Ingested File Storage ledger
+databaseRouter.delete('/ftp-staging/ingested-files/:id', async (req: Request, res: Response) => {
+  try {
+    const success = await repo.removeIngestedFtpFile(req.params.id);
+    return res.json({ success });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/db/ftp-staging/reset-pattern-ledger - Reset ledger for a given pattern
+databaseRouter.post('/ftp-staging/reset-pattern-ledger', async (req: Request, res: Response) => {
+  try {
+    const { connectionId, filePattern } = req.body;
+    if (!connectionId || !filePattern) {
+      return res.status(400).json({ error: 'connectionId and filePattern are required' });
+    }
+    const resolved = await resolveFtpDatabaseConnection(connectionId, req.body);
+    const connId = resolved?.id || connectionId;
+    const count = await repo.resetIngestedFilesForPattern(connId, filePattern);
+    return res.json({ success: true, count });
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
   }
@@ -2447,7 +2609,12 @@ databaseRouter.get('/systems', async (_req: Request, res: Response) => {
 
 
 databaseRouter.post('/query/execute', async (req: Request, res: Response) => {
-  const { userId, username, userRole, dbId, dbName, query, tableName } = req.body;
+  const authUser = (req as any).user;
+  const { dbId, dbName, query, tableName } = req.body;
+  const userId = req.body.userId || authUser?.id;
+  const username = req.body.username || authUser?.username || authUser?.name || authUser?.email;
+  const userRole = (authUser?.role === 'admin' && req.body.userRole) ? req.body.userRole : (authUser?.role || req.body.userRole || 'operator');
+
   if (!query || !query.trim()) {
     return res.status(400).json({ error: 'Query statement is required' });
   }
@@ -2604,7 +2771,6 @@ databaseRouter.post('/query/execute', async (req: Request, res: Response) => {
       executionTimeMs: result.executionTimeMs
     };
 
-    store.connectionLogs.unshift(log);
     try {
       await repo.createConnectionLog(log);
     } catch (logErr: any) {

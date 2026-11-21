@@ -3034,15 +3034,15 @@ export default function ValidationOrchestratorWorkspace({
           message: failMsg,
           severity: 'CRITICAL',
           failedStepCount: 1,
-          passedStepCount: Math.max(0, workflow.steps.length - 1),
+          passedStepCount: 0,
           totalStepCount: workflow.steps.length,
           stepDetails: workflow.steps.map((s, idx) => ({
             stepId: s.id,
             stepName: s.name,
             checkType: s.checkType,
-            status: (s.checkType === 'EXISTENCE_CHECK' || idx === 0) ? 'FAIL' : 'PASS',
-            actionTaken: (s.checkType === 'EXISTENCE_CHECK' || idx === 0) ? (s.onFailAction || 'STOP') : 'CONTINUE',
-            detail: (s.checkType === 'EXISTENCE_CHECK' || idx === 0) ? failMsg : 'Condition satisfied'
+            status: (s.checkType === 'EXISTENCE_CHECK' || idx === 0) ? 'FAIL' : 'PENDING',
+            actionTaken: (s.checkType === 'EXISTENCE_CHECK' || idx === 0) ? (s.onFailAction || 'STOP') : 'STOP',
+            detail: (s.checkType === 'EXISTENCE_CHECK' || idx === 0) ? failMsg : 'Prerequisite target record missing - not evaluated'
           }))
         };
       }
@@ -3098,9 +3098,9 @@ export default function ValidationOrchestratorWorkspace({
           const stepKey = Object.keys(valDetails).find(k => isStepIdMatch(k, s.id) || isStepIdMatch(k.replace(/^step-/, ''), s.id));
           const stepObj = stepKey ? valDetails[stepKey] : null;
 
-          let sStatus: 'PASS' | 'FAIL' | 'PENDING' = 'PASS';
-          let sAction = 'CONTINUE';
-          let sDetail = 'Condition satisfied';
+          let sStatus: 'PASS' | 'FAIL' | 'PENDING' = 'PENDING';
+          let sAction = 'STOP';
+          let sDetail = 'Condition not evaluated';
 
           if (matchingStage) {
             if (matchingStage.status === 'FAIL' || matchingStage.status === 'ERROR') {

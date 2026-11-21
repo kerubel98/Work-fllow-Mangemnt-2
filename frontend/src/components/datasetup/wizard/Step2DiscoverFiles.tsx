@@ -25,6 +25,13 @@ export interface Step2DiscoverFilesProps {
   initialFormat?: string;
   initialDelimiter?: string;
   connectionId?: string;
+  connectionDetails?: {
+    host?: string;
+    port?: number;
+    username?: string;
+    password?: string;
+    databaseName?: string;
+  };
   onNext: (discoveryData: {
     remotePath: string;
     filePattern: string;
@@ -45,6 +52,7 @@ export function Step2DiscoverFiles({
   initialFormat = 'CSV',
   initialDelimiter = ',',
   connectionId,
+  connectionDetails,
   onNext,
   onBack
 }: Step2DiscoverFilesProps) {
@@ -62,12 +70,12 @@ export function Step2DiscoverFiles({
   const [remoteFiles, setRemoteFiles] = useState<DiscoveredFileItem[]>([]);
 
   // Detected Headers and Sample Data Preview
-  const sampleHeaders = [
+  const [sampleHeaders, setSampleHeaders] = useState<string[]>([
     'trans_id', 'source_account', 'destination_account', 'amount', 
     'currency', 'channel', 'rrn', 'auth_code', 'status', 'settlement_date'
-  ];
+  ]);
 
-  const sampleRows: Record<string, any>[] = [
+  const [sampleRows, setSampleRows] = useState<Record<string, any>[]>([
     {
       trans_id: 'TRX-948102',
       source_account: 'ACC-100293182',
@@ -104,14 +112,14 @@ export function Step2DiscoverFiles({
       status: 'PENDING_RECON',
       settlement_date: '2026-11-05'
     }
-  ];
+  ]);
 
-  // Try real API discovery if connectionId provided
+  // Try real API discovery if connectionId or connectionDetails provided
   useEffect(() => {
     let isMounted = true;
-    if (connectionId) {
+    if (connectionId || connectionDetails?.host) {
       setIsScanning(true);
-      api.discoverFtpFilesRecursive(connectionId, currentPath)
+      api.discoverFtpFilesRecursive(connectionId || '', currentPath, connectionDetails)
         .then(files => {
           if (isMounted && Array.isArray(files) && files.length > 0) {
             setRemoteFiles(files.map(f => ({
@@ -132,7 +140,65 @@ export function Step2DiscoverFiles({
         });
     }
     return () => { isMounted = false; };
-  }, [connectionId, currentPath]);
+  }, [connectionId, currentPath, connectionDetails?.host, connectionDetails?.port, connectionDetails?.username]);
+
+  // Live inspection and real preview parsing when a remote file is selected
+  useEffect(() => {
+    if (!selectedFileForInspection || (!connectionId && !connectionDetails?.host)) return;
+    const target = remoteFiles.find(f => f.name === selectedFileForInspection);
+    const fullPath = target?.fullPath || selectedFileForInspection;
+    const isXls = selectedFileForInspection.endsWith('.xls') || selectedFileForInspection.endsWith('.xlsx') || target?.fileType === 'EXCEL';
+    if (isXls) setFileFormat('EXCEL');
+
+    const configPayload = {
+      sourceDirectoryPath: currentPath,
+      sampleFilePath: fullPath,
+      sampleFileName: fullPath,
+      fileNamePattern: filePattern || selectedFileForInspection,
+      fileFormat: isXls ? 'EXCEL' : fileFormat,
+      fileType: isXls ? 'EXCEL' : fileFormat,
+      delimiter: delimiter === '\\t' ? '\t' : delimiter,
+      hasHeaders: true,
+      headerRowIndex,
+      dataStartRow
+    };
+
+    api.testFtpPreviewParse(connectionId || '', configPayload, connectionDetails)
+      .then(async (res) => {
+        if (res && res.headersDetected && res.headersDetected.length > 0) {
+          setSampleHeaders(res.headersDetected);
+          if (res.parsedRowsSample && res.parsedRowsSample.length > 0) {
+            setSampleRows(res.parsedRowsSample);
+          }
+          if (res.headerRowIndex && res.headerRowIndex !== headerRowIndex) {
+            setHeaderRowIndex(res.headerRowIndex);
+          }
+          if (res.dataStartRow && res.dataStartRow !== dataStartRow) {
+            setDataStartRow(res.dataStartRow);
+          }
+          if (res.fileType === 'EXCEL') {
+            setFileFormat('EXCEL');
+          }
+        } else {
+          // Fallback structure inspection
+          const structRes = await api.inspectFtpStructure(connectionId || '', fullPath, connectionDetails).catch(() => null);
+          if (structRes) {
+            if (structRes.suggestedHeaderRow) setHeaderRowIndex(structRes.suggestedHeaderRow);
+            if (structRes.suggestedDataStartRow) setDataStartRow(structRes.suggestedDataStartRow);
+            if (structRes.fileType === 'EXCEL') setFileFormat('EXCEL');
+            const detectedHeaders = (structRes as any).headersDetected || (structRes.sampleLines && structRes.sampleLines.length > 0
+              ? structRes.sampleLines[0].split(structRes.detectedDelimiter || delimiter || ',').map((s: string) => s.trim().replace(/^["']|["']$/g, ''))
+              : []);
+            if (detectedHeaders.length > 0) {
+              setSampleHeaders(detectedHeaders);
+            }
+          }
+        }
+      })
+      .catch(err => {
+        console.warn('Live test parse notice in wizard:', err);
+      });
+  }, [selectedFileForInspection, connectionId, currentPath, connectionDetails?.host]);
 
   // Pattern matcher
   const matchedFiles = useMemo(() => {
@@ -144,8 +210,8 @@ export function Step2DiscoverFiles({
   const handleScanDirectory = async () => {
     setIsScanning(true);
     try {
-      if (connectionId) {
-        const files = await api.discoverFtpFilesRecursive(connectionId, currentPath);
+      if (connectionId || connectionDetails?.host) {
+        const files = await api.discoverFtpFilesRecursive(connectionId || '', currentPath, connectionDetails);
         if (Array.isArray(files) && files.length > 0) {
           setRemoteFiles(files.map(f => ({
             name: f.name,

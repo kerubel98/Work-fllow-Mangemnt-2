@@ -1,15 +1,16 @@
 import { getPostgresPool } from '../config/postgres.js';
+import { encryptSecret, decryptSecret } from '../utils/crypto.js';
 import {
-  User, Issue, ChatMessage, DatabaseConnection, EnvironmentSystem, Team, TeamTask,
+  User, Issue, IssueStatus, ChatMessage, DatabaseConnection, EnvironmentSystem, Team, TeamTask,
   TeamInsight, TeamDiscussionMessage, AppNotification, DirectMessage, QueryApprovalRequest,
   DbAccessRequest, ConnectionUsageLog, HashtagPreset, Plugin, Organization,
   GlobalTransactionSchemaConfig, WorkspaceTableRecord, DatabaseValidationWorkflow,
   QueryExtraction, InvestigationTask, InvestigationBatch, InvestigationTransaction,
-  CentralTransactionRecord, ValidationBox, GlobalStandardDirectoryRecord, TaskWorkflowExecution, FtpFileStagingConfig, TransactionTemplate, UploadedTransactionRecord, UploadAuditLog,
+  CentralTransactionRecord, ValidationBox, GlobalStandardDirectoryRecord, TaskWorkflowExecution, FtpFileStagingConfig, FtpIngestedFile, TransactionTemplate, UploadedTransactionRecord, UploadAuditLog,
   DatabaseColumnConfiguration, TeamRelationship, TeamRelationshipType,
   WorkspaceSettingProposal, SettingProposalType, SettingProposalStatus,
   FileIngestionMappingTemplate, ValueTranslationDictionary, ValueDictionaryColumnLink, SystemTransformationRule,
-  EscalationAgreement, SavedQuery, UserNotificationPreferences
+  EscalationAgreement, SavedQuery, UserNotificationPreferences, HashtagCollectedTransaction
 } from '../types.js';
 
 function parseJson(val: any, fallback: any = null) {
@@ -18,6 +19,16 @@ function parseJson(val: any, fallback: any = null) {
     try { return JSON.parse(val); } catch { return fallback; }
   }
   return val;
+}
+
+export function normalizeIssueStatus(status?: string): IssueStatus {
+  if (!status) return 'OPEN';
+  const upper = status.trim().toUpperCase();
+  if (upper === 'IN PROGRESS') return 'IN_PROGRESS';
+  if (['OPEN', 'IN_PROGRESS', 'INVESTIGATING', 'RESOLVED', 'CLOSED', 'FAILED', 'ESCALATED'].includes(upper)) {
+    return upper as IssueStatus;
+  }
+  return 'OPEN';
 }
 
 function safeJsonStringify(obj: any, fallback: string = '[]'): string {
@@ -220,7 +231,7 @@ export const postgresRepo = {
          id, username, email, role, is_approved, can_execute_select, can_execute_update, 
          allowed_db_ids, permanent_team_id, share_workspace_with_team, created_at,
          display_name, avatar_url, phone, department, title, timezone, 
-         message_provider_settings, preferences
+         message_provider_settings, preferences, password_hash
        )
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
        ON CONFLICT (id) DO UPDATE SET
@@ -240,7 +251,8 @@ export const postgresRepo = {
          title = COALESCE(EXCLUDED.title, users.title),
          timezone = COALESCE(EXCLUDED.timezone, users.timezone),
          message_provider_settings = COALESCE(EXCLUDED.message_provider_settings, users.message_provider_settings),
-         preferences = COALESCE(EXCLUDED.preferences, users.preferences);`,
+         preferences = COALESCE(EXCLUDED.preferences, users.preferences),
+         password_hash = COALESCE(EXCLUDED.password_hash, users.password_hash);`,
       [
         userData.id,
         userData.username,
@@ -443,7 +455,7 @@ export const postgresRepo = {
         issue.id,
         issue.title,
         issue.description,
-        issue.status || 'Open',
+        normalizeIssueStatus(issue.status),
         issue.priority || 'Medium',
         issue.creatorId,
         issue.creatorName,
@@ -939,7 +951,7 @@ export const postgresRepo = {
       connectionString: r.connection_string || undefined,
       databaseName: r.database_name || undefined,
       username: r.username || undefined,
-      password: maskSecret ? (r.password ? '••••••••' : undefined) : (r.password || undefined),
+      password: maskSecret ? (r.password ? '••••••••' : undefined) : (decryptSecret(r.password) || undefined),
       status: r.status,
       apiEndpoint: r.api_endpoint || '',
       createdByAdmin: r.created_by_admin,
@@ -1039,7 +1051,7 @@ export const postgresRepo = {
         conn.connectionString || null,
         conn.databaseName || null,
         conn.username || null,
-        conn.password || null,
+        conn.password ? encryptSecret(conn.password) : null,
         conn.status || 'offline',
         conn.apiEndpoint || '',
         conn.createdByAdmin ?? false,
@@ -2030,6 +2042,44 @@ async updateDatabaseConnection(id: string, updates: Partial<DatabaseConnection>)
     };
   },
 
+  async getCentralTransactionsByKeys(keys: string[]): Promise<Map<string, CentralTransactionRecord>> {
+    const map = new Map<string, CentralTransactionRecord>();
+    if (!keys || keys.length === 0) return map;
+
+    const pool = getPostgresPool();
+    const uniqueKeys = Array.from(new Set(keys.filter(Boolean)));
+    const CHUNK_SIZE = 5000;
+
+    for (let i = 0; i < uniqueKeys.length; i += CHUNK_SIZE) {
+      const chunk = uniqueKeys.slice(i, i + CHUNK_SIZE);
+      const { rows } = await pool.query(
+        'SELECT * FROM central_transaction_repository WHERE transaction_key = ANY($1);',
+        [chunk]
+      );
+      for (const r of rows) {
+        map.set(r.transaction_key, {
+          transactionKey: r.transaction_key,
+          originalTaskId: r.original_task_id,
+          currentTaskId: r.current_task_id,
+          allTaskIds: parseJson(r.all_task_ids, []),
+          batchId: r.batch_id,
+          rowNumber: r.row_number,
+          status: r.status,
+          isDuplicate: !!r.is_duplicate,
+          duplicateFromTaskId: r.duplicate_from_task_id,
+          duplicateCount: r.duplicate_count || 1,
+          duplicateStatus: r.duplicate_status || 'ORIGINAL',
+          workflowIds: parseJson(r.workflow_ids, []),
+          canonicalData: parseJson(r.canonical_data, {}),
+          rawData: parseJson(r.raw_data, {}),
+          createdAt: r.created_at?.toISOString(),
+          updatedAt: r.updated_at?.toISOString()
+        });
+      }
+    }
+    return map;
+  },
+
   async getCentralTransactionsByTaskId(taskId: string): Promise<CentralTransactionRecord[]> {
     const pool = getPostgresPool();
     const { rows } = await pool.query(
@@ -2961,6 +3011,119 @@ async updateDatabaseConnection(id: string, updates: Partial<DatabaseConnection>)
     `, [ftpConnectionId, folderPath, `${folderPath}%`]);
   },
 
+  // ================= FTP INGESTED FILES STORAGE & LEDGER =================
+  async getIngestedFtpFiles(ftpConnectionId?: string, filePattern?: string): Promise<FtpIngestedFile[]> {
+    const pool = getPostgresPool();
+    let query = 'SELECT * FROM ftp_ingested_files';
+    const params: any[] = [];
+    const conditions: string[] = [];
+
+    if (ftpConnectionId) {
+      params.push(ftpConnectionId);
+      conditions.push(`ftp_connection_id = $${params.length}`);
+    }
+    if (filePattern) {
+      params.push(filePattern);
+      conditions.push(`file_pattern = $${params.length}`);
+    }
+    if (conditions.length > 0) {
+      query += ` WHERE ${conditions.join(' AND ')}`;
+    }
+    query += ' ORDER BY ingested_at DESC;';
+
+    const { rows } = await pool.query(query, params);
+    return rows.map((r: any) => ({
+      id: r.id,
+      ftpConnectionId: r.ftp_connection_id,
+      fileName: r.file_name,
+      filePath: r.file_path,
+      relativeFolder: r.relative_folder,
+      fileSize: r.file_size ? Number(r.file_size) : 0,
+      fileModifiedAt: r.file_modified_at ? new Date(r.file_modified_at).toISOString() : undefined,
+      fileFormat: r.file_format,
+      filePattern: r.file_pattern,
+      stagingConfigId: r.staging_config_id || undefined,
+      targetTableName: r.target_table_name,
+      recordsStaged: r.records_staged || 0,
+      ingestionStatus: r.ingestion_status || 'INGESTED',
+      ingestedAt: r.ingested_at ? new Date(r.ingested_at).toISOString() : new Date().toISOString(),
+      lastCheckedAt: r.last_checked_at ? new Date(r.last_checked_at).toISOString() : undefined
+    }));
+  },
+
+  async isFtpFileIngested(ftpConnectionId: string, filePath: string, fileSize?: number): Promise<boolean> {
+    const pool = getPostgresPool();
+    const { rows } = await pool.query(
+      `SELECT id, file_size FROM ftp_ingested_files 
+       WHERE ftp_connection_id = $1 AND file_path = $2 AND ingestion_status = 'INGESTED' 
+       LIMIT 1;`,
+      [ftpConnectionId, filePath]
+    );
+    if (rows.length === 0) return false;
+    if (fileSize !== undefined && fileSize > 0 && Number(rows[0].file_size) > 0) {
+      return Number(rows[0].file_size) === fileSize;
+    }
+    return true;
+  },
+
+  async recordIngestedFtpFile(data: FtpIngestedFile): Promise<FtpIngestedFile> {
+    const pool = getPostgresPool();
+    const id = data.id || `ingested-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+    await pool.query(
+      `INSERT INTO ftp_ingested_files (
+        id, ftp_connection_id, file_name, file_path, relative_folder,
+        file_size, file_modified_at, file_format, file_pattern,
+        staging_config_id, target_table_name, records_staged,
+        ingestion_status, ingested_at, last_checked_at
+      ) VALUES (
+        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW(), NOW()
+      )
+      ON CONFLICT (ftp_connection_id, file_path) DO UPDATE SET
+        file_name = EXCLUDED.file_name,
+        relative_folder = EXCLUDED.relative_folder,
+        file_size = EXCLUDED.file_size,
+        file_modified_at = EXCLUDED.file_modified_at,
+        file_format = EXCLUDED.file_format,
+        file_pattern = EXCLUDED.file_pattern,
+        staging_config_id = EXCLUDED.staging_config_id,
+        target_table_name = EXCLUDED.target_table_name,
+        records_staged = EXCLUDED.records_staged,
+        ingestion_status = EXCLUDED.ingestion_status,
+        last_checked_at = NOW();`,
+      [
+        id,
+        data.ftpConnectionId,
+        data.fileName,
+        data.filePath,
+        data.relativeFolder || '/',
+        data.fileSize || 0,
+        data.fileModifiedAt ? new Date(data.fileModifiedAt) : null,
+        data.fileFormat || 'CSV',
+        data.filePattern,
+        data.stagingConfigId || null,
+        data.targetTableName,
+        data.recordsStaged || 0,
+        data.ingestionStatus || 'INGESTED'
+      ]
+    );
+    return { ...data, id };
+  },
+
+  async removeIngestedFtpFile(id: string): Promise<boolean> {
+    const pool = getPostgresPool();
+    const res = await pool.query('DELETE FROM ftp_ingested_files WHERE id = $1;', [id]);
+    return (res.rowCount || 0) > 0;
+  },
+
+  async resetIngestedFilesForPattern(ftpConnectionId: string, filePattern: string): Promise<number> {
+    const pool = getPostgresPool();
+    const res = await pool.query(
+      'DELETE FROM ftp_ingested_files WHERE ftp_connection_id = $1 AND file_pattern = $2;',
+      [ftpConnectionId, filePattern]
+    );
+    return res.rowCount || 0;
+  },
+
   // ================= ORGANIZATIONS =================
   async getOrganizations(): Promise<Organization[]> {
     const pool = getPostgresPool();
@@ -3386,7 +3549,7 @@ async updateDatabaseConnection(id: string, updates: Partial<DatabaseConnection>)
            staged_by_user_name = $3,
            staged_at = NOW(),
            findings_notes = COALESCE($4, findings_notes),
-           status = 'Investigating'
+           status = 'INVESTIGATING'
        WHERE id = $5 OR LOWER(id) = LOWER($5)
        RETURNING *;`,
       [environment, stagedBy, userName, notes || null, issueId]

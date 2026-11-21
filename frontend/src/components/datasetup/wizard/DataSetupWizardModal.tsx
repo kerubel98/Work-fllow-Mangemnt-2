@@ -306,6 +306,13 @@ export function DataSetupWizardModal({
                   initialFormat={wizardData.fileFormat || 'CSV'}
                   initialDelimiter={wizardData.delimiter || ','}
                   connectionId={wizardData.id}
+                  connectionDetails={{
+                    host: wizardData.host,
+                    port: wizardData.port ? Number(wizardData.port) : undefined,
+                    username: wizardData.username,
+                    password: wizardData.password,
+                    databaseName: wizardData.database || wizardData.remotePath
+                  }}
                   onNext={(discoveryData) => {
                     setWizardData(prev => ({ ...prev, ...discoveryData }));
                     setCurrentStep(3);

@@ -1,7 +1,39 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { generateToken } from '../../utils/auth.js';
 
 describe('Two-Tier External System Privileges & Team Resources Governance', () => {
   const BASE_URL = 'http://localhost:5002/api';
+
+  const authFetch = (url: string, options: any = {}) => {
+    let callerId = 'usr-1';
+    let callerRole = 'admin';
+    if (options.body) {
+      try {
+        const parsed = typeof options.body === 'string' ? JSON.parse(options.body) : options.body;
+        if (parsed.callerUserId) callerId = parsed.callerUserId;
+        if (parsed.callerRole) callerRole = parsed.callerRole;
+        else if (parsed.userId) callerId = parsed.userId;
+        if (parsed.userRole) callerRole = parsed.userRole;
+      } catch {}
+    }
+    const token = generateToken({
+      id: callerId,
+      username: callerId,
+      email: `${callerId}@paymentops.com`,
+      role: callerRole,
+      isApproved: true,
+      canExecuteSelect: true,
+      canExecuteUpdate: true
+    });
+    return fetch(url, {
+      ...options,
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+        ...(options.headers || {})
+      }
+    });
+  };
 
   const testManagerId = `usr-mgr-${Date.now()}`;
   const testMemberId = `usr-mem-${Date.now()}`;
@@ -14,7 +46,7 @@ describe('Two-Tier External System Privileges & Team Resources Governance', () =
 
   beforeAll(async () => {
     // 1. Create main permanent team with Manager and Member
-    const resTeam = await fetch(`${BASE_URL}/teams`, {
+    const resTeam = await authFetch(`${BASE_URL}/teams`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -31,7 +63,7 @@ describe('Two-Tier External System Privileges & Team Resources Governance', () =
     expect(resTeam.status).toBe(201);
 
     // 2. Create another permanent team for testing cross-team isolation
-    const resOther = await fetch(`${BASE_URL}/teams`, {
+    const resOther = await authFetch(`${BASE_URL}/teams`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -50,15 +82,15 @@ describe('Two-Tier External System Privileges & Team Resources Governance', () =
 
   afterAll(async () => {
     if (createdTeamDbId) {
-      await fetch(`${BASE_URL}/db/databases/${createdTeamDbId}`, { method: 'DELETE' }).catch(() => {});
+      await authFetch(`${BASE_URL}/db/databases/${createdTeamDbId}`, { method: 'DELETE' }).catch(() => {});
     }
-    await fetch(`${BASE_URL}/teams/${teamId}`, { method: 'DELETE' }).catch(() => {});
-    await fetch(`${BASE_URL}/teams/${otherTeamId}`, { method: 'DELETE' }).catch(() => {});
+    await authFetch(`${BASE_URL}/teams/${teamId}`, { method: 'DELETE' }).catch(() => {});
+    await authFetch(`${BASE_URL}/teams/${otherTeamId}`, { method: 'DELETE' }).catch(() => {});
   });
 
   describe('1. Tier 2: Manager Delegation & Strict Privilege Ceiling', () => {
     it('allows Manager to allocate privileges within the team envelope', async () => {
-      const res = await fetch(`${BASE_URL}/teams/${teamId}/member-privileges`, {
+      const res = await authFetch(`${BASE_URL}/teams/${teamId}/member-privileges`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -83,7 +115,7 @@ describe('Two-Tier External System Privileges & Team Resources Governance', () =
     });
 
     it('rejects allocating a database that the team does NOT have in its envelope (Ceiling Violation)', async () => {
-      const res = await fetch(`${BASE_URL}/teams/${teamId}/member-privileges`, {
+      const res = await authFetch(`${BASE_URL}/teams/${teamId}/member-privileges`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -105,7 +137,7 @@ describe('Two-Tier External System Privileges & Team Resources Governance', () =
     });
 
     it('rejects allocating a query statement type that the team does NOT have in its envelope (Ceiling Violation)', async () => {
-      const res = await fetch(`${BASE_URL}/teams/${teamId}/member-privileges`, {
+      const res = await authFetch(`${BASE_URL}/teams/${teamId}/member-privileges`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -129,7 +161,7 @@ describe('Two-Tier External System Privileges & Team Resources Governance', () =
 
   describe('2. Team-Specific Database Creation & Cross-Team Isolation', () => {
     it('creates a team-scoped connection isolated to the team', async () => {
-      const res = await fetch(`${BASE_URL}/db/team-databases`, {
+      const res = await authFetch(`${BASE_URL}/db/team-databases`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -153,7 +185,7 @@ describe('Two-Tier External System Privileges & Team Resources Governance', () =
     });
 
     it('retrieves team-specific databases via dedicated GET /api/db/team-databases', async () => {
-      const res = await fetch(`${BASE_URL}/db/team-databases?teamId=${teamId}`);
+      const res = await authFetch(`${BASE_URL}/db/team-databases?teamId=${teamId}`);
       const body = await res.json();
       console.log('GET /api/db/team-databases returned:', JSON.stringify(body, null, 2));
       expect(res.status).toBe(200);
@@ -162,7 +194,7 @@ describe('Two-Tier External System Privileges & Team Resources Governance', () =
     });
 
     it('blocks users from other teams from executing queries against team-scoped databases', async () => {
-      const res = await fetch(`${BASE_URL}/db/query/execute`, {
+      const res = await authFetch(`${BASE_URL}/db/query/execute`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -184,7 +216,7 @@ describe('Two-Tier External System Privileges & Team Resources Governance', () =
 
   describe('3. Team Manager Promotion Workflow & Admin Monitor', () => {
     it('allows Manager to submit promotion request for system-wide promotion', async () => {
-      const res = await fetch(`${BASE_URL}/db/team-databases/${createdTeamDbId}/request-promotion`, {
+      const res = await authFetch(`${BASE_URL}/db/team-databases/${createdTeamDbId}/request-promotion`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -200,7 +232,7 @@ describe('Two-Tier External System Privileges & Team Resources Governance', () =
     });
 
     it('surfaces pending team resources on Admin monitoring endpoint GET /api/db/admin/team-resources', async () => {
-      const res = await fetch(`${BASE_URL}/db/admin/team-resources`);
+      const res = await authFetch(`${BASE_URL}/db/admin/team-resources`);
       const body = await res.json();
       expect(res.status).toBe(200);
       expect(Array.isArray(body)).toBe(true);
@@ -211,7 +243,7 @@ describe('Two-Tier External System Privileges & Team Resources Governance', () =
     });
 
     it('allows Workspace Admin to approve promotion, converting connection to global scope', async () => {
-      const res = await fetch(`${BASE_URL}/db/team-databases/${createdTeamDbId}/review-promotion`, {
+      const res = await authFetch(`${BASE_URL}/db/team-databases/${createdTeamDbId}/review-promotion`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -235,7 +267,7 @@ describe('Two-Tier External System Privileges & Team Resources Governance', () =
 
     beforeAll(async () => {
       // Create a private team database
-      const res = await fetch(`${BASE_URL}/db/team-databases`, {
+      const res = await authFetch(`${BASE_URL}/db/team-databases`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -253,7 +285,7 @@ describe('Two-Tier External System Privileges & Team Resources Governance', () =
     });
 
     it('allows resource creator to create column configurations on their created database', async () => {
-      const res = await fetch(`${BASE_URL}/db/column-configurations`, {
+      const res = await authFetch(`${BASE_URL}/db/column-configurations`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -275,7 +307,7 @@ describe('Two-Tier External System Privileges & Team Resources Governance', () =
     });
 
     it('rejects another non-admin user attempting to configure rules on someone elses resource', async () => {
-      const res = await fetch(`${BASE_URL}/db/column-configurations`, {
+      const res = await authFetch(`${BASE_URL}/db/column-configurations`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -295,7 +327,7 @@ describe('Two-Tier External System Privileges & Team Resources Governance', () =
     });
 
     it('scopes GET /api/db/column-configurations to created resources when userId/teamId is provided', async () => {
-      const res = await fetch(`${BASE_URL}/db/column-configurations?userId=${testManagerId}&teamId=${teamId}&userRole=manager`);
+      const res = await authFetch(`${BASE_URL}/db/column-configurations?userId=${testManagerId}&teamId=${teamId}&userRole=manager`);
       expect(res.status).toBe(200);
       const list = await res.json();
       expect(Array.isArray(list)).toBe(true);

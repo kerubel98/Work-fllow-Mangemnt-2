@@ -9,11 +9,12 @@ import * as ftp from 'basic-ftp';
 import { Writable } from 'stream';
 import * as XLSX from 'xlsx';
 import { XMLParser } from 'fast-xml-parser';
-import { DatabaseConnection, FtpFileStagingConfig, FtpFieldMapping } from '../types.js';
+import { DatabaseConnection, FtpFileStagingConfig, FtpFieldMapping, SemanticPatternGroup } from '../types.js';
 import { resolveFtpConfig, discoverFtpFilesRecursive, fetchRemoteFileBuffer, FtpFileEntry } from './ftpConnectionService.js';
 import { mirrorTableManager } from './mirrorTableManager.js';
 import { queryPg } from '../config/postgres.js';
 import { repo } from '../store/repository.js';
+import { matchesFilePattern, groupFilesBySemanticPattern, deriveTableNameForPattern } from '../utils/ftpPatternGrouping.js';
 
 export interface FileStructureInspectionResult {
   fileName: string;
@@ -24,9 +25,25 @@ export interface FileStructureInspectionResult {
   xmlCandidateElements?: string[];
   detectedDelimiter?: string;
   sampleLines?: string[];
+  headersDetected?: string[];
   suggestedHeaderRow?: number;
   suggestedDataStartRow?: number;
   totalLinesSampled?: number;
+}
+
+export interface ColumnPresenceAnalysis {
+  colIndex: number;
+  header: string;
+  cleanHeader: string;
+  hasData: boolean;
+  nonEmptyCount: number;
+  totalRows: number;
+  dataPercentage: number;
+  sampleValues: string[];
+  isMergedSpan: boolean;
+  isPrimaryDataColumn: boolean;
+  isExcludedEmpty: boolean;
+  suggestedDataType?: string;
 }
 
 export interface PreviewParseResult {
@@ -46,6 +63,7 @@ export interface PreviewParseResult {
   rawLinesSample: string[];
   parsedRowsSample: Record<string, any>[];
   mappedRowsSample: Record<string, any>[];
+  allColumnsAnalysis?: ColumnPresenceAnalysis[];
   footerSkippedLines: string[];
   structureSummary?: {
     totalColumnsDetected: number;
@@ -210,10 +228,12 @@ export const ftpFileStagingService = {
 
       let suggestedHeaderRow = 1;
       let suggestedDataStartRow = 2;
+      let headersDetected: string[] = [];
+      let sampleLines: string[] = [];
 
       const firstSheet = wb.Sheets[wb.SheetNames[0]];
       if (firstSheet) {
-        const rawRows: any[][] = XLSX.utils.sheet_to_json(firstSheet, { header: 1 });
+        const rawRows: any[][] = XLSX.utils.sheet_to_json(firstSheet, { header: 1, defval: '' });
         let bestHeaderIdx = 0;
         let maxColsFound = 0;
         for (let r = 0; r < Math.min(rawRows.length, 15); r++) {
@@ -229,6 +249,18 @@ export const ftpFileStagingService = {
           suggestedHeaderRow = bestHeaderIdx + 1;
           suggestedDataStartRow = suggestedHeaderRow + 1;
         }
+
+        const headerRow = rawRows[bestHeaderIdx] || [];
+        headersDetected = headerRow.map((c: any, idx: number) => {
+          const val = c !== null && c !== undefined ? String(c).trim() : '';
+          return val || `Col_${idx + 1}`;
+        });
+
+        const dataRows = rawRows.slice(suggestedDataStartRow - 1, suggestedDataStartRow + 5);
+        sampleLines = [
+          headersDetected.join(','),
+          ...dataRows.map(row => Array.isArray(row) ? row.map(cell => cell !== null && cell !== undefined ? String(cell) : '').join(',') : '')
+        ];
       }
 
       return {
@@ -236,6 +268,9 @@ export const ftpFileStagingService = {
         fileType: 'EXCEL',
         fileSizeBytes: buf.length,
         excelSheets: sheets,
+        headersDetected,
+        sampleLines,
+        detectedDelimiter: ',',
         suggestedHeaderRow,
         suggestedDataStartRow
       };
@@ -330,7 +365,7 @@ export const ftpFileStagingService = {
     config: Partial<FtpFileStagingConfig>,
     maxRows = 15
   ): Promise<PreviewParseResult> {
-    let targetFile = config.sampleFileName || config.fileNamePattern || db.availableTables?.[0];
+    let targetFile = (config as any).sampleFilePath || (config as any).filePath || config.sampleFileName || config.fileNamePattern || (config as any).targetFile || db.availableTables?.[0];
     if (!targetFile || !targetFile.trim()) {
       throw new Error('No target file or sample file specified for preview parsing.');
     }
@@ -355,8 +390,8 @@ export const ftpFileStagingService = {
     }
 
     const ext = targetFile.toLowerCase().slice(targetFile.lastIndexOf('.'));
-    const isExcel = config.fileFormat === 'EXCEL' || ext === '.xlsx' || ext === '.xls';
-    const isXml = config.fileFormat === 'XML' || ext === '.xml';
+    const isExcel = config.fileFormat === 'EXCEL' || (config as any).fileType === 'EXCEL' || ext === '.xlsx' || ext === '.xls';
+    const isXml = config.fileFormat === 'XML' || (config as any).fileType === 'XML' || ext === '.xml';
 
     const headerIndex = Math.max(1, config.headerRowIndex || 1);
     const headerRowCount = Math.max(1, config.headerRowCount || 1);
@@ -389,47 +424,146 @@ export const ftpFileStagingService = {
       const matrix: any[][] = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: '' });
       const totalRows = matrix.length;
 
-      // Handle merged cells in header: forward fill values across span
-      const merges = ws['!merges'] || [];
-      if (config.handleMergedCells !== false && merges.length > 0) {
-        for (const m of merges) {
-          const topVal = matrix[m.s.r]?.[m.s.c] || '';
-          if (topVal) {
-            for (let r = m.s.r; r <= m.e.r; r++) {
-              for (let c = m.s.c; c <= m.e.c; c++) {
-                if (matrix[r]) {
-                  matrix[r][c] = topVal;
-                }
-              }
-            }
+      // Auto-detect optimal header row if default (row 1) was passed but deeper row has the actual columns
+      let effectiveHeaderIndex = headerIndex;
+      if (!config.headerRowIndex || config.headerRowIndex === 1) {
+        let bestHeaderIdx = 0;
+        let maxColsFound = 0;
+        for (let r = 0; r < Math.min(matrix.length, 15); r++) {
+          const row = matrix[r];
+          if (!Array.isArray(row)) continue;
+          const nonNullCount = row.filter(c => c !== null && c !== undefined && String(c).trim() !== '').length;
+          if (nonNullCount > maxColsFound) {
+            maxColsFound = nonNullCount;
+            bestHeaderIdx = r;
           }
+        }
+        if (bestHeaderIdx > 0 && maxColsFound >= 3) {
+          effectiveHeaderIndex = bestHeaderIdx + 1;
         }
       }
 
-      // Extract and combine multi-row headers
-      const headerStartIdx = headerIndex - 1;
+      // Multi-row header bounds
+      const headerStartIdx = effectiveHeaderIndex - 1;
       const headerEndIdx = headerStartIdx + headerRowCount;
       const headerRows = matrix.slice(headerStartIdx, headerEndIdx);
       const colCount = Math.max(...matrix.map(row => row.length), 0);
 
-      const combinedHeaders: string[] = [];
-      for (let c = 0; c < colCount; c++) {
-        const parts: string[] = [];
-        for (let r = 0; r < headerRows.length; r++) {
-          const val = String(headerRows[r]?.[c] || '').trim();
-          if (val && !parts.includes(val)) {
-            parts.push(val);
-          }
-        }
-        const combined = parts.join(separator).replace(/^_+|_+$/g, '') || `Col_${c + 1}`;
-        combinedHeaders.push(combined);
-      }
-
-      const dataStartIndex = Math.max(headerEndIdx + 1, config.dataStartRow || (headerEndIdx + 1));
+      const dataStartIndex = Math.max(headerEndIdx + 1, config.dataStartRow && config.dataStartRow > effectiveHeaderIndex ? config.dataStartRow : (headerEndIdx + 1));
       const activeDataRows = matrix.slice(
         dataStartIndex - 1,
         skipFooter > 0 ? matrix.length - skipFooter : matrix.length
       );
+
+      // Data Presence & Merged Column Analysis across all columns
+      const merges = ws['!merges'] || [];
+      const allColumnsAnalysis: ColumnPresenceAnalysis[] = [];
+
+      for (let c = 0; c < colCount; c++) {
+        let nonEmptyCount = 0;
+        const sampleValues: string[] = [];
+        for (let r = 0; r < activeDataRows.length; r++) {
+          const cell = activeDataRows[r]?.[c];
+          if (cell !== null && cell !== undefined && String(cell).trim() !== '') {
+            nonEmptyCount++;
+            if (sampleValues.length < 3) sampleValues.push(String(cell).trim());
+          }
+        }
+
+        // Check if (headerStartIdx, c) is covered by a horizontal merge
+        const merge = merges.find(m =>
+          m.s.r <= headerEndIdx - 1 &&
+          m.e.r >= headerStartIdx &&
+          c >= m.s.c &&
+          c <= m.e.c &&
+          m.s.c < m.e.c
+        );
+
+        let headerText = '';
+        const parts: string[] = [];
+        for (let r = 0; r < headerRows.length; r++) {
+          const val = String(headerRows[r]?.[c] || '').trim();
+          if (val && !parts.includes(val)) parts.push(val);
+        }
+        headerText = parts.join(separator).replace(/^_+|_+$/g, '');
+
+        let isMergedSpan = false;
+        let isPrimaryDataColumn = true;
+        let isExcludedEmpty = false;
+
+        if (merge) {
+          isMergedSpan = true;
+          const topMergeVal = String(matrix[merge.s.r]?.[merge.s.c] || '').trim();
+
+          // Find which column index in this merge span has the highest data presence in activeDataRows
+          let bestDataCol = merge.s.c;
+          let maxDataInSpan = -1;
+          for (let sc = merge.s.c; sc <= merge.e.c; sc++) {
+            let scCount = 0;
+            for (let r = 0; r < activeDataRows.length; r++) {
+              const scCell = activeDataRows[r]?.[sc];
+              if (scCell !== null && scCell !== undefined && String(scCell).trim() !== '') scCount++;
+            }
+            if (scCount > maxDataInSpan) {
+              maxDataInSpan = scCount;
+              bestDataCol = sc;
+            }
+          }
+
+          if (c === bestDataCol) {
+            headerText = topMergeVal || headerText || `Col_${c + 1}`;
+            isPrimaryDataColumn = true;
+            isExcludedEmpty = false;
+          } else {
+            headerText = topMergeVal ? `${topMergeVal}_span_${c}` : `Col_${c + 1}`;
+            isPrimaryDataColumn = false;
+            // Exclude if it has 0 data and another column in the span has data
+            isExcludedEmpty = nonEmptyCount === 0;
+          }
+        } else {
+          if (!headerText) {
+            headerText = `Col_${c + 1}`;
+            if (nonEmptyCount === 0) isExcludedEmpty = true;
+          }
+        }
+
+        // Infer suggested data type
+        let suggestedDataType = 'VARCHAR(128)';
+        const hLower = headerText.toLowerCase();
+        if (hLower.includes('amount') || hLower.includes('fee') || hLower.includes('rate') || hLower.includes('balance') || hLower.includes('amnt') || hLower.includes('req_amnt')) {
+          suggestedDataType = 'NUMERIC(18,4)';
+        } else if (hLower.includes('date') || hLower.includes('time') || hLower.includes('timestamp')) {
+          suggestedDataType = 'TIMESTAMP';
+        } else if (hLower.includes('count') || hLower.includes('qty')) {
+          suggestedDataType = 'BIGINT';
+        }
+
+        const totalRowsSampled = activeDataRows.length;
+        const dataPercentage = totalRowsSampled > 0 ? Math.round((nonEmptyCount / totalRowsSampled) * 100) : 0;
+
+        allColumnsAnalysis.push({
+          colIndex: c,
+          header: headerText,
+          cleanHeader: headerText.replace(/[^a-zA-Z0-9_]/g, '_'),
+          hasData: nonEmptyCount > 0,
+          nonEmptyCount,
+          totalRows: totalRowsSampled,
+          dataPercentage,
+          sampleValues,
+          isMergedSpan,
+          isPrimaryDataColumn,
+          isExcludedEmpty,
+          suggestedDataType
+        });
+      }
+
+      // Determine which columns to include in headersDetected & parsedRowsSample
+      const pruneEmpty = config.pruneEmptyMergedColumns !== false && (config as any).onlyColumnsWithData !== false;
+      const activeColumns = pruneEmpty
+        ? allColumnsAnalysis.filter(col => !col.isExcludedEmpty)
+        : allColumnsAnalysis;
+
+      const combinedHeaders = activeColumns.map(col => col.header);
 
       const parsedRowsSample: Record<string, any>[] = [];
       const mappedRowsSample: Record<string, any>[] = [];
@@ -438,12 +572,12 @@ export const ftpFileStagingService = {
       const importantCols = config.selectedImportantColumns || mappings.filter(m => m.isImportant !== false).map(m => m.sourceColumn);
 
       for (let i = 0; i < sampleLimit; i++) {
-        const rowData = activeDataRows[i];
+        const rowData = activeDataRows[i] || [];
         const parsedRow: Record<string, any> = {};
         const mappedRow: Record<string, any> = {};
 
-        combinedHeaders.forEach((hdr, idx) => {
-          parsedRow[hdr] = rowData[idx] ?? null;
+        activeColumns.forEach(col => {
+          parsedRow[col.header] = rowData[col.colIndex] ?? null;
         });
         parsedRowsSample.push(parsedRow);
 
@@ -467,7 +601,7 @@ export const ftpFileStagingService = {
         fileName: targetFile,
         fileType: 'EXCEL',
         totalLinesRead: totalRows,
-        headerRowIndex: headerIndex,
+        headerRowIndex: effectiveHeaderIndex,
         headerRowCount,
         dataStartRow: dataStartIndex,
         headersDetected: combinedHeaders,
@@ -478,6 +612,7 @@ export const ftpFileStagingService = {
         rawLinesSample: matrix.slice(0, 8).map(r => r.join(' | ')),
         parsedRowsSample,
         mappedRowsSample,
+        allColumnsAnalysis,
         footerSkippedLines: footerSkippedRows,
         structureSummary: {
           totalColumnsDetected: combinedHeaders.length,
@@ -668,6 +803,46 @@ export const ftpFileStagingService = {
       mappedRowsSample.push(mappedRow);
     }
 
+    const allColumnsAnalysis: ColumnPresenceAnalysis[] = headers.map((hdr, idx) => {
+      let nonEmptyCount = 0;
+      const sampleValues: string[] = [];
+      const sampleCheckLimit = Math.min(dataLines.length, 100);
+      for (let r = 0; r < sampleCheckLimit; r++) {
+        const lineCols = parseDelimitedLine(dataLines[r], delimiter, quoteChar);
+        const cell = lineCols[idx];
+        if (cell !== null && cell !== undefined && String(cell).trim() !== '') {
+          nonEmptyCount++;
+          if (sampleValues.length < 3) sampleValues.push(String(cell).trim());
+        }
+      }
+
+      let suggestedDataType = 'VARCHAR(128)';
+      const hLower = hdr.toLowerCase();
+      if (hLower.includes('amount') || hLower.includes('fee') || hLower.includes('rate') || hLower.includes('balance') || hLower.includes('amnt') || hLower.includes('req_amnt')) {
+        suggestedDataType = 'NUMERIC(18,4)';
+      } else if (hLower.includes('date') || hLower.includes('time') || hLower.includes('timestamp')) {
+        suggestedDataType = 'TIMESTAMP';
+      } else if (hLower.includes('count') || hLower.includes('qty')) {
+        suggestedDataType = 'BIGINT';
+      }
+
+      const dataPercentage = sampleCheckLimit > 0 ? Math.round((nonEmptyCount / sampleCheckLimit) * 100) : 0;
+      return {
+        colIndex: idx,
+        header: hdr,
+        cleanHeader: hdr.replace(/[^a-zA-Z0-9_]/g, '_'),
+        hasData: nonEmptyCount > 0,
+        nonEmptyCount,
+        totalRows: sampleCheckLimit,
+        dataPercentage,
+        sampleValues,
+        isMergedSpan: false,
+        isPrimaryDataColumn: true,
+        isExcludedEmpty: nonEmptyCount === 0 && (!hdr || hdr.startsWith('col_')),
+        suggestedDataType
+      };
+    });
+
     return {
       success: true,
       fileName: targetFile,
@@ -683,6 +858,7 @@ export const ftpFileStagingService = {
       rawLinesSample: allLines.slice(0, 8),
       parsedRowsSample,
       mappedRowsSample,
+      allColumnsAnalysis,
       footerSkippedLines: footerLines,
       structureSummary: {
         totalColumnsDetected: headers.length,
@@ -861,6 +1037,8 @@ export const ftpFileStagingService = {
     stagedCount: number;
     filesProcessedCount: number;
     filesProcessed: string[];
+    filesAlreadyIngestedCount?: number;
+    filesAlreadyIngested?: string[];
     skippedMismatches: any[];
     executionTimeMs: number;
     message: string;
@@ -872,24 +1050,25 @@ export const ftpFileStagingService = {
     const scanDir = rawScanDir || (traversalMode === 'RECURSIVE_SCAN' ? '/' : undefined);
 
     // 1. Collect target files to process
-    let targetFiles: { fullPath: string; folder: string; name: string }[] = [];
+    let targetFiles: { fullPath: string; folder: string; name: string; size?: number; modifiedAt?: string; fileType?: string }[] = [];
 
     if (traversalMode === 'RECURSIVE_SCAN' || traversalMode === 'DIRECTORY_SCAN') {
-      const recursiveEntries = await discoverFtpFilesRecursive(db, scanDir || '/', 8);
+      const recursiveEntries = await discoverFtpFilesRecursive(db, scanDir || '/', 10);
       const regex = compilePatternToRegex(config.fileNamePattern || '*');
 
       targetFiles = recursiveEntries
         .filter(entry => {
           if (!config.fileNamePattern || config.fileNamePattern.trim() === '*' || config.fileNamePattern.trim() === '.*') return true;
-          const entryNorm = entry.fullPath.replace(/\\/g, '/');
-          const nameNorm = entry.name;
-          const folderNorm = entry.relativeFolder.replace(/\\/g, '/');
-          return regex.test(nameNorm) || regex.test(entryNorm) || regex.test(`${folderNorm}/${nameNorm}`);
+          return matchesFilePattern(config.fileNamePattern, entry.name, entry.fullPath) ||
+                 regex.test(entry.name) || regex.test(entry.fullPath);
         })
         .map(entry => ({
           fullPath: entry.fullPath,
-          folder: entry.relativeFolder,
-          name: entry.name
+          folder: entry.relativeFolder || '/',
+          name: entry.name,
+          size: entry.size || 0,
+          modifiedAt: entry.modifiedAt,
+          fileType: entry.fileType
         }));
 
       // Error if no pattern matched
@@ -900,43 +1079,99 @@ export const ftpFileStagingService = {
       targetFiles = [{
         fullPath: config.fileNamePattern,
         folder: '/',
-        name: config.fileNamePattern.replace(/^.*[\\\/]/, '')
+        name: config.fileNamePattern.replace(/^.*[\\\/]/, ''),
+        size: 0
       }];
     }
 
-    // 2. Determine target mirror table name
+    // 2. Determine target mirror table name (one dedicated table per file pattern)
     const sanitizedBase = sanitizeColumnName((config.name || config.fileNamePattern || 'feed').replace(/[^a-zA-Z0-9]/g, '_'), 1);
-    const mirrorTableName = config.stagingTableName || (sanitizedBase.startsWith('mirror_') ? sanitizedBase : `mirror_ftp_${sanitizedBase}`);
+    const mirrorTableName = config.targetTableName || config.stagingTableName || (sanitizedBase.startsWith('mirror_') ? sanitizedBase : deriveTableNameForPattern(config.fileNamePattern || sanitizedBase));
 
-    // 3. Resolve columns to stage: Important Columns & Mappings
-    const mappings = config.fieldMappings || [];
-    const importantCols = config.selectedImportantColumns && config.selectedImportantColumns.length > 0
-      ? config.selectedImportantColumns
-      : mappings.filter(m => m.isImportant !== false).map(m => m.sourceColumn);
+    // 3. Resolve columns to stage: Field Mappings or Auto-detected Real Headers
+    let mappings: any[] = (config.fieldMappings && config.fieldMappings.length > 0) ? [...config.fieldMappings] : [];
 
-    // Build physical columns list
-    const columnDefinitions: { colName: string; dataType: string; sourceColumn: string; transform?: string }[] = [];
+    // If no explicit field mappings are provided in config, auto-inspect the sample or first target file to derive real physical columns
+    if (mappings.length === 0 && targetFiles.length > 0) {
+      try {
+        const sampleFile = targetFiles[0];
+        const effectiveSampleConfig = this.resolveEffectiveConfigForFile(sampleFile, config);
+        const samplePreview = await this.testPreviewParse(db, {
+          ...effectiveSampleConfig,
+          fileNamePattern: sampleFile.fullPath
+        }, 5);
 
-    if (mappings.length > 0) {
-      mappings.forEach((m, idx) => {
-        if (importantCols.length === 0 || importantCols.includes(m.sourceColumn) || m.isImportant !== false) {
-          const colName = sanitizeColumnName(m.canonicalField || m.sourceColumn, idx + 1);
-          let pgType = 'VARCHAR(255)';
-          if (m.dataType === 'number') pgType = 'NUMERIC(18, 4)';
-          else if (m.dataType === 'date') pgType = 'TIMESTAMPTZ';
-          else if (m.dataType === 'boolean') pgType = 'BOOLEAN';
-
-          columnDefinitions.push({
-            colName,
-            dataType: pgType,
-            sourceColumn: m.sourceColumn,
-            transform: m.transform
+        if (samplePreview && samplePreview.headersDetected && samplePreview.headersDetected.length > 0) {
+          mappings = samplePreview.headersDetected.map((h: string, idx: number) => {
+            const hClean = h.trim();
+            const hLower = hClean.toLowerCase();
+            let dataType = 'VARCHAR(255)';
+            if (hLower.includes('amount') || hLower.includes('fee') || hLower.includes('rate') || hLower.includes('balance') || hLower.includes('amnt') || hLower.includes('req_amnt')) {
+              dataType = 'NUMERIC(18, 4)';
+            } else if (hLower.includes('date') || hLower.includes('time') || hLower.includes('timestamp')) {
+              dataType = 'TIMESTAMPTZ';
+            } else if (hLower.includes('count') || hLower.includes('qty')) {
+              dataType = 'BIGINT';
+            }
+            return {
+              sourceHeader: hClean,
+              sourceColumn: hClean,
+              targetColumn: sanitizeColumnName(hClean, idx + 1),
+              canonicalField: sanitizeColumnName(hClean, idx + 1),
+              dataType
+            };
           });
         }
-      });
+      } catch (autoInspectErr: any) {
+        console.warn(`[ftpFileStagingService] Auto-detect headers for ${mirrorTableName} failed:`, autoInspectErr.message);
+      }
     }
 
-    // Default fallback columns if no specific mappings
+    const importantCols = config.selectedImportantColumns && config.selectedImportantColumns.length > 0
+      ? config.selectedImportantColumns
+      : mappings.filter((m: any) => m.isImportant !== false).map((m: any) => m.sourceHeader || m.sourceColumn || m.targetColumn);
+
+    // Build physical columns list with deduplication (e.g. for merged Excel cells with repeated names)
+    const seenColNames = new Set<string>();
+    const columnDefinitions: { colName: string; dataType: string; sourceColumn: string; transform?: string }[] = [];
+
+    mappings.forEach((m: any, idx: number) => {
+      if (m.included === false || m.isImportant === false) return;
+      const targetColCandidate = m.targetColumn || m.canonicalField;
+      if (!targetColCandidate || !String(targetColCandidate).trim()) return;
+      const sourceCol = m.sourceHeader || m.sourceColumn || targetColCandidate;
+
+      const baseColName = sanitizeColumnName(targetColCandidate, idx + 1);
+      let colName = baseColName;
+      let counter = 2;
+      while (seenColNames.has(colName.toLowerCase())) {
+        colName = `${baseColName}_${counter++}`;
+      }
+      seenColNames.add(colName.toLowerCase());
+
+        let pgType = 'VARCHAR(255)';
+        const typeStr = (m.dataType || '').toLowerCase();
+        if (typeStr === 'number' || typeStr.includes('numeric') || typeStr.includes('decimal')) {
+          pgType = 'NUMERIC(18, 4)';
+        } else if (typeStr === 'date' || typeStr.includes('timestamp') || typeStr.includes('timestamptz')) {
+          pgType = 'TIMESTAMPTZ';
+        } else if (typeStr === 'boolean' || typeStr.includes('bool')) {
+          pgType = 'BOOLEAN';
+        } else if (typeStr === 'bigint' || typeStr === 'integer' || typeStr === 'int') {
+          pgType = 'BIGINT';
+        } else if (typeStr.startsWith('varchar') || typeStr.startsWith('char') || typeStr.startsWith('text')) {
+          pgType = m.dataType;
+        }
+
+      columnDefinitions.push({
+        colName,
+        dataType: pgType,
+        sourceColumn: sourceCol,
+        transform: m.transform
+      });
+    });
+
+    // Default fallback columns ONLY if file structure had zero detectable headers
     if (columnDefinitions.length === 0) {
       columnDefinitions.push(
         { colName: 'transaction_id', dataType: 'VARCHAR(255)', sourceColumn: 'transaction_id' },
@@ -981,7 +1216,38 @@ export const ftpFileStagingService = {
       await queryPg(`ALTER TABLE "${mirrorTableName}" ADD COLUMN IF NOT EXISTS _validation_details JSONB DEFAULT '{}'::jsonb;`);
       await queryPg(`ALTER TABLE "${mirrorTableName}" ADD COLUMN IF NOT EXISTS _mirrored_at TIMESTAMPTZ DEFAULT NOW();`);
       await queryPg(`ALTER TABLE "${mirrorTableName}" ADD COLUMN IF NOT EXISTS payload JSONB DEFAULT '{}'::jsonb;`);
-    } catch {}
+
+      // Dynamically add all mapped physical columns if the table already existed previously
+      for (const col of columnDefinitions) {
+        try {
+          await queryPg(`ALTER TABLE "${mirrorTableName}" ADD COLUMN IF NOT EXISTS "${col.colName}" ${col.dataType};`);
+        } catch (colErr: any) {
+          console.warn(`[ftpFileStagingService] ADD COLUMN IF NOT EXISTS "${col.colName}" warning:`, colErr.message);
+        }
+      }
+    } catch (alterErr: any) {
+      console.warn(`[ftpFileStagingService] Table alteration warning for ${mirrorTableName}:`, alterErr.message);
+    }
+
+    // Register table schema in database_table_mappings for universal pipeline and rule availability
+    try {
+      await repo.saveTableMapping(db.id, mirrorTableName, {
+        dbId: db.id,
+        dbName: db.name || 'FTP Storage',
+        tableName: mirrorTableName,
+        columns: columnDefinitions.map(c => ({
+          physicalColumn: c.colName,
+          globalKey: c.colName,
+          name: c.colName,
+          type: c.dataType,
+          sourceColumn: c.sourceColumn
+        })),
+        isCustom: false,
+        updatedBy: 'system_ftp_staging'
+      });
+    } catch (mappingErr: any) {
+      console.warn(`[ftpFileStagingService] Could not register table mapping for ${mirrorTableName}:`, mappingErr.message);
+    }
 
     // Only truncate previous records if user explicitly requested REPLACE mode
     if (config.stagingMode === 'REPLACE') {
@@ -990,11 +1256,20 @@ export const ftpFileStagingService = {
 
     let totalStaged = 0;
     const processedFilesList: string[] = [];
+    const skippedAlreadyIngested: string[] = [];
     const skippedMismatches: any[] = [];
 
-    // 5. Loop through all discovered files across folders (with exception overrides & fault-tolerant skipping)
+    // 5. Loop through all discovered files across folders (with deduplication & fault-tolerant skipping)
     for (const fileItem of targetFiles) {
       try {
+        // Deduplication check: verify against persistent Ingested File Storage to prevent duplicate records
+        const isAlreadyIngested = await repo.isFtpFileIngested(db.id, fileItem.fullPath, fileItem.size);
+        if (isAlreadyIngested && config.stagingMode !== 'REPLACE' && !(config as any).forceReingest) {
+          console.log(`[ftpFileStagingService] File '${fileItem.fullPath}' is already in ftp_ingested_files. Skipping duplicate record ingestion.`);
+          skippedAlreadyIngested.push(fileItem.fullPath);
+          continue;
+        }
+
         // In permanent historical mode, refresh only this file's rows before re-inserting
         if (config.stagingMode !== 'REPLACE') {
           await queryPg(
@@ -1019,21 +1294,33 @@ export const ftpFileStagingService = {
 
           columnDefinitions.forEach(c => {
             let rawVal = rawRow[c.sourceColumn];
+            if (rawVal === undefined || rawVal === null) rawVal = rawRow[c.colName];
             if (rawVal === undefined || rawVal === null) {
-              const cleanSource = c.sourceColumn.toLowerCase().replace(/[^a-z0-9]/g, '');
-              const foundKey = Object.keys(rawRow).find(k => k.toLowerCase().replace(/[^a-z0-9]/g, '').includes(cleanSource) || cleanSource.includes(k.toLowerCase().replace(/[^a-z0-9]/g, '')));
+              const cleanCol = c.colName.toLowerCase().replace(/[^a-z0-9]/g, '');
+              const cleanSrc = c.sourceColumn ? c.sourceColumn.toLowerCase().replace(/[^a-z0-9]/g, '') : cleanCol;
+              const foundKey = Object.keys(rawRow).find(k => {
+                const cleanK = k.toLowerCase().replace(/[^a-z0-9]/g, '');
+                return cleanK === cleanSrc || cleanK === cleanCol || (cleanSrc && cleanK.includes(cleanSrc)) || (cleanSrc && cleanSrc.includes(cleanK));
+              });
               if (foundKey) rawVal = rawRow[foundKey];
+            }
+            if (typeof rawVal === 'object' && rawVal !== null && !(rawVal instanceof Date)) {
+              rawVal = JSON.stringify(rawVal);
             }
             const transformed = applyFieldTransform(rawVal, c.transform);
 
-            if (transformed === null || transformed === undefined) {
+            if (transformed === null || transformed === undefined || String(transformed).trim() === '' || String(transformed).trim().toUpperCase() === 'NULL') {
               colValues.push('NULL');
-            } else if (c.dataType.startsWith('NUMERIC')) {
-              const num = parseFloat(String(transformed).replace(/[^0-9.-]/g, ''));
-              colValues.push(isNaN(num) ? '0' : String(num));
+            } else if (c.dataType.startsWith('NUMERIC') || c.dataType.startsWith('BIGINT') || c.dataType.startsWith('INT')) {
+              const cleanNumStr = String(transformed).replace(/,/g, '').trim();
+              const num = parseFloat(cleanNumStr.replace(/[^0-9.-]/g, ''));
+              colValues.push(isNaN(num) ? 'NULL' : String(num));
             } else if (c.dataType.startsWith('TIMESTAMP')) {
               const dt = new Date(transformed);
-              colValues.push(isNaN(dt.getTime()) ? 'NOW()' : `'${dt.toISOString()}'`);
+              colValues.push(isNaN(dt.getTime()) ? 'NULL' : `'${dt.toISOString()}'`);
+            } else if (c.dataType.startsWith('BOOLEAN')) {
+              const strVal = String(transformed).trim().toLowerCase();
+              colValues.push(strVal === 'true' || strVal === '1' || strVal === 't' ? 'TRUE' : 'FALSE');
             } else {
               const escaped = String(transformed).replace(/'/g, "''");
               colValues.push(`'${escaped}'`);
@@ -1049,6 +1336,7 @@ export const ftpFileStagingService = {
             '${escapedFolder}',
             ${idx + 1},
             ${colValues.join(', ')},
+            '${jsonPayload}'::jsonb,
             '${jsonPayload}'::jsonb
           )`);
           totalStaged++;
@@ -1061,11 +1349,29 @@ export const ftpFileStagingService = {
             const chunk = insertChunks.slice(b, b + BATCH_SIZE);
             await queryPg(`
               INSERT INTO "${mirrorTableName}" (
-                _source_file, _source_folder, _raw_row_index, ${colNamesSql}, raw_payload
+                _source_file, _source_folder, _raw_row_index, ${colNamesSql}, raw_payload, payload
               ) VALUES ${chunk.join(',\n')};
             `);
           }
         }
+
+        // Record file in persistent Ingested File Storage ledger
+        await repo.recordIngestedFtpFile({
+          id: `ingested-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`,
+          ftpConnectionId: db.id,
+          fileName: fileItem.name,
+          filePath: fileItem.fullPath,
+          relativeFolder: fileItem.folder,
+          fileSize: fileItem.size || 0,
+          fileModifiedAt: fileItem.modifiedAt,
+          fileFormat: effectiveConfig.fileFormat || 'CSV',
+          filePattern: config.fileNamePattern || fileItem.name,
+          stagingConfigId: config.id,
+          targetTableName: mirrorTableName,
+          recordsStaged: rowsToInsert.length,
+          ingestionStatus: 'INGESTED',
+          ingestedAt: new Date().toISOString()
+        });
 
         processedFilesList.push(fileItem.fullPath);
       } catch (fileErr: any) {
@@ -1132,10 +1438,27 @@ export const ftpFileStagingService = {
       stagedCount: totalStaged,
       filesProcessedCount: processedFilesList.length,
       filesProcessed: processedFilesList,
+      filesAlreadyIngestedCount: skippedAlreadyIngested.length,
+      filesAlreadyIngested: skippedAlreadyIngested,
       skippedMismatches,
       executionTimeMs,
-      message: `Successfully staged ${totalStaged} records across ${processedFilesList.length} files into [${mirrorTableName}]. (${skippedMismatches.length} mismatched files skipped).`
+      message: `Successfully staged ${totalStaged} records across ${processedFilesList.length} files into [${mirrorTableName}]. (${skippedAlreadyIngested.length} previously ingested files skipped; ${skippedMismatches.length} mismatched files skipped).`
     };
+  },
+
+  /**
+   * Automatically groups discovered files into semantic file-type patterns across all folders recursively.
+   */
+  async detectSemanticPatternsAcrossFolders(
+    db: DatabaseConnection,
+    discoveredFiles?: FtpFileEntry[],
+    scanDir?: string
+  ): Promise<SemanticPatternGroup[]> {
+    let files = discoveredFiles;
+    if (!files || files.length === 0) {
+      files = await discoverFtpFilesRecursive(db, scanDir || '/', 10);
+    }
+    return groupFilesBySemanticPattern(files);
   },
 
   /**

@@ -9,7 +9,12 @@ issuesRouter.get('/', async (req: Request, res: Response) => {
   try {
     const userId = req.query.userId as string | undefined;
     const scope = (req.query.scope as 'personal' | 'team' | 'all') || 'all';
-    const issues = await repo.getIssues(userId, scope);
+    let issues = await repo.getIssues(userId, scope);
+    if (req.query.limit) {
+      const limit = Math.max(1, Math.min(parseInt(req.query.limit as string, 10) || 500, 500));
+      const offset = Math.max(0, parseInt(req.query.offset as string, 10) || 0);
+      issues = issues.slice(offset, offset + limit);
+    }
     return res.json(issues);
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
@@ -220,8 +225,8 @@ issuesRouter.get('/:id', async (req: Request, res: Response) => {
 // GET /api/issues/:id/transactions - Thin client paginated dataset with batch filter
 issuesRouter.get('/:id/transactions', async (req: Request, res: Response) => {
   try {
-    const page = parseInt(req.query.page as string || '1', 10);
-    const limit = parseInt(req.query.limit as string || '50', 10);
+    const page = Math.max(1, parseInt(req.query.page as string || '1', 10) || 1);
+    const limit = Math.max(1, Math.min(parseInt(req.query.limit as string || '50', 10) || 50, 500));
     const batchId = req.query.batchId as string | undefined;
     const result = await repo.getTaskDatasetTransactions(req.params.id, page, limit, batchId);
     return res.json({
@@ -380,36 +385,30 @@ issuesRouter.post('/:id/chat', async (req: Request, res: Response) => {
 
     let existing = await repo.getIssueById(req.params.id);
     if (!existing) {
-      // Auto-register missing or mock issue from issueContext or in-memory store
-      const { store } = await import('../store/dataStore.js');
-      const memoryIssue = store.issues.find(i => i.id === req.params.id || i.id.toLowerCase() === req.params.id.toLowerCase());
+      if (issueContext && (issueContext.title || issueContext.description)) {
+        existing = await repo.createIssue({
+          id: req.params.id,
+          title: issueContext.title || `Operational Task ${req.params.id}`,
+          description: issueContext.description || 'Auto-registered task from investigation session.',
+          status: (issueContext.status as any) || 'OPEN',
+          priority: issueContext.priority || 'Medium',
+          creatorId: issueContext.creatorId || senderId,
+          creatorName: issueContext.creatorName || senderName || 'User',
+          createdAt: issueContext.createdAt || new Date().toISOString(),
+          linkedHashtag: issueContext.linkedHashtag,
+          type: issueContext.type || 'single',
+          transactionId: issueContext.transactionId,
+          uploadedFileName: issueContext.uploadedFileName,
+          uploadedFileHeaders: issueContext.uploadedFileHeaders,
+          fileMapping: issueContext.fileMapping,
+          firstLevelMappedData: issueContext.firstLevelMappedData,
+          chat: [newMessage]
+        });
 
-      const title = issueContext?.title || memoryIssue?.title || `Operational Task ${req.params.id}`;
-      const description = issueContext?.description || memoryIssue?.description || 'Auto-registered task from investigation session.';
-      const creatorId = issueContext?.creatorId || memoryIssue?.creatorId || senderId;
-      const creatorName = issueContext?.creatorName || memoryIssue?.creatorName || senderName || 'User';
-
-      existing = await repo.createIssue({
-        id: req.params.id,
-        title,
-        description,
-        status: issueContext?.status || memoryIssue?.status || 'Investigating',
-        priority: issueContext?.priority || memoryIssue?.priority || 'Medium',
-        creatorId,
-        creatorName,
-        createdAt: issueContext?.createdAt || memoryIssue?.createdAt || new Date().toISOString(),
-        linkedHashtag: issueContext?.linkedHashtag || memoryIssue?.linkedHashtag,
-        type: issueContext?.type || memoryIssue?.type || 'single',
-        transactionId: issueContext?.transactionId || memoryIssue?.transactionId,
-        uploadedFileName: issueContext?.uploadedFileName || memoryIssue?.uploadedFileName,
-        uploadedFileHeaders: issueContext?.uploadedFileHeaders || memoryIssue?.uploadedFileHeaders,
-        fileMapping: issueContext?.fileMapping || memoryIssue?.fileMapping,
-        firstLevelMappedData: issueContext?.firstLevelMappedData || memoryIssue?.firstLevelMappedData,
-        chat: [newMessage]
-      });
-
-      eventService.broadcastEvent('issue_chat:new', { issueId: req.params.id, message: newMessage });
-      return res.json(existing);
+        eventService.broadcastEvent('issue_chat:new', { issueId: req.params.id, message: newMessage });
+        return res.json(existing);
+      }
+      return res.status(404).json({ error: `Issue ${req.params.id} not found` });
     }
 
     const updated = await repo.addIssueChat(req.params.id, newMessage);

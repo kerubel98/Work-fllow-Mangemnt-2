@@ -87,7 +87,7 @@ describe('Team Mailbox, Thread Awareness & Task Linking Test Suite', () => {
     const pool = getPostgresPool();
     await pool.query(
       `INSERT INTO issues (id, title, description, status, priority, creator_id, creator_name, team_id)
-       VALUES ($1, 'Discrepancy Investigation Task', 'Investigating discrepancies', 'Open', 'High', 'usr-test-lead', 'Lead Tester', $2)
+       VALUES ($1, 'Discrepancy Investigation Task', 'Investigating discrepancies', 'OPEN', 'High', 'usr-test-lead', 'Lead Tester', $2)
        ON CONFLICT (id) DO NOTHING;`,
       [testIssueId, testTeamId]
     );
@@ -274,7 +274,7 @@ describe('Team Mailbox, Thread Awareness & Task Linking Test Suite', () => {
     const pool = getPostgresPool();
     await pool.query(
       `INSERT INTO issues (id, title, description, status, priority, creator_id, creator_name, team_id)
-       VALUES ($1, 'Reconciliation Task 771', 'Desc', 'Open', 'High', 'usr-test-lead', 'Lead Tester', $2)
+       VALUES ($1, 'Reconciliation Task 771', 'Desc', 'OPEN', 'High', 'usr-test-lead', 'Lead Tester', $2)
        ON CONFLICT (id) DO NOTHING;`,
       [testIssueId, testTeamId]
     );

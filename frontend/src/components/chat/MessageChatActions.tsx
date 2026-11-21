@@ -147,7 +147,9 @@ export const MessageReactionsRow: React.FC<MessageReactionsRowProps> = ({
     return null;
   }
 
-  const reactionEntries = Object.entries(reactions).filter(([_, users]) => users && users.length > 0);
+  const reactionEntries = Object.entries(reactions).filter(
+    (entry): entry is [string, string[]] => Array.isArray(entry[1]) && entry[1].length > 0
+  );
   if (reactionEntries.length === 0) return null;
 
   return (

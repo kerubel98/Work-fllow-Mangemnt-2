@@ -659,8 +659,15 @@ export const investigationOrchestratorService = {
           mirrorCols
         );
 
-        // Execute compiled set-based batch update
-        await queryPg(compiledSql.fullUpdateSql, [jobId]);
+        // Execute compiled set-based batch update with local statement timeout protection
+        const p = getPostgresPool();
+        const client = await p.connect();
+        try {
+          await client.query("SET LOCAL statement_timeout = '5s';");
+          await client.query(compiledSql.fullUpdateSql, [jobId]);
+        } finally {
+          client.release();
+        }
 
         const stageInputRecords = [...currentActiveRecords];
 

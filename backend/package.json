@@ -8,6 +8,7 @@
     "dev": "tsx watch src/server.ts",
     "build": "tsc",
     "start": "node dist/server.js",
+    "migrate": "tsx src/database/migrate.ts",
     "test": "vitest run"
   },
   "dependencies": {
@@ -31,6 +32,6 @@
     "tsx": "^4.21.0",
     "typescript": "^5.8.2",
     "vite": "^6.2.3",
-    "vitest": "^5.0.0"
+    "vitest": "^5.0.2"
   }
 }

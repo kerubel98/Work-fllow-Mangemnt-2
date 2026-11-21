@@ -14,7 +14,6 @@ import {
 } from '../chat/MessageChatActions';
 import { ForwardMessageModal, ForwardDestination } from '../chat/ForwardMessageModal';
 import { api } from '../../api/client';
-import { api } from '../../api/client';
 import { EscalateToTeamModal } from '../team/EscalateToTeamModal';
 import UnifiedChatInput, { InChatDirectiveType } from '../chat/UnifiedChatInput';
 
@@ -111,6 +110,7 @@ export const CaseDiscussionDrawer: React.FC<CaseDiscussionDrawerProps> = ({
         await api.postIssueChat(destination.id, {
           senderId: currentUser?.id || 'curr-user',
           senderName: currentUser?.username || 'operator',
+          senderRole: currentUser?.role || 'user',
           text: payloadText
         });
       } catch (e) {

@@ -1,7 +1,29 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { generateToken } from '../../utils/auth.js';
 
 describe('Team Database Access & Permanent Team Membership Governance', () => {
   const BASE_URL = 'http://localhost:5002/api';
+
+  const adminToken = generateToken({
+    id: 'usr-1',
+    username: 'admin',
+    email: 'admin@paymentops.com',
+    role: 'admin',
+    isApproved: true,
+    canExecuteSelect: true,
+    canExecuteUpdate: true
+  });
+
+  const authFetch = (url: string, options: any = {}) => {
+    return fetch(url, {
+      ...options,
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${adminToken}`,
+        ...(options.headers || {})
+      }
+    });
+  };
 
   const testUserId1 = `test-usr-${Date.now()}-1`;
   const testUserId2 = `test-usr-${Date.now()}-2`;
@@ -14,7 +36,7 @@ describe('Team Database Access & Permanent Team Membership Governance', () => {
 
   beforeAll(async () => {
     // 1. Create permTeamA via API so it exists in PostgreSQL and the server
-    const res = await fetch(`${BASE_URL}/teams`, {
+    const res = await authFetch(`${BASE_URL}/teams`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -32,14 +54,14 @@ describe('Team Database Access & Permanent Team Membership Governance', () => {
   });
 
   afterAll(async () => {
-    await fetch(`${BASE_URL}/teams/${teamAlphaId}`, { method: 'DELETE' }).catch(() => {});
-    await fetch(`${BASE_URL}/teams/${teamBetaId}`, { method: 'DELETE' }).catch(() => {});
-    await fetch(`${BASE_URL}/teams/${teamGammaId}`, { method: 'DELETE' }).catch(() => {});
+    await authFetch(`${BASE_URL}/teams/${teamAlphaId}`, { method: 'DELETE' }).catch(() => {});
+    await authFetch(`${BASE_URL}/teams/${teamBetaId}`, { method: 'DELETE' }).catch(() => {});
+    await authFetch(`${BASE_URL}/teams/${teamGammaId}`, { method: 'DELETE' }).catch(() => {});
   });
 
   describe('1. Single Permanent Team Invariant Enforcement', () => {
     it('rejects creating a second permanent team with a user already in a permanent team', async () => {
-      const res = await fetch(`${BASE_URL}/teams`, {
+      const res = await authFetch(`${BASE_URL}/teams`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -60,7 +82,7 @@ describe('Team Database Access & Permanent Team Membership Governance', () => {
 
     it('rejects updating an existing permanent team to include a user from another permanent team', async () => {
       // Create independent permanent team with user 2
-      const resCreate = await fetch(`${BASE_URL}/teams`, {
+      const resCreate = await authFetch(`${BASE_URL}/teams`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -75,7 +97,7 @@ describe('Team Database Access & Permanent Team Membership Governance', () => {
       expect(resCreate.status).toBe(201);
 
       // Attempt to add user 1 (from teamAlphaId) into teamBetaId
-      const resUpdate = await fetch(`${BASE_URL}/teams/${teamBetaId}`, {
+      const resUpdate = await authFetch(`${BASE_URL}/teams/${teamBetaId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -89,7 +111,7 @@ describe('Team Database Access & Permanent Team Membership Governance', () => {
     });
 
     it('allows a user to belong to working / cross-functional squads alongside their permanent team', async () => {
-      const res = await fetch(`${BASE_URL}/teams`, {
+      const res = await authFetch(`${BASE_URL}/teams`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -111,7 +133,7 @@ describe('Team Database Access & Permanent Team Membership Governance', () => {
 
   describe('2. Team Database Access & Query Type Enforcement in Query Sandbox', () => {
     it('blocks query execution if user has no permanent team membership', async () => {
-      const res = await fetch(`${BASE_URL}/db/query/execute`, {
+      const res = await authFetch(`${BASE_URL}/db/query/execute`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -129,7 +151,7 @@ describe('Team Database Access & Permanent Team Membership Governance', () => {
     });
 
     it('blocks query execution if permanent team is not authorized to access the requested database', async () => {
-      const res = await fetch(`${BASE_URL}/db/query/execute`, {
+      const res = await authFetch(`${BASE_URL}/db/query/execute`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -147,7 +169,7 @@ describe('Team Database Access & Permanent Team Membership Governance', () => {
     });
 
     it('blocks UPDATE execution when permanent team only permits SELECT queries', async () => {
-      const res = await fetch(`${BASE_URL}/db/query/execute`, {
+      const res = await authFetch(`${BASE_URL}/db/query/execute`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -167,7 +189,7 @@ describe('Team Database Access & Permanent Team Membership Governance', () => {
 
     it('allows query execution when permanent team has been granted the required query type', async () => {
       // Grant UPDATE to teamAlpha
-      const updateRes = await fetch(`${BASE_URL}/teams/${teamAlphaId}`, {
+      const updateRes = await authFetch(`${BASE_URL}/teams/${teamAlphaId}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -176,7 +198,7 @@ describe('Team Database Access & Permanent Team Membership Governance', () => {
       });
       expect(updateRes.status).toBe(200);
 
-      const res = await fetch(`${BASE_URL}/db/query/execute`, {
+      const res = await authFetch(`${BASE_URL}/db/query/execute`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

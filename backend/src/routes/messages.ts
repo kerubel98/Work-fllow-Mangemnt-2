@@ -387,8 +387,12 @@ messagesRouter.get('/oauth2/authorize', async (req: Request, res: Response) => {
                         config.redirect_uri?.trim() ||
                         (req.query.redirectUri as string)?.trim() ||
                         `${req.protocol}://${req.get('host')}/api/messages/oauth2/callback`;
-    const stateObj = { providerId, userId, userEmail, returnUrl, redirectUri };
-    const state = Buffer.from(JSON.stringify(stateObj)).toString('base64url');
+    const stateObj = { providerId, userId, userEmail, returnUrl, redirectUri, timestamp: Date.now() };
+    const payload = Buffer.from(JSON.stringify(stateObj)).toString('base64url');
+    const cryptoMod = await import('crypto');
+    const secret = process.env.JWT_SECRET || 'oauth2-state-hmac-secret-salt-default-key';
+    const sig = cryptoMod.createHmac('sha256', secret).update(payload).digest('base64url');
+    const state = `${payload}.${sig}`;
 
     let authUrl = '';
     if (preset === 'ZOHO' || clientId.startsWith('1000.')) {
@@ -433,12 +437,27 @@ messagesRouter.get('/oauth2/callback', async (req: Request, res: Response) => {
       error_description?: string;
     };
 
-    let stateObj: { providerId?: string; userId?: string; userEmail?: string; returnUrl?: string } = {};
+    let stateObj: { providerId?: string; userId?: string; userEmail?: string; returnUrl?: string; timestamp?: number } = {};
     if (state) {
       try {
-        stateObj = JSON.parse(Buffer.from(state, 'base64url').toString('utf8'));
-      } catch {
-        stateObj = {};
+        const cryptoMod = await import('crypto');
+        const secret = process.env.JWT_SECRET || 'oauth2-state-hmac-secret-salt-default-key';
+        if (state.includes('.')) {
+          const [payload, sig] = state.split('.');
+          const expectedSig = cryptoMod.createHmac('sha256', secret).update(payload).digest('base64url');
+          if (sig.length !== expectedSig.length || !cryptoMod.timingSafeEqual(Buffer.from(sig), Buffer.from(expectedSig))) {
+            throw new Error('Invalid state signature (potential CSRF tampering)');
+          }
+          stateObj = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8'));
+          if (stateObj.timestamp && Date.now() - stateObj.timestamp > 15 * 60 * 1000) {
+            throw new Error('OAuth state expired (exceeded 15 minutes)');
+          }
+        } else {
+          stateObj = JSON.parse(Buffer.from(state, 'base64url').toString('utf8'));
+        }
+      } catch (err: any) {
+        console.warn('[messagesRouter] State validation failed:', err.message);
+        return res.status(403).json({ error: `OAuth CSRF verification failed: ${err.message}` });
       }
     }
 
