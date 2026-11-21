@@ -1453,14 +1453,19 @@ export default function App() {
                   </ErrorBoundary>
                 )}
 
-                {(activeNavigation === 'workflows' || activeNavigation === 'workflow_studio' || activeNavigation === 'rules' || activeNavigation === 'rules_library' || activeNavigation === 'query_sandbox' || activeNavigation === 'sql_sandbox') && (
+                {(activeNavigation === 'query_sandbox' || activeNavigation === 'sql_sandbox') && (
+                  <ErrorBoundary fallbackTitle="Query Sandbox Error">
+                    <QuerySandboxStandaloneView currentUser={effectiveUser || currentUser!} />
+                  </ErrorBoundary>
+                )}
+
+                {(activeNavigation === 'workflows' || activeNavigation === 'workflow_studio' || activeNavigation === 'rules' || activeNavigation === 'rules_library') && (
                   <ErrorBoundary fallbackTitle="Rules and Workflows Studio Error">
                     <ValidationBoxManager
                       currentUser={effectiveUser || currentUser!}
                       teams={teams}
                       initialTab={
                         (activeNavigation === 'workflows' || activeNavigation === 'workflow_studio') ? 'workflows' :
-                        (activeNavigation === 'query_sandbox' || activeNavigation === 'sql_sandbox') ? 'query_sandbox' :
                         'validation_boxes'
                       }
                     />

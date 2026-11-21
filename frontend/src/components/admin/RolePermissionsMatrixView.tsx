@@ -12,10 +12,10 @@ export function RolePermissionsMatrixView() {
       title: 'Administrator',
       subtitle: 'Everything, including connections and users.',
       sections: [
-        { title: 'WORK', items: ['Cases', 'Intake', 'Automations'] },
+        { title: 'WORK', items: ['Cases', 'Intake', 'Automations', 'Query sandbox'] },
         { title: 'COLLABORATE', items: ['Team', 'Messages'] },
         { title: 'INSIGHTS', items: ['Dashboard'] },
-        { title: 'BUILD', items: ['Workflows', 'Rules', 'Query sandbox'] },
+        { title: 'BUILD', items: ['Workflows', 'Rules'] },
         { title: 'ADMIN', items: ['People & access', 'Connections', 'Data setup', 'Authority Center'] }
       ],
       rights: [
@@ -44,10 +44,10 @@ export function RolePermissionsMatrixView() {
       title: 'Technical',
       subtitle: 'Investigates and solves escalated cases.',
       sections: [
-        { title: 'WORK', items: ['Cases', 'Intake', 'Automations'] },
+        { title: 'WORK', items: ['Cases', 'Intake', 'Automations', 'Query sandbox'] },
         { title: 'COLLABORATE', items: ['Team', 'Messages'] },
         { title: 'INSIGHTS', items: ['Dashboard'] },
-        { title: 'BUILD', items: ['Workflows', 'Rules', 'Query sandbox'] },
+        { title: 'BUILD', items: ['Workflows', 'Rules'] },
         { title: 'ADMIN', items: ['Data setup'] }
       ],
       rights: [

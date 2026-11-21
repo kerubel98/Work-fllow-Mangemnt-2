@@ -38,19 +38,18 @@ import { ShareAssetModal } from '../common/ShareAssetModal';
 import { AssetStatusBadge } from '../common/AssetStatusBadge';
 import DatabaseColumnConfigurationStudio from './DatabaseColumnConfiguration';
 import WorkflowStudioFlowchart from './WorkflowStudioFlowchart';
-import QuerySandboxStandaloneView from '../sandbox/QuerySandboxStandaloneView';
 
 interface ValidationBoxManagerProps {
   currentUser?: any;
   teams?: any[];
-  initialTab?: 'validation_boxes' | 'column_rules' | 'workflows' | 'query_sandbox';
+  initialTab?: 'validation_boxes' | 'column_rules' | 'workflows';
 }
 
 export const ValidationBoxManager: React.FC<ValidationBoxManagerProps> = ({ currentUser, teams = [], initialTab = 'validation_boxes' }) => {
   const [boxes, setBoxes] = useState<ValidationBox[]>([]);
   const [databases, setDatabases] = useState<DatabaseConnection[]>([]);
   const [loading, setLoading] = useState(true);
-  const [activeTab, setActiveTab] = useState<'validation_boxes' | 'column_rules' | 'workflows' | 'query_sandbox'>(initialTab);
+  const [activeTab, setActiveTab] = useState<'validation_boxes' | 'column_rules' | 'workflows'>(initialTab);
 
   useEffect(() => {
     if (initialTab) {
@@ -857,11 +856,11 @@ export const ValidationBoxManager: React.FC<ValidationBoxManagerProps> = ({ curr
             <span>Build</span>
             <span>/</span>
             <span className="text-slate-700 font-semibold">
-              {activeTab === 'workflows' ? 'Workflows' : activeTab === 'column_rules' ? 'DB Rules' : activeTab === 'query_sandbox' ? 'Query Sandbox' : 'Rules'}
+              {activeTab === 'workflows' ? 'Workflows' : activeTab === 'column_rules' ? 'DB Rules' : 'Rules'}
             </span>
           </div>
           <h1 className="text-lg font-bold text-slate-900 tracking-tight leading-tight">
-            {activeTab === 'workflows' ? 'Workflow Pipelines' : activeTab === 'column_rules' ? 'Database Rules' : activeTab === 'query_sandbox' ? 'Query Sandbox' : 'Rules'}
+            {activeTab === 'workflows' ? 'Workflow Pipelines' : activeTab === 'column_rules' ? 'Database Rules' : 'Rules'}
           </h1>
         </div>
 
@@ -958,22 +957,6 @@ export const ValidationBoxManager: React.FC<ValidationBoxManagerProps> = ({ curr
                   </div>
                 </button>
               </div>
-              <div className="p-1">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsNewRuleDropdownOpen(false);
-                    setActiveTab('query_sandbox');
-                  }}
-                  className="w-full text-left px-3 py-2 text-xs text-slate-700 hover:bg-slate-50 rounded-lg flex items-center gap-2.5 cursor-pointer"
-                >
-                  <Terminal className="w-4 h-4 text-purple-600" />
-                  <div>
-                    <div className="font-bold text-slate-900">Query Sandbox</div>
-                    <div className="text-[10px] text-slate-400">Interactive SQL editor, explain & test queries</div>
-                  </div>
-                </button>
-              </div>
             </div>
           )}
           </div>
@@ -1035,26 +1018,9 @@ export const ValidationBoxManager: React.FC<ValidationBoxManagerProps> = ({ curr
           </span>
         </button>
 
-        <button
-          type="button"
-          onClick={() => setActiveTab('query_sandbox')}
-          className={`pb-2 flex items-center gap-2 cursor-pointer transition-colors relative ${
-            activeTab === 'query_sandbox'
-              ? 'text-slate-900 font-bold border-b-2 border-[#F27421]'
-              : 'text-slate-500 hover:text-slate-800'
-          }`}
-        >
-          <Terminal className="w-3.5 h-3.5" />
-          <span>Query Sandbox</span>
-          <span className={`text-[10px] px-1.5 py-0.2 rounded-full font-bold ${
-            activeTab === 'query_sandbox' ? 'bg-[#0F142A] text-white' : 'bg-slate-100 text-slate-600'
-          }`}>
-            SQL
-          </span>
-        </button>
       </div>
 
-      {/* Content Switch: DB Rules Studio vs Workflows vs Query Sandbox vs Validation Boxes Library */}
+      {/* Content Switch: DB Rules Studio vs Workflows vs Validation Boxes Library */}
       {activeTab === 'column_rules' ? (
         <div className="pt-1 flex-1 min-h-0 overflow-y-auto">
           <DatabaseColumnConfigurationStudio
@@ -1071,10 +1037,6 @@ export const ValidationBoxManager: React.FC<ValidationBoxManagerProps> = ({ curr
             hideHeader={true}
             onWorkflowStateChange={setWfState}
           />
-        </div>
-      ) : activeTab === 'query_sandbox' ? (
-        <div className="pt-0 flex-1 min-h-0 overflow-hidden -mx-3.5 -mb-1 flex flex-col">
-          <QuerySandboxStandaloneView currentUser={currentUser} />
         </div>
       ) : (
         <div className="pt-1 flex-1 min-h-0 overflow-y-auto space-y-3">

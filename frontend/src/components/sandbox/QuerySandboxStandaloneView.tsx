@@ -647,7 +647,7 @@ export const QuerySandboxStandaloneView: React.FC<QuerySandboxStandaloneViewProp
         {/* Left Side: Brand, Breadcrumbs, Database & Table Selectors */}
         <div className="flex items-center space-x-3 flex-wrap">
           <div>
-            <div className="text-[11px] text-slate-400 font-sans leading-none mb-1">Build / Query sandbox</div>
+            <div className="text-[11px] text-slate-400 font-sans leading-none mb-1">Work / Query sandbox</div>
             <h1 className="text-lg font-bold font-heading text-slate-900 tracking-tight flex items-center space-x-2">
               <span>Query sandbox</span>
             </h1>

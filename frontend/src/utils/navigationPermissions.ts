@@ -25,6 +25,8 @@ export function canAccessTab(
     case 'create_case':
     case 'manager_analytics':
     case 'workspace_settings':
+    case 'query_sandbox':
+    case 'sql_sandbox':
       return true;
 
     // Operational Authority Center (Dual-Authorization Four-Eyes Review)

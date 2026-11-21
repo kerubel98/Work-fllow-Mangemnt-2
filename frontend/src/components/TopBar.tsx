@@ -96,7 +96,7 @@ export default function TopBar({
         return { section: 'Build', page: 'Rules' };
       case 'query_sandbox':
       case 'sql_sandbox':
-        return { section: 'Build', page: 'Query sandbox' };
+        return { section: 'Work', page: 'Query sandbox' };
       case 'user_admin':
       case 'people_access':
         return { section: 'Admin', page: 'People & access' };

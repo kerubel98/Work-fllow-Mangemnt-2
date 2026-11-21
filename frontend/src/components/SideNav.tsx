@@ -9,7 +9,7 @@ import {
   Briefcase, Inbox, Hash, Users, MessageSquare, BarChart3,
   Layers, UserCheck, Database, Sliders, ShieldCheck,
   Settings, PanelLeftClose, PanelLeftOpen, Bell, ArrowRight,
-  CheckSquare, AlertCircle, X, CheckCheck, Trash2
+  CheckSquare, AlertCircle, X, CheckCheck, Trash2, Terminal
 } from 'lucide-react';
 import { isAuthorizedTabForUser } from '../utils/navigationPermissions';
 import { useGovernance } from '../context/GovernanceContext';
@@ -299,6 +299,12 @@ export default function SideNav({
             <Hash size={15} />,
             automationsCount
           )}
+          {navButton(
+            ['query_sandbox', 'sql_sandbox'],
+            'query_sandbox',
+            'Query Sandbox',
+            <Terminal size={15} />
+          )}
 
           {/* GROUP 2: COLLABORATE */}
           {groupHeader('COLLABORATE')}
@@ -331,7 +337,7 @@ export default function SideNav({
           {/* GROUP 4: BUILD */}
           {groupHeader('BUILD')}
           {navButton(
-            ['rules', 'rules_library', 'workflows', 'workflow_studio', 'query_sandbox', 'sql_sandbox'],
+            ['rules', 'rules_library', 'workflows', 'workflow_studio'],
             'rules',
             'Rules',
             <Layers size={15} />
