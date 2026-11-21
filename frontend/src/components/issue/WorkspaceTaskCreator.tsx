@@ -3306,7 +3306,7 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
                 type="button"
                 onClick={() => handleRunHashtag()}
                 className="w-full flex items-center justify-center space-x-2 py-2.5 text-gray-600 rounded-md text-xs font-bold transition shadow-xs cursor-pointer group border-solid border-gray-300"
-                title="Execute hashtag directive and apply its own column mappings directly to the task data"
+                title="Execute hashtag directive"
               >
                 <Play size={13} color="#12a83aff" className="fill-white group-hover:scale-110 transition-transform" />
                 <span>Run Hashtag</span>
