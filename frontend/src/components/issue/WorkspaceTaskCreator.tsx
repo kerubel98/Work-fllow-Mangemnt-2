@@ -2133,15 +2133,6 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
 
         {/* Action Buttons Top Right matching Case page */}
         <div className="flex items-center space-x-2 shrink-0 relative pt-1">
-          {/* Level / Mode badge */}
-          <button
-            type="button"
-            className="flex items-center space-x-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-xs font-bold rounded-lg shadow-2xs transition-colors cursor-pointer"
-          >
-            <Terminal size={13} />
-            <span>Level 2 (SANDBOX)</span>
-          </button>
-
           {/* Review Summary button */}
           <button
             type="button"
@@ -3305,8 +3296,8 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
               <button
                 type="button"
                 onClick={() => handleRunHashtag()}
-                className="w-full flex items-center justify-center space-x-2 py-2.5 text-gray-600 rounded-xl text-xs font-bold transition shadow-xs cursor-pointer group border-solid"
-                title="Execute hashtag directive and apply its own column mappings directly to the task data"
+                className="w-full flex items-center justify-center space-x-2 py-2.5 text-gray-600 rounded-xl text-xs font-bold transition shadow-xs cursor-pointer group border-2 border-gray-300"
+                title="Execute hashtag directive"
               >
                 <Play size={13} color="#12a83aff" className="fill-white group-hover:scale-110 transition-transform" />
                 <span>Run Hashtag</span>
