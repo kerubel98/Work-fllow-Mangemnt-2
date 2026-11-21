@@ -29,13 +29,13 @@ This index is maintained automatically by the `/summarize` skill and serves as t
 ## 🧭 Navigation & Usage Guide
 
 ### To Create a Session Handoff:
-Invoke `/summarize` in your conversation. The agent will:
+Invoke `/summarize` (or `/summarize <filename>`) in your conversation. The agent will:
 1. Update git: stage verified deliverables and create a git commit (or retrieve current commit hash if clean).
-2. Generate a new timestamped session file: `agent-handoffs/session-handoff-YYYY-MM-DD-HHmm.md` recording the Commit ID.
+2. Generate the session file: `agent-handoffs/<filename>.md` if a custom name was specified, or `agent-handoffs/session-handoff-YYYY-MM-DD-HHmm.md` by default.
 3. Update this index (`agent-handoffs/index.md`) with the new session entry, commit hash, and update the **Latest Session Handoff** pointer.
 
 ### To Resume Work in a New Conversation:
-Invoke `/resume` in your new conversation. The agent will:
-1. Inspect this index (`agent-handoffs/index.md`) to find the latest session.
-2. Read the latest session handoff file and verify the codebase matches the documented Git Commit ID.
+Invoke `/resume` (or `/resume <filename>`) in your new conversation. The agent will:
+1. Inspect this index (`agent-handoffs/index.md`) to find the requested or latest session.
+2. Read the identified session handoff file and verify the codebase matches the documented Git Commit ID.
 3. Validate the current repository state and immediately continue execution from the highest-priority next step.
