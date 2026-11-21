@@ -133,6 +133,20 @@ Whenever modifying, designing, reviewing, or analyzing features in this reposito
     - **Mandatory PostgreSQL First**: Any new feature, dictionary, or configuration schema MUST be persisted in PostgreSQL (`operational_workflow_db`) via a versioned relational migration, backend repository methods in `postgresRepo.ts`, and REST API routes before or alongside frontend wiring.
     - **Strictly Ephemeral UI Scoping**: `localStorage` is permitted solely for non-business, device-local UI ergonomics (such as sidebar collapsed toggles). Any frontend state caching must serve only as a secondary optimistic read cache that is unconditionally hydrated and governed by PostgreSQL.
 
+24. **Composite Executable Ingestion Mappings (Mapping = Schema + Ordered Recipe Pipeline)**:
+    - **Composite Execution Entity**: An ingestion mapping template must NEVER be saved or executed as a simple column-to-column dictionary. It is a composite entity containing both schema projections and an ordered array of cleaning recipes (`FileIngestionCleaningRecipe`: Header Row Index, Data Start Row, Whitespace Trimming, Deduplication, and Value Translation Dictionaries).
+    - **Mandatory Backend Replay**: When an ingestion template is applied—either interactively during task creation or automatically in scheduled cron automations—the backend engine (`recipeExecutionService`) must replay all recipe steps sequentially against the raw data rows before committing them to the persistent store.
+    - **Multi-Tier Cross-File Resolution**: Mappings must never fail on minor header discrepancies. Column matching must resolve across three tiers:
+      1. *Normalized Alphanumeric Matching*: Strips whitespace, underscores, and special characters (`[a-z0-9]`).
+      2. *Global Standard Directory Matching*: Resolves aliases against `global_standard_directory` keys and display labels.
+      3. *Explicit Template Overrides*: Applies user-configured custom mappings.
+
+25. **Clean Table Toolbars & Modal-Governed Ingestion Transformations**:
+    - **Zero Clutter on Primary Toolbars**: Table toolbars must remain uncluttered by redundant status strings or inline configuration inputs (e.g. raw "Showing X of Y columns Header: 1•Data: 2").
+    - **Contextual Action Containment**: Structural dataset adjustments (Header Row Index, Data Start Row, Deduplicate, Whitespace Trim, Column Pruning) must be housed inside the table's contextual `...` dropdown menu.
+    - **Explicit Provenance via Confirmation Modals**: Changes to ingestion row structures must open dedicated validation modals (`HeaderDataRowModal`) that record an explicit, reviewable entry into the task's Applied Recipes history.
+
+
 
 
 

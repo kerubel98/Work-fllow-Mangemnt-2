@@ -12,7 +12,8 @@ import {
   GlobalMappingSchemaModel,
   SchemaModelFieldDef,
   CentralUploadedTransactionRepositoryTable,
-  CentralRepositoryDdlLog
+  CentralRepositoryDdlLog,
+  FileIngestionMappingTemplate
 } from '../types';
 import { api } from '../api/client';
 
@@ -1482,6 +1483,131 @@ export class GlobalMappingService {
     });
 
     return map;
+  }
+
+  /**
+   * Applies a FileIngestionMappingTemplate's columnMappings against a target file's headers
+   * using a robust 7-tier matching resolution algorithm:
+   * 1. Exact match (case-sensitive)
+   * 2. Case-insensitive trimmed match
+   * 3. Alphanumeric slug match (ignoring whitespace, underscores, dashes, punctuation)
+   * 4. Positional matching (col_0, col_1, Column 1, etc.)
+   * 5. Direct target key match (header directly equals the canonical target field key or its slug)
+   * 6. Token / Word overlap (substring match with length >= 4)
+   * 7. Fallback: autoGenerateColumnMapping against standard fields
+   */
+  public applyTemplateToHeaders(
+    headers: string[],
+    template: FileIngestionMappingTemplate,
+    candidateFields?: GlobalTransactionSchemaField[]
+  ): Record<string, string> {
+    const result: Record<string, string> = {};
+    if (!headers || !headers.length) return result;
+
+    const tplMappings = template?.columnMappings || {};
+    const standardFieldsToUse = candidateFields && candidateFields.length > 0 
+      ? candidateFields 
+      : (this.config.standardFields || DEFAULT_GLOBAL_STANDARD_FIELDS);
+
+    // Build normalized lookup tables for template mappings
+    const slugToTarget = new Map<string, string>();
+    const lowerToTarget = new Map<string, string>();
+    const targetKeysSet = new Set<string>();
+
+    for (const [srcKey, targetKey] of Object.entries(tplMappings)) {
+      if (!srcKey || !targetKey || targetKey === 'Unmapped' || targetKey === '') continue;
+      const trimmedTarget = targetKey.trim();
+      lowerToTarget.set(srcKey.trim().toLowerCase(), trimmedTarget);
+      slugToTarget.set(srcKey.toLowerCase().replace(/[^a-z0-9]/g, ''), trimmedTarget);
+      targetKeysSet.add(trimmedTarget.toLowerCase());
+      slugToTarget.set(trimmedTarget.toLowerCase().replace(/[^a-z0-9]/g, ''), trimmedTarget);
+    }
+
+    // Precompute standard fields slugs
+    const fieldSlugMap = new Map<string, string>();
+    for (const field of standardFieldsToUse) {
+      fieldSlugMap.set(field.key.toLowerCase().replace(/[^a-z0-9]/g, ''), field.key);
+      if (field.label) {
+        fieldSlugMap.set(field.label.toLowerCase().replace(/[^a-z0-9]/g, ''), field.key);
+      }
+    }
+
+    headers.forEach((header, index) => {
+      const raw = String(header || '').trim();
+      if (!raw) {
+        result[raw] = '';
+        return;
+      }
+
+      // Tier 1: Exact match in template
+      if (tplMappings[raw] && tplMappings[raw] !== 'Unmapped') {
+        result[raw] = tplMappings[raw].trim();
+        return;
+      }
+
+      // Tier 2: Lowercase trimmed match in template
+      const lowerH = raw.toLowerCase();
+      if (lowerToTarget.has(lowerH)) {
+        result[raw] = lowerToTarget.get(lowerH)!;
+        return;
+      }
+
+      // Tier 3: Alphanumeric slug match in template
+      const slugH = lowerH.replace(/[^a-z0-9]/g, '');
+      if (slugH && slugToTarget.has(slugH)) {
+        result[raw] = slugToTarget.get(slugH)!;
+        return;
+      }
+
+      // Tier 4: Positional matching (col_0, col_1, Column 1, etc.)
+      const positionalKeys = [
+        `col_${index}`,
+        `col_${index + 1}`,
+        `column_${index}`,
+        `column_${index + 1}`,
+        `Column ${index + 1}`
+      ];
+      for (const posKey of positionalKeys) {
+        if (tplMappings[posKey] && tplMappings[posKey] !== 'Unmapped') {
+          result[raw] = tplMappings[posKey].trim();
+          return;
+        }
+      }
+
+      // Tier 5: Direct target key match
+      if (targetKeysSet.has(lowerH)) {
+        result[raw] = lowerH;
+        return;
+      }
+      for (const tKey of targetKeysSet) {
+        const tSlug = tKey.replace(/[^a-z0-9]/g, '');
+        if (tSlug && (tSlug === slugH || (slugH.length >= 4 && (slugH.includes(tSlug) || tSlug.includes(slugH))))) {
+          result[raw] = tKey;
+          return;
+        }
+      }
+
+      // Tier 6: Substring containment with template keys (>= 4 chars)
+      if (slugH.length >= 4) {
+        for (const [tSlug, target] of slugToTarget.entries()) {
+          if (tSlug.length >= 4 && (slugH.includes(tSlug) || tSlug.includes(slugH))) {
+            result[raw] = target;
+            return;
+          }
+        }
+      }
+
+      // Tier 7: Standard directory fallback auto-map
+      const autoSingle = this.autoGenerateColumnMapping([raw], standardFieldsToUse);
+      if (autoSingle[raw]) {
+        result[raw] = autoSingle[raw];
+        return;
+      }
+
+      result[raw] = '';
+    });
+
+    return result;
   }
 
   /**

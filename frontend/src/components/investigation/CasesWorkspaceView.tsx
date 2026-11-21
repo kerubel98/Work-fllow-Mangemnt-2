@@ -1161,28 +1161,37 @@ export default function CasesWorkspaceView({
                     />
                   </div>
 
-                  {/* Filter pills */}
-                  <div className="flex items-center p-0.5 bg-slate-100 rounded-lg text-xs font-medium text-slate-600">
+                  {/* Filter pills matching WorkspaceTaskCreator styling */}
+                  <div className="flex items-center p-0.5 bg-[#f0f4f9] border border-slate-200/90 rounded-xl text-xs font-medium shadow-2xs">
                     <button
+                      type="button"
                       onClick={() => setFilterMode('all')}
-                      className={`px-2 py-1 rounded-md transition-all cursor-pointer ${
-                        filterMode === 'all' ? 'bg-white text-slate-900 shadow-2xs font-bold' : 'hover:text-slate-900'
+                      className={`px-3 py-1 rounded-lg transition-all cursor-pointer ${
+                        filterMode === 'all'
+                          ? 'bg-white text-slate-900 shadow-2xs font-bold'
+                          : 'text-[#1a64db] font-semibold hover:text-blue-800'
                       }`}
                     >
                       All
                     </button>
                     <button
+                      type="button"
                       onClick={() => setFilterMode('duplicates')}
-                      className={`px-2 py-1 rounded-md transition-all cursor-pointer ${
-                        filterMode === 'duplicates' ? 'bg-white text-slate-900 shadow-2xs font-bold' : 'hover:text-slate-900'
+                      className={`px-3 py-1 rounded-lg transition-all cursor-pointer ${
+                        filterMode === 'duplicates'
+                          ? 'bg-white text-[#1a64db] shadow-2xs font-bold'
+                          : 'text-[#1a64db] font-semibold hover:text-blue-800'
                       }`}
                     >
                       Duplicates {kpis.duplicates}
                     </button>
                     <button
+                      type="button"
                       onClick={() => setFilterMode('unique')}
-                      className={`px-2 py-1 rounded-md transition-all cursor-pointer ${
-                        filterMode === 'unique' ? 'bg-white text-slate-900 shadow-2xs font-bold' : 'hover:text-slate-900'
+                      className={`px-3 py-1 rounded-lg transition-all cursor-pointer ${
+                        filterMode === 'unique'
+                          ? 'bg-white text-[#1a64db] shadow-2xs font-bold'
+                          : 'text-[#1a64db] font-semibold hover:text-blue-800'
                       }`}
                     >
                       Unique {kpis.records - kpis.duplicates}

@@ -164,6 +164,23 @@ async function ensureFtpStagingSchema(): Promise<void> {
   }
 }
 
+let valueDictSchemaInitialized = false;
+async function ensureValueTranslationDictionariesSchema(): Promise<void> {
+  if (valueDictSchemaInitialized) return;
+  try {
+    const pool = getPostgresPool();
+    await pool.query(`
+      ALTER TABLE value_translation_dictionaries
+        ADD COLUMN IF NOT EXISTS pre_transform_rule VARCHAR(64),
+        ADD COLUMN IF NOT EXISTS post_transform_rule VARCHAR(64),
+        ADD COLUMN IF NOT EXISTS transformation_rules JSONB DEFAULT '[]'::jsonb;
+    `);
+    valueDictSchemaInitialized = true;
+  } catch (err: any) {
+    console.warn('[postgresRepo] ensureValueTranslationDictionariesSchema warning:', err.message);
+  }
+}
+
 function mapValueDictionaryRow(r: any): ValueTranslationDictionary {
   return {
     id: r.id,
@@ -180,6 +197,9 @@ function mapValueDictionaryRow(r: any): ValueTranslationDictionary {
     sourceLabel: r.source_label || undefined,
     targetLabel: r.target_label || undefined,
     isSystemDefault: r.is_system_default || false,
+    preTransformRule: r.pre_transform_rule || undefined,
+    postTransformRule: r.post_transform_rule || undefined,
+    transformationRules: parseJson(r.transformation_rules, []),
     createdBy: r.created_by,
     createdAt: r.created_at?.toISOString() || new Date().toISOString(),
     updatedAt: r.updated_at?.toISOString() || new Date().toISOString()
@@ -5390,6 +5410,7 @@ async updateDatabaseConnection(id: string, updates: Partial<DatabaseConnection>)
 
   // ================= VALUE TRANSLATION DICTIONARIES (Domain 7 / Governance Rule 23) =================
   async getValueTranslationDictionaries(category?: string): Promise<ValueTranslationDictionary[]> {
+    await ensureValueTranslationDictionariesSchema();
     const pool = getPostgresPool();
     let sql = 'SELECT * FROM value_translation_dictionaries';
     const params: any[] = [];
@@ -5403,6 +5424,7 @@ async updateDatabaseConnection(id: string, updates: Partial<DatabaseConnection>)
   },
 
   async getValueTranslationDictionaryById(id: string): Promise<ValueTranslationDictionary | null> {
+    await ensureValueTranslationDictionariesSchema();
     const pool = getPostgresPool();
     const { rows } = await pool.query(
       'SELECT * FROM value_translation_dictionaries WHERE id = $1 LIMIT 1;',
@@ -5413,6 +5435,7 @@ async updateDatabaseConnection(id: string, updates: Partial<DatabaseConnection>)
   },
 
   async createOrUpdateValueTranslationDictionary(dict: ValueTranslationDictionary): Promise<ValueTranslationDictionary> {
+    await ensureValueTranslationDictionariesSchema();
     const pool = getPostgresPool();
     const id = dict.id || `dict_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
     const now = new Date();
@@ -5420,9 +5443,9 @@ async updateDatabaseConnection(id: string, updates: Partial<DatabaseConnection>)
       `INSERT INTO value_translation_dictionaries (
          id, name, description, category, mappings, is_system_default, created_by, created_at, updated_at,
          group_name, direction, case_sensitive, trim_whitespace, no_match_policy, default_fallback,
-         source_label, target_label
+         source_label, target_label, pre_transform_rule, post_transform_rule, transformation_rules
        )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
        ON CONFLICT (id) DO UPDATE SET
          name = EXCLUDED.name,
          description = EXCLUDED.description,
@@ -5437,7 +5460,10 @@ async updateDatabaseConnection(id: string, updates: Partial<DatabaseConnection>)
          no_match_policy = EXCLUDED.no_match_policy,
          default_fallback = EXCLUDED.default_fallback,
          source_label = EXCLUDED.source_label,
-         target_label = EXCLUDED.target_label;`,
+         target_label = EXCLUDED.target_label,
+         pre_transform_rule = EXCLUDED.pre_transform_rule,
+         post_transform_rule = EXCLUDED.post_transform_rule,
+         transformation_rules = EXCLUDED.transformation_rules;`,
       [
         id,
         dict.name,
@@ -5455,7 +5481,10 @@ async updateDatabaseConnection(id: string, updates: Partial<DatabaseConnection>)
         dict.noMatchPolicy || 'KEEP_ORIGINAL',
         dict.defaultFallback ?? null,
         dict.sourceLabel || null,
-        dict.targetLabel || null
+        dict.targetLabel || null,
+        dict.preTransformRule || null,
+        dict.postTransformRule || null,
+        JSON.stringify(dict.transformationRules || [])
       ]
     );
     const saved = await this.getValueTranslationDictionaryById(id);

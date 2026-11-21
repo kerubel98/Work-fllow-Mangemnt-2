@@ -705,6 +705,8 @@ export type CleaningActionType =
   | 'FILL_BLANKS_NA';
 
 export interface FileIngestionCleaningRecipe {
+  headerRowIndex?: number;
+  dataStartRow?: number;
   emptyRowsAction?: 'DROP' | 'FILL_NA' | 'ERROR_BLOCK';
   duplicateRowsAction?: 'DROP_EXACT' | 'KEEP_FIRST' | 'FLAG_FOR_REVIEW' | 'ERROR_BLOCK';
   trimWhitespace?: boolean;
@@ -716,6 +718,7 @@ export interface FileIngestionCleaningRecipe {
   transformOperations?: TransformOperation[];
   cleaningActions?: string[];
   valueTranslations?: Record<string, string>;
+  renamedHeaders?: Record<string, string>;
 }
 
 export interface FileIngestionRecipe {
@@ -760,6 +763,9 @@ export interface ValueTranslationDictionary {
   sourceLabel?: string;
   targetLabel?: string;
   isSystemDefault?: boolean;
+  preTransformRule?: string;
+  postTransformRule?: string;
+  transformationRules?: string[];
   createdBy?: string;
   createdAt?: string;
   updatedAt?: string;
@@ -798,6 +804,8 @@ export interface ValueDictionaryPreview {
   output: string;
   flagged: boolean;
   matchedSide?: 'source' | 'target';
+  preTransformedInput?: string;
+  postTransformedOutput?: string;
 }
 
 export const DEFAULT_VALUE_TRANSLATION_DICTIONARIES: ValueTranslationDictionary[] = [
@@ -1118,7 +1126,6 @@ export interface FtpFileStagingConfig {
   customDelimiter?: string;
   hasHeader: boolean;
   headerRowIndex: number;
-  dataStartRow?: number;
   headerRowCount?: number;
   handleMergedCells?: boolean;
   mergedHeaderSeparator?: string;
@@ -1286,7 +1293,7 @@ export interface CentralRepositoryDdlLog {
   ddlStatement: string;
   timestamp: string;
   executedBy: string;
-  status: 'SUCCESS' | 'FAILED' | 'PENDING';
+  status: 'SUCCESS' | 'FAILED' | 'PENDING' | 'GENERATED';
   message: string;
 }
 

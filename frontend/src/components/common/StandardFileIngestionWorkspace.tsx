@@ -58,7 +58,8 @@ import {
   BookOpen,
   Combine,
   Search,
-  FileSpreadsheet
+  FileSpreadsheet,
+  Edit3
 } from 'lucide-react';
 import { DataTablePagination } from './DataTablePagination';
 
@@ -963,6 +964,12 @@ export const StandardFileIngestionWorkspace = forwardRef<
       setRawHeaders(replayed.headers);
       setParsedRows(replayed.rows);
     }
+
+    if (appliedTemplate) {
+      const targetHeaders = rawHeaders.length > 0 ? rawHeaders : extractedHeaders;
+      const resolved = globalMappingService.applyTemplateToHeaders(targetHeaders, appliedTemplate);
+      setColumnMappings(resolved);
+    }
   };
 
   // Parse CSV
@@ -1175,9 +1182,6 @@ export const StandardFileIngestionWorkspace = forwardRef<
     setAppliedCleaningActions(cleanActs);
     setDeletedColumns(delCols);
 
-    if (tpl.columnMappings) {
-      setColumnMappings(prev => ({ ...prev, ...tpl.columnMappings }));
-    }
     if (tpl.requiredColumns) {
       setRequiredColumns(tpl.requiredColumns);
     }
@@ -1188,6 +1192,8 @@ export const StandardFileIngestionWorkspace = forwardRef<
     setHeaderMode(targetMode);
     setHeaderRowIndex(targetRowIdx);
     setManualHeaders(targetManualHeaders);
+
+    let effectiveHeaders = activeHeaders;
 
     // Replay entire recipe pipeline over raw lines if file is attached
     if (rawFileLines.length > 0) {
@@ -1215,7 +1221,15 @@ export const StandardFileIngestionWorkspace = forwardRef<
 
       setRawHeaders(replayed.headers);
       setParsedRows(replayed.rows);
+      effectiveHeaders = replayed.headers;
     }
+
+    // Apply template column mappings with multi-tier matching
+    const resolvedMappings = globalMappingService.applyTemplateToHeaders(
+      effectiveHeaders.length > 0 ? effectiveHeaders : activeHeaders,
+      tpl
+    );
+    setColumnMappings(resolvedMappings);
 
     const opCount = splitOps.length + mergeOps.length + transformOps.length + cleanActs.length;
     setCleaningStatusMessage(
@@ -1935,16 +1949,17 @@ export const StandardFileIngestionWorkspace = forwardRef<
     <div className={`space-y-3 ${className}`}>
       {/* 1. FILE UPLOAD CARD / DROP ZONE (Hidden when hideFileCard is true and file is loaded) */}
       {(!hideFileCard || !fileName) ? (
-        createFileNameCard(
-          fileName,
-          parsedRows.length,
-          activeHeaders.length,
-          fileType,
-          fileInputRef,
-          processUploadedFile,
-          handleRemoveFile,
-          sourceIsIntake
-        )
+        <FileCardWithRename
+          fileName={fileName}
+          rowCount={parsedRows.length}
+          colCount={activeHeaders.length}
+          fileType={fileType}
+          fileInputRef={fileInputRef}
+          processUploadedFile={processUploadedFile}
+          handleRemoveFile={handleRemoveFile}
+          sourceIsIntake={sourceIsIntake}
+          onRenameFile={(newName) => setFileName(newName)}
+        />
       ) : (
         <input
           ref={fileInputRef}
@@ -3673,17 +3688,39 @@ export const StandardFileIngestionWorkspace = forwardRef<
   );
 });
 
-// Helper for Active File Card / Drag-and-Drop Zone (Former Style)
-function createFileNameCard(
-  fileName: string,
-  rowCount: number,
-  colCount: number,
-  fileType: string,
-  fileInputRef: React.RefObject<HTMLInputElement | null>,
-  processUploadedFile: (file: File) => void,
-  handleRemoveFile: () => void,
-  sourceIsIntake?: boolean
-) {
+// Component for Active File Card with Inline Rename Support
+const FileCardWithRename: React.FC<{
+  fileName: string;
+  rowCount: number;
+  colCount: number;
+  fileType: string;
+  fileInputRef: React.RefObject<HTMLInputElement | null>;
+  processUploadedFile: (file: File) => void;
+  handleRemoveFile: () => void;
+  sourceIsIntake?: boolean;
+  onRenameFile?: (newName: string) => void;
+}> = ({
+  fileName,
+  rowCount,
+  colCount,
+  fileType,
+  fileInputRef,
+  processUploadedFile,
+  handleRemoveFile,
+  sourceIsIntake,
+  onRenameFile
+}) => {
+  const [isEditing, setIsEditing] = useState(false);
+  const [editName, setEditName] = useState(fileName);
+
+  const save = () => {
+    const trimmed = editName.trim();
+    if (trimmed && onRenameFile) {
+      onRenameFile(trimmed);
+    }
+    setIsEditing(false);
+  };
+
   if (fileName) {
     return (
       <div className={`p-3.5 ${sourceIsIntake ? 'bg-orange-50/50 border-orange-200/80' : 'bg-blue-50/50 border-blue-200/80'} border rounded-xl flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 animate-in fade-in duration-150`}>
@@ -3693,7 +3730,44 @@ function createFileNameCard(
           </div>
           <div className="space-y-0.5">
             <div className="flex items-center space-x-2">
-              <span className="text-xs font-bold text-slate-900">{fileName}</span>
+              {isEditing ? (
+                <div className="flex items-center space-x-1">
+                  <input
+                    type="text"
+                    value={editName}
+                    onChange={e => setEditName(e.target.value)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') save();
+                      if (e.key === 'Escape') setIsEditing(false);
+                    }}
+                    autoFocus
+                    className="text-xs font-bold font-mono text-slate-900 bg-white border border-blue-300 rounded px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-blue-400 w-48"
+                  />
+                  <button type="button" onClick={save} className="p-1 text-emerald-600 hover:bg-emerald-50 rounded cursor-pointer" title="Save file name">
+                    <Check size={12} />
+                  </button>
+                  <button type="button" onClick={() => setIsEditing(false)} className="p-1 text-slate-400 hover:bg-slate-100 rounded cursor-pointer" title="Cancel">
+                    <X size={12} />
+                  </button>
+                </div>
+              ) : (
+                <>
+                  <span className="text-xs font-bold text-slate-900">{fileName}</span>
+                  {onRenameFile && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditName(fileName);
+                        setIsEditing(true);
+                      }}
+                      className="p-0.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded transition cursor-pointer"
+                      title="Edit original file name"
+                    >
+                      <Edit3 size={11} />
+                    </button>
+                  )}
+                </>
+              )}
               <span className={`text-[10px] ${sourceIsIntake ? 'bg-orange-100 text-[#c85a12]' : 'bg-blue-100 text-blue-800'} px-2 py-0.5 rounded font-mono font-semibold`}>
                 {rowCount} Rows · {colCount} Cols · {fileType.toUpperCase()}
               </span>
@@ -3763,6 +3837,6 @@ function createFileNameCard(
       </label>
     </div>
   );
-}
+};
 
 export default StandardFileIngestionWorkspace;

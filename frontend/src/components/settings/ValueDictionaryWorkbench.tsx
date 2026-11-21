@@ -42,6 +42,23 @@ const NO_MATCH_OPTIONS: { value: ValueDictionaryNoMatchPolicy; label: string }[]
   { value: 'FLAG', label: 'Keep value and flag it' }
 ];
 
+export const PRE_TRANSFORM_OPTIONS = [
+  { value: '', label: 'None (Raw Value)' },
+  { value: 'TRIM', label: 'Trim Whitespace' },
+  { value: 'UPPERCASE', label: 'Convert to UPPERCASE' },
+  { value: 'LOWERCASE', label: 'Convert to lowercase' },
+  { value: 'STRIP_CURRENCY', label: 'Clean Number / Strip Currency ($/ETB)' },
+  { value: 'PHONE_ET', label: 'Normalize Ethiopian Phone (+251)' },
+  { value: 'DATE_ISO', label: 'Standardize Date to ISO (YYYY-MM-DD)' }
+];
+
+export const POST_TRANSFORM_OPTIONS = [
+  { value: '', label: 'None (Direct Target)' },
+  { value: 'UPPERCASE', label: 'Force UPPERCASE' },
+  { value: 'TITLECASE', label: 'Format as Title Case' },
+  { value: 'MASK_PAN', label: 'Mask Account / PAN (4111****1111)' }
+];
+
 const START_POINTS: {
   id: string; title: string; hint: string; name: string;
   category: ValueTranslationDictionary['category']; groupName?: string;
@@ -483,7 +500,8 @@ const WorkbenchInner: React.FC<ValueDictionaryWorkbenchProps> = ({ dicts, onDict
     const t = setTimeout(() => {
       api.previewValueDictionary(draft.id, tryInput, {
         direction: draft.direction, caseSensitive: draft.caseSensitive, trimWhitespace: draft.trimWhitespace,
-        noMatchPolicy: draft.noMatchPolicy, defaultFallback: draft.defaultFallback, mappings: draft.mappings
+        noMatchPolicy: draft.noMatchPolicy, defaultFallback: draft.defaultFallback, mappings: draft.mappings,
+        preTransformRule: draft.preTransformRule, postTransformRule: draft.postTransformRule
       }).then(setTryResult).catch(() => setTryResult(null));
     }, 250);
     return () => clearTimeout(t);
@@ -682,7 +700,7 @@ const WorkbenchInner: React.FC<ValueDictionaryWorkbenchProps> = ({ dicts, onDict
               <div className={`mx-5 mb-3 text-xs px-3 py-2 rounded-lg ${message.kind === 'ok' ? 'bg-emerald-50 text-emerald-700' : 'bg-rose-50 text-rose-700'}`}>{message.text}</div>
             )}
 
-            <div className="px-5 pb-4 grid grid-cols-1 lg:grid-cols-[auto_auto_minmax(0,1fr)] gap-x-8 gap-y-3 items-end">
+            <div className="px-5 pb-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4 items-end">
               <div>
                 <div className="text-xs font-semibold text-slate-600 mb-1">Direction</div>
                 <Segmented value={draft.direction || 'FORWARD'} options={dirOptions} onChange={v => update({ direction: v as ValueDictionaryDirection })} />
@@ -699,13 +717,33 @@ const WorkbenchInner: React.FC<ValueDictionaryWorkbenchProps> = ({ dicts, onDict
                 </div>
               </div>
               <div>
+                <div className="text-xs font-semibold text-slate-600 mb-1">Pre-Lookup Transform</div>
+                <select
+                  value={draft.preTransformRule || ''}
+                  onChange={e => update({ preTransformRule: e.target.value || undefined })}
+                  className="w-full border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-orange-200 cursor-pointer"
+                >
+                  {PRE_TRANSFORM_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                </select>
+              </div>
+              <div>
+                <div className="text-xs font-semibold text-slate-600 mb-1">Post-Lookup Transform</div>
+                <select
+                  value={draft.postTransformRule || ''}
+                  onChange={e => update({ postTransformRule: e.target.value || undefined })}
+                  className="w-full border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-orange-200 cursor-pointer"
+                >
+                  {POST_TRANSFORM_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+                </select>
+              </div>
+              <div>
                 <div className="text-xs font-semibold text-slate-600 mb-1">If no match</div>
                 <div className="flex gap-2">
-                  <select value={draft.noMatchPolicy || 'KEEP_ORIGINAL'} onChange={e => update({ noMatchPolicy: e.target.value as ValueDictionaryNoMatchPolicy })} className="flex-1 min-w-0 border border-slate-200 rounded-lg px-2.5 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-orange-200">
+                  <select value={draft.noMatchPolicy || 'KEEP_ORIGINAL'} onChange={e => update({ noMatchPolicy: e.target.value as ValueDictionaryNoMatchPolicy })} className="flex-1 min-w-0 border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-orange-200">
                     {NO_MATCH_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
                   </select>
                   {draft.noMatchPolicy === 'USE_FALLBACK' && (
-                    <input value={draft.defaultFallback || ''} onChange={e => update({ defaultFallback: e.target.value })} placeholder="Default value" className="w-36 border border-slate-200 rounded-lg px-2.5 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-orange-200" />
+                    <input value={draft.defaultFallback || ''} onChange={e => update({ defaultFallback: e.target.value })} placeholder="Default value" className="w-28 border border-slate-200 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-orange-200" />
                   )}
                 </div>
               </div>
@@ -770,10 +808,26 @@ const WorkbenchInner: React.FC<ValueDictionaryWorkbenchProps> = ({ dicts, onDict
         <div className="bg-white rounded-2xl border border-slate-200 p-4">
           <div className="text-sm font-bold text-slate-900 mb-2">Try it</div>
           <input value={tryInput} onChange={e => setTryInput(e.target.value)} placeholder="Type a value…" disabled={!draft} className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-orange-200" />
+          
+          {tryResult?.preTransformedInput && tryResult.preTransformedInput !== tryInput && (
+            <div className="text-[11px] text-slate-600 font-mono mt-1.5 bg-slate-50 px-2 py-1 rounded border border-slate-200/60 flex items-center justify-between">
+              <span className="text-slate-400">Pre-transform:</span>
+              <span className="font-bold text-blue-700">{tryResult.preTransformedInput}</span>
+            </div>
+          )}
+
           <div className="flex items-center gap-1.5 text-xs text-slate-400 my-2"><ArrowDown size={12} /> translates to</div>
           <div className={`rounded-lg px-3 py-2.5 text-sm font-bold ${tryResult ? (tryResult.matched ? 'bg-orange-500 text-white' : 'bg-slate-100 text-slate-700') : 'bg-slate-50 text-slate-300'}`}>
             {tryResult ? (tryResult.output === '' ? '(blank)' : safeText(tryResult.output)) : '—'}
           </div>
+
+          {tryResult?.postTransformedOutput && tryResult.matched && tryResult.postTransformedOutput !== tryResult.output && (
+            <div className="text-[11px] text-slate-600 font-mono mt-1.5 bg-slate-50 px-2 py-1 rounded border border-slate-200/60 flex items-center justify-between">
+              <span className="text-slate-400">Post-transform:</span>
+              <span className="font-bold text-emerald-700">{tryResult.postTransformedOutput}</span>
+            </div>
+          )}
+
           {tryResult && !tryResult.matched && (
             <p className="text-[11px] text-slate-500 mt-1.5">{tryResult.flagged ? 'No match. Value kept and flagged.' : 'No match. The “If no match” rule was applied.'}</p>
           )}

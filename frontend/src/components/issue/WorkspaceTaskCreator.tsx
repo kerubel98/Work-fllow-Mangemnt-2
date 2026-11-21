@@ -33,6 +33,7 @@ import { generateFallbackAttachmentDataset } from '../common/StandardFileIngesti
 export interface ColumnDef {
   id: string;
   name: string;
+  originalName?: string;
   type: 'Text' | 'Date' | 'Number';
   mapping: string;
   selected: boolean;
@@ -43,7 +44,7 @@ export interface RecipeStep {
   num: number;
   title: string;
   desc: string;
-  type?: 'INSPECT_HEADER' | 'MAP_FIELDS' | 'REQUIRED_COLUMNS' | 'DEDUPLICATE' | 'TRIM' | 'EMPTY_ROWS' | 'MERGE' | 'SPLIT' | 'TRANSFORM' | 'CUSTOM' | 'HEADER_ROW_CONFIG';
+  type?: 'INSPECT_HEADER' | 'MAP_FIELDS' | 'REQUIRED_COLUMNS' | 'DEDUPLICATE' | 'TRIM' | 'EMPTY_ROWS' | 'MERGE' | 'SPLIT' | 'TRANSFORM' | 'CUSTOM' | 'HEADER_ROW_CONFIG' | 'RENAME_HEADER';
   details?: Record<string, any>;
   appliedAt?: string;
 }
@@ -154,6 +155,15 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
   const [reviewModalOpen, setReviewModalOpen] = useState(false);
   const [saveTemplateModalOpen, setSaveTemplateModalOpen] = useState(false);
   const [templateSaveName, setTemplateSaveName] = useState('My Custom Settlement Template');
+
+  // File Name Editing & Filter Dropdown State
+  const [isEditingFileName, setIsEditingFileName] = useState(false);
+  const [tempFileName, setTempFileName] = useState('');
+  const [showRowFilterDropdown, setShowRowFilterDropdown] = useState(false);
+
+  // Header Name Editing State in Source File & Schema tab
+  const [editingColId, setEditingColId] = useState<string | null>(null);
+  const [tempColHeaderName, setTempColHeaderName] = useState('');
 
   // Header & Data Row Config Modal State
   const [headerConfigModalOpen, setHeaderConfigModalOpen] = useState(false);
@@ -366,6 +376,448 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
     return [step1, step2, ...customSteps, finalStep];
   }, [createFileName, createParsedRows.length, columns, mappedCount, createFileMapping, customRecipeSteps, requiredColumnsList, readyRequiredCount, headerRowIndex, dataStartRow]);
 
+  // Record undo snapshot
+  const recordSnapshot = () => {
+    setHistory(prev => [
+      ...prev.slice(-15),
+      {
+        rows: JSON.parse(JSON.stringify(createParsedRows)),
+        columns: JSON.parse(JSON.stringify(columns)),
+        columnMappings: { ...createFileMapping },
+        customSteps: [...customRecipeSteps],
+        fileName: createFileName,
+        headerRowIndex,
+        dataStartRow,
+        rawSheetMatrix: rawSheetMatrix.length > 0 ? [...rawSheetMatrix] : undefined
+      }
+    ]);
+  };
+
+  const handleUndo = () => {
+    if (history.length === 0) return;
+    const previous = history[history.length - 1];
+    setHistory(prev => prev.slice(0, -1));
+    setCreateParsedRows(previous.rows);
+    setColumns(previous.columns);
+    setCreateFileMapping(previous.columnMappings);
+    setCustomRecipeSteps(previous.customSteps);
+    if (previous.fileName) setCreateFileName(previous.fileName);
+    if (previous.headerRowIndex !== undefined) setHeaderRowIndex(previous.headerRowIndex);
+    if (previous.dataStartRow !== undefined) setDataStartRow(previous.dataStartRow);
+    if (previous.rawSheetMatrix) setRawSheetMatrix(previous.rawSheetMatrix);
+    setFeedbackMessage('Reverted last data cleaning modification.');
+    setTimeout(() => setFeedbackMessage(null), 3000);
+  };
+
+  const handleSaveFileName = (nameToSave?: string) => {
+    const newName = (nameToSave !== undefined ? nameToSave : tempFileName).trim();
+    if (!newName) {
+      setIsEditingFileName(false);
+      return;
+    }
+    recordSnapshot();
+    setCreateFileName(newName);
+    setIsEditingFileName(false);
+    setCustomRecipeSteps(prev => prev.map(s => {
+      if (s.type === 'INSPECT_HEADER' || s.num === 1) {
+        return {
+          ...s,
+          desc: `Inspected ${createRawHeaders.length} headers in "${newName}"`
+        };
+      }
+      return s;
+    }));
+    setFeedbackMessage(`Source file name renamed to "${newName}".`);
+    setTimeout(() => setFeedbackMessage(null), 3000);
+  };
+
+  // Header Renaming Handler (Source File & Schema tab and Grid View)
+  const handleSaveColumnHeader = (colId: string, nameToSave?: string) => {
+    const targetCol = columns.find(c => c.id === colId);
+    if (!targetCol) {
+      setEditingColId(null);
+      return;
+    }
+
+    const newName = (nameToSave !== undefined ? nameToSave : tempColHeaderName).trim();
+    if (!newName) {
+      setEditingColId(null);
+      return;
+    }
+
+    if (newName === targetCol.name) {
+      setEditingColId(null);
+      return;
+    }
+
+    // Check if newName conflicts with another existing column
+    const duplicate = columns.find(c => c.id !== colId && c.name.toLowerCase() === newName.toLowerCase());
+    if (duplicate) {
+      setFeedbackMessage(`A column named "${newName}" already exists. Please choose a unique header name.`);
+      setTimeout(() => setFeedbackMessage(null), 3500);
+      return;
+    }
+
+    recordSnapshot();
+    const oldName = targetCol.name;
+    const oldId = targetCol.id;
+
+    // 1. Update columns array
+    setColumns(prev => prev.map(c => {
+      if (c.id === oldId) {
+        return {
+          ...c,
+          id: newName,
+          name: newName,
+          originalName: c.originalName || oldName
+        };
+      }
+      return c;
+    }));
+
+    // 2. Update visibleColumnIds
+    setVisibleColumnIds(prev => prev.map(id => id === oldId ? newName : id));
+
+    // 3. Update parsed rows data objects so keys match the new header name
+    setCreateParsedRows(prev => prev.map(row => {
+      const copy = { ...row };
+      if (oldId in copy) {
+        copy[newName] = copy[oldId];
+        delete copy[oldId];
+      }
+      return copy;
+    }));
+
+    // 4. Update raw headers array
+    setCreateRawHeaders(prev => prev.map(h => h === oldName ? newName : h));
+
+    // 5. Update file mapping dictionary keys
+    setCreateFileMapping(prev => {
+      const updated = { ...prev };
+      if (oldId in updated) {
+        updated[newName] = updated[oldId];
+        delete updated[oldId];
+      }
+      return updated;
+    });
+
+    // 6. Update rawSheetMatrix header row if present
+    setRawSheetMatrix(prev => {
+      if (!prev || prev.length < headerRowIndex) return prev;
+      const copy = prev.map(r => [...r]);
+      const headerRow = copy[headerRowIndex - 1];
+      if (headerRow) {
+        const idx = headerRow.findIndex(h => String(h || '').trim() === oldName);
+        if (idx !== -1) {
+          headerRow[idx] = newName;
+        }
+      }
+      return copy;
+    });
+
+    // 7. Add Applied Recipe step
+    setCustomRecipeSteps(prev => [
+      ...prev,
+      {
+        num: 1 + prev.length,
+        title: `Rename Header: "${oldName}" → "${newName}"`,
+        desc: `Renamed source column "${oldName}" to "${newName}" across ${createParsedRows.length} rows`,
+        type: 'RENAME_HEADER',
+        appliedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      }
+    ]);
+
+    setEditingColId(null);
+    setFeedbackMessage(`Header "${oldName}" renamed to "${newName}". Added to recipes.`);
+    setTimeout(() => setFeedbackMessage(null), 3500);
+  };
+
+  // Apply a FileIngestionMappingTemplate to the current or freshly loaded dataset
+  // Performs: Header row slicing, Recipe replaying (splits, merges, transforms, cleanings),
+  // and 7-tier resilient multi-tier column mapping resolution
+  const applyTemplateToCurrentDataset = (
+    tpl: FileIngestionMappingTemplate,
+    matrixOverride?: any[][],
+    fileNameOverride?: string
+  ) => {
+    if (!tpl) return;
+
+    // 1. Matrix to slice from: matrixOverride or rawSheetMatrix or reconstruct from headers + rows
+    let matrixToUse = matrixOverride && matrixOverride.length > 0 ? matrixOverride : rawSheetMatrix;
+    if ((!matrixToUse || matrixToUse.length === 0) && createRawHeaders.length > 0) {
+      matrixToUse = [
+        createRawHeaders,
+        ...createParsedRows.map(r => createRawHeaders.map(h => r[h] !== undefined && r[h] !== null ? r[h] : ''))
+      ];
+      setRawSheetMatrix(matrixToUse);
+    }
+
+    const targetHeaderRow = tpl.headerRowIndex || 1;
+    const targetDataRow = tpl.dataStartRow || (targetHeaderRow + 1);
+    setHeaderRowIndex(targetHeaderRow);
+    setDataStartRow(targetDataRow);
+
+    let activeHeaders: string[] = [];
+    let currentRows: Record<string, any>[] = [];
+
+    if (matrixToUse && matrixToUse.length > 0) {
+      const headerIdx = Math.max(0, targetHeaderRow - 1);
+      const dataIdx = Math.max(headerIdx + 1, targetDataRow - 1);
+
+      const headerRowArray = matrixToUse[headerIdx] || [];
+      activeHeaders = (Array.isArray(headerRowArray) ? headerRowArray : Object.values(headerRowArray))
+        .map((h: any, i: number) => String(h || '').trim() || `col_${i + 1}`)
+        .filter(Boolean);
+
+      for (let r = dataIdx; r < matrixToUse.length; r++) {
+        const rowData = matrixToUse[r];
+        if (!rowData) continue;
+        if (Array.isArray(rowData) && rowData.every(c => c === '' || c === null || c === undefined)) continue;
+
+        const rowObj: Record<string, any> = {};
+        activeHeaders.forEach((hdr, cIdx) => {
+          const val = Array.isArray(rowData) ? rowData[cIdx] : (rowData as any)[hdr] ?? (rowData as any)[cIdx];
+          rowObj[hdr] = val !== undefined && val !== null ? val : '';
+        });
+        currentRows.push(rowObj);
+      }
+    } else {
+      activeHeaders = [...createRawHeaders];
+      currentRows = createParsedRows.map(r => ({ ...r }));
+    }
+
+    // 2. Replay Recipe Pipeline (Exclusions, Splits, Merges, Transforms, Cleanings)
+    const recipe = tpl.cleaningRecipe || {};
+    const splitOps: any[] = tpl.splitOperations || recipe.splitOperations || [];
+    const mergeOps: any[] = tpl.mergeOperations || recipe.mergeOperations || [];
+    const transformOps: any[] = tpl.transformOperations || recipe.transformOperations || [];
+    const cleanActs: string[] = tpl.cleaningActions || recipe.cleaningActions || [];
+    const delCols: string[] = tpl.deletedColumns || [];
+
+    // Helper for finding matching column name in current activeHeaders (case/slug insensitive)
+    const findMatchingHeader = (colName: string): string | null => {
+      if (!colName) return null;
+      if (activeHeaders.includes(colName)) return colName;
+      const lower = colName.toLowerCase().trim();
+      const direct = activeHeaders.find(h => h.toLowerCase().trim() === lower);
+      if (direct) return direct;
+      const slug = lower.replace(/[^a-z0-9]/g, '');
+      const slugMatch = activeHeaders.find(h => h.toLowerCase().replace(/[^a-z0-9]/g, '') === slug);
+      if (slugMatch) return slugMatch;
+      return null;
+    };
+
+    // Replay Deleted Columns
+    if (delCols.length > 0) {
+      for (const del of delCols) {
+        const matched = findMatchingHeader(del);
+        if (matched) {
+          activeHeaders = activeHeaders.filter(h => h !== matched);
+          currentRows.forEach(r => { delete r[matched]; });
+        }
+      }
+    }
+
+    // Replay Splits
+    for (const splitOp of splitOps) {
+      const srcCol = findMatchingHeader(splitOp.column || splitOp.targetCol);
+      if (!srcCol) continue;
+      const delim = splitOp.delimiter || splitOp.customDelimiter || '\\';
+      const col1 = splitOp.part1Name || splitOp.partNames?.[0] || splitOp.col1 || `${srcCol}_part1`;
+      const col2 = splitOp.part2Name || splitOp.partNames?.[1] || splitOp.col2 || `${srcCol}_part2`;
+
+      currentRows = currentRows.map(r => {
+        const copy = { ...r };
+        const originalVal = String(r[srcCol] ?? '');
+        const parts = originalVal.split(delim);
+        copy[col1] = parts[0]?.trim() || '';
+        copy[col2] = parts.slice(1).join(delim).trim() || '';
+        if (splitOp.keepOriginal === false) delete copy[srcCol];
+        return copy;
+      });
+
+      const idx = activeHeaders.indexOf(srcCol);
+      if (idx !== -1) {
+        if (splitOp.keepOriginal === false) {
+          activeHeaders.splice(idx, 1, col1, col2);
+        } else {
+          activeHeaders.splice(idx + 1, 0, col1, col2);
+        }
+      } else {
+        activeHeaders.push(col1, col2);
+      }
+    }
+
+    // Replay Merges
+    for (const mergeOp of mergeOps) {
+      const c1 = findMatchingHeader(mergeOp.col1);
+      const c2 = findMatchingHeader(mergeOp.col2);
+      if (!c1 || !c2) continue;
+      const resCol = mergeOp.resultColumnName || mergeOp.targetCol || `${c1}_${c2}`;
+      const sep = mergeOp.separator || mergeOp.customSeparator || ' ';
+
+      currentRows = currentRows.map(r => {
+        const copy = { ...r };
+        const v1 = copy[c1] !== undefined && copy[c1] !== null ? String(copy[c1]).trim() : '';
+        const v2 = copy[c2] !== undefined && copy[c2] !== null ? String(copy[c2]).trim() : '';
+        copy[resCol] = (v1 && v2) ? `${v1}${sep}${v2}` : (v1 || v2 || '');
+        if (mergeOp.keepSources === false) {
+          delete copy[c1];
+          delete copy[c2];
+        }
+        return copy;
+      });
+
+      if (mergeOp.keepSources === false) {
+        activeHeaders = activeHeaders.filter(h => h !== c1 && h !== c2);
+      }
+      if (!activeHeaders.includes(resCol)) {
+        activeHeaders.push(resCol);
+      }
+    }
+
+    // Replay Transforms
+    for (const transOp of transformOps) {
+      const col = findMatchingHeader(transOp.column || transOp.col);
+      if (!col) continue;
+      const rule = transOp.ruleType || transOp.rule;
+
+      currentRows = currentRows.map(r => {
+        const copy = { ...r };
+        const val = copy[col];
+        if (val !== undefined && val !== null) {
+          const str = String(val);
+          if (rule === 'UPPERCASE') copy[col] = str.toUpperCase();
+          else if (rule === 'LOWERCASE') copy[col] = str.toLowerCase();
+          else if (rule === 'TITLECASE') copy[col] = str.replace(/\w\S*/g, txt => txt.charAt(0).toUpperCase() + txt.substr(1).toLowerCase());
+          else if (rule === 'TRIM') copy[col] = str.trim();
+          else if (rule === 'NUMBER_CLEAN') {
+            const num = parseFloat(str.replace(/[^0-9.-]/g, ''));
+            copy[col] = isNaN(num) ? '0.00' : num.toFixed(2);
+          } else if (rule === 'STRIP_CURRENCY') {
+            copy[col] = str.replace(/[^0-9.,-]/g, '').trim();
+          } else if (rule === 'ROUND_INT') {
+            const num = parseFloat(str.replace(/[^0-9.-]/g, ''));
+            copy[col] = isNaN(num) ? '0' : Math.round(num).toString();
+          } else if (rule === 'DATE_ISO') {
+            const dmy = str.match(/^(\d{1,2})[./-](\d{1,2})[./-](\d{4})/);
+            if (dmy) {
+              copy[col] = `${dmy[3]}-${dmy[2].padStart(2, '0')}-${dmy[1].padStart(2, '0')}`;
+            } else {
+              const p = Date.parse(str);
+              if (!isNaN(p)) copy[col] = new Date(p).toISOString().split('T')[0];
+            }
+          } else if (rule === 'MASK_PAN') {
+            const digits = str.replace(/\D/g, '');
+            if (digits.length >= 8) copy[col] = `${digits.slice(0, 4)}••••••••${digits.slice(-4)}`;
+          }
+        }
+        return copy;
+      });
+    }
+
+    // Replay Cleaning Policies
+    if (cleanActs.includes('TRIM_WHITESPACE') || recipe.trimWhitespace) {
+      currentRows = currentRows.map(r => {
+        const out: Record<string, any> = {};
+        for (const [k, v] of Object.entries(r)) {
+          out[k] = typeof v === 'string' ? v.trim() : v;
+        }
+        return out;
+      });
+    }
+
+    if (cleanActs.includes('DEDUPLICATE') || recipe.duplicateRowsAction === 'DROP_EXACT') {
+      const seen = new Set<string>();
+      currentRows = currentRows.filter(r => {
+        const h = JSON.stringify(r);
+        if (seen.has(h)) return false;
+        seen.add(h);
+        return true;
+      });
+    }
+
+    // 3. Multi-tier Column Mapping Resolution
+    const activeFields = standardFields.length > 0 ? standardFields : DEFAULT_GLOBAL_STANDARD_FIELDS;
+    const resolvedMapping = globalMappingService.applyTemplateToHeaders(activeHeaders, tpl, activeFields);
+
+    const newCols: ColumnDef[] = activeHeaders.map(h => {
+      const sampleVal = currentRows[0] ? currentRows[0][h] : undefined;
+      const mapped = resolvedMapping[h] || 'Unmapped';
+      return {
+        id: h,
+        name: h,
+        type: inferType(h, sampleVal),
+        mapping: mapped,
+        selected: false,
+        unmapped: !mapped || mapped === 'Unmapped'
+      };
+    });
+
+    const mappedCount = newCols.filter(c => !c.unmapped).length;
+
+    // 4. Update Workspace State
+    if (fileNameOverride) setCreateFileName(fileNameOverride);
+    setCreateRawHeaders(activeHeaders);
+    setCreateParsedRows(currentRows);
+    setCreateFileMapping(resolvedMapping);
+    setColumns(newCols);
+    setVisibleColumnIds(newCols.map(c => c.id));
+    setCurrentPage(1);
+
+    // 5. Build Dynamic Custom Recipe Steps for UI display
+    const replayedSteps: RecipeStep[] = [
+      {
+        num: 1,
+        title: `Header Row ${targetHeaderRow} • Data Row ${targetDataRow}`,
+        desc: `Preamble sliced: ${currentRows.length} active rows, ${activeHeaders.length} columns`,
+        type: 'INSPECT_HEADER',
+        appliedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      },
+      {
+        num: 2,
+        title: `Applied template "${tpl.name}"`,
+        desc: `Mapped ${mappedCount} of ${activeHeaders.length} columns via 7-tier key resolution`,
+        type: 'MAP_FIELDS',
+        appliedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      }
+    ];
+
+    splitOps.forEach((s: any, idx: number) => {
+      replayedSteps.push({
+        num: 3 + idx,
+        title: `Split column "${s.column || s.targetCol}"`,
+        desc: `Separated by "${s.delimiter || s.customDelimiter || '\\'}" into "${s.part1Name || 'part1'}" and "${s.part2Name || 'part2'}"`,
+        type: 'SPLIT',
+        appliedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      });
+    });
+
+    transformOps.forEach((t: any, idx: number) => {
+      replayedSteps.push({
+        num: 3 + splitOps.length + idx,
+        title: `Transform "${t.column || t.col}"`,
+        desc: `Applied rule ${t.ruleType || t.rule}`,
+        type: 'CUSTOM',
+        appliedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      });
+    });
+
+    if (cleanActs.length > 0) {
+      replayedSteps.push({
+        num: 3 + splitOps.length + transformOps.length,
+        title: `Data Cleaning Rules`,
+        desc: `Applied ${cleanActs.join(', ')}`,
+        type: 'CUSTOM',
+        appliedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+      });
+    }
+
+    setCustomRecipeSteps(replayedSteps);
+    setFeedbackMessage(`Applied template "${tpl.name}": ${mappedCount} of ${activeHeaders.length} columns mapped.`);
+    setTimeout(() => setFeedbackMessage(null), 3500);
+  };
+
   // Handle switching intake attachment
   const handleSelectAttachment = (att: any) => {
     setActiveAttachment(att);
@@ -422,10 +874,14 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
     if (matrix.length > 0) {
       setRawSheetMatrix(matrix);
     }
-    setHeaderRowIndex(1);
-    setDataStartRow(2);
 
-    if (headers.length > 0) {
+    // Check if an active mapping template is selected - apply it immediately to the new attachment!
+    const activeTpl = templates.find(t => t.name === selectedTemplate);
+    if (activeTpl && (matrix.length > 0 || rows.length > 0)) {
+      applyTemplateToCurrentDataset(activeTpl, matrix.length > 0 ? matrix : undefined, fileName);
+    } else if (headers.length > 0) {
+      setHeaderRowIndex(1);
+      setDataStartRow(2);
       setCreateRawHeaders(headers);
       const activeFields = standardFields.length > 0 ? standardFields : DEFAULT_GLOBAL_STANDARD_FIELDS;
       const autoMap = globalMappingService.autoGenerateColumnMapping(headers, activeFields);
@@ -476,39 +932,6 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
     }
   }, [initialPreFill]);
 
-  // Record undo snapshot
-  const recordSnapshot = () => {
-    setHistory(prev => [
-      ...prev.slice(-15),
-      {
-        rows: JSON.parse(JSON.stringify(createParsedRows)),
-        columns: JSON.parse(JSON.stringify(columns)),
-        columnMappings: { ...createFileMapping },
-        customSteps: [...customRecipeSteps],
-        fileName: createFileName,
-        headerRowIndex,
-        dataStartRow,
-        rawSheetMatrix: rawSheetMatrix.length > 0 ? [...rawSheetMatrix] : undefined
-      }
-    ]);
-  };
-
-  const handleUndo = () => {
-    if (history.length === 0) return;
-    const previous = history[history.length - 1];
-    setHistory(prev => prev.slice(0, -1));
-    setCreateParsedRows(previous.rows);
-    setColumns(previous.columns);
-    setCreateFileMapping(previous.columnMappings);
-    setCustomRecipeSteps(previous.customSteps);
-    if (previous.fileName) setCreateFileName(previous.fileName);
-    if (previous.headerRowIndex !== undefined) setHeaderRowIndex(previous.headerRowIndex);
-    if (previous.dataStartRow !== undefined) setDataStartRow(previous.dataStartRow);
-    if (previous.rawSheetMatrix) setRawSheetMatrix(previous.rawSheetMatrix);
-    setFeedbackMessage('Reverted last data cleaning modification.');
-    setTimeout(() => setFeedbackMessage(null), 3000);
-  };
-
   // -------------------------------------------------------------
   // File Upload Handler (for Grid view import or replacement)
   // -------------------------------------------------------------
@@ -526,48 +949,56 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
         if (json.length > 0) {
           const rawH = (json[0] || []).map(h => String(h || '').trim()).filter(Boolean);
           const parsed = XLSX.utils.sheet_to_json(worksheet) as Record<string, any>[];
-          const activeFields = standardFields.length > 0 ? standardFields : DEFAULT_GLOBAL_STANDARD_FIELDS;
-          const autoMap = globalMappingService.autoGenerateColumnMapping(rawH, activeFields);
-
-          const newCols: ColumnDef[] = rawH.map(h => {
-            const sampleVal = parsed[0] ? parsed[0][h] : undefined;
-            const mapped = autoMap[h] || 'Unmapped';
-            return {
-              id: h,
-              name: h,
-              type: inferType(h, sampleVal),
-              mapping: mapped,
-              selected: false,
-              unmapped: mapped === 'Unmapped'
-            };
-          });
 
           setCreateFileName(file.name);
           const baseName = file.name.replace(/\.[^/.]+$/, '').replace(/[-_]/g, ' ');
           const formattedTitle = baseName.charAt(0).toUpperCase() + baseName.slice(1);
           setCreateTitle(prev => (!prev || prev === 'New Task' || prev === 'Untitled Task' ? formattedTitle : prev));
-          setCreateRawHeaders(rawH);
-          setCreateParsedRows(parsed);
           setRawSheetMatrix(json);
-          setHeaderRowIndex(1);
-          setDataStartRow(2);
-          setCreateFileMapping(autoMap);
-          setColumns(newCols);
-          setVisibleColumnIds(newCols.map(c => c.id));
-          setCurrentPage(1);
 
-          setCustomRecipeSteps(prev => [
-            ...prev,
-            {
-              num: 3 + prev.length,
-              title: `Loaded "${file.name}"`,
-              desc: `Parsed ${parsed.length} rows and ${rawH.length} columns from sheet "${sheet}"`,
-              type: 'INSPECT_HEADER',
-              appliedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-            }
-          ]);
-          setFeedbackMessage(`Successfully loaded "${file.name}" with ${parsed.length} rows.`);
-          setTimeout(() => setFeedbackMessage(null), 3500);
+          // If a template is active, automatically apply it to the new file!
+          const activeTpl = templates.find(t => t.name === selectedTemplate);
+          if (activeTpl) {
+            applyTemplateToCurrentDataset(activeTpl, json, file.name);
+          } else {
+            const activeFields = standardFields.length > 0 ? standardFields : DEFAULT_GLOBAL_STANDARD_FIELDS;
+            const autoMap = globalMappingService.autoGenerateColumnMapping(rawH, activeFields);
+
+            const newCols: ColumnDef[] = rawH.map(h => {
+              const sampleVal = parsed[0] ? parsed[0][h] : undefined;
+              const mapped = autoMap[h] || 'Unmapped';
+              return {
+                id: h,
+                name: h,
+                type: inferType(h, sampleVal),
+                mapping: mapped,
+                selected: false,
+                unmapped: mapped === 'Unmapped'
+              };
+            });
+
+            setCreateRawHeaders(rawH);
+            setCreateParsedRows(parsed);
+            setHeaderRowIndex(1);
+            setDataStartRow(2);
+            setCreateFileMapping(autoMap);
+            setColumns(newCols);
+            setVisibleColumnIds(newCols.map(c => c.id));
+            setCurrentPage(1);
+
+            setCustomRecipeSteps(prev => [
+              ...prev,
+              {
+                num: 3 + prev.length,
+                title: `Loaded "${file.name}"`,
+                desc: `Parsed ${parsed.length} rows and ${rawH.length} columns from sheet "${sheet}"`,
+                type: 'INSPECT_HEADER',
+                appliedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+              }
+            ]);
+            setFeedbackMessage(`Successfully loaded "${file.name}" with ${parsed.length} rows.`);
+            setTimeout(() => setFeedbackMessage(null), 3500);
+          }
         }
       } catch (err) {
         console.error('Failed to parse file:', err);
@@ -933,36 +1364,23 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
     setSelectedTemplate(templateName);
     const tpl = templates.find(t => t.name === templateName);
     if (tpl) {
-      if (tpl.headerRowIndex && tpl.headerRowIndex !== headerRowIndex) {
-        setHeaderRowIndex(tpl.headerRowIndex);
-      }
-      if (tpl.dataStartRow && tpl.dataStartRow !== dataStartRow) {
-        setDataStartRow(tpl.dataStartRow);
-      }
-      if (tpl.columnMappings) {
-        recordSnapshot();
-        setCreateFileMapping(prev => ({ ...prev, ...tpl.columnMappings }));
-        setColumns(cols => cols.map(c => {
-          const mapped = tpl.columnMappings[c.name] || tpl.columnMappings[c.id] || c.mapping;
-          return {
-            ...c,
-            mapping: mapped || 'Unmapped',
-            unmapped: !mapped || mapped === 'Unmapped'
-          };
-        }));
-        setCustomRecipeSteps(prev => [
-          ...prev,
-          {
-            num: 3 + prev.length,
-            title: `Applied template "${templateName}"`,
-            desc: `Loaded predefined column mappings (Header row ${tpl.headerRowIndex || 1}, Data starts row ${tpl.dataStartRow || 2})`,
-            type: 'MAP_FIELDS',
-            appliedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-          }
-        ]);
-        setFeedbackMessage(`Applied mapping template "${templateName}".`);
-        setTimeout(() => setFeedbackMessage(null), 3500);
-      }
+      recordSnapshot();
+      applyTemplateToCurrentDataset(tpl);
+    } else if (templateName === 'Standard Settlement Template') {
+      recordSnapshot();
+      const activeFields = standardFields.length > 0 ? standardFields : DEFAULT_GLOBAL_STANDARD_FIELDS;
+      const autoMap = globalMappingService.autoGenerateColumnMapping(createRawHeaders, activeFields);
+      setCreateFileMapping(autoMap);
+      setColumns(cols => cols.map(c => {
+        const mapped = autoMap[c.name] || 'Unmapped';
+        return {
+          ...c,
+          mapping: mapped,
+          unmapped: !mapped || mapped === 'Unmapped'
+        };
+      }));
+      setFeedbackMessage('Applied Standard Settlement Template.');
+      setTimeout(() => setFeedbackMessage(null), 3500);
     }
   };
 
@@ -1185,6 +1603,12 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
       const transformOperations: any[] = [];
       const cleaningActions: string[] = [];
       const deletedCols: string[] = [];
+      const renamedHeaders: Record<string, string> = {};
+      columns.forEach(c => {
+        if (c.originalName && c.originalName !== c.name) {
+          renamedHeaders[c.originalName] = c.name;
+        }
+      });
 
       for (const step of customRecipeSteps) {
         const titleLower = step.title.toLowerCase();
@@ -1247,13 +1671,14 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
         headerMode: 'ROW_INDEX',
         headerRowIndex: headerRowIndex,
         dataStartRow: dataStartRow,
-        manualHeaders: {},
+        manualHeaders: renamedHeaders,
         deletedColumns: deletedCols,
         requiredColumns: requiredColumnsList,
         columnMappings: createFileMapping,
         cleaningRecipe: {
           headerRowIndex: headerRowIndex,
           dataStartRow: dataStartRow,
+          renamedHeaders,
           orderedRecipeSteps: allRecipeSteps,
           splitOperations,
           mergeOperations,
@@ -1438,36 +1863,84 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
               <span>DRAFT</span>
             </span>
 
-            {/* File Info with Change File / Upload File */}
+            {/* File Info with Change File / Inline Edit / Upload File */}
             <div className="inline-flex items-center space-x-1.5 px-2.5 py-0.5 bg-white border border-slate-200 rounded-lg text-xs shadow-2xs">
               <FileSpreadsheet size={13} className={createFileName ? "text-[#F27421]" : "text-slate-400"} />
-              <span className={`font-mono truncate max-w-[200px] ${createFileName ? 'font-bold text-slate-800' : 'text-slate-400 font-normal italic'}`}>
-                {createFileName || 'No file attached'}
-              </span>
-              <button
-                type="button"
-                onClick={() => fileInputRef.current?.click()}
-                className="text-[11px] font-semibold text-[#F27421] hover:underline cursor-pointer ml-1"
-                title={createFileName ? "Replace spreadsheet file" : "Upload spreadsheet file"}
-              >
-                {createFileName ? 'Change File' : 'Upload File'}
-              </button>
-              {createFileName && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setCreateFileName('');
-                    setCreateParsedRows([]);
-                    setCreateRawHeaders([]);
-                    setColumns([]);
-                    setVisibleColumnIds([]);
-                    setActiveAttachment(null);
-                  }}
-                  className="p-0.5 text-slate-400 hover:text-rose-600 transition-colors cursor-pointer ml-0.5"
-                  title="Remove data"
-                >
-                  <Trash2 size={11} />
-                </button>
+              {isEditingFileName ? (
+                <div className="flex items-center space-x-1">
+                  <input
+                    type="text"
+                    value={tempFileName}
+                    onChange={e => setTempFileName(e.target.value)}
+                    onKeyDown={e => {
+                      if (e.key === 'Enter') handleSaveFileName();
+                      if (e.key === 'Escape') setIsEditingFileName(false);
+                    }}
+                    autoFocus
+                    placeholder="Enter file name..."
+                    className="font-mono text-xs font-bold text-slate-800 bg-orange-50/50 border border-orange-300 rounded px-1.5 py-0.5 focus:outline-none focus:ring-1 focus:ring-orange-400 w-44"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => handleSaveFileName()}
+                    className="p-1 text-emerald-600 hover:bg-emerald-50 rounded cursor-pointer"
+                    title="Save file name"
+                  >
+                    <Check size={12} />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsEditingFileName(false)}
+                    className="p-1 text-slate-400 hover:bg-slate-100 rounded cursor-pointer"
+                    title="Cancel"
+                  >
+                    <X size={12} />
+                  </button>
+                </div>
+              ) : (
+                <>
+                  <span className={`font-mono truncate max-w-[200px] ${createFileName ? 'font-bold text-slate-800' : 'text-slate-400 font-normal italic'}`}>
+                    {createFileName || 'No file attached'}
+                  </span>
+                  {createFileName && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setTempFileName(createFileName);
+                        setIsEditingFileName(true);
+                      }}
+                      className="p-0.5 text-slate-400 hover:text-slate-700 hover:bg-slate-100 rounded transition cursor-pointer"
+                      title="Edit source file name"
+                    >
+                      <Edit3 size={11} />
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => fileInputRef.current?.click()}
+                    className="text-[11px] font-semibold text-[#F27421] hover:underline cursor-pointer ml-1"
+                    title={createFileName ? "Replace spreadsheet file" : "Upload spreadsheet file"}
+                  >
+                    {createFileName ? 'Change File' : 'Upload File'}
+                  </button>
+                  {createFileName && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setCreateFileName('');
+                        setCreateParsedRows([]);
+                        setCreateRawHeaders([]);
+                        setColumns([]);
+                        setVisibleColumnIds([]);
+                        setActiveAttachment(null);
+                      }}
+                      className="p-0.5 text-slate-400 hover:text-rose-600 transition-colors cursor-pointer ml-0.5"
+                      title="Remove data"
+                    >
+                      <Trash2 size={11} />
+                    </button>
+                  )}
+                </>
               )}
             </div>
 
@@ -1814,15 +2287,17 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
               {/* Right Side Header Controls: Filter Mode Pills (All, Duplicates, Unique) & Template Selector */}
               <div className="flex items-center space-x-3 py-1.5 shrink-0 self-end md:self-auto">
                 {/* Filter Mode Pills (All, Duplicates, Unique) matching screenshot */}
-                <div className="flex items-center p-0.5 bg-slate-100/90 border border-slate-200/60 rounded-lg text-xs font-medium text-slate-600 shadow-2xs">
+                <div className="flex items-center p-0.5 bg-[#f0f4f9] border border-slate-200/90 rounded-xl text-xs font-medium shadow-2xs">
                   <button
                     type="button"
                     onClick={() => {
                       setFilterMode('all');
                       setCurrentPage(1);
                     }}
-                    className={`px-3 py-1 rounded-md transition-all cursor-pointer ${
-                      filterMode === 'all' ? 'bg-white text-slate-900 shadow-2xs font-bold' : 'hover:text-slate-900'
+                    className={`px-3 py-1 rounded-lg transition-all cursor-pointer ${
+                      filterMode === 'all'
+                        ? 'bg-white text-slate-900 shadow-2xs font-bold'
+                        : 'text-[#1a64db] font-semibold hover:text-blue-800'
                     }`}
                   >
                     All
@@ -1833,8 +2308,10 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
                       setFilterMode('duplicates');
                       setCurrentPage(1);
                     }}
-                    className={`px-3 py-1 rounded-md transition-all cursor-pointer ${
-                      filterMode === 'duplicates' ? 'bg-white text-slate-900 shadow-2xs font-bold' : 'hover:text-slate-900'
+                    className={`px-3 py-1 rounded-lg transition-all cursor-pointer ${
+                      filterMode === 'duplicates'
+                        ? 'bg-white text-[#1a64db] shadow-2xs font-bold'
+                        : 'text-[#1a64db] font-semibold hover:text-blue-800'
                     }`}
                   >
                     Duplicates {duplicateCount}
@@ -1845,12 +2322,54 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
                       setFilterMode('unique');
                       setCurrentPage(1);
                     }}
-                    className={`px-3 py-1 rounded-md transition-all cursor-pointer ${
-                      filterMode === 'unique' ? 'bg-white text-slate-900 shadow-2xs font-bold' : 'hover:text-slate-900'
+                    className={`px-3 py-1 rounded-lg transition-all cursor-pointer ${
+                      filterMode === 'unique'
+                        ? 'bg-white text-[#1a64db] shadow-2xs font-bold'
+                        : 'text-[#1a64db] font-semibold hover:text-blue-800'
                     }`}
                   >
                     Unique {Math.max(0, createParsedRows.length - duplicateCount)}
                   </button>
+
+                  {/* Filter Dropdown Chevron Menu */}
+                  <div className="relative pr-1">
+                    <button
+                      type="button"
+                      onClick={() => setShowRowFilterDropdown(prev => !prev)}
+                      className="p-1 text-slate-600 hover:text-slate-900 rounded cursor-pointer transition flex items-center"
+                      title="Filter mode options"
+                    >
+                      <ChevronDown size={14} className="text-slate-600" />
+                    </button>
+                    {showRowFilterDropdown && (
+                      <div className="absolute right-0 top-full mt-1.5 w-48 bg-white border border-slate-200 rounded-xl shadow-xl z-30 py-1 text-xs">
+                        <button
+                          type="button"
+                          onClick={() => { setFilterMode('all'); setCurrentPage(1); setShowRowFilterDropdown(false); }}
+                          className={`w-full text-left px-3 py-2 flex items-center justify-between hover:bg-slate-50 cursor-pointer ${filterMode === 'all' ? 'font-bold text-slate-900 bg-slate-50' : 'text-slate-700'}`}
+                        >
+                          <span>All Records</span>
+                          <span className="font-mono text-slate-400">{createParsedRows.length}</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { setFilterMode('duplicates'); setCurrentPage(1); setShowRowFilterDropdown(false); }}
+                          className={`w-full text-left px-3 py-2 flex items-center justify-between hover:bg-slate-50 cursor-pointer ${filterMode === 'duplicates' ? 'font-bold text-blue-700 bg-blue-50/50' : 'text-slate-700'}`}
+                        >
+                          <span>Only Duplicates</span>
+                          <span className="font-mono text-blue-600">{duplicateCount}</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { setFilterMode('unique'); setCurrentPage(1); setShowRowFilterDropdown(false); }}
+                          className={`w-full text-left px-3 py-2 flex items-center justify-between hover:bg-slate-50 cursor-pointer ${filterMode === 'unique' ? 'font-bold text-blue-700 bg-blue-50/50' : 'text-slate-700'}`}
+                        >
+                          <span>Only Unique</span>
+                          <span className="font-mono text-blue-600">{Math.max(0, createParsedRows.length - duplicateCount)}</span>
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 </div>
 
                 {/* Template Selector with Chevron Dropdown */}
@@ -1858,7 +2377,7 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
                   <select
                     value={selectedTemplate}
                     onChange={e => handleSelectTemplate(e.target.value)}
-                    className="appearance-none pl-3 pr-8 py-1.5 bg-white border border-slate-200 hover:border-slate-300 rounded-lg text-xs font-semibold text-slate-800 shadow-2xs focus:outline-none focus:border-[#F27421] cursor-pointer"
+                    className="appearance-none pl-3.5 pr-8 py-1.5 bg-white border border-slate-200/90 hover:border-slate-300 rounded-xl text-xs font-semibold text-[#1a64db] shadow-2xs focus:outline-none focus:border-[#F27421] cursor-pointer"
                     title="Select and apply mapping template"
                   >
                     <option value="Standard Settlement Template">Standard Settlement Template</option>
@@ -1866,7 +2385,7 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
                       <option key={t.id} value={t.name}>{t.name}</option>
                     ))}
                   </select>
-                  <ChevronDown size={13} className="absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none text-slate-500" />
+                  <ChevronDown size={14} className="absolute right-2.5 top-1/2 -translate-y-1/2 pointer-events-none text-slate-600" />
                 </div>
               </div>
             </div>
@@ -2247,6 +2766,21 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
                                             Transform: {col.name}
                                           </div>
 
+                                          {/* Rename Original Header */}
+                                          <button
+                                            type="button"
+                                            onClick={() => {
+                                              setActiveMenuColumn(null);
+                                              setActiveTab('schema');
+                                              setEditingColId(col.id);
+                                              setTempColHeaderName(col.name);
+                                            }}
+                                            className="w-full px-3 py-1.5 text-left hover:bg-orange-50/70 flex items-center gap-2 cursor-pointer text-[#F27421] font-semibold border-b border-slate-100 mb-1"
+                                          >
+                                            <Edit3 size={12} className="text-[#F27421]" />
+                                            <span>Rename Header...</span>
+                                          </button>
+
                                           {/* Text Category */}
                                           <div className="px-3 py-0.5 text-[9px] font-bold text-slate-400 uppercase">Text Transforms</div>
                                           <button
@@ -2567,10 +3101,63 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
                   {columns.map(col => (
-                    <div key={col.id} className="p-3 bg-slate-50/70 border border-slate-200/80 rounded-xl space-y-1.5 text-xs">
-                      <div className="flex items-center justify-between">
-                        <span className="font-mono font-bold text-slate-900">{col.name}</span>
-                        <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold ${
+                    <div key={col.id} className="p-3 bg-slate-50/70 border border-slate-200/80 rounded-xl space-y-2 text-xs">
+                      <div className="flex items-center justify-between gap-2">
+                        {editingColId === col.id ? (
+                          <div className="flex items-center space-x-1 flex-1 min-w-0">
+                            <input
+                              type="text"
+                              value={tempColHeaderName}
+                              onChange={e => setTempColHeaderName(e.target.value)}
+                              onKeyDown={e => {
+                                if (e.key === 'Enter') handleSaveColumnHeader(col.id);
+                                if (e.key === 'Escape') setEditingColId(null);
+                              }}
+                              autoFocus
+                              placeholder="Enter header name..."
+                              className="font-mono text-xs font-bold text-slate-800 bg-white border border-[#F27421] rounded px-2 py-1 focus:outline-none focus:ring-1 focus:ring-[#F27421] w-full shadow-2xs"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => handleSaveColumnHeader(col.id)}
+                              className="p-1 text-emerald-600 hover:bg-emerald-50 rounded cursor-pointer shrink-0 transition"
+                              title="Save header name"
+                            >
+                              <Check size={13} />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setEditingColId(null)}
+                              className="p-1 text-slate-400 hover:bg-slate-100 rounded cursor-pointer shrink-0 transition"
+                              title="Cancel"
+                            >
+                              <X size={13} />
+                            </button>
+                          </div>
+                        ) : (
+                          <div className="flex items-center space-x-1.5 min-w-0 group/header flex-1">
+                            <span className="font-mono font-bold text-slate-900 truncate" title={col.name}>
+                              {col.name}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditingColId(col.id);
+                                setTempColHeaderName(col.name);
+                              }}
+                              className="p-0.5 text-slate-400 hover:text-slate-800 hover:bg-slate-200/60 rounded transition cursor-pointer opacity-70 group-hover/header:opacity-100"
+                              title="Edit original header name"
+                            >
+                              <Edit3 size={11} />
+                            </button>
+                            {col.originalName && col.originalName !== col.name && (
+                              <span className="text-[10px] font-mono text-slate-400 bg-slate-200/60 px-1.5 py-0.2 rounded shrink-0" title={`Original header in file: ${col.originalName}`}>
+                                was: {col.originalName}
+                              </span>
+                            )}
+                          </div>
+                        )}
+                        <span className={`px-2 py-0.5 rounded text-[10px] font-mono font-bold shrink-0 ${
                           col.type === 'Number' ? 'bg-blue-50 text-blue-700' :
                           col.type === 'Date' ? 'bg-amber-50 text-amber-700' :
                           'bg-slate-200 text-slate-700'
@@ -2872,6 +3459,31 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
                   onChange={e => setCreateTitle(e.target.value)}
                   placeholder="e.g. Daily Settlement Clearing Batch"
                   className="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 text-xs text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-[#F27421]/20 focus:border-[#F27421] focus:bg-white font-medium"
+                />
+              </div>
+
+              <div className="space-y-1">
+                <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider">
+                  Original Source File Name
+                </label>
+                <input
+                  type="text"
+                  value={createFileName}
+                  onChange={e => {
+                    const newName = e.target.value;
+                    setCreateFileName(newName);
+                    setCustomRecipeSteps(prev => prev.map(s => {
+                      if (s.type === 'INSPECT_HEADER' || s.num === 1) {
+                        return {
+                          ...s,
+                          desc: `Inspected ${createRawHeaders.length} headers in "${newName}"`
+                        };
+                      }
+                      return s;
+                    }));
+                  }}
+                  placeholder="e.g. telebirr_settlement_20261121.xlsx"
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl p-2.5 text-xs font-mono font-bold text-slate-800 placeholder-slate-400 focus:outline-none focus:ring-2 focus:ring-[#F27421]/20 focus:border-[#F27421] focus:bg-white"
                 />
               </div>
 

@@ -31,6 +31,21 @@ import {
   RecipeExecutionOptions
 } from '../types.js';
 import { postgresRepo } from '../store/postgresRepo.js';
+import { translateWithDictionary } from './valueDictionaryService.js';
+
+function resolveRowKey(row: Record<string, any>, targetCol: string): string | null {
+  if (!targetCol) return null;
+  if (row[targetCol] !== undefined) return targetCol;
+  const lower = targetCol.toLowerCase().trim();
+  const direct = Object.keys(row).find(k => k.toLowerCase().trim() === lower);
+  if (direct) return direct;
+  const slug = lower.replace(/[^a-z0-9]/g, '');
+  if (slug) {
+    const slugMatch = Object.keys(row).find(k => k.toLowerCase().replace(/[^a-z0-9]/g, '') === slug);
+    if (slugMatch) return slugMatch;
+  }
+  return null;
+}
 
 export class RecipeExecutionService {
   /**
@@ -75,12 +90,16 @@ export class RecipeExecutionService {
       const effectiveHeaderRow = template.headerRowIndex || 1;
       const effectiveDataStart = template.dataStartRow || (effectiveHeaderRow + 1);
 
-      // If manual headers are provided for positional columns (col_0, col_1, etc.)
-      if (template.manualHeaders && Object.keys(template.manualHeaders).length > 0) {
+      // If manual headers or renamed headers are provided for positional/source columns
+      const headerRenames: Record<string, string> = {
+        ...(template.manualHeaders || {}),
+        ...(template.cleaningRecipe?.renamedHeaders || {})
+      };
+      if (Object.keys(headerRenames).length > 0) {
         currentRows = currentRows.map(row => {
           const remapped: Record<string, any> = {};
           for (const [key, val] of Object.entries(row)) {
-            const mappedHeader = template.manualHeaders[key];
+            const mappedHeader = headerRenames[key];
             if (mappedHeader && mappedHeader.trim()) {
               remapped[mappedHeader.trim()] = val;
             } else {
@@ -111,13 +130,11 @@ export class RecipeExecutionService {
       const stage2Start = Date.now();
       const deletedCols = template.deletedColumns || [];
       if (deletedCols.length > 0) {
-        const delSet = new Set(deletedCols.map(c => c.trim().toLowerCase()));
         currentRows = currentRows.map(row => {
-          const out: Record<string, any> = {};
-          for (const [k, v] of Object.entries(row)) {
-            if (!delSet.has(k.trim().toLowerCase()) || k.startsWith('_')) {
-              out[k] = v;
-            }
+          const out = { ...row };
+          for (const del of deletedCols) {
+            const matched = resolveRowKey(out, del);
+            if (matched && !matched.startsWith('_')) delete out[matched];
           }
           return out;
         });
@@ -157,7 +174,8 @@ export class RecipeExecutionService {
 
         currentRows = currentRows.map(row => {
           const out = { ...row };
-          const rawVal = out[colKey] !== undefined && out[colKey] !== null ? String(out[colKey]) : '';
+          const actualColKey = resolveRowKey(out, colKey) || colKey;
+          const rawVal = out[actualColKey] !== undefined && out[actualColKey] !== null ? String(out[actualColKey]) : '';
           if (rawVal.length > 0) splitAffectedCount++;
 
           const parts = (splitOp.delimiterType === 'SPACE' || delim === ' ')
@@ -168,8 +186,8 @@ export class RecipeExecutionService {
             out[name] = parts[idx] !== undefined ? parts[idx].trim() : '';
           });
 
-          if (!splitOp.keepOriginal) {
-            delete out[colKey];
+          if (!splitOp.keepOriginal && actualColKey) {
+            delete out[actualColKey];
           }
           return out;
         });
@@ -208,8 +226,10 @@ export class RecipeExecutionService {
 
         currentRows = currentRows.map(row => {
           const out = { ...row };
-          const v1 = out[col1] !== undefined && out[col1] !== null ? String(out[col1]).trim() : '';
-          const v2 = out[col2] !== undefined && out[col2] !== null ? String(out[col2]).trim() : '';
+          const actualCol1 = resolveRowKey(out, col1) || col1;
+          const actualCol2 = resolveRowKey(out, col2) || col2;
+          const v1 = out[actualCol1] !== undefined && out[actualCol1] !== null ? String(out[actualCol1]).trim() : '';
+          const v2 = out[actualCol2] !== undefined && out[actualCol2] !== null ? String(out[actualCol2]).trim() : '';
 
           if (v1 || v2) {
             mergeAffectedCount++;
@@ -219,8 +239,8 @@ export class RecipeExecutionService {
           }
 
           if (!mergeOp.keepSources) {
-            delete out[col1];
-            delete out[col2];
+            if (actualCol1) delete out[actualCol1];
+            if (actualCol2) delete out[actualCol2];
           }
           return out;
         });
@@ -271,8 +291,9 @@ export class RecipeExecutionService {
 
         currentRows = currentRows.map(row => {
           const out = { ...row };
-          if (out[col] !== undefined) {
-            const originalVal = out[col];
+          const actualCol = resolveRowKey(out, col) || col;
+          if (out[actualCol] !== undefined) {
+            const originalVal = out[actualCol];
             const transformedVal = this.applySingleTransform(
               originalVal,
               transOp.ruleType,
@@ -282,7 +303,7 @@ export class RecipeExecutionService {
               systemRules
             );
             if (originalVal !== transformedVal) affected++;
-            out[col] = transformedVal;
+            out[actualCol] = transformedVal;
           }
           return out;
         });
@@ -305,25 +326,17 @@ export class RecipeExecutionService {
         const mappings = matchedDict?.mappings || (matchedDict as any)?.entries;
         if (!matchedDict || !Array.isArray(mappings)) continue;
 
-        const dictMap = new Map<string, string>();
-        for (const entry of mappings) {
-          if (entry.sourceValue) {
-            dictMap.set(entry.sourceValue.trim().toLowerCase(), entry.targetValue);
-          }
-        }
-
         let dictAffected = 0;
-        const defaultVal = (matchedDict as any).defaultValue || (matchedDict as any).defaultTargetValue;
         currentRows = currentRows.map(row => {
           const out = { ...row };
-          const raw = out[col] !== undefined && out[col] !== null ? String(out[col]).trim() : '';
-          const lookup = dictMap.get(raw.toLowerCase());
-          if (lookup !== undefined) {
-            dictAffected++;
-            out[col] = lookup;
-          } else if (defaultVal) {
-            dictAffected++;
-            out[col] = defaultVal;
+          const actualCol = resolveRowKey(out, col) || col;
+          if (out[actualCol] !== undefined && out[actualCol] !== null) {
+            const originalVal = out[actualCol];
+            const transResult = translateWithDictionary(matchedDict, originalVal);
+            if (transResult.matched || transResult.output !== originalVal) {
+              dictAffected++;
+              out[actualCol] = transResult.output;
+            }
           }
           return out;
         });
@@ -334,7 +347,13 @@ export class RecipeExecutionService {
           action: `DICT_MAP_${col}`,
           affectedRowsCount: dictAffected,
           durationMs: Date.now() - opStart,
-          details: { column: col, dictionaryId: matchedDict.id, dictionaryName: matchedDict.name }
+          details: {
+            column: col,
+            dictionaryId: matchedDict.id,
+            dictionaryName: matchedDict.name,
+            preTransformRule: matchedDict.preTransformRule,
+            postTransformRule: matchedDict.postTransformRule
+          }
         });
       }
 
@@ -466,28 +485,83 @@ export class RecipeExecutionService {
       const stage7Start = Date.now();
       const columnMappings = template.columnMappings || {};
       const hasMappings = Object.keys(columnMappings).length > 0;
+      const shouldProject = hasMappings && options.projectToCanonical !== false;
 
-      if (hasMappings && options.projectToCanonical) {
-        // Build reverse lookup / normalized mapping
-        const normMapping = new Map<string, string>();
+      if (shouldProject) {
+        // Multi-tier lookup tables for column projection
+        const exactMap = new Map<string, string>();
+        const lowerMap = new Map<string, string>();
+        const slugMap = new Map<string, string>();
+        const targetKeys = new Set<string>();
+
         for (const [src, tgt] of Object.entries(columnMappings)) {
-          if (src && tgt) {
-            normMapping.set(src.trim().toLowerCase(), tgt.trim());
-          }
+          if (!src || !tgt || tgt === 'Unmapped' || tgt === '') continue;
+          const trimmedTarget = tgt.trim();
+          exactMap.set(src, trimmedTarget);
+          lowerMap.set(src.trim().toLowerCase(), trimmedTarget);
+          const sSlug = src.toLowerCase().replace(/[^a-z0-9]/g, '');
+          if (sSlug) slugMap.set(sSlug, trimmedTarget);
+          targetKeys.add(trimmedTarget.toLowerCase());
+          const tSlug = trimmedTarget.toLowerCase().replace(/[^a-z0-9]/g, '');
+          if (tSlug) slugMap.set(tSlug, trimmedTarget);
         }
 
-        currentRows = currentRows.map(row => {
+        currentRows = currentRows.map((row) => {
           const canonicalRow: Record<string, any> = {};
-          for (const [k, v] of Object.entries(row)) {
+          const keys = Object.keys(row);
+
+          for (let kIdx = 0; kIdx < keys.length; kIdx++) {
+            const k = keys[kIdx];
+            const v = row[k];
             if (k.startsWith('_')) {
               canonicalRow[k] = v;
               continue;
             }
-            const mappedTarget = normMapping.get(k.trim().toLowerCase());
-            if (mappedTarget) {
-              canonicalRow[mappedTarget] = v;
+
+            // Tier 1: Exact match
+            let target = exactMap.get(k);
+
+            // Tier 2: Lowercase match
+            if (!target) {
+              target = lowerMap.get(k.trim().toLowerCase());
+            }
+
+            // Tier 3: Slug match
+            const kSlug = k.toLowerCase().replace(/[^a-z0-9]/g, '');
+            if (!target && kSlug) {
+              target = slugMap.get(kSlug);
+            }
+
+            // Tier 4: Positional match (col_0, col_1, Column 1, etc.)
+            if (!target) {
+              const posKeys = [`col_${kIdx}`, `col_${kIdx + 1}`, `column_${kIdx}`, `column_${kIdx + 1}`, `Column ${kIdx + 1}`];
+              for (const pk of posKeys) {
+                if (exactMap.has(pk)) { target = exactMap.get(pk); break; }
+                if (lowerMap.has(pk.toLowerCase())) { target = lowerMap.get(pk.toLowerCase()); break; }
+              }
+            }
+
+            // Tier 5: Direct target key match
+            if (!target && targetKeys.has(k.trim().toLowerCase())) {
+              target = k.trim().toLowerCase();
+            }
+
+            // Tier 6: Substring match (>= 4 chars)
+            if (!target && kSlug.length >= 4) {
+              for (const [sSlug, tgt] of slugMap.entries()) {
+                if (sSlug.length >= 4 && (kSlug.includes(sSlug) || sSlug.includes(kSlug))) {
+                  target = tgt;
+                  break;
+                }
+              }
+            }
+
+            if (target) {
+              canonicalRow[target] = v;
+              if (options.preserveRawPayload && canonicalRow[k] === undefined) {
+                canonicalRow[k] = v;
+              }
             } else {
-              // Retain original unmapped column so no data is silently dropped
               canonicalRow[k] = v;
             }
           }
@@ -498,11 +572,11 @@ export class RecipeExecutionService {
       auditTrail.push({
         stepNum: stepCounter++,
         stage: 'CANONICAL_PROJECTION',
-        action: hasMappings ? (options.projectToCanonical ? 'PROJECT_CANONICAL_FIELDS' : 'VALIDATE_CANONICAL_MAPPINGS') : 'NO_OP',
+        action: hasMappings ? (shouldProject ? 'PROJECT_CANONICAL_FIELDS' : 'VALIDATE_CANONICAL_MAPPINGS') : 'NO_OP',
         affectedRowsCount: hasMappings ? currentRows.length : 0,
         durationMs: Date.now() - stage7Start,
         details: {
-          projected: Boolean(options.projectToCanonical && hasMappings),
+          projected: Boolean(shouldProject && hasMappings),
           mappingsCount: Object.keys(columnMappings).length
         }
       });

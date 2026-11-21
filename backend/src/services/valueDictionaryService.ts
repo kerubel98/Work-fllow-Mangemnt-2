@@ -42,6 +42,55 @@ export interface DictionaryTranslationResult {
   flagged: boolean;
   /** Which stored side matched the input: 'source' (FORWARD) or 'target' (REVERSE). */
   matchedSide?: 'source' | 'target';
+  preTransformedInput?: string;
+  postTransformedOutput?: string;
+}
+
+export function applyTransformationRule(rule: string, value: string): string {
+  if (value === null || value === undefined) return '';
+  const str = String(value);
+  const r = (rule || '').trim().toUpperCase();
+  switch (r) {
+    case 'UPPERCASE':
+      return str.toUpperCase();
+    case 'LOWERCASE':
+      return str.toLowerCase();
+    case 'TITLECASE':
+      return str.replace(/\w\S*/g, txt => txt.charAt(0).toUpperCase() + txt.substring(1).toLowerCase());
+    case 'TRIM':
+      return str.trim();
+    case 'STRIP_CURRENCY':
+    case 'CLEAN_AMOUNT': {
+      // Remove currency symbols ($, ETB, USD, €, etc.) and commas
+      const cleaned = str.replace(/[^0-9.-]/g, '').trim();
+      return cleaned || str;
+    }
+    case 'PHONE_ET': {
+      // Standardize Ethiopian phone number to +251...
+      const digits = str.replace(/[^0-9]/g, '');
+      if (digits.startsWith('251') && digits.length === 12) return `+${digits}`;
+      if (digits.startsWith('0') && digits.length === 10) return `+251${digits.slice(1)}`;
+      if ((digits.startsWith('9') || digits.startsWith('7')) && digits.length === 9) return `+251${digits}`;
+      return str;
+    }
+    case 'MASK_PAN': {
+      // 16-digit card mask: 4111********1111
+      const trimmed = str.trim();
+      if (trimmed.length >= 12) {
+        return `${trimmed.slice(0, 4)}${'*'.repeat(trimmed.length - 8)}${trimmed.slice(-4)}`;
+      }
+      return str;
+    }
+    case 'DATE_ISO': {
+      try {
+        const d = new Date(str);
+        if (!isNaN(d.getTime())) return d.toISOString().split('T')[0];
+      } catch {}
+      return str;
+    }
+    default:
+      return str;
+  }
 }
 
 function normalise(value: string, dict: Pick<ValueTranslationDictionary, 'caseSensitive' | 'trimWhitespace'>): string {
@@ -56,31 +105,78 @@ export function translateWithDictionary(
   input: unknown
 ): DictionaryTranslationResult {
   const raw = input === null || input === undefined ? '' : String(input);
+
+  // 1. Pre-Lookup Transformation
+  let preProcessed = raw;
+  if (dict.preTransformRule) {
+    preProcessed = applyTransformationRule(dict.preTransformRule, preProcessed);
+  }
+  if (Array.isArray(dict.transformationRules) && dict.transformationRules.length > 0) {
+    for (const rule of dict.transformationRules) {
+      preProcessed = applyTransformationRule(rule, preProcessed);
+    }
+  }
+
   const direction = dict.direction || 'FORWARD';
-  const needle = normalise(raw, dict);
+  const needle = normalise(preProcessed, dict);
 
   const tryForward = direction === 'FORWARD' || direction === 'BOTH';
   const tryReverse = direction === 'REVERSE' || direction === 'BOTH';
 
+  let rawOutput = '';
+  let matched = false;
+  let flagged = false;
+  let matchedSide: 'source' | 'target' | undefined = undefined;
+
   if (tryForward) {
     const hit = (dict.mappings || []).find(m => normalise(m.sourceValue, dict) === needle);
-    if (hit) return { matched: true, output: hit.targetValue, flagged: false, matchedSide: 'source' };
+    if (hit) {
+      matched = true;
+      rawOutput = hit.targetValue;
+      matchedSide = 'source';
+    }
   }
-  if (tryReverse) {
+  if (!matched && tryReverse) {
     const hit = (dict.mappings || []).find(m => normalise(m.targetValue, dict) === needle);
-    if (hit) return { matched: true, output: hit.sourceValue, flagged: false, matchedSide: 'target' };
+    if (hit) {
+      matched = true;
+      rawOutput = hit.sourceValue;
+      matchedSide = 'target';
+    }
   }
 
-  switch (dict.noMatchPolicy || 'KEEP_ORIGINAL') {
-    case 'BLANK':
-      return { matched: false, output: '', flagged: false };
-    case 'USE_FALLBACK':
-      return { matched: false, output: dict.defaultFallback ?? raw, flagged: false };
-    case 'FLAG':
-      return { matched: false, output: raw, flagged: true };
-    default:
-      return { matched: false, output: raw, flagged: false };
+  if (!matched) {
+    switch (dict.noMatchPolicy || 'KEEP_ORIGINAL') {
+      case 'BLANK':
+        rawOutput = '';
+        break;
+      case 'USE_FALLBACK':
+        rawOutput = dict.defaultFallback ?? raw;
+        break;
+      case 'FLAG':
+        rawOutput = raw;
+        flagged = true;
+        break;
+      default:
+        rawOutput = raw;
+        break;
+    }
   }
+
+  // 2. Post-Lookup Transformation
+  let finalOutput = rawOutput;
+  if (dict.postTransformRule && rawOutput) {
+    finalOutput = applyTransformationRule(dict.postTransformRule, rawOutput);
+  }
+
+  return {
+    matched,
+    output: finalOutput,
+    flagged,
+    matchedSide,
+    preTransformedInput: dict.preTransformRule ? preProcessed : undefined,
+    postTransformedOutput: dict.postTransformRule ? finalOutput : undefined
+  };
 }
 
 /**

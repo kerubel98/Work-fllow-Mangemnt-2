@@ -282,6 +282,30 @@ Whenever introducing, updating, or debugging workflow or stage attributes:
 - **Dynamic Rule Discovery**: The UI inspector must query `api.getColumnConfigurations(dbId, table)` to provide operators with live rule checkboxes, type badges, and active count indicators.
 - **Cardinality & Aggregation Contracts**: Multi-row queries must explicitly specify cardinality policy (`STRICT_SINGLE`, `ONE_TO_MANY`, `EXPLICIT_LATEST`, `EXPLICIT_FIRST`, `ALL_ROWS`) and aggregation strategy (`NONE`, `SUM`, `COUNT`, `MIN`, `MAX`) to prevent ambiguous result sets during external mirror reconciliation.
 
+### 3.24 Composite Executable Ingestion Mappings & Multi-Tier Resolution
+- **Composite Definition**: An ingestion mapping template consists of both column mappings and ordered cleaning recipes:
+  1. `columnMappings: Record<string, string>` (Source Column -> Standard Field Key)
+  2. `cleaningRecipe: FileIngestionCleaningRecipe` (Ordered transformation steps: Header Row Index, Data Start Row, Deduplication, Whitespace Trim, Dictionary Transformations).
+- **Automation & Background Parity**: Any automation or background job that ingests a file using a mapping template must invoke `recipeExecutionService.executeCleaningRecipe()` so that data transformations execute identically whether processed interactively by a human operator or headlessly by a cron worker.
+- **Multi-Tier Cross-File Resolution**: To prevent cross-file template failures when source systems use slight variations in casing or naming, column headers must resolve through a 3-tier hierarchy:
+  1. *Normalized Alphanumeric Matching*: Compares tokens stripped of punctuation and whitespace (`raw.toLowerCase().replace(/[^a-z0-9]/g, '')`).
+  2. *Global Standard Directory Matching*: Resolves aliases against `global_standard_directory` field keys and display labels.
+  3. *Explicit Template Overrides*: Direct mappings defined in the selected mapping template.
+
+### 3.25 Value Dictionary Transformation Pipeline (Pre/Post Lookup Rules)
+- **PostgreSQL Persistence**: Persisted in PostgreSQL table `value_translation_dictionaries` via migration `038_value_dictionary_transformation_rules.sql` with columns `pre_transform_rule`, `post_transform_rule`, and `transformation_rules JSONB`.
+- **Pre-Lookup Rules**: Executed before dictionary key lookup:
+  - `TRIM`: Strips leading and trailing whitespace.
+  - `UPPERCASE` / `LOWERCASE`: Casing normalization.
+  - `STRIP_CURRENCY` / `CLEAN_AMOUNT`: Strips currency symbols (`$`, `ETB`, `EUR`) and thousands separators.
+  - `PHONE_ET`: Formats local phone numbers to international standard (`+2519...`).
+  - `DATE_ISO`: Normalizes date strings to ISO-8601 (`YYYY-MM-DD`).
+- **Post-Lookup Rules**: Executed on the translated output:
+  - `TITLECASE`: Capitalizes words.
+  - `MASK_PAN`: Masks primary account numbers (`4111********4444`).
+- **Interactive Sandbox Testing**: Every dictionary interface (`ValueDictionaryWorkbench.tsx`, `ValueDictionariesView.tsx`) must provide a live "Try it" preview displaying both pre-transformed input and final mapped output.
+
+
 ---
 
 ## 4. End-to-End Investigation Flow
@@ -412,6 +436,73 @@ No feature or milestone may be accepted or certified until a verification audit 
 - Every enum or trigger has an active runtime runner (not just DDL/types).
 - Every test assertion loop runs non-vacuously (no assertions over empty arrays).
 - Every external connection dispatches to live databases where configured.
+
+
+### Custom Agent Directive: /summarize
+
+When I type `/summarize`, treat it as a request to create a session handoff for continuing the current coding task in a new agent conversation.
+
+## Objective
+Create a concise, accurate, context-preserving Markdown document that allows a fresh agent session to continue the work without re-investigating everything or asking me to repeat information.
+
+## Instructions
+1. Review the current conversation and identify the actual task and progress.
+2. Verify important implementation details against the current project files when necessary. Do not assume a change was completed just because it was discussed.
+3. Create or update a Markdown handoff file at:
+
+   `agent-handoffs/session-handoff.md`
+
+4. Include only information that is relevant to continuing the current task.
+5. Preserve important decisions, constraints, unresolved issues, and next steps.
+6. Keep the document concise, structured, and easy to scan.
+7. Do not copy entire source files, large code blocks, or unrelated conversation content.
+8. Do not modify application source code just to create a session summary.
+9. If a fact is uncertain, explicitly label it as unverified rather than inventing details.
+10. Make the handoff self-contained so a new agent can use it without access to this conversation.
+
+## Required Markdown Structure
+
+# Session Handoff
+
+## 1. Current Task
+What we are currently trying to accomplish and the expected outcome.
+
+## 2. Progress
+- Completed work
+- Partially completed work
+- Work not yet started
+
+## 3. Important Technical Decisions
+- Architecture, implementation choices, constraints, and decisions that must not be changed without reason.
+
+## 4. Files Involved
+List relevant files and briefly explain their roles.
+Distinguish files modified from files merely inspected.
+
+## 5. Current State
+Describe how the implementation currently works and where work stopped.
+
+## 6. Issues and Blockers
+Include errors, unresolved questions, bugs, or dependencies. If none, state "None identified."
+
+## 7. Next Steps
+Provide a prioritized, actionable checklist of the next tasks.
+
+## 8. Verification
+List relevant commands, tests, builds, and their results. Clearly distinguish executed tests from tests not run.
+
+## 9. Continuation Instructions
+Tell the next agent exactly where to start, what to inspect first, what to avoid repeating, and how to continue.
+
+## Output Requirements
+- Use concise Markdown.
+- Prefer bullets over long paragraphs.
+- Keep technical details that are necessary for continuation.
+- Avoid repeating information.
+- Do not invent progress, test results, file names, or decisions.
+- Save the document to the specified path.
+- After saving, provide a brief confirmation with the file path and a short summary of what the handoff contains.
+- If the `/summarize` directive is invoked again later, update the handoff to reflect the latest state rather than blindly appending duplicate content.
 
 
 

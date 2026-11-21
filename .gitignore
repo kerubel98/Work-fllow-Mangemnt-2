@@ -19,4 +19,5 @@ tesr.json
 redesigned_ui/
 presentation_ui/
 .opencode/
-
+.agents/
+ARCHITECTURE_*.md
