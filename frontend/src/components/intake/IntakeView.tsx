@@ -9,7 +9,7 @@ import {
   CheckCircle2, AlertTriangle, Terminal, Server, Shield, Eye,
   Play, Check, Plus, ExternalLink, ArrowUpRight, Clock, UserCheck,
   Calendar, Layers, Zap, Database, RotateCcw, Settings2, SlidersHorizontal,
-  Briefcase, Hash
+  Briefcase, Hash, FileSpreadsheet
 } from 'lucide-react';
 import { Team, User, FtpFileStagingConfig, Issue } from '../../types';
 import { api } from '../../api/client';
@@ -69,6 +69,19 @@ const DEFAULT_INTAKE_ITEMS = [
             { Txn_Ref: 'TXN-SINQ-1003', Card_Pan: '5061********1190', Settlement_Date: '2026-10-21', Amount_ETB: 320000.50, Terminal_Id: 'ATM-HAWASSA-02', Response_Code: '05', Settlement_Status: 'DISCREPANCY' },
             { Txn_Ref: 'TXN-SINQ-1004', Card_Pan: '5061********7724', Settlement_Date: '2026-10-21', Amount_ETB: 15400.00, Terminal_Id: 'POS-PIASSA-03', Response_Code: '00', Settlement_Status: 'SETTLED' },
             { Txn_Ref: 'TXN-SINQ-1005', Card_Pan: '5061********9025', Settlement_Date: '2026-10-21', Amount_ETB: 89000.00, Terminal_Id: 'ATM-ADAMA-01', Response_Code: '00', Settlement_Status: 'SETTLED' }
+          ]
+        }
+      },
+      {
+        id: 'att-sinqee-02',
+        filename: 'sinqee_reversal_exceptions.csv',
+        size: '42 KB',
+        contentType: 'spreadsheet',
+        parsedData: {
+          sampleHeaders: ['Txn_Ref', 'Orig_Ref', 'Dispute_Type', 'Amount_ETB', 'Terminal_Id', 'Reason'],
+          sampleRows: [
+            { Txn_Ref: 'REV-SINQ-2001', Orig_Ref: 'TXN-SINQ-1003', Dispute_Type: 'ATM_DISPENSE_FAIL', Amount_ETB: 320000.50, Terminal_Id: 'ATM-HAWASSA-02', Reason: 'Customer cash unpresent' },
+            { Txn_Ref: 'REV-SINQ-2002', Orig_Ref: 'TXN-SINQ-1009', Dispute_Type: 'POS_DUPLICATE_CHARGE', Amount_ETB: 12500.00, Terminal_Id: 'POS-BOLE-02', Reason: 'Network timeout replay' }
           ]
         }
       }
@@ -822,6 +835,67 @@ const IntakeViewContent: React.FC<IntakeViewProps> = ({
     setReviewDrawerOpen(true);
   };
 
+  const handleCreateTaskForAttachment = (att: any, msg: any) => {
+    setReviewDrawerOpen(false);
+    const fileName = att?.filename || 'attached_feed.xlsx';
+    const cleanFileName = fileName.replace(/\.[^/.]+$/, '').replace(/[-_]/g, ' ');
+    const formattedFileTitle = cleanFileName.charAt(0).toUpperCase() + cleanFileName.slice(1);
+    const taskTitle = msg?.subject
+      ? `${msg.subject} [${fileName}]`
+      : formattedFileTitle;
+
+    const priority = msg?.parsed_fields?.priority || (msg?.urgency === 'critical' ? 'Critical' : msg?.urgency === 'high' ? 'High' : 'Medium');
+    const description = `Ingested from ${msg?.channel || 'Intake'} (${msg?.sender_address || msg?.senderAddress || ''})\nAttached File: ${fileName} (${att?.size || 'N/A'})\nCategory: ${msg?.category || 'Reconciliation exception'}${actionNotes ? `\nReview Notes: ${actionNotes}` : ''}`;
+
+    if (onNavigateToCreateTask) {
+      onNavigateToCreateTask({
+        title: taskTitle,
+        description,
+        priority,
+        sourceMessageId: msg?.id,
+        attachments: [att],
+        uploadedFileName: fileName,
+        channel: msg?.channel || 'email',
+        senderName: msg?.sender_name,
+        senderAddress: msg?.sender_address || msg?.senderAddress,
+        teamId: msg?.team_id || teamId,
+        taskVisibility: 'TEAM_PUBLIC'
+      });
+    } else {
+      setQuickTaskTitle(taskTitle);
+      setQuickTaskDesc(description);
+      setQuickTaskPriority(priority);
+      setQuickTaskModalOpen(true);
+    }
+  };
+
+  const handleCreateTaskWithoutAttachment = (msg: any) => {
+    setReviewDrawerOpen(false);
+    const taskTitle = msg?.subject || 'Intake Request Case';
+    const priority = msg?.parsed_fields?.priority || (msg?.urgency === 'critical' ? 'Critical' : msg?.urgency === 'high' ? 'High' : 'Medium');
+    const description = `Ingested from ${msg?.channel || 'Intake'} (${msg?.sender_address || msg?.senderAddress || ''})\nCategory: ${msg?.category || 'Reconciliation exception'}${actionNotes ? `\nReview Notes: ${actionNotes}` : ''}`;
+
+    if (onNavigateToCreateTask) {
+      onNavigateToCreateTask({
+        title: taskTitle,
+        description,
+        priority,
+        sourceMessageId: msg?.id,
+        attachments: [],
+        channel: msg?.channel || 'email',
+        senderName: msg?.sender_name,
+        senderAddress: msg?.sender_address || msg?.senderAddress,
+        teamId: msg?.team_id || teamId,
+        taskVisibility: 'TEAM_PUBLIC'
+      });
+    } else {
+      setQuickTaskTitle(taskTitle);
+      setQuickTaskDesc(description);
+      setQuickTaskPriority(priority);
+      setQuickTaskModalOpen(true);
+    }
+  };
+
   const handleSimulateDispatch = async () => {
     if (!simSender.trim() || !simText.trim()) return;
     setSimRunning(true);
@@ -1521,35 +1595,16 @@ const IntakeViewContent: React.FC<IntakeViewProps> = ({
                             )}
                           </td>
 
-                          {/* Review & Create Case Action */}
+                          {/* Review Action */}
                           <td className="py-3.5 px-4 text-right">
-                            <div className="flex items-center justify-end gap-1.5">
-                              <button
-                                onClick={() => handleOpenReview(msg)}
-                                className="px-2.5 py-1 bg-white hover:bg-slate-50 text-slate-700 border border-slate-200 rounded-lg text-xs font-medium font-sans shadow-2xs transition-colors cursor-pointer"
-                              >
-                                Review
-                              </button>
-                              {onNavigateToCreateTask && (
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    onNavigateToCreateTask({
-                                      title: msg.subject || 'Intake Case',
-                                      description: `Ingested from ${msg.channel || 'Intake'} (${msg.sender_address || msg.senderAddress || ''})\nCategory: ${msg.category || 'Reconciliation exception'}`,
-                                      priority: msg.parsed_fields?.priority || (msg.urgency === 'critical' ? 'Critical' : msg.urgency === 'high' ? 'High' : 'Medium'),
-                                      sourceMessageId: msg.id,
-                                      attachments: msg.attachments || []
-                                    });
-                                  }}
-                                  className="px-2.5 py-1 bg-[#F27421]/10 hover:bg-[#F27421] text-[#F27421] hover:text-white rounded-lg text-xs font-semibold font-sans transition-colors cursor-pointer flex items-center gap-1 shadow-2xs"
-                                  title="Create case directly from this intake request with attached files"
-                                >
-                                  <Plus size={12} />
-                                  <span>Create Case</span>
-                                </button>
-                              )}
-                            </div>
+                            <button
+                              onClick={() => handleOpenReview(msg)}
+                              className="px-3 py-1.5 bg-white hover:bg-[#F27421]/10 text-slate-700 hover:text-[#F27421] border border-slate-200 hover:border-[#F27421]/40 rounded-lg text-xs font-semibold font-sans shadow-2xs transition-all cursor-pointer inline-flex items-center gap-1.5"
+                              title="Review request details and create task per attached file"
+                            >
+                              <Eye size={13} />
+                              <span>Review</span>
+                            </button>
                           </td>
                         </tr>
                       );
@@ -2304,19 +2359,68 @@ const IntakeViewContent: React.FC<IntakeViewProps> = ({
                 </div>
               </div>
 
-              {selectedStaged.attachments?.length > 0 && (
-                <div>
-                  <label className="text-xs font-semibold text-slate-700 block mb-1">Attached Files</label>
-                  <div className="space-y-1.5">
-                    {selectedStaged.attachments.map((att: any, i: number) => (
-                      <div key={i} className="flex items-center space-x-2 p-2 bg-slate-50 border border-slate-200 rounded-lg">
-                        <FileText size={14} className="text-[#F27421]" />
-                        <span className="font-mono text-slate-700 truncate">{att.filename || `attachment_${i+1}.xlsx`}</span>
-                      </div>
-                    ))}
-                  </div>
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <label className="text-xs font-bold text-slate-800">
+                    Attached Files ({selectedStaged.attachments?.length || 0})
+                  </label>
+                  {selectedStaged.attachments && selectedStaged.attachments.length > 0 && (
+                    <span className="text-[11px] text-[#F27421] font-medium">
+                      Create task per file
+                    </span>
+                  )}
                 </div>
-              )}
+
+                {selectedStaged.attachments && selectedStaged.attachments.length > 0 ? (
+                  <div className="space-y-2">
+                    {selectedStaged.attachments.map((att: any, i: number) => {
+                      const isExcel = att.filename?.endsWith('.xlsx') || att.filename?.endsWith('.xls');
+                      const isCsv = att.filename?.endsWith('.csv');
+                      return (
+                        <div
+                          key={att.id || i}
+                          className="p-3 bg-slate-50 hover:bg-slate-100/80 border border-slate-200 rounded-xl transition-all flex items-center justify-between gap-3 shadow-2xs"
+                        >
+                          <div className="flex items-center space-x-2.5 min-w-0">
+                            <div className={`w-8 h-8 rounded-lg flex items-center justify-center shrink-0 ${
+                              isExcel || isCsv ? 'bg-emerald-50 text-emerald-600' : 'bg-[#F27421]/10 text-[#F27421]'
+                            }`}>
+                              {isExcel || isCsv ? <FileSpreadsheet size={16} /> : <FileText size={16} />}
+                            </div>
+                            <div className="min-w-0">
+                              <p className="font-semibold text-slate-800 text-xs truncate" title={att.filename}>
+                                {att.filename || `attachment_${i + 1}.xlsx`}
+                              </p>
+                              <div className="flex items-center space-x-2 mt-0.5 text-[11px] text-slate-400">
+                                <span>{att.size || (isExcel ? 'Excel Spreadsheet' : isCsv ? 'CSV Dataset' : 'Document')}</span>
+                                {att.filename && (
+                                  <span className="uppercase font-mono text-[9px] px-1 py-0.2 bg-slate-200/80 text-slate-600 rounded">
+                                    {att.filename.split('.').pop()}
+                                  </span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+
+                          <button
+                            type="button"
+                            onClick={() => handleCreateTaskForAttachment(att, selectedStaged)}
+                            className="px-3 py-1.5 bg-[#F27421] hover:bg-[#e06516] text-white rounded-lg text-xs font-semibold font-sans transition-colors cursor-pointer flex items-center gap-1.5 shadow-2xs shrink-0"
+                            title={`Create task for ${att.filename}`}
+                          >
+                            <Plus size={13} />
+                            <span>Create Task</span>
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div className="p-3 bg-slate-50 border border-dashed border-slate-200 rounded-xl text-center text-xs text-slate-400">
+                    No files attached to this request (text/payload only).
+                  </div>
+                )}
+              </div>
 
               <div>
                 <label className="text-xs font-semibold text-slate-700 block mb-1">Raw Ingested Payload</label>
@@ -2341,28 +2445,35 @@ const IntakeViewContent: React.FC<IntakeViewProps> = ({
             <div className="p-4 border-t border-slate-100 bg-white flex items-center justify-between gap-2">
               <button
                 type="button"
-                onClick={() => {
-                  setReviewDrawerOpen(false);
-                  if (onNavigateToCreateTask) {
-                    onNavigateToCreateTask({
-                      title: selectedStaged.subject,
-                      description: `Ingested from ${selectedStaged.channel || 'Intake'} (${selectedStaged.sender_address || ''})\nCategory: ${selectedStaged.category || 'Reconciliation'}\nNotes: ${actionNotes}`,
-                      priority: selectedStaged.parsed_fields?.priority || (selectedStaged.urgency === 'high' ? 'High' : 'Medium'),
-                      sourceMessageId: selectedStaged.id,
-                      attachments: selectedStaged.attachments || []
-                    });
-                  } else {
-                    setQuickTaskTitle(selectedStaged.subject || '');
-                    setQuickTaskDesc(`Ingested from ${selectedStaged.channel || 'Intake'} (${selectedStaged.sender_address || ''})\nCategory: ${selectedStaged.category || 'Reconciliation'}\nNotes: ${actionNotes}`);
-                    setQuickTaskPriority(selectedStaged.parsed_fields?.priority || 'Medium');
-                    setQuickTaskModalOpen(true);
-                  }
-                }}
-                className="px-4 py-2 bg-[#F27421] hover:bg-[#e06516] text-white text-xs font-semibold rounded-lg shadow-xs transition-colors cursor-pointer flex items-center gap-1.5"
+                onClick={() => setReviewDrawerOpen(false)}
+                className="px-4 py-2 border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-semibold rounded-lg transition-colors cursor-pointer"
               >
-                <Plus size={13} />
-                <span>Create Task</span>
+                Close
               </button>
+
+              {(!selectedStaged.attachments || selectedStaged.attachments.length === 0) ? (
+                <button
+                  type="button"
+                  onClick={() => handleCreateTaskWithoutAttachment(selectedStaged)}
+                  className="px-4 py-2 bg-[#F27421] hover:bg-[#e06516] text-white text-xs font-semibold rounded-lg shadow-xs transition-colors cursor-pointer flex items-center gap-1.5"
+                >
+                  <Plus size={13} />
+                  <span>Create Task from Request</span>
+                </button>
+              ) : selectedStaged.attachments.length === 1 ? (
+                <button
+                  type="button"
+                  onClick={() => handleCreateTaskForAttachment(selectedStaged.attachments[0], selectedStaged)}
+                  className="px-4 py-2 bg-[#F27421] hover:bg-[#e06516] text-white text-xs font-semibold rounded-lg shadow-xs transition-colors cursor-pointer flex items-center gap-1.5"
+                >
+                  <Plus size={13} />
+                  <span>Create Task ({selectedStaged.attachments[0].filename})</span>
+                </button>
+              ) : (
+                <span className="text-[11px] text-slate-500 font-medium">
+                  {selectedStaged.attachments.length} files attached &bull; Click "Create Task" on a file above
+                </span>
+              )}
             </div>
           </aside>
         </div>
