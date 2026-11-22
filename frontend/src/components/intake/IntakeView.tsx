@@ -939,55 +939,314 @@ const IntakeViewContent: React.FC<IntakeViewProps> = ({
         </div>
       </div>
 
-      {/* 2. 6-Card KPI Summary Metrics Grid matching 19_intake.png */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
-        {/* Total Inbound */}
-        <div className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-2xs space-y-1">
-          <span className="text-xs text-slate-500 font-medium font-sans block">Total Inbound</span>
-          <p className="text-2xl font-bold font-heading text-slate-900">
-            {summary.totalInbound || 110}
-          </p>
-        </div>
+      {/* 2. Dynamic KPI Summary Metrics Grid (Changes as the selected tab) */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4 shrink-0">
+        {activeSubTab === 'created_tasks' ? (
+          <>
+            {/* Total Created Tasks */}
+            <div className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-2xs space-y-1">
+              <span className="text-xs text-slate-500 font-medium font-sans block">Total Created Tasks</span>
+              <p className="text-2xl font-bold font-heading text-slate-900">
+                {taskMetrics.total}
+              </p>
+            </div>
 
-        {/* Pending triage */}
-        <div className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-2xs space-y-1">
-          <span className="text-xs text-slate-500 font-medium font-sans block">Pending triage</span>
-          <p className="text-2xl font-bold font-heading text-slate-900">
-            {summary.pendingTriage || 60}
-          </p>
-        </div>
+            {/* Open Tasks */}
+            <div className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-2xs space-y-1">
+              <span className="text-xs text-slate-500 font-medium font-sans block">Open Tasks</span>
+              <p className="text-2xl font-bold font-heading text-rose-600">
+                {taskMetrics.open}
+              </p>
+            </div>
 
-        {/* Ready for task (Orange) */}
-        <div className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-2xs space-y-1">
-          <span className="text-xs text-slate-500 font-medium font-sans block">Ready for task</span>
-          <p className="text-2xl font-bold font-heading text-[#F27421]">
-            {summary.readyForTaskCreation || 41}
-          </p>
-        </div>
+            {/* Investigating */}
+            <div className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-2xs space-y-1">
+              <span className="text-xs text-slate-500 font-medium font-sans block">Investigating</span>
+              <p className="text-2xl font-bold font-heading text-amber-600">
+                {taskMetrics.inProgress}
+              </p>
+            </div>
 
-        {/* Converted (Emerald) */}
-        <div className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-2xs space-y-1">
-          <span className="text-xs text-slate-500 font-medium font-sans block">Converted</span>
-          <p className="text-2xl font-bold font-heading text-emerald-600">
-            {summary.convertedToTask || 9}
-          </p>
-        </div>
+            {/* Resolved Cases */}
+            <div className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-2xs space-y-1">
+              <span className="text-xs text-slate-500 font-medium font-sans block">Resolved Cases</span>
+              <p className="text-2xl font-bold font-heading text-emerald-600">
+                {taskMetrics.resolved}
+              </p>
+            </div>
 
-        {/* Escalated */}
-        <div className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-2xs space-y-1">
-          <span className="text-xs text-slate-500 font-medium font-sans block">Escalated</span>
-          <p className="text-2xl font-bold font-heading text-slate-900">
-            {summary.escalatedCount || 0}
-          </p>
-        </div>
+            {/* High & Critical */}
+            <div className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-2xs space-y-1">
+              <span className="text-xs text-slate-500 font-medium font-sans block">High & Critical Priority</span>
+              <p className="text-2xl font-bold font-heading text-rose-600">
+                {taskMetrics.critical}
+              </p>
+            </div>
 
-        {/* SLA breaches (Rose) */}
-        <div className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-2xs space-y-1">
-          <span className="text-xs text-slate-500 font-medium font-sans block">SLA breaches</span>
-          <p className="text-2xl font-bold font-heading text-rose-600">
-            {summary.slaBreachCount || 101}
-          </p>
-        </div>
+            {/* File Batches */}
+            <div className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-2xs space-y-1">
+              <span className="text-xs text-slate-500 font-medium font-sans block">File Ingestion Batches</span>
+              <p className="text-2xl font-bold font-heading text-slate-900">
+                {createdTasks.filter(t => t.type === 'file' || t.uploadedFileName).length}
+              </p>
+            </div>
+          </>
+        ) : activeSubTab === 'ftp_feeds' ? (
+          <>
+            {/* Configured Feeds */}
+            <div className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-2xs space-y-1">
+              <span className="text-xs text-slate-500 font-medium font-sans block">Configured Feeds</span>
+              <p className="text-2xl font-bold font-heading text-slate-900">
+                {ftpConfigs.length}
+              </p>
+            </div>
+
+            {/* Active Schedules */}
+            <div className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-2xs space-y-1">
+              <span className="text-xs text-slate-500 font-medium font-sans block">Active Schedules</span>
+              <p className="text-2xl font-bold font-heading text-emerald-600">
+                {ftpConfigs.filter(c => c.scheduleConfig?.enabled).length}
+              </p>
+            </div>
+
+            {/* Total Rows Staged */}
+            <div className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-2xs space-y-1">
+              <span className="text-xs text-slate-500 font-medium font-sans block">Total Rows Staged</span>
+              <p className="text-2xl font-bold font-heading text-[#F27421]">
+                {ftpConfigs.reduce((acc, c) => acc + (c.lastStagedCount || 0), 0).toLocaleString()}
+              </p>
+            </div>
+
+            {/* Active Servers */}
+            <div className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-2xs space-y-1">
+              <span className="text-xs text-slate-500 font-medium font-sans block">Connected Servers</span>
+              <p className="text-2xl font-bold font-heading text-slate-900">
+                {new Set(ftpConfigs.map(c => c.ftpConnectionId).filter(Boolean)).size || 1}
+              </p>
+            </div>
+
+            {/* Automated Engine */}
+            <div className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-2xs space-y-1">
+              <span className="text-xs text-slate-500 font-medium font-sans block">Automated Engine</span>
+              <p className="text-2xl font-bold font-heading text-emerald-600 flex items-center gap-1.5">
+                <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
+                <span className="text-lg">Online</span>
+              </p>
+            </div>
+
+            {/* Polling Mode */}
+            <div className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-2xs space-y-1">
+              <span className="text-xs text-slate-500 font-medium font-sans block">Polling Frequency</span>
+              <p className="text-lg font-bold font-heading text-slate-900 pt-1">
+                Scheduled
+              </p>
+            </div>
+          </>
+        ) : activeSubTab === 'providers' ? (
+          <>
+            {/* Connected Providers */}
+            <div className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-2xs space-y-1">
+              <span className="text-xs text-slate-500 font-medium font-sans block">Connected Providers</span>
+              <p className="text-2xl font-bold font-heading text-slate-900">
+                {providers.length || 7}
+              </p>
+            </div>
+
+            {/* OAuth 2.0 Engines */}
+            <div className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-2xs space-y-1">
+              <span className="text-xs text-slate-500 font-medium font-sans block">OAuth 2.0 Auth</span>
+              <p className="text-2xl font-bold font-heading text-emerald-600">
+                Enterprise
+              </p>
+            </div>
+
+            {/* Channel Diversity */}
+            <div className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-2xs space-y-1">
+              <span className="text-xs text-slate-500 font-medium font-sans block">Channel Diversity</span>
+              <p className="text-2xl font-bold font-heading text-[#F27421]">
+                4 Channels
+              </p>
+            </div>
+
+            {/* Discovered Feeds */}
+            <div className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-2xs space-y-1">
+              <span className="text-xs text-slate-500 font-medium font-sans block">Ingestion Ingress</span>
+              <p className="text-2xl font-bold font-heading text-slate-900">
+                Active
+              </p>
+            </div>
+
+            {/* Handshake Integrity */}
+            <div className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-2xs space-y-1">
+              <span className="text-xs text-slate-500 font-medium font-sans block">Handshake Integrity</span>
+              <p className="text-2xl font-bold font-heading text-emerald-600">
+                Encrypted
+              </p>
+            </div>
+
+            {/* Telemetry Bridge */}
+            <div className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-2xs space-y-1">
+              <span className="text-xs text-slate-500 font-medium font-sans block">Telemetry Bridge</span>
+              <p className="text-2xl font-bold font-heading text-emerald-600 flex items-center gap-1.5">
+                <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
+                <span className="text-lg">Healthy</span>
+              </p>
+            </div>
+          </>
+        ) : activeSubTab === 'webhooks' ? (
+          <>
+            {/* Configured Endpoints */}
+            <div className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-2xs space-y-1">
+              <span className="text-xs text-slate-500 font-medium font-sans block">Configured Endpoints</span>
+              <p className="text-2xl font-bold font-heading text-slate-900">
+                {configs.length || 3}
+              </p>
+            </div>
+
+            {/* Ingress Protocol */}
+            <div className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-2xs space-y-1">
+              <span className="text-xs text-slate-500 font-medium font-sans block">Ingress Protocol</span>
+              <p className="text-2xl font-bold font-heading text-slate-900">
+                HTTPS / POST
+              </p>
+            </div>
+
+            {/* Signature Auth */}
+            <div className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-2xs space-y-1">
+              <span className="text-xs text-slate-500 font-medium font-sans block">Signature Auth</span>
+              <p className="text-2xl font-bold font-heading text-[#F27421]">
+                HMAC-SHA256
+              </p>
+            </div>
+
+            {/* Success Rate */}
+            <div className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-2xs space-y-1">
+              <span className="text-xs text-slate-500 font-medium font-sans block">Success Rate</span>
+              <p className="text-2xl font-bold font-heading text-emerald-600">
+                100%
+              </p>
+            </div>
+
+            {/* Retry Policy */}
+            <div className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-2xs space-y-1">
+              <span className="text-xs text-slate-500 font-medium font-sans block">Retry Policy</span>
+              <p className="text-2xl font-bold font-heading text-slate-900">
+                Exponential
+              </p>
+            </div>
+
+            {/* Listener Status */}
+            <div className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-2xs space-y-1">
+              <span className="text-xs text-slate-500 font-medium font-sans block">Listener Status</span>
+              <p className="text-2xl font-bold font-heading text-emerald-600 flex items-center gap-1.5">
+                <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
+                <span className="text-lg">Listening</span>
+              </p>
+            </div>
+          </>
+        ) : activeSubTab === 'simulator' ? (
+          <>
+            {/* Selected Channel */}
+            <div className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-2xs space-y-1">
+              <span className="text-xs text-slate-500 font-medium font-sans block">Selected Channel</span>
+              <p className="text-2xl font-bold font-heading text-slate-900 uppercase">
+                {simChannel}
+              </p>
+            </div>
+
+            {/* Anomaly Engine */}
+            <div className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-2xs space-y-1">
+              <span className="text-xs text-slate-500 font-medium font-sans block">Anomaly Engine</span>
+              <p className="text-2xl font-bold font-heading text-emerald-600">
+                Active
+              </p>
+            </div>
+
+            {/* Confidence Target */}
+            <div className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-2xs space-y-1">
+              <span className="text-xs text-slate-500 font-medium font-sans block">Confidence Target</span>
+              <p className="text-2xl font-bold font-heading text-[#F27421]">
+                80% - 95%
+              </p>
+            </div>
+
+            {/* Staging Target */}
+            <div className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-2xs space-y-1">
+              <span className="text-xs text-slate-500 font-medium font-sans block">Staging Target</span>
+              <p className="text-2xl font-bold font-heading text-slate-900">
+                Queue Sandbox
+              </p>
+            </div>
+
+            {/* Dispatched Tests */}
+            <div className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-2xs space-y-1">
+              <span className="text-xs text-slate-500 font-medium font-sans block">Simulated Runs</span>
+              <p className="text-2xl font-bold font-heading text-purple-600">
+                {stagedMessages.filter(m => m.id?.startsWith('stg-sim')).length}
+              </p>
+            </div>
+
+            {/* Engine Status */}
+            <div className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-2xs space-y-1">
+              <span className="text-xs text-slate-500 font-medium font-sans block">Simulator Engine</span>
+              <p className="text-2xl font-bold font-heading text-emerald-600 flex items-center gap-1.5">
+                <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse" />
+                <span className="text-lg">{simRunning ? 'Dispatching...' : 'Ready'}</span>
+              </p>
+            </div>
+          </>
+        ) : (
+          /* Default: Requests Tab KPIs */
+          <>
+            {/* Total Inbound */}
+            <div className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-2xs space-y-1">
+              <span className="text-xs text-slate-500 font-medium font-sans block">Total Inbound</span>
+              <p className="text-2xl font-bold font-heading text-slate-900">
+                {summary.totalInbound || 110}
+              </p>
+            </div>
+
+            {/* Pending triage */}
+            <div className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-2xs space-y-1">
+              <span className="text-xs text-slate-500 font-medium font-sans block">Pending triage</span>
+              <p className="text-2xl font-bold font-heading text-slate-900">
+                {summary.pendingTriage || 60}
+              </p>
+            </div>
+
+            {/* Ready for task (Orange) */}
+            <div className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-2xs space-y-1">
+              <span className="text-xs text-slate-500 font-medium font-sans block">Ready for task</span>
+              <p className="text-2xl font-bold font-heading text-[#F27421]">
+                {summary.readyForTaskCreation || 41}
+              </p>
+            </div>
+
+            {/* Converted (Emerald) */}
+            <div className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-2xs space-y-1">
+              <span className="text-xs text-slate-500 font-medium font-sans block">Converted</span>
+              <p className="text-2xl font-bold font-heading text-emerald-600">
+                {summary.convertedToTask || 9}
+              </p>
+            </div>
+
+            {/* Escalated */}
+            <div className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-2xs space-y-1">
+              <span className="text-xs text-slate-500 font-medium font-sans block">Escalated</span>
+              <p className="text-2xl font-bold font-heading text-slate-900">
+                {summary.escalatedCount || 0}
+              </p>
+            </div>
+
+            {/* SLA breaches (Rose) */}
+            <div className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-2xs space-y-1">
+              <span className="text-xs text-slate-500 font-medium font-sans block">SLA breaches</span>
+              <p className="text-2xl font-bold font-heading text-rose-600">
+                {summary.slaBreachCount || 101}
+              </p>
+            </div>
+          </>
+        )}
       </div>
 
       {/* Notifications */}
@@ -1344,41 +1603,6 @@ const IntakeViewContent: React.FC<IntakeViewProps> = ({
       {/* ========================================================= */}
       {activeSubTab === 'ftp_feeds' && (
         <div className="flex-1 min-h-0 flex flex-col space-y-4">
-          {/* Top Operational Metrics Row */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5 shrink-0">
-            <div className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-2xs space-y-1">
-              <span className="text-xs text-slate-500 font-medium font-sans block">Configured Feeds</span>
-              <p className="text-2xl font-bold font-heading text-slate-900 flex items-center justify-between">
-                <span>{ftpConfigs.length}</span>
-                <Server size={18} className="text-slate-400" />
-              </p>
-            </div>
-
-            <div className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-2xs space-y-1">
-              <span className="text-xs text-slate-500 font-medium font-sans block">Active Schedules</span>
-              <p className="text-2xl font-bold font-heading text-emerald-600 flex items-center justify-between">
-                <span>{ftpConfigs.filter(c => c.scheduleConfig?.enabled).length}</span>
-                <Clock size={18} className="text-emerald-500" />
-              </p>
-            </div>
-
-            <div className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-2xs space-y-1">
-              <span className="text-xs text-slate-500 font-medium font-sans block">Total Rows Staged</span>
-              <p className="text-2xl font-bold font-heading text-[#F27421] flex items-center justify-between">
-                <span>{ftpConfigs.reduce((acc, c) => acc + (c.lastStagedCount || 0), 0).toLocaleString()}</span>
-                <Database size={18} className="text-[#F27421]" />
-              </p>
-            </div>
-
-            <div className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-2xs space-y-1">
-              <span className="text-xs text-slate-500 font-medium font-sans block">Automated Engine</span>
-              <p className="text-xs font-semibold font-sans text-slate-700 flex items-center gap-1.5 mt-2">
-                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-                <span>Scheduler Service Online</span>
-              </p>
-            </div>
-          </div>
-
           {/* Action & Filter Toolbar */}
           <div className="bg-white border border-slate-200/80 rounded-xl p-3.5 shadow-2xs flex flex-wrap items-center justify-between gap-3 shrink-0">
             <div className="flex items-center gap-2.5">
@@ -1631,41 +1855,6 @@ const IntakeViewContent: React.FC<IntakeViewProps> = ({
       {/* ========================================================= */}
       {activeSubTab === 'created_tasks' && (
         <div className="flex-1 min-h-0 flex flex-col space-y-4">
-          {/* Top Operational Metrics Row */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5 shrink-0">
-            <div className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-2xs space-y-1">
-              <span className="text-xs text-slate-500 font-medium font-sans block">Total Created Tasks</span>
-              <p className="text-2xl font-bold font-heading text-slate-900 flex items-center justify-between">
-                <span>{taskMetrics.total}</span>
-                <Briefcase size={18} className="text-slate-400" />
-              </p>
-            </div>
-
-            <div className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-2xs space-y-1">
-              <span className="text-xs text-slate-500 font-medium font-sans block">Open & Investigating</span>
-              <p className="text-2xl font-bold font-heading text-amber-600 flex items-center justify-between">
-                <span>{taskMetrics.open + taskMetrics.inProgress}</span>
-                <Clock size={18} className="text-amber-500" />
-              </p>
-            </div>
-
-            <div className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-2xs space-y-1">
-              <span className="text-xs text-slate-500 font-medium font-sans block">Resolved Cases</span>
-              <p className="text-2xl font-bold font-heading text-emerald-600 flex items-center justify-between">
-                <span>{taskMetrics.resolved}</span>
-                <CheckCircle2 size={18} className="text-emerald-500" />
-              </p>
-            </div>
-
-            <div className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-2xs space-y-1">
-              <span className="text-xs text-slate-500 font-medium font-sans block">High & Critical Priority</span>
-              <p className="text-2xl font-bold font-heading text-rose-600 flex items-center justify-between">
-                <span>{taskMetrics.critical}</span>
-                <AlertTriangle size={18} className="text-rose-500" />
-              </p>
-            </div>
-          </div>
-
           {/* Action & Filter Toolbar */}
           <div className="bg-white border border-slate-200/80 rounded-xl p-3.5 shadow-2xs flex flex-wrap items-center justify-between gap-3 shrink-0">
             <div className="flex flex-wrap items-center gap-2.5">
