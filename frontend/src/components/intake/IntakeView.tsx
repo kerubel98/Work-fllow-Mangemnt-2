@@ -476,7 +476,7 @@ const IntakeViewContent: React.FC<IntakeViewProps> = ({
   onNavigateToCreateTask,
   issues: propIssues = []
 }) => {
-  const [activeSubTab, setActiveSubTab] = useState<'requests' | 'ftp_feeds' | 'created_tasks' | 'providers' | 'webhooks' | 'simulator'>('requests');
+  const [activeSubTab, setActiveSubTab] = useState<'created_tasks' | 'requests' | 'ftp_feeds' | 'providers' | 'webhooks' | 'simulator'>('created_tasks');
   const [createdTasks, setCreatedTasks] = useState<Issue[]>(propIssues);
 
   useEffect(() => {
@@ -1015,6 +1015,25 @@ const IntakeViewContent: React.FC<IntakeViewProps> = ({
       <div className="flex items-center space-x-1 border-b border-slate-200/80 pb-2 font-sans">
         <button
           type="button"
+          id="tab-intake-created-tasks"
+          onClick={() => setActiveSubTab('created_tasks')}
+          className={`px-3 py-1.5 rounded-lg text-xs font-medium transition flex items-center gap-1.5 cursor-pointer ${
+            activeSubTab === 'created_tasks'
+              ? 'bg-[#0F142A] text-white shadow-xs'
+              : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+          }`}
+        >
+          <Briefcase size={13} className={activeSubTab === 'created_tasks' ? 'text-[#F27421]' : 'text-slate-500'} />
+          <span>Created Tasks</span>
+          <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-sans ${
+            activeSubTab === 'created_tasks' ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-600'
+          }`}>
+            {createdTasks.length}
+          </span>
+        </button>
+
+        <button
+          type="button"
           onClick={() => setActiveSubTab('requests')}
           className={`px-3 py-1.5 rounded-lg text-xs font-medium transition flex items-center gap-1.5 cursor-pointer ${
             activeSubTab === 'requests'
@@ -1050,25 +1069,6 @@ const IntakeViewContent: React.FC<IntakeViewProps> = ({
           {ftpConfigs.some(c => c.scheduleConfig?.enabled) && (
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse ml-0.5" />
           )}
-        </button>
-
-        <button
-          type="button"
-          id="tab-intake-created-tasks"
-          onClick={() => setActiveSubTab('created_tasks')}
-          className={`px-3 py-1.5 rounded-lg text-xs font-medium transition flex items-center gap-1.5 cursor-pointer ${
-            activeSubTab === 'created_tasks'
-              ? 'bg-[#0F142A] text-white shadow-xs'
-              : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
-          }`}
-        >
-          <Briefcase size={13} className={activeSubTab === 'created_tasks' ? 'text-[#F27421]' : 'text-slate-500'} />
-          <span>Created Tasks</span>
-          <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-sans ${
-            activeSubTab === 'created_tasks' ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-600'
-          }`}>
-            {createdTasks.length}
-          </span>
         </button>
 
         <button
