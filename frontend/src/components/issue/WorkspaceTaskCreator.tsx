@@ -1836,7 +1836,12 @@ export const WorkspaceTaskCreator: React.FC<WorkspaceTaskCreatorProps> = ({
     }
 
     if (initialPreFill?.sourceMessageId) {
-      api.linkMessageToIssue(initialPreFill.sourceMessageId, generatedTaskId).catch(err => {
+      api.linkMessageToIssue(
+        initialPreFill.sourceMessageId,
+        generatedTaskId,
+        initialPreFill.attachmentId,
+        initialPreFill.uploadedFileName || createFileName
+      ).catch(err => {
         console.warn('Could not link message to issue:', err);
       });
     }

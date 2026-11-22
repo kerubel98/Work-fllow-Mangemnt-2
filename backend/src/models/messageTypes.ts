@@ -140,7 +140,9 @@ export type StagedMessageStatus =
   | 'APPROVED'
   | 'CONVERTED_TO_TASK'
   | 'ESCALATED'
-  | 'FAILED';
+  | 'FAILED'
+  | 'CLOSED'
+  | 'ARCHIVED';
 
 export interface ProviderConnection {
   id: string;
@@ -181,6 +183,8 @@ export interface StagedMessageAttachment {
   parsedData?: Record<string, any>;
   parsingStatus: 'PENDING' | 'PARSED' | 'FAILED' | 'SKIPPED';
   parsingError?: string;
+  createdIssueId?: string | null;
+  taskCreatedAt?: string | null;
   createdAt: string;
 }
 
@@ -209,6 +213,9 @@ export interface StagedMessage {
   checkerId?: string;
   reviewNotes?: string;
   slaDueAt?: string;
+  closedAt?: string | null;
+  closeReason?: string | null;
+  archivedAt?: string | null;
   createdAt: string;
   updatedAt: string;
   attachments?: StagedMessageAttachment[];

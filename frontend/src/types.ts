@@ -2442,6 +2442,9 @@ export interface MailboxAttachment {
     rowCount?: number;
   };
   rawBase64?: string;
+  createdIssueId?: string | null;
+  taskCreatedAt?: string | null;
+  size?: string;
   createdAt?: string;
 }
 
@@ -2507,6 +2510,8 @@ export interface TaskPreFillFromMessage {
   senderAddress?: string;
   taskVisibility: 'TEAM_PUBLIC';
   attachments?: MailboxAttachment[];
+  attachmentId?: string;
+  uploadedFileName?: string;
 }
 
 

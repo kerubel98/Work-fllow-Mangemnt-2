@@ -1011,6 +1011,96 @@ messagesRouter.post('/staging/:id/escalate', async (req: Request, res: Response)
   }
 });
 
+// POST /api/messages/staging/:id/link-attachment-task - Link a specific attachment to a created task/case
+messagesRouter.post('/staging/:id/link-attachment-task', async (req: Request, res: Response) => {
+  try {
+    const { stagingService } = await import('../services/messaging/stagingService.js');
+    const { attachmentId, filename, issueId } = req.body;
+    if (!issueId) {
+      return res.status(400).json({ error: 'issueId is required.' });
+    }
+    const updated = await stagingService.linkAttachmentTask(req.params.id, attachmentId || filename, issueId);
+    return res.json({ success: true, staged: updated });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/messages/staging/:id/close - Close staged request with optional closure reason
+messagesRouter.post('/staging/:id/close', async (req: Request, res: Response) => {
+  try {
+    const { stagingService } = await import('../services/messaging/stagingService.js');
+    const { actorId, actorName, reason } = req.body;
+    const updated = await stagingService.closeStagedMessage(
+      req.params.id,
+      { id: actorId || 'sys', name: actorName || 'Operator' },
+      reason
+    );
+    return res.json({ success: true, staged: updated });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/messages/staging/:id/archive - Archive staged request out of active triage queue
+messagesRouter.post('/staging/:id/archive', async (req: Request, res: Response) => {
+  try {
+    const { stagingService } = await import('../services/messaging/stagingService.js');
+    const { actorId, actorName } = req.body;
+    const updated = await stagingService.archiveStagedMessage(
+      req.params.id,
+      { id: actorId || 'sys', name: actorName || 'Operator' }
+    );
+    return res.json({ success: true, staged: updated });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/messages/staging/:id/reopen - Reopen a closed or archived request back to NEW
+messagesRouter.post('/staging/:id/reopen', async (req: Request, res: Response) => {
+  try {
+    const { stagingService } = await import('../services/messaging/stagingService.js');
+    const { actorId, actorName } = req.body;
+    const updated = await stagingService.reopenStagedMessage(
+      req.params.id,
+      { id: actorId || 'sys', name: actorName || 'Operator' }
+    );
+    return res.json({ success: true, staged: updated });
+  } catch (err: any) {
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/messages/staging/:id/reply - Reply directly to the customer/partner for this staged request
+messagesRouter.post('/staging/:id/reply', async (req: Request, res: Response) => {
+  try {
+    const { to, subject, textBody, htmlBody, channel, senderAddress } = req.body;
+    if (!to || !textBody) {
+      return res.status(400).json({ error: 'Recipient "to" and "textBody" are required.' });
+    }
+    const { stagingService } = await import('../services/messaging/stagingService.js');
+    const stagedMsg = await stagingService.getStagedMessageById(req.params.id);
+
+    const result = await messageIntakeService.replyToMessage(stagedMsg?.teamId || '', {
+      channel: channel || stagedMsg?.channel || 'email',
+      to,
+      subject: subject || (stagedMsg?.subject ? `Re: ${stagedMsg.subject}` : 'Re: External Request'),
+      textBody,
+      htmlBody,
+      conversationId: stagedMsg?.conversationId || stagedMsg?.threadId,
+      threadId: stagedMsg?.threadId,
+      inReplyToMessageId: stagedMsg?.sourceMessageId || stagedMsg?.id,
+      senderAddress
+    });
+
+    return res.status(201).json({ success: true, ...result });
+  } catch (err: any) {
+    console.error('[messagesRouter] Error sending reply to staged message:', err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 // GET /api/messages/summary or /api/external-requests/summary - Summary dashboard metrics
 messagesRouter.get('/summary', async (req: Request, res: Response) => {
   try {
@@ -1055,12 +1145,23 @@ messagesRouter.get('/mailbox', async (req: Request, res: Response) => {
 messagesRouter.put('/:messageId/link-issue', async (req: Request, res: Response) => {
   try {
     const { messageId } = req.params;
-    const { issueId } = req.body;
+    const { issueId, attachmentId, filename } = req.body;
     if (!issueId) {
       return res.status(400).json({ error: 'issueId is required.' });
     }
 
     const linked = await messageIntakeService.linkMessageToIssue(messageId, issueId);
+
+    // If attachment ID or filename was specified, link per-attachment task tracking in staged_message_attachments
+    if (attachmentId || filename) {
+      try {
+        const { stagingService } = await import('../services/messaging/stagingService.js');
+        await stagingService.linkAttachmentTask(messageId, attachmentId || filename, issueId);
+      } catch (attLinkErr) {
+        console.warn('[messagesRouter] Could not link specific attachment to issue:', attLinkErr);
+      }
+    }
+
     return res.json({ success: linked, messageId, issueId });
   } catch (err: any) {
     console.error('[messagesRouter] Error linking message to issue:', err);

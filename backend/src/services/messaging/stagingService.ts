@@ -172,7 +172,7 @@ export class StagingService {
     let idx = 1;
 
     if (params.teamId) {
-      conditions.push(`team_id = $${idx++}`);
+      conditions.push(`(team_id = $${idx++} OR team_id IS NULL)`);
       values.push(params.teamId);
     }
     if (params.assignedUserId) {
@@ -813,6 +813,103 @@ export class StagingService {
     };
   }
 
+  /**
+   * Links a specific attachment of a staged message to a created Issue/Task,
+   * enabling per-attachment task tracking and converting buttons to "Open Case".
+   */
+  async linkAttachmentTask(
+    stagedMessageId: string,
+    attachmentIdOrFilename: string,
+    issueId: string
+  ): Promise<StagedMessage> {
+    const pool = getPostgresPool();
+
+    // 1. Update the attachment row
+    await pool.query(
+      `UPDATE staged_message_attachments
+       SET created_issue_id = $1, task_created_at = NOW()
+       WHERE staged_message_id = $2 AND (id = $3 OR filename = $3);`,
+      [issueId, stagedMessageId, attachmentIdOrFilename]
+    );
+
+    // 2. Update staged_message status to CONVERTED_TO_TASK
+    await pool.query(
+      `UPDATE staged_messages
+       SET status = 'CONVERTED_TO_TASK',
+           created_issue_id = COALESCE(created_issue_id, $1),
+           linked_issue_id = COALESCE(linked_issue_id, $1),
+           updated_at = NOW()
+       WHERE id = $2;`,
+      [issueId, stagedMessageId]
+    );
+
+    return (await this.getStagedMessageById(stagedMessageId))!;
+  }
+
+  /**
+   * Closes a staged message with an optional closure reason.
+   */
+  async closeStagedMessage(
+    id: string,
+    actor: { id: string; name: string },
+    reason?: string
+  ): Promise<StagedMessage> {
+    const pool = getPostgresPool();
+    await pool.query(
+      `UPDATE staged_messages
+       SET status = 'CLOSED',
+           closed_at = NOW(),
+           close_reason = $1,
+           review_notes = COALESCE(review_notes, '') || '\n[Closed by ' || $2 || ']: ' || $1,
+           updated_at = NOW()
+       WHERE id = $3;`,
+      [reason || 'Closed during triage review', actor.name || actor.id, id]
+    );
+    return (await this.getStagedMessageById(id))!;
+  }
+
+  /**
+   * Archives a staged message out of the active operational triage queue.
+   */
+  async archiveStagedMessage(
+    id: string,
+    actor: { id: string; name: string }
+  ): Promise<StagedMessage> {
+    const pool = getPostgresPool();
+    await pool.query(
+      `UPDATE staged_messages
+       SET status = 'ARCHIVED',
+           archived_at = NOW(),
+           review_notes = COALESCE(review_notes, '') || '\n[Archived by ' || $1 || ']',
+           updated_at = NOW()
+       WHERE id = $2;`,
+      [actor.name || actor.id, id]
+    );
+    return (await this.getStagedMessageById(id))!;
+  }
+
+  /**
+   * Reopens a closed or archived staged message back to NEW triage status.
+   */
+  async reopenStagedMessage(
+    id: string,
+    actor: { id: string; name: string }
+  ): Promise<StagedMessage> {
+    const pool = getPostgresPool();
+    await pool.query(
+      `UPDATE staged_messages
+       SET status = 'NEW',
+           closed_at = NULL,
+           archived_at = NULL,
+           close_reason = NULL,
+           review_notes = COALESCE(review_notes, '') || '\n[Reopened by ' || $1 || ']',
+           updated_at = NOW()
+       WHERE id = $2;`,
+      [actor.name || actor.id, id]
+    );
+    return (await this.getStagedMessageById(id))!;
+  }
+
   private mapStagedRow(r: any, attachments: any[] = []): StagedMessage {
     return {
       id: r.id,
@@ -839,6 +936,9 @@ export class StagingService {
       checkerId: r.checker_id,
       reviewNotes: r.review_notes,
       slaDueAt: r.sla_due_at,
+      closedAt: r.closed_at || null,
+      closeReason: r.close_reason || null,
+      archivedAt: r.archived_at || null,
       createdAt: r.created_at,
       updatedAt: r.updated_at,
       attachments: attachments.map(a => ({
@@ -853,6 +953,8 @@ export class StagingService {
         parsedData: a.parsed_data || {},
         parsingStatus: a.parsing_status,
         parsingError: a.parsing_error,
+        createdIssueId: a.created_issue_id || null,
+        taskCreatedAt: a.task_created_at || null,
         createdAt: a.created_at
       }))
     };

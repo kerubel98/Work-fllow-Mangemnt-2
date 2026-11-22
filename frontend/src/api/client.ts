@@ -1536,6 +1536,36 @@ export const api = {
       body: JSON.stringify(payload)
     }),
 
+  linkStagedAttachmentTask: (id: string, payload: { attachmentId?: string; filename?: string; issueId: string }) =>
+    fetchApi<{ success: boolean; staged: any }>(`/messages/staging/${encodeURIComponent(id)}/link-attachment-task`, {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    }),
+
+  closeStagedMessage: (id: string, payload?: { actorId?: string; actorName?: string; reason?: string }) =>
+    fetchApi<{ success: boolean; staged: any }>(`/messages/staging/${encodeURIComponent(id)}/close`, {
+      method: 'POST',
+      body: JSON.stringify(payload || {})
+    }),
+
+  archiveStagedMessage: (id: string, payload?: { actorId?: string; actorName?: string }) =>
+    fetchApi<{ success: boolean; staged: any }>(`/messages/staging/${encodeURIComponent(id)}/archive`, {
+      method: 'POST',
+      body: JSON.stringify(payload || {})
+    }),
+
+  reopenStagedMessage: (id: string, payload?: { actorId?: string; actorName?: string }) =>
+    fetchApi<{ success: boolean; staged: any }>(`/messages/staging/${encodeURIComponent(id)}/reopen`, {
+      method: 'POST',
+      body: JSON.stringify(payload || {})
+    }),
+
+  replyToStagedMessage: (id: string, payload: { to: string; subject?: string; textBody: string; channel?: string; senderAddress?: string }) =>
+    fetchApi<{ success: boolean; messageId?: string; sentAt?: string }>(`/messages/staging/${encodeURIComponent(id)}/reply`, {
+      method: 'POST',
+      body: JSON.stringify(payload)
+    }),
+
   getExternalRequestSummary: (teamId?: string) => {
     const query = new URLSearchParams();
     if (teamId) query.append('teamId', teamId);
@@ -1634,12 +1664,12 @@ export const api = {
     return fetchApi<MailboxResponse>(`/messages/mailbox${qs ? `?${qs}` : ''}`);
   },
 
-  linkMessageToIssue: (messageId: string, issueId: string) =>
+  linkMessageToIssue: (messageId: string, issueId: string, attachmentId?: string, filename?: string) =>
     fetchApi<{ success: boolean; messageId: string; issueId: string }>(
       `/messages/${encodeURIComponent(messageId)}/link-issue`,
       {
         method: 'PUT',
-        body: JSON.stringify({ issueId })
+        body: JSON.stringify({ issueId, attachmentId, filename })
       }
     ),
 

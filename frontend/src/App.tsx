@@ -1029,7 +1029,12 @@ export default function App() {
     api.createIssue(freshIssue).catch(err => console.warn('Could not create issue in API:', err));
 
     if (mailboxTaskPreFill?.sourceMessageId) {
-      api.linkMessageToIssue(mailboxTaskPreFill.sourceMessageId, newId).catch(err => {
+      api.linkMessageToIssue(
+        mailboxTaskPreFill.sourceMessageId,
+        newId,
+        mailboxTaskPreFill.attachmentId,
+        mailboxTaskPreFill.uploadedFileName
+      ).catch(err => {
         console.warn('Could not link message to issue:', err);
       });
       setMailboxTaskPreFill(null);
@@ -1506,7 +1511,12 @@ export default function App() {
                       }}
                       onTaskCreated={(generatedTaskId) => {
                         if (mailboxTaskPreFill?.sourceMessageId && generatedTaskId) {
-                          api.linkMessageToIssue(mailboxTaskPreFill.sourceMessageId, generatedTaskId).catch(err => {
+                          api.linkMessageToIssue(
+                            mailboxTaskPreFill.sourceMessageId,
+                            generatedTaskId,
+                            mailboxTaskPreFill.attachmentId,
+                            mailboxTaskPreFill.uploadedFileName
+                          ).catch(err => {
                             console.warn('Could not link message to issue:', err);
                           });
                         }
