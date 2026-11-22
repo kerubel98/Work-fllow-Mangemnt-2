@@ -1430,7 +1430,6 @@ const IntakeViewContent: React.FC<IntakeViewProps> = ({
                     <th className="py-3 px-4 font-normal">Request</th>
                     <th className="py-3 px-4 font-normal">Category</th>
                     <th className="py-3 px-4 font-normal">Urgency</th>
-                    <th className="py-3 px-4 font-normal">AI confidence</th>
                     <th className="py-3 px-4 font-normal">Attachments</th>
                     <th className="py-3 px-4 font-normal">Status</th>
                     <th className="py-3 px-4 font-normal text-right"></th>
@@ -1439,7 +1438,7 @@ const IntakeViewContent: React.FC<IntakeViewProps> = ({
                 <tbody className="divide-y divide-slate-100 text-xs">
                   {paginatedMessages.length === 0 ? (
                     <tr>
-                      <td colSpan={7} className="py-12 text-center text-slate-400 font-sans">
+                      <td colSpan={6} className="py-12 text-center text-slate-400 font-sans">
                         <div className="flex flex-col items-center justify-center space-y-2">
                           <Mail size={24} className="text-slate-300" />
                           <p className="font-medium text-slate-600">No requests match the selected criteria</p>
@@ -1450,7 +1449,6 @@ const IntakeViewContent: React.FC<IntakeViewProps> = ({
                   ) : (
                     paginatedMessages.map(msg => {
                       const atts = msg.attachments || [];
-                      const confidencePercent = Math.round((msg.confidence_score ?? 0.5) * 100);
 
                       return (
                         <tr key={msg.id} className="hover:bg-slate-50/70 transition">
@@ -1487,21 +1485,6 @@ const IntakeViewContent: React.FC<IntakeViewProps> = ({
                             }`}>
                               {msg.urgency === 'critical' ? 'Critical' : msg.urgency === 'high' ? 'High' : 'Normal'}
                             </span>
-                          </td>
-
-                          {/* AI Confidence */}
-                          <td className="py-3.5 px-4">
-                            <div className="flex items-center space-x-2">
-                              <div className="w-14 bg-slate-200 h-1.5 rounded-full overflow-hidden">
-                                <div 
-                                  className="bg-[#0F142A] h-full rounded-full" 
-                                  style={{ width: `${confidencePercent}%` }} 
-                                />
-                              </div>
-                              <span className="text-xs text-slate-400 font-sans">
-                                {confidencePercent}%
-                              </span>
-                            </div>
                           </td>
 
                           {/* Attachments */}
