@@ -1477,6 +1477,7 @@ export default function App() {
                     <IntakeView
                       currentTeam={teams.find(t => t.id === deepLinkTeamId) || teams[0] || null}
                       currentUser={effectiveUser || currentUser}
+                      issues={issues}
                       onNavigateToCase={(caseId) => {
                         setDeepLinkIssueId(caseId);
                         setActiveNavigation('workspace');

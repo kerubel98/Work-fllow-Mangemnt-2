@@ -8,9 +8,10 @@ import {
   Inbox, RefreshCw, Search, Mail, FileText, ChevronRight, X,
   CheckCircle2, AlertTriangle, Terminal, Server, Shield, Eye,
   Play, Check, Plus, ExternalLink, ArrowUpRight, Clock, UserCheck,
-  Calendar, Layers, Zap, Database, RotateCcw, Settings2, SlidersHorizontal
+  Calendar, Layers, Zap, Database, RotateCcw, Settings2, SlidersHorizontal,
+  Briefcase, Hash
 } from 'lucide-react';
-import { Team, User, FtpFileStagingConfig } from '../../types';
+import { Team, User, FtpFileStagingConfig, Issue } from '../../types';
 import { api } from '../../api/client';
 import { ErrorBoundary } from '../ErrorBoundary';
 import { DataTablePagination } from '../common/DataTablePagination';
@@ -21,13 +22,15 @@ interface IntakeViewProps {
   currentUser?: User | null;
   onNavigateToCase?: (caseId: string) => void;
   onNavigateToCreateTask?: (prefill?: any) => void;
+  issues?: Issue[];
 }
 
 export const IntakeView: React.FC<IntakeViewProps> = ({ 
   currentTeam = null, 
   currentUser = null,
   onNavigateToCase,
-  onNavigateToCreateTask
+  onNavigateToCreateTask,
+  issues = []
 }) => {
   return (
     <ErrorBoundary fallbackTitle="Intake Cockpit Error">
@@ -36,6 +39,7 @@ export const IntakeView: React.FC<IntakeViewProps> = ({
         currentUser={currentUser} 
         onNavigateToCase={onNavigateToCase} 
         onNavigateToCreateTask={onNavigateToCreateTask}
+        issues={issues}
       />
     </ErrorBoundary>
   );
@@ -469,9 +473,25 @@ const IntakeViewContent: React.FC<IntakeViewProps> = ({
   currentTeam, 
   currentUser,
   onNavigateToCase,
-  onNavigateToCreateTask
+  onNavigateToCreateTask,
+  issues: propIssues = []
 }) => {
-  const [activeSubTab, setActiveSubTab] = useState<'requests' | 'ftp_feeds' | 'providers' | 'webhooks' | 'simulator'>('requests');
+  const [activeSubTab, setActiveSubTab] = useState<'requests' | 'ftp_feeds' | 'created_tasks' | 'providers' | 'webhooks' | 'simulator'>('requests');
+  const [createdTasks, setCreatedTasks] = useState<Issue[]>(propIssues);
+
+  useEffect(() => {
+    if (propIssues && propIssues.length > 0) {
+      setCreatedTasks(propIssues);
+    }
+  }, [propIssues]);
+
+  // Created Tasks Tab State
+  const [taskSearchQuery, setTaskSearchQuery] = useState('');
+  const [taskStatusFilter, setTaskStatusFilter] = useState('ALL');
+  const [taskPriorityFilter, setTaskPriorityFilter] = useState('ALL');
+  const [taskPage, setTaskPage] = useState(1);
+  const [taskPageSize, setTaskPageSize] = useState(7);
+
   const [quickTaskModalOpen, setQuickTaskModalOpen] = useState(false);
   const [quickTaskTitle, setQuickTaskTitle] = useState('');
   const [quickTaskDesc, setQuickTaskDesc] = useState('');
@@ -529,16 +549,138 @@ const IntakeViewContent: React.FC<IntakeViewProps> = ({
 
   const teamId = currentTeam?.id || '';
 
+  // Helpers for Created Tasks View
+  const formatTaskDate = (dateStr?: string) => {
+    if (!dateStr) return 'Recently';
+    try {
+      const d = new Date(dateStr);
+      if (isNaN(d.getTime())) return dateStr;
+      return d.toLocaleDateString(undefined, {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+    } catch {
+      return dateStr;
+    }
+  };
+
+  const getPriorityClass = (priority?: string) => {
+    switch ((priority || '').toUpperCase()) {
+      case 'CRITICAL':
+        return 'bg-rose-50 text-rose-700 border-rose-200 font-bold';
+      case 'HIGH':
+        return 'bg-amber-50 text-amber-700 border-amber-200';
+      case 'MEDIUM':
+        return 'bg-blue-50 text-blue-700 border-blue-200';
+      default:
+        return 'bg-slate-100 text-slate-600 border-slate-200';
+    }
+  };
+
+  const getStatusClass = (status?: string) => {
+    switch ((status || '').toUpperCase()) {
+      case 'OPEN':
+      case 'READY':
+        return 'bg-rose-50 text-rose-700 border-rose-200';
+      case 'INVESTIGATING':
+      case 'IN_PROGRESS':
+      case 'TESTING':
+        return 'bg-amber-50 text-amber-700 border-amber-200';
+      case 'RESOLVED':
+      case 'CLOSED':
+        return 'bg-emerald-50 text-emerald-700 border-emerald-200';
+      case 'FLAGGED':
+      case 'ESCALATED':
+        return 'bg-purple-50 text-purple-700 border-purple-200';
+      default:
+        return 'bg-slate-100 text-slate-700 border-slate-200';
+    }
+  };
+
+  const getStatusDot = (status?: string) => {
+    switch ((status || '').toUpperCase()) {
+      case 'OPEN':
+      case 'READY':
+        return 'bg-rose-500';
+      case 'INVESTIGATING':
+      case 'IN_PROGRESS':
+      case 'TESTING':
+        return 'bg-amber-500';
+      case 'RESOLVED':
+      case 'CLOSED':
+        return 'bg-emerald-500';
+      case 'FLAGGED':
+      case 'ESCALATED':
+        return 'bg-purple-500';
+      default:
+        return 'bg-slate-400';
+    }
+  };
+
+  const taskMetrics = useMemo(() => {
+    const total = createdTasks.length;
+    const open = createdTasks.filter(t => ['OPEN', 'READY', 'Open'].includes(t.status as any)).length;
+    const inProgress = createdTasks.filter(t => ['INVESTIGATING', 'IN_PROGRESS', 'TESTING', 'Investigating'].includes(t.status as any)).length;
+    const resolved = createdTasks.filter(t => ['RESOLVED', 'CLOSED', 'Resolved', 'Closed'].includes(t.status as any)).length;
+    const critical = createdTasks.filter(t => ['Critical', 'CRITICAL', 'High', 'HIGH'].includes(t.priority as any)).length;
+    return { total, open, inProgress, resolved, critical };
+  }, [createdTasks]);
+
+  const filteredTasks = useMemo(() => {
+    return createdTasks.filter(task => {
+      if (taskStatusFilter !== 'ALL') {
+        const normStatus = (task.status || '').toUpperCase();
+        const normFilter = taskStatusFilter.toUpperCase();
+        if (normFilter === 'OPEN' && !['OPEN', 'READY'].includes(normStatus)) return false;
+        if (normFilter === 'INVESTIGATING' && !['INVESTIGATING', 'IN_PROGRESS', 'TESTING'].includes(normStatus)) return false;
+        if (normFilter === 'RESOLVED' && !['RESOLVED', 'CLOSED'].includes(normStatus)) return false;
+        if (normFilter === 'FLAGGED' && !['FLAGGED', 'ESCALATED', 'DISCREPANCY'].includes(normStatus)) return false;
+      }
+
+      if (taskPriorityFilter !== 'ALL') {
+        if ((task.priority || '').toUpperCase() !== taskPriorityFilter.toUpperCase()) return false;
+      }
+
+      if (taskSearchQuery.trim()) {
+        const q = taskSearchQuery.toLowerCase();
+        const idMatch = (task.id || '').toLowerCase().includes(q);
+        const titleMatch = (task.title || '').toLowerCase().includes(q);
+        const descMatch = (task.description || '').toLowerCase().includes(q);
+        const creatorMatch = (task.creatorName || '').toLowerCase().includes(q);
+        const tagMatch = (task.linkedHashtag || '').toLowerCase().includes(q);
+        const fileMatch = (task.uploadedFileName || '').toLowerCase().includes(q);
+        if (!idMatch && !titleMatch && !descMatch && !creatorMatch && !tagMatch && !fileMatch) {
+          return false;
+        }
+      }
+
+      return true;
+    }).sort((a, b) => {
+      const dateA = new Date(a.createdAt || 0).getTime();
+      const dateB = new Date(b.createdAt || 0).getTime();
+      return dateB - dateA;
+    });
+  }, [createdTasks, taskSearchQuery, taskStatusFilter, taskPriorityFilter]);
+
+  const paginatedTasks = useMemo(() => {
+    const start = (taskPage - 1) * taskPageSize;
+    return filteredTasks.slice(start, start + taskPageSize);
+  }, [filteredTasks, taskPage, taskPageSize]);
+
   const loadAllData = async () => {
     setIsLoading(true);
     setErrorMsg(null);
     try {
-      const [summ, staged, provs, cfgs, loadedFtp] = await Promise.all([
+      const [summ, staged, provs, cfgs, loadedFtp, loadedIssues] = await Promise.all([
         teamId ? api.getExternalRequestSummary(teamId).catch(() => null) : Promise.resolve(null),
         teamId ? api.getStagedMessages({ teamId, limit: 100 }).catch(() => []) : Promise.resolve([]),
         teamId ? api.getMessageProviders({ teamId }).catch(() => []) : Promise.resolve([]),
         teamId ? api.getTeamChannelConfigs(teamId).catch(() => []) : Promise.resolve([]),
-        api.getFtpStagingConfigs().catch(() => [])
+        api.getFtpStagingConfigs().catch(() => []),
+        api.getIssues().catch(() => [])
       ]);
       if (summ) setSummary(summ);
       if (Array.isArray(staged) && staged.length > 0) {
@@ -556,6 +698,9 @@ const IntakeViewContent: React.FC<IntakeViewProps> = ({
           return true;
         });
         setFtpConfigs(uniqueFtp);
+      }
+      if (Array.isArray(loadedIssues) && loadedIssues.length > 0) {
+        setCreatedTasks(loadedIssues);
       }
     } catch (err: any) {
       console.warn('Could not load dynamic intake data, using established cache:', err);
@@ -905,6 +1050,25 @@ const IntakeViewContent: React.FC<IntakeViewProps> = ({
           {ftpConfigs.some(c => c.scheduleConfig?.enabled) && (
             <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse ml-0.5" />
           )}
+        </button>
+
+        <button
+          type="button"
+          id="tab-intake-created-tasks"
+          onClick={() => setActiveSubTab('created_tasks')}
+          className={`px-3 py-1.5 rounded-lg text-xs font-medium transition flex items-center gap-1.5 cursor-pointer ${
+            activeSubTab === 'created_tasks'
+              ? 'bg-[#0F142A] text-white shadow-xs'
+              : 'text-slate-600 hover:text-slate-900 hover:bg-slate-100'
+          }`}
+        >
+          <Briefcase size={13} className={activeSubTab === 'created_tasks' ? 'text-[#F27421]' : 'text-slate-500'} />
+          <span>Created Tasks</span>
+          <span className={`px-1.5 py-0.2 rounded-full text-[10px] font-sans ${
+            activeSubTab === 'created_tasks' ? 'bg-white/20 text-white' : 'bg-slate-100 text-slate-600'
+          }`}>
+            {createdTasks.length}
+          </span>
         </button>
 
         <button
@@ -1463,6 +1627,282 @@ const IntakeViewContent: React.FC<IntakeViewProps> = ({
       )}
 
       {/* ========================================================= */}
+      {/* TAB: CREATED TASKS & CASES                                */}
+      {/* ========================================================= */}
+      {activeSubTab === 'created_tasks' && (
+        <div className="flex-1 min-h-0 flex flex-col space-y-4">
+          {/* Top Operational Metrics Row */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5 shrink-0">
+            <div className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-2xs space-y-1">
+              <span className="text-xs text-slate-500 font-medium font-sans block">Total Created Tasks</span>
+              <p className="text-2xl font-bold font-heading text-slate-900 flex items-center justify-between">
+                <span>{taskMetrics.total}</span>
+                <Briefcase size={18} className="text-slate-400" />
+              </p>
+            </div>
+
+            <div className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-2xs space-y-1">
+              <span className="text-xs text-slate-500 font-medium font-sans block">Open & Investigating</span>
+              <p className="text-2xl font-bold font-heading text-amber-600 flex items-center justify-between">
+                <span>{taskMetrics.open + taskMetrics.inProgress}</span>
+                <Clock size={18} className="text-amber-500" />
+              </p>
+            </div>
+
+            <div className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-2xs space-y-1">
+              <span className="text-xs text-slate-500 font-medium font-sans block">Resolved Cases</span>
+              <p className="text-2xl font-bold font-heading text-emerald-600 flex items-center justify-between">
+                <span>{taskMetrics.resolved}</span>
+                <CheckCircle2 size={18} className="text-emerald-500" />
+              </p>
+            </div>
+
+            <div className="bg-white border border-slate-200/80 rounded-xl p-4 shadow-2xs space-y-1">
+              <span className="text-xs text-slate-500 font-medium font-sans block">High & Critical Priority</span>
+              <p className="text-2xl font-bold font-heading text-rose-600 flex items-center justify-between">
+                <span>{taskMetrics.critical}</span>
+                <AlertTriangle size={18} className="text-rose-500" />
+              </p>
+            </div>
+          </div>
+
+          {/* Action & Filter Toolbar */}
+          <div className="bg-white border border-slate-200/80 rounded-xl p-3.5 shadow-2xs flex flex-wrap items-center justify-between gap-3 shrink-0">
+            <div className="flex flex-wrap items-center gap-2.5">
+              <div className="relative">
+                <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none" />
+                <input
+                  type="text"
+                  placeholder="Search by case ID, title, creator, or #hashtag..."
+                  value={taskSearchQuery}
+                  onChange={e => {
+                    setTaskSearchQuery(e.target.value);
+                    setTaskPage(1);
+                  }}
+                  className="w-72 sm:w-80 bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5 pl-8 text-xs text-slate-700 placeholder-slate-400 font-sans focus:outline-none focus:border-[#F27421] focus:bg-white"
+                />
+              </div>
+
+              <select
+                value={taskStatusFilter}
+                onChange={e => {
+                  setTaskStatusFilter(e.target.value);
+                  setTaskPage(1);
+                }}
+                className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5 text-xs font-sans text-slate-700 shadow-2xs focus:outline-none focus:border-[#F27421] cursor-pointer"
+              >
+                <option value="ALL">All Statuses</option>
+                <option value="OPEN">Open</option>
+                <option value="INVESTIGATING">Investigating</option>
+                <option value="RESOLVED">Resolved</option>
+                <option value="FLAGGED">Flagged</option>
+              </select>
+
+              <select
+                value={taskPriorityFilter}
+                onChange={e => {
+                  setTaskPriorityFilter(e.target.value);
+                  setTaskPage(1);
+                }}
+                className="bg-slate-50 border border-slate-200 rounded-lg px-3 py-1.5 text-xs font-sans text-slate-700 shadow-2xs focus:outline-none focus:border-[#F27421] cursor-pointer"
+              >
+                <option value="ALL">All Priorities</option>
+                <option value="Critical">Critical</option>
+                <option value="High">High</option>
+                <option value="Medium">Medium</option>
+                <option value="Low">Low</option>
+              </select>
+
+              <span className="text-xs text-slate-500 font-sans">
+                Showing {filteredTasks.length} of {createdTasks.length} tasks
+              </span>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={loadAllData}
+                disabled={isLoading}
+                className="px-3 py-1.5 bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-700 rounded-lg text-xs font-medium font-sans transition cursor-pointer flex items-center gap-1.5"
+              >
+                <RefreshCw size={12} className={isLoading ? 'animate-spin text-[#F27421]' : 'text-slate-500'} />
+                <span>Refresh</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  if (onNavigateToCreateTask) {
+                    onNavigateToCreateTask();
+                  } else {
+                    setQuickTaskTitle('');
+                    setQuickTaskDesc('');
+                    setQuickTaskPriority('Medium');
+                    setQuickTaskModalOpen(true);
+                  }
+                }}
+                className="px-3 py-1.5 bg-[#F27421] hover:bg-[#e06516] text-white rounded-lg text-xs font-semibold font-sans shadow-2xs transition-colors cursor-pointer flex items-center gap-1.5"
+              >
+                <Plus size={13} />
+                <span>New Task</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Tasks Table */}
+          <div className="bg-white border border-slate-200/80 rounded-xl overflow-hidden shadow-2xs flex-1 min-h-0 flex flex-col">
+            <div className="overflow-x-auto flex-1 min-h-0">
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="bg-slate-50/80 border-b border-slate-200/80 text-[11px] font-semibold text-slate-500 tracking-wider uppercase font-sans">
+                    <th className="py-3 px-4">Task / Case ID</th>
+                    <th className="py-3 px-4">Title & Details</th>
+                    <th className="py-3 px-4">Source Dataset</th>
+                    <th className="py-3 px-4">Records</th>
+                    <th className="py-3 px-4">Priority</th>
+                    <th className="py-3 px-4">Status</th>
+                    <th className="py-3 px-4">Created By</th>
+                    <th className="py-3 px-4 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 text-xs font-sans">
+                  {paginatedTasks.length === 0 ? (
+                    <tr>
+                      <td colSpan={8} className="py-12 text-center text-slate-400">
+                        <Briefcase size={32} className="mx-auto mb-2 text-slate-300" />
+                        <p className="font-medium text-slate-600">No created tasks found</p>
+                        <p className="text-[11px] text-slate-400 mt-1">Tasks created from intake requests or files will appear here.</p>
+                      </td>
+                    </tr>
+                  ) : (
+                    paginatedTasks.map((task) => (
+                      <tr key={task.id} className="hover:bg-slate-50/60 transition-colors">
+                        {/* Task / Case ID */}
+                        <td className="py-3.5 px-4 font-mono font-bold text-slate-900 whitespace-nowrap">
+                          <button
+                            type="button"
+                            onClick={() => onNavigateToCase?.(task.id)}
+                            className="text-slate-900 hover:text-[#F27421] transition-colors cursor-pointer text-left flex items-center gap-1.5 group"
+                            title="Open case in workspace"
+                          >
+                            <span>{task.id}</span>
+                            <ExternalLink size={11} className="text-slate-400 group-hover:text-[#F27421] opacity-0 group-hover:opacity-100 transition-opacity" />
+                          </button>
+                          <div className="text-[10px] font-sans font-normal text-slate-400 mt-0.5">
+                            {task.type === 'file' ? 'File Batch' : 'Single Ingestion'}
+                          </div>
+                        </td>
+
+                        {/* Title & Details */}
+                        <td className="py-3.5 px-4 max-w-xs">
+                          <div
+                            onClick={() => onNavigateToCase?.(task.id)}
+                            className="font-semibold text-slate-800 hover:text-[#F27421] transition-colors cursor-pointer truncate"
+                            title={task.title}
+                          >
+                            {task.title}
+                          </div>
+                          {task.description && (
+                            <div className="text-[11px] text-slate-400 truncate mt-0.5">
+                              {task.description}
+                            </div>
+                          )}
+                          {task.linkedHashtag && (
+                            <div className="mt-1">
+                              <span className="inline-flex items-center gap-0.5 text-[10px] font-mono font-medium px-1.5 py-0.2 rounded bg-slate-100 text-slate-600 border border-slate-200">
+                                <Hash size={10} className="text-slate-400" />
+                                <span>{task.linkedHashtag.replace(/^#/, '')}</span>
+                              </span>
+                            </div>
+                          )}
+                        </td>
+
+                        {/* Source Dataset */}
+                        <td className="py-3.5 px-4 whitespace-nowrap">
+                          {task.uploadedFileName ? (
+                            <div className="flex items-center gap-1.5 text-slate-700">
+                              <FileText size={13} className="text-blue-500 shrink-0" />
+                              <span className="font-mono text-[11px] truncate max-w-[140px]" title={task.uploadedFileName}>
+                                {task.uploadedFileName}
+                              </span>
+                            </div>
+                          ) : (
+                            <span className="text-slate-400 text-xs">Direct Ingestion</span>
+                          )}
+                        </td>
+
+                        {/* Records */}
+                        <td className="py-3.5 px-4 font-mono text-slate-700 whitespace-nowrap">
+                          {(task.transactionCount ?? task.firstLevelMappedData?.length ?? 0).toLocaleString()}
+                        </td>
+
+                        {/* Priority */}
+                        <td className="py-3.5 px-4 whitespace-nowrap">
+                          <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-medium border ${getPriorityClass(task.priority)}`}>
+                            {task.priority || 'Medium'}
+                          </span>
+                        </td>
+
+                        {/* Status */}
+                        <td className="py-3.5 px-4 whitespace-nowrap">
+                          <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium border ${getStatusClass(task.status)}`}>
+                            <span className={`w-1.5 h-1.5 rounded-full ${getStatusDot(task.status)}`} />
+                            <span>{task.status || 'Open'}</span>
+                          </span>
+                        </td>
+
+                        {/* Created By */}
+                        <td className="py-3.5 px-4 whitespace-nowrap">
+                          <div className="text-slate-700 font-medium text-xs">
+                            @{task.creatorName || 'admin'}
+                          </div>
+                          <div className="text-[10px] text-slate-400 mt-0.5">
+                            {formatTaskDate(task.createdAt)}
+                          </div>
+                        </td>
+
+                        {/* Actions */}
+                        <td className="py-3.5 px-4 text-right whitespace-nowrap">
+                          <button
+                            type="button"
+                            id={`btn-open-case-${task.id}`}
+                            onClick={() => onNavigateToCase?.(task.id)}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-[#F27421] hover:bg-[#e06516] text-white rounded-lg text-xs font-semibold font-sans shadow-2xs transition-colors cursor-pointer"
+                            title={`Open case ${task.id} in Cases workspace`}
+                          >
+                            <span>Open case</span>
+                            <ArrowUpRight size={13} />
+                          </button>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Pagination Footer */}
+            <DataTablePagination
+              currentPage={taskPage}
+              totalItems={filteredTasks.length}
+              pageSize={taskPageSize}
+              pageSizeOptions={[5, 7, 10, 15, 20, 25, 50]}
+              onPageChange={setTaskPage}
+              onPageSizeChange={(newSize) => {
+                setTaskPageSize(newSize);
+                setTaskPage(1);
+              }}
+              statusBadge={
+                <span className="text-[11px] font-mono text-slate-500 bg-slate-100 px-2 py-0.5 rounded-full border border-slate-200/60">
+                  {filteredTasks.length} filtered · {createdTasks.length} total
+                </span>
+              }
+            />
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================= */}
       {/* 5. TAB 2: PROVIDERS                                       */}
       {/* ========================================================= */}
       {activeSubTab === 'providers' && (
@@ -1792,6 +2232,7 @@ const IntakeViewContent: React.FC<IntakeViewProps> = ({
                     status: 'Open'
                   });
                   setSuccessMsg(`Task ${newIssue.id || 'created'} successfully!`);
+                  setCreatedTasks(prev => [newIssue, ...prev]);
                   setQuickTaskModalOpen(false);
                   if (onNavigateToCase && newIssue.id) {
                     onNavigateToCase(newIssue.id);
