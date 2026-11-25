@@ -5,8 +5,8 @@ Central ledger of all audit scopes, findings, remediation statuses, and sign-off
 ---
 
 ## Overall Audit Status
-- **Active Audits**: 12 (`AUD-INVESTIGATION-CORE-2026-11-24`, `AUD-INTAKE-STAGING-2026-11-24`, `AUD-MAPPING-INGESTION-2026-11-24`, `AUD-DB-GOVERNANCE-APPROVALS-2026-11-24`, `AUD-AUTH-OAUTH-2026-11-24`, `AUD-HASHTAG-SCHEDULER-2026-11-24`, `AUD-SANDBOX-ESCALATIONS-2026-11-24`, `AUD-CASES-PAGE-2026-11-25`, `AUD-TEAM-COLLAB-2026-11-25`, `AUD-WORKFLOW-STUDIO-2026-11-25`, `AUD-AUTOMATION-E2E-2026-11-25`, `AUD-GOV-MISALIGN-2026-11-25`)
-- **Open Findings**: 55 (**13 CRITICAL**, **20 HIGH**, **18 MEDIUM**, **4 LOW**)
+- **Active Audits**: 13 (`AUD-INVESTIGATION-CORE-2026-11-24`, `AUD-INTAKE-STAGING-2026-11-24`, `AUD-MAPPING-INGESTION-2026-11-24`, `AUD-DB-GOVERNANCE-APPROVALS-2026-11-24`, `AUD-AUTH-OAUTH-2026-11-24`, `AUD-HASHTAG-SCHEDULER-2026-11-24`, `AUD-SANDBOX-ESCALATIONS-2026-11-24`, `AUD-CASES-PAGE-2026-11-25`, `AUD-TEAM-COLLAB-2026-11-25`, `AUD-WORKFLOW-STUDIO-2026-11-25`, `AUD-AUTOMATION-E2E-2026-11-25`, `AUD-GOV-MISALIGN-2026-11-25`, `AUD-EXTDB-AI-METRICS-2026-11-25`)
+- **Open Findings**: 59 (**14 CRITICAL**, **21 HIGH**, **20 MEDIUM**, **4 LOW**)
 - **Resolved Findings**: 0
 - **Regressions**: 0
 
@@ -15,6 +15,7 @@ Central ledger of all audit scopes, findings, remediation statuses, and sign-off
 ## Audit History
 | Date | Audit ID | Scope | Commit | Findings | Status | Report |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| 2026-11-25 | `AUD-EXTDB-AI-METRICS-2026-11-25` | External DB Connectivity, Live Query Engine, AI & Analytics | `d7bf228` | 1C / 1H / 2M / 0L | `OPEN` | [`AUD-EXTDB-AI-METRICS-2026-11-25.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/agent-handoffs/audit/reports/AUD-EXTDB-AI-METRICS-2026-11-25.md) |
 | 2026-11-25 | `AUD-GOV-MISALIGN-2026-11-25` | Governance Misalignments & Architectural Mismatches | `d7bf228` | 1C / 2H / 2M / 0L | `OPEN` | [`AUD-GOV-MISALIGN-2026-11-25.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/agent-handoffs/audit/reports/AUD-GOV-MISALIGN-2026-11-25.md) |
 | 2026-11-25 | `AUD-AUTOMATION-E2E-2026-11-25` | End-to-End Automation Process & Modernization | `d7bf228` | 1C / 2H / 1M / 0L | `OPEN` | [`AUD-AUTOMATION-E2E-2026-11-25.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/agent-handoffs/audit/reports/AUD-AUTOMATION-E2E-2026-11-25.md) |
 | 2026-11-25 | `AUD-WORKFLOW-STUDIO-2026-11-25` | Workflow Studio, Flowchart DAG & Pipeline Execution | `d7bf228` | 2C / 3H / 1M / 0L | `OPEN` | [`AUD-WORKFLOW-STUDIO-2026-11-25.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/agent-handoffs/audit/reports/AUD-WORKFLOW-STUDIO-2026-11-25.md) |
@@ -89,6 +90,10 @@ Central ledger of all audit scopes, findings, remediation statuses, and sign-off
 | `AUD-GOV-003` | `HIGH` | `OPEN` | `AUD-GOV-MISALIGN-2026-11-25` | `WorkspaceSettings.tsx:115,137,150`; `globalMappingService.ts:108-1646` | Business config (`operational_workspace_config_v1`) and mapping schemas still persist in `localStorage` despite Rule 23 |
 | `AUD-GOV-004` | `MEDIUM` | `OPEN` | `AUD-GOV-MISALIGN-2026-11-25` | `WorkspaceSettings.tsx:204`; `LoginScreen.tsx:131` | Brittle `h-[calc(100vh-2.25rem)]` and `min-h-[calc(100vh-3rem)]` height subtractions violate Rule 16 flexbox containment |
 | `AUD-GOV-005` | `MEDIUM` | `OPEN` | `AUD-GOV-MISALIGN-2026-11-25` | `AGENTS.md`; `.agents/skills/audit/SKILL.md:15,24-37` | Governance docs embed unrelated FinSync v2 QR/geofence/cashier invariants and external `FinSync_Project` paths |
+| `AUD-EXT-001` | `CRITICAL` | `OPEN` | `AUD-EXTDB-AI-METRICS-2026-11-25` | `backend/src/services/dbConnectionManager.ts:456-471` | `mirror_*` fast-path allows `UNION` / stacked-query exfiltration of internal `operational_workflow_db` tables |
+| `AUD-EXT-002` | `HIGH` | `OPEN` | `AUD-EXTDB-AI-METRICS-2026-11-25` | `backend/src/routes/ai.ts:48-66` | Unredacted financial `transactionData` sent to external Google Gemini API |
+| `AUD-EXT-003` | `MEDIUM` | `OPEN` | `AUD-EXTDB-AI-METRICS-2026-11-25` | `backend/src/routes/metrics.ts:22-29` | `GET /api/metrics/team/:teamId` exposes team KPIs without checking team membership |
+| `AUD-EXT-004` | `MEDIUM` | `OPEN` | `AUD-EXTDB-AI-METRICS-2026-11-25` | `backend/src/services/dbConnectionManager.ts:376-417` | External DB pool caches lack periodic TTL sweep, omit credential hash in key, and omit TLS/SSL options |
 
 ---
 
