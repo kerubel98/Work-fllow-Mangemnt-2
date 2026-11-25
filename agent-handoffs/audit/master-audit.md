@@ -5,8 +5,8 @@ Central ledger of all audit scopes, findings, remediation statuses, and sign-off
 ---
 
 ## Overall Audit Status
-- **Active Audits**: 8 (`AUD-INVESTIGATION-CORE-2026-11-24`, `AUD-INTAKE-STAGING-2026-11-24`, `AUD-MAPPING-INGESTION-2026-11-24`, `AUD-DB-GOVERNANCE-APPROVALS-2026-11-24`, `AUD-AUTH-OAUTH-2026-11-24`, `AUD-HASHTAG-SCHEDULER-2026-11-24`, `AUD-SANDBOX-ESCALATIONS-2026-11-24`, `AUD-CASES-PAGE-2026-11-25`)
-- **Open Findings**: 33 (**7 CRITICAL**, **10 HIGH**, **12 MEDIUM**, **4 LOW**)
+- **Active Audits**: 11 (`AUD-INVESTIGATION-CORE-2026-11-24`, `AUD-INTAKE-STAGING-2026-11-24`, `AUD-MAPPING-INGESTION-2026-11-24`, `AUD-DB-GOVERNANCE-APPROVALS-2026-11-24`, `AUD-AUTH-OAUTH-2026-11-24`, `AUD-HASHTAG-SCHEDULER-2026-11-24`, `AUD-SANDBOX-ESCALATIONS-2026-11-24`, `AUD-CASES-PAGE-2026-11-25`, `AUD-TEAM-COLLAB-2026-11-25`, `AUD-WORKFLOW-STUDIO-2026-11-25`, `AUD-AUTOMATION-E2E-2026-11-25`)
+- **Open Findings**: 50 (**12 CRITICAL**, **18 HIGH**, **16 MEDIUM**, **4 LOW**)
 - **Resolved Findings**: 0
 - **Regressions**: 0
 
@@ -15,6 +15,9 @@ Central ledger of all audit scopes, findings, remediation statuses, and sign-off
 ## Audit History
 | Date | Audit ID | Scope | Commit | Findings | Status | Report |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| 2026-11-25 | `AUD-AUTOMATION-E2E-2026-11-25` | End-to-End Automation Process & Modernization | `d7bf228` | 1C / 2H / 1M / 0L | `OPEN` | [`AUD-AUTOMATION-E2E-2026-11-25.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/agent-handoffs/audit/reports/AUD-AUTOMATION-E2E-2026-11-25.md) |
+| 2026-11-25 | `AUD-WORKFLOW-STUDIO-2026-11-25` | Workflow Studio, Flowchart DAG & Pipeline Execution | `d7bf228` | 2C / 3H / 1M / 0L | `OPEN` | [`AUD-WORKFLOW-STUDIO-2026-11-25.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/agent-handoffs/audit/reports/AUD-WORKFLOW-STUDIO-2026-11-25.md) |
+| 2026-11-25 | `AUD-TEAM-COLLAB-2026-11-25` | Team Workspace, Multi-Tenant Boundary Isolation & Asset Sharing | `d7bf228` | 2C / 3H / 2M / 0L | `OPEN` | [`AUD-TEAM-COLLAB-2026-11-25.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/agent-handoffs/audit/reports/AUD-TEAM-COLLAB-2026-11-25.md) |
 | 2026-11-25 | `AUD-CASES-PAGE-2026-11-25` | Cases Page & Investigation Workspace UI/Navigation | `d7bf228` | 0C / 1H / 2M / 1L | `OPEN` | [`AUD-CASES-PAGE-2026-11-25.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/agent-handoffs/audit/reports/AUD-CASES-PAGE-2026-11-25.md) |
 | 2026-11-24 | `AUD-SANDBOX-ESCALATIONS-2026-11-24` | Query Sandbox & Bilateral Escalations | `d7bf228` | 0C / 1H / 1M / 0L | `OPEN` | [`AUD-SANDBOX-ESCALATIONS-2026-11-24.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/agent-handoffs/audit/reports/AUD-SANDBOX-ESCALATIONS-2026-11-24.md) |
 | 2026-11-24 | `AUD-HASHTAG-SCHEDULER-2026-11-24` | Universal Hashtag Engine & Schedulers | `d7bf228` | 1C / 1H / 1M / 0L | `OPEN` | [`AUD-HASHTAG-SCHEDULER-2026-11-24.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/agent-handoffs/audit/reports/AUD-HASHTAG-SCHEDULER-2026-11-24.md) |
@@ -63,6 +66,23 @@ Central ledger of all audit scopes, findings, remediation statuses, and sign-off
 | `AUD-CAS-002` | `MEDIUM` | `OPEN` | `AUD-CASES-PAGE-2026-11-25` | `frontend/src/components/investigation/ValidationOrchestratorWorkspace.tsx:3656-3686`; `CasesWorkspaceView.tsx:430-443` | Unbounded full-dataset React state & unvirtualized table DOM causing UI freezes on large datasets |
 | `AUD-CAS-003` | `MEDIUM` | `OPEN` | `AUD-CASES-PAGE-2026-11-25` | `frontend/src/components/investigation/InvestigationWorkspace.tsx:28-34`; `CasesWorkspaceView.tsx:149, 1300` | Missing granular sub-pane error boundaries and unhandled optimistic row override desynchronization |
 | `AUD-CAS-004` | `LOW` | `OPEN` | `AUD-CASES-PAGE-2026-11-25` | `backend/src/routes/investigations.ts:267-294` | `GET /api/investigations/:taskId/central-records` lacks team ownership and visibility guards |
+| `AUD-TEAM-001` | `CRITICAL` | `OPEN` | `AUD-TEAM-COLLAB-2026-11-25` | `backend/src/routes/teams.ts:137-143, 206-223` | Bypassed manager check on omitted `callerUserId` in `member-privileges`; client-supplied `callerRole` grants team admin |
+| `AUD-TEAM-002` | `CRITICAL` | `OPEN` | `AUD-TEAM-COLLAB-2026-11-25` | `backend/src/routes/teams.ts:97-125, 290-298` | Unauthenticated `DELETE /api/teams/:id` and unconstrained `PUT /api/teams/:id` allow deleting or mutating any team |
+| `AUD-TEAM-003` | `HIGH` | `OPEN` | `AUD-TEAM-COLLAB-2026-11-25` | `backend/src/services/assetSharingService.ts:174-180`; `assetSharing.ts:11-43` | `POST /api/assets/share` mutates `team_id` in PostgreSQL without verifying sender ownership (asset hijacking) |
+| `AUD-TEAM-004` | `HIGH` | `OPEN` | `AUD-TEAM-COLLAB-2026-11-25` | `backend/src/routes/assetSharing.ts:116-119`; `assetVerificationService.ts:129-132` | Header-spoofed `x-user-id` and null `maker_id` bypass Anti-Self-Approval in asset approval route |
+| `AUD-TEAM-005` | `HIGH` | `OPEN` | `AUD-TEAM-COLLAB-2026-11-25` | `backend/src/routes/collaboration.ts:9-18, 20-52, 69-77` | Direct messages and user notifications can be intercepted, spoofed, and read across teams without auth |
+| `AUD-TEAM-006` | `MEDIUM` | `OPEN` | `AUD-TEAM-COLLAB-2026-11-25` | `backend/src/routes/workspaceSettingsProposals.ts:81-115` | `POST /api/settings/proposals/:id/review` trusts client-supplied `checkerId` instead of JWT identity |
+| `AUD-TEAM-007` | `MEDIUM` | `OPEN` | `AUD-TEAM-COLLAB-2026-11-25` | `backend/src/routes/database.ts:720-725, 923-928` | Private team database access checks pass when `callerTeamId` / `x-team-id` is omitted by caller |
+| `AUD-WFS-001` | `CRITICAL` | `OPEN` | `AUD-WORKFLOW-STUDIO-2026-11-25` | `backend/src/routes/workflows.ts:347-364` | Raw SQL injection in `POST /api/workflows/query-sandbox/preview` via unsanitized `targetDataSource` and `selectedColumns` |
+| `AUD-WFS-002` | `CRITICAL` | `OPEN` | `AUD-WORKFLOW-STUDIO-2026-11-25` | `validationPipelineBuilder.ts:367-372`; `WorkflowStudioFlowchart.tsx:1334, 1508` | Vacuous DAG cycle detection: `validationPipelineBuilder` matches stage IDs against node IDs, passing cyclic graphs |
+| `AUD-WFS-003` | `HIGH` | `OPEN` | `AUD-WORKFLOW-STUDIO-2026-11-25` | `backend/src/routes/workflows.ts:235-271, 310-330` | Unauthenticated `PUT /:id` and `DELETE /:id` routes allow arbitrary modification/deletion of workflows and query extractions |
+| `AUD-WFS-004` | `HIGH` | `OPEN` | `AUD-WORKFLOW-STUDIO-2026-11-25` | `backend/src/routes/workflowBundles.ts:107-120`; `workflowBundleService.ts:199-201` | Anti-Self-Approval bypass in workflow bundle promotion review via trusted client-supplied `req.body.checkerId` |
+| `AUD-WFS-005` | `HIGH` | `OPEN` | `AUD-WORKFLOW-STUDIO-2026-11-25` | `frontend/src/components/settings/WorkflowStudioFlowchart.tsx:444` | Silent production rule corruption: missing validation box fallback uses modulo index `safeBoxes[sIdx % safeBoxes.length]` |
+| `AUD-WFS-006` | `MEDIUM` | `OPEN` | `AUD-WORKFLOW-STUDIO-2026-11-25` | `backend/src/routes/workflows.ts:263-271`; `postgresRepo.ts` | Deleting a workflow leaves orphaned query extractions and execution records without transactional cascading |
+| `AUD-AUTO-001` | `CRITICAL` | `OPEN` | `AUD-AUTOMATION-E2E-2026-11-25` | `frontend/src/components/automations/AutomationsView.tsx:58-71, 91-135, 168-211` | Ephemeral UI-only automation creation, hardcoded mock cron list, and fake `setTimeout(1200)` execution |
+| `AUD-AUTO-002` | `HIGH` | `OPEN` | `AUD-AUTOMATION-E2E-2026-11-25` | `backend/src/server.ts:175-177`; `ftpSchedulerService.ts:31-169` | FTP/SFTP scheduler is never booted as a daemon in `server.ts`, and staging does not trigger `attachedWorkflowId` |
+| `AUD-AUTO-003` | `HIGH` | `OPEN` | `AUD-AUTOMATION-E2E-2026-11-25` | `backend/src/services/hashtagSchedulerService.ts:19, 50-52, 208-221` | Ignores cron expressions (runs every 60s) and uses in-memory `isExecuting` flag without PostgreSQL advisory locks |
+| `AUD-AUTO-004` | `MEDIUM` | `OPEN` | `AUD-AUTOMATION-E2E-2026-11-25` | `backend/src/routes/database.ts:2501-2505`; `hashtagSchedulerService.ts:91-93` | `run-scheduled` defaults `forceAll: true` without auth checks; background failures lack SSE alerts or DLQ |
 
 ---
 
@@ -73,14 +93,18 @@ _None yet._
 
 ## Regression Watch
 - Ensure `PAUSED_DB_OFFLINE` never falls back to `PASS` in `ExecutablePipeline.executeBatch` or `executeRow`.
-- Ensure `CasesWorkspaceView` table headers remain stationary with strict `min-h-0` flexbox isolation (Rule 16).
-- Ensure JSON cell formatters continue using `JSON.stringify` serialization rather than direct React node rendering (Rule 6).
+- Ensure `WorkflowStudioFlowchart` preserves all four tiers simultaneously (Canvas State, Inspector, Execution Model, and PostgreSQL Hydration) per Principle 21.
+- Ensure Kahn's topological sort accurately maps connection node IDs to stage IDs.
 
 ---
 
 ## Consolidated Remediation Roadmap
 
-1. **Phase 1: Critical Invariants & Security Hardening (7 Critical Findings)**
+1. **Phase 1: Critical Invariants & Security Hardening (11 Critical Findings)**
+   - `AUD-WFS-001`: Sanitize and parameterize query sandbox preview query; eliminate raw SQL concatenation.
+   - `AUD-WFS-002`: Fix node ID / stage ID prefix resolution in `validationPipelineBuilder.ts` to restore Kahn's cycle detection.
+   - `AUD-TEAM-001`: Secure `teamsRouter.put('/:id/member-privileges')` and eliminate client-supplied `callerRole`.
+   - `AUD-TEAM-002`: Protect `teamsRouter.delete('/:id')` and `teamsRouter.put('/:id')` with admin / manager auth.
    - `AUD-INV-001`: Fix `PAUSED_DB_OFFLINE` stage rollup in `ExecutablePipeline.ts`.
    - `AUD-INV-002`: Authorize task `DELETE` and global `clear-all` routes.
    - `AUD-DB-001`: Enforce admin verification on database connection promotion and team isolation.
@@ -89,12 +113,18 @@ _None yet._
    - `AUD-AUTH-002`: Remove hardcoded fallback `JWT_SECRET` and plaintext password comparison.
    - `AUD-TAG-001`: Sanitize and bind criteria and solution SQL templates in `hashtagService.ts`.
 
-2. **Phase 2: High Severity Integrity & Authorization (10 High Findings)**
+2. **Phase 2: High Severity Integrity & Authorization (16 High Findings)**
+   - `AUD-WFS-003`: Protect `workflowsRouter` mutation and deletion routes with authentication and team checks.
+   - `AUD-WFS-004`: Enforce JWT identity on workflow bundle promotion reviews.
+   - `AUD-WFS-005`: Remove modulo validation box fallback in `WorkflowStudioFlowchart.tsx`.
+   - `AUD-TEAM-003`: Guard asset sharing to prevent unauthorized `team_id` reassignment in PostgreSQL.
+   - `AUD-TEAM-004`: Enforce strict JWT actor identity and require non-null distinct `maker_id` on asset approvals.
+   - `AUD-TEAM-005`: Authorize direct message retrieval, message creation, and notifications by authenticated user.
    - `AUD-CAS-001`: Synchronize Cases workspace client pagination with backend limits and total counts.
    - `AUD-INV-003`, `AUD-INV-004`, `AUD-INT-001`, `AUD-INT-002`, `AUD-MAP-001`, `AUD-DB-003`, `AUD-AUTH-003`, `AUD-TAG-002`, `AUD-SBX-001`.
 
-3. **Phase 3: Medium & Low Operational Reliability (12 Medium / 4 Low Findings)**
-   - `AUD-CAS-002`, `AUD-CAS-003`, `AUD-CAS-004`, `AUD-INV-005`, `AUD-INV-006`, `AUD-INV-007`, `AUD-INT-003`, `AUD-INT-004`, `AUD-INT-005`, `AUD-MAP-002`, `AUD-MAP-003`, `AUD-MAP-004`, `AUD-MAP-005`, `AUD-DB-004`, `AUD-TAG-003`, `AUD-SBX-002`.
+3. **Phase 3: Medium & Low Operational Reliability (15 Medium / 4 Low Findings)**
+   - `AUD-WFS-006`, `AUD-TEAM-006`, `AUD-TEAM-007`, `AUD-CAS-002`, `AUD-CAS-003`, `AUD-CAS-004`, `AUD-INV-005`, `AUD-INV-006`, `AUD-INV-007`, `AUD-INT-003`, `AUD-INT-004`, `AUD-INT-005`, `AUD-MAP-002`, `AUD-MAP-003`, `AUD-MAP-004`, `AUD-MAP-005`, `AUD-DB-004`, `AUD-TAG-003`, `AUD-SBX-002`.
 
 ---
 
