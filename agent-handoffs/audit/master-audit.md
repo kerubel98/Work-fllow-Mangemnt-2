@@ -5,8 +5,8 @@ Central ledger of all audit scopes, findings, remediation statuses, and sign-off
 ---
 
 ## Overall Audit Status
-- **Active Audits**: 11 (`AUD-INVESTIGATION-CORE-2026-11-24`, `AUD-INTAKE-STAGING-2026-11-24`, `AUD-MAPPING-INGESTION-2026-11-24`, `AUD-DB-GOVERNANCE-APPROVALS-2026-11-24`, `AUD-AUTH-OAUTH-2026-11-24`, `AUD-HASHTAG-SCHEDULER-2026-11-24`, `AUD-SANDBOX-ESCALATIONS-2026-11-24`, `AUD-CASES-PAGE-2026-11-25`, `AUD-TEAM-COLLAB-2026-11-25`, `AUD-WORKFLOW-STUDIO-2026-11-25`, `AUD-AUTOMATION-E2E-2026-11-25`)
-- **Open Findings**: 50 (**12 CRITICAL**, **18 HIGH**, **16 MEDIUM**, **4 LOW**)
+- **Active Audits**: 12 (`AUD-INVESTIGATION-CORE-2026-11-24`, `AUD-INTAKE-STAGING-2026-11-24`, `AUD-MAPPING-INGESTION-2026-11-24`, `AUD-DB-GOVERNANCE-APPROVALS-2026-11-24`, `AUD-AUTH-OAUTH-2026-11-24`, `AUD-HASHTAG-SCHEDULER-2026-11-24`, `AUD-SANDBOX-ESCALATIONS-2026-11-24`, `AUD-CASES-PAGE-2026-11-25`, `AUD-TEAM-COLLAB-2026-11-25`, `AUD-WORKFLOW-STUDIO-2026-11-25`, `AUD-AUTOMATION-E2E-2026-11-25`, `AUD-GOV-MISALIGN-2026-11-25`)
+- **Open Findings**: 55 (**13 CRITICAL**, **20 HIGH**, **18 MEDIUM**, **4 LOW**)
 - **Resolved Findings**: 0
 - **Regressions**: 0
 
@@ -15,6 +15,7 @@ Central ledger of all audit scopes, findings, remediation statuses, and sign-off
 ## Audit History
 | Date | Audit ID | Scope | Commit | Findings | Status | Report |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| 2026-11-25 | `AUD-GOV-MISALIGN-2026-11-25` | Governance Misalignments & Architectural Mismatches | `d7bf228` | 1C / 2H / 2M / 0L | `OPEN` | [`AUD-GOV-MISALIGN-2026-11-25.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/agent-handoffs/audit/reports/AUD-GOV-MISALIGN-2026-11-25.md) |
 | 2026-11-25 | `AUD-AUTOMATION-E2E-2026-11-25` | End-to-End Automation Process & Modernization | `d7bf228` | 1C / 2H / 1M / 0L | `OPEN` | [`AUD-AUTOMATION-E2E-2026-11-25.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/agent-handoffs/audit/reports/AUD-AUTOMATION-E2E-2026-11-25.md) |
 | 2026-11-25 | `AUD-WORKFLOW-STUDIO-2026-11-25` | Workflow Studio, Flowchart DAG & Pipeline Execution | `d7bf228` | 2C / 3H / 1M / 0L | `OPEN` | [`AUD-WORKFLOW-STUDIO-2026-11-25.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/agent-handoffs/audit/reports/AUD-WORKFLOW-STUDIO-2026-11-25.md) |
 | 2026-11-25 | `AUD-TEAM-COLLAB-2026-11-25` | Team Workspace, Multi-Tenant Boundary Isolation & Asset Sharing | `d7bf228` | 2C / 3H / 2M / 0L | `OPEN` | [`AUD-TEAM-COLLAB-2026-11-25.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/agent-handoffs/audit/reports/AUD-TEAM-COLLAB-2026-11-25.md) |
@@ -83,6 +84,11 @@ Central ledger of all audit scopes, findings, remediation statuses, and sign-off
 | `AUD-AUTO-002` | `HIGH` | `OPEN` | `AUD-AUTOMATION-E2E-2026-11-25` | `backend/src/server.ts:175-177`; `ftpSchedulerService.ts:31-169` | FTP/SFTP scheduler is never booted as a daemon in `server.ts`, and staging does not trigger `attachedWorkflowId` |
 | `AUD-AUTO-003` | `HIGH` | `OPEN` | `AUD-AUTOMATION-E2E-2026-11-25` | `backend/src/services/hashtagSchedulerService.ts:19, 50-52, 208-221` | Ignores cron expressions (runs every 60s) and uses in-memory `isExecuting` flag without PostgreSQL advisory locks |
 | `AUD-AUTO-004` | `MEDIUM` | `OPEN` | `AUD-AUTOMATION-E2E-2026-11-25` | `backend/src/routes/database.ts:2501-2505`; `hashtagSchedulerService.ts:91-93` | `run-scheduled` defaults `forceAll: true` without auth checks; background failures lack SSE alerts or DLQ |
+| `AUD-GOV-001` | `CRITICAL` | `OPEN` | `AUD-GOV-MISALIGN-2026-11-25` | `backend/src/server.ts:82`; `events.ts:11-21` | `GET /api/events` SSE stream mounted before `requireAuth`, broadcasting live messages and issue updates unauthenticated |
+| `AUD-GOV-002` | `HIGH` | `OPEN` | `AUD-GOV-MISALIGN-2026-11-25` | `teams.ts`, `database.ts`, `approvals.ts`, `workflowBundles.ts`, `collaboration.ts` | Systemic mismatch: `server.ts` enforces JWT `requireAuth`, yet route handlers bypass `req.user` via spoofable `req.body`/`req.query`/`x-user-*` |
+| `AUD-GOV-003` | `HIGH` | `OPEN` | `AUD-GOV-MISALIGN-2026-11-25` | `WorkspaceSettings.tsx:115,137,150`; `globalMappingService.ts:108-1646` | Business config (`operational_workspace_config_v1`) and mapping schemas still persist in `localStorage` despite Rule 23 |
+| `AUD-GOV-004` | `MEDIUM` | `OPEN` | `AUD-GOV-MISALIGN-2026-11-25` | `WorkspaceSettings.tsx:204`; `LoginScreen.tsx:131` | Brittle `h-[calc(100vh-2.25rem)]` and `min-h-[calc(100vh-3rem)]` height subtractions violate Rule 16 flexbox containment |
+| `AUD-GOV-005` | `MEDIUM` | `OPEN` | `AUD-GOV-MISALIGN-2026-11-25` | `AGENTS.md`; `.agents/skills/audit/SKILL.md:15,24-37` | Governance docs embed unrelated FinSync v2 QR/geofence/cashier invariants and external `FinSync_Project` paths |
 
 ---
 
