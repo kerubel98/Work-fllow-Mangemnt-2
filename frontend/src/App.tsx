@@ -342,7 +342,9 @@ export default function App() {
 
     const setupSSE = () => {
       try {
-        const streamUrl = `/api/events${currentUser ? `?userId=${currentUser.id}` : ''}`;
+        const token = getAuthToken();
+        if (!token) return; // Do not connect without valid authenticated session
+        const streamUrl = `/api/events?token=${encodeURIComponent(token)}`;
         eventSource = new EventSource(streamUrl);
 
         eventSource.addEventListener('direct_message:new', (e: MessageEvent) => {

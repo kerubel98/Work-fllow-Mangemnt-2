@@ -2,8 +2,31 @@ import { Router, Request, Response } from 'express';
 import { repo } from '../store/repository.js';
 import { DatabaseValidationWorkflow, ProcessingStage, ValidationCheckStep } from '../types.js';
 import { executeLiveQueryOnDb } from '../services/dbConnectionManager.js';
+import { getPostgresPool } from '../config/postgres.js';
 
 export const workflowsRouter = Router();
+
+const IDENTIFIER_REGEX = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
+const TABLE_IDENTIFIER_REGEX = /^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)?$/;
+
+function sanitizeAndQuoteTable(tableName: string): string {
+  const trimmed = tableName.trim();
+  if (!TABLE_IDENTIFIER_REGEX.test(trimmed)) {
+    throw new Error(`Invalid table identifier: '${tableName}' contains disallowed characters or SQL syntax.`);
+  }
+  return trimmed
+    .split('.')
+    .map(part => `"${part.replace(/"/g, '""')}"`)
+    .join('.');
+}
+
+function sanitizeAndQuoteColumn(colName: string): string {
+  const trimmed = colName.trim();
+  if (!IDENTIFIER_REGEX.test(trimmed)) {
+    throw new Error(`Invalid column identifier: '${colName}' contains disallowed characters or SQL syntax.`);
+  }
+  return `"${trimmed.replace(/"/g, '""')}"`;
+}
 
 // Helper to batch-hydrate attached column configurations onto workflow steps and stages
 async function hydrateWorkflowColumnConfigurations(wf: DatabaseValidationWorkflow): Promise<DatabaseValidationWorkflow> {
@@ -234,6 +257,22 @@ workflowsRouter.post('/', async (req: Request, res: Response) => {
 // PUT /api/workflows/:id - Update workflow
 workflowsRouter.put('/:id', async (req: Request, res: Response) => {
   try {
+    const workflowId = req.params.id;
+    const existing = await repo.getValidationWorkflowById(workflowId);
+    if (!existing) {
+      return res.status(404).json({ error: 'Workflow not found' });
+    }
+
+    // Authorization guard (AUD-WFS-003): Admin or owning team check
+    const user = (req as any).user;
+    if (user) {
+      const isAdmin = user.role?.toLowerCase() === 'admin';
+      const isOwner = !existing.teamId || existing.teamId === user.teamId || existing.createdBy === user.id;
+      if (!isAdmin && !isOwner) {
+        return res.status(403).json({ error: 'Forbidden: You do not have permission to modify this workflow.' });
+      }
+    }
+
     const updates = req.body || {};
     if (updates.stages && Array.isArray(updates.stages)) {
       updates.stages = updates.stages.filter(Boolean);
@@ -250,7 +289,7 @@ workflowsRouter.put('/:id', async (req: Request, res: Response) => {
     if (updates.messageAggregations && Array.isArray(updates.messageAggregations)) {
       updates.messageAggregations = updates.messageAggregations.filter(Boolean);
     }
-    const updated = await repo.updateWorkflow(req.params.id, updates);
+    const updated = await repo.updateWorkflow(workflowId, updates);
     if (!updated) return res.status(404).json({ error: 'Workflow not found' });
     const hydrated = await hydrateWorkflowColumnConfigurations(updated);
     return res.json(hydrated);
@@ -262,7 +301,39 @@ workflowsRouter.put('/:id', async (req: Request, res: Response) => {
 // DELETE /api/workflows/:id - Delete workflow
 workflowsRouter.delete('/:id', async (req: Request, res: Response) => {
   try {
-    const success = await repo.deleteWorkflow(req.params.id);
+    const workflowId = req.params.id;
+    const existing = await repo.getValidationWorkflowById(workflowId);
+    if (!existing) {
+      return res.status(404).json({ error: 'Workflow not found' });
+    }
+
+    // Authorization guard (AUD-WFS-003): Admin or owning team check
+    const user = (req as any).user;
+    if (user) {
+      const isAdmin = user.role?.toLowerCase() === 'admin';
+      const isOwner = !existing.teamId || existing.teamId === user.teamId || existing.createdBy === user.id;
+      if (!isAdmin && !isOwner) {
+        return res.status(403).json({ error: 'Forbidden: You do not have permission to delete this workflow.' });
+      }
+    }
+
+    // Referential integrity check (AUD-WFS-006): Block deletion if referenced by active bundle
+    try {
+      const pool = getPostgresPool();
+      const bundleCheck = await pool.query(
+        "SELECT id, name FROM workflow_bundles WHERE workflow_id = $1 AND status != 'REJECTED' LIMIT 1;",
+        [workflowId]
+      );
+      if (bundleCheck.rows.length > 0) {
+        return res.status(409).json({
+          error: `Cannot delete workflow: it is referenced by active workflow bundle '${bundleCheck.rows[0].name}' (${bundleCheck.rows[0].id}).`
+        });
+      }
+    } catch {
+      // Non-fatal if table not initialized
+    }
+
+    const success = await repo.deleteWorkflow(workflowId);
     if (!success) return res.status(404).json({ error: 'Workflow not found' });
     return res.json({ success: true, message: 'Workflow deleted successfully' });
   } catch (err: any) {
@@ -329,26 +400,57 @@ workflowsRouter.delete('/query-extractions/:id', async (req: Request, res: Respo
   }
 });
 
-// POST /api/workflows/query-sandbox/preview
+// POST /api/workflows/query-sandbox/preview (AUD-WFS-001: SQL Injection Sanitization & ANSI Quoting)
 workflowsRouter.post('/query-sandbox/preview', async (req: Request, res: Response) => {
   try {
     const { extraction, sampleKeys } = req.body;
     if (!extraction) {
       return res.status(400).json({ error: 'extraction configuration required' });
     }
+
+    const rawTable = extraction.targetDataSource || 'transactions';
+    let safeTable: string;
+    try {
+      safeTable = sanitizeAndQuoteTable(rawTable);
+    } catch (err: any) {
+      return res.status(400).json({ error: err.message });
+    }
+
+    const rawPrimaryKey = extraction.keyMappings && extraction.keyMappings.length > 0
+      ? extraction.keyMappings[0].sourceField
+      : 'transaction_id';
+    let safePrimaryKey: string;
+    try {
+      safePrimaryKey = sanitizeAndQuoteColumn(rawPrimaryKey);
+    } catch (err: any) {
+      return res.status(400).json({ error: err.message });
+    }
+
+    let safeColumns = '*';
+    if (extraction.selectedColumns && extraction.selectedColumns.length > 0) {
+      try {
+        safeColumns = extraction.selectedColumns.map((c: any) => {
+          if (!c.sourceColumn) throw new Error('sourceColumn is required in selectedColumns');
+          const col = sanitizeAndQuoteColumn(c.sourceColumn);
+          if (c.alias) {
+            const alias = sanitizeAndQuoteColumn(c.alias);
+            return `${col} AS ${alias}`;
+          }
+          return col;
+        }).join(', ');
+      } catch (err: any) {
+        return res.status(400).json({ error: err.message });
+      }
+    }
+
     const chunk = {
       chunkId: 'sample-preview',
       sequence: 1,
       transactionIds: sampleKeys && sampleKeys.length > 0 ? sampleKeys.slice(0, 5) : ['TX-001', 'TX-002']
     };
-    const primaryKey = extraction.keyMappings && extraction.keyMappings.length > 0
-      ? extraction.keyMappings[0].sourceField
-      : 'transaction_id';
-    const columns = extraction.selectedColumns && extraction.selectedColumns.length > 0
-      ? extraction.selectedColumns.map((c: any) => c.alias ? `${c.sourceColumn} AS ${c.alias}` : c.sourceColumn).join(', ')
-      : '*';
+
     const placeholders = chunk.transactionIds.map(() => '?').join(', ');
-    const sql = `SELECT ${columns} FROM ${extraction.targetDataSource || 'transactions'} WHERE ${primaryKey} IN (${placeholders});`;
+    const sql = `SELECT ${safeColumns} FROM ${safeTable} WHERE ${safePrimaryKey} IN (${placeholders});`;
 
     let rows: any[] = [];
     if (extraction.targetDbId && extraction.targetDataSource) {
@@ -356,7 +458,7 @@ workflowsRouter.post('/query-sandbox/preview', async (req: Request, res: Respons
         const dbs = await repo.getDatabases();
         const db = dbs.find(d => d.id === extraction.targetDbId) || dbs.find(d => d.name === extraction.targetDbId);
         if (db) {
-          const previewQuery = `SELECT ${columns} FROM ${extraction.targetDataSource} LIMIT 10;`;
+          const previewQuery = `SELECT ${safeColumns} FROM ${safeTable} LIMIT 10;`;
           const queryRes = await executeLiveQueryOnDb(db, previewQuery);
           if (queryRes && queryRes.rows) {
             rows = queryRes.rows;

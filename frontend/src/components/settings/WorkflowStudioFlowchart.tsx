@@ -437,11 +437,12 @@ export const WorkflowStudioFlowchart = React.forwardRef<WorkflowStudioFlowchartH
           (stage.ruleBlockIds && Array.isArray(stage.ruleBlockIds) && stage.ruleBlockIds.includes(b.id)) ||
           (b.targetTable && stage.targetDataSource && b.targetTable === stage.targetDataSource)
         )) : [];
+        // AUD-WFS-005: Do NOT use modulo fallback across safeBoxes to prevent silent rule definition corruption
         const box = safeBoxes.find(b => b && (
-          b.id === (step as any)?.boxId ||
-          b.id === step?.id ||
+          ((step as any)?.boxId && b.id === (step as any).boxId) ||
+          (step?.id && b.id === step.id) ||
           (b.name && step?.name && b.name.trim().toLowerCase() === step.name.trim().toLowerCase())
-        )) || stageBoxes[0] || (safeBoxes.length > 0 ? safeBoxes[sIdx % safeBoxes.length] : undefined);
+        )) || (stageBoxes.length === 1 ? stageBoxes[0] : undefined);
 
         const nodeId = `node-step-${step?.id || sIdx + 1}`;
         newNodes.push({

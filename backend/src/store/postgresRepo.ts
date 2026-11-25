@@ -1670,11 +1670,19 @@ async updateDatabaseConnection(id: string, updates: Partial<DatabaseConnection>)
 
   async deleteValidationWorkflow(id: string): Promise<boolean> {
     const pool = getPostgresPool();
+    const client = await pool.connect();
     try {
-      await pool.query('DELETE FROM query_extractions WHERE workflow_id = $1;', [id]);
-    } catch {}
-    const res = await pool.query('DELETE FROM database_validation_workflows WHERE id = $1;', [id]);
-    return (res.rowCount ?? 0) > 0;
+      await client.query('BEGIN');
+      await client.query('DELETE FROM query_extractions WHERE workflow_id = $1;', [id]);
+      const res = await client.query('DELETE FROM database_validation_workflows WHERE id = $1;', [id]);
+      await client.query('COMMIT');
+      return (res.rowCount ?? 0) > 0;
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
   },
 
   async getQueryExtractionsByWorkflowId(workflowId: string): Promise<QueryExtraction[]> {

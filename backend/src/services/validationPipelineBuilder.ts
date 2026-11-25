@@ -344,17 +344,6 @@ export class ValidationPipelineBuilder {
       return { isAcyclic: true, topologicalOrder: [] };
     }
 
-    // PB-002: Check for self-referential cycles regardless of stage count
-    for (const conn of connections) {
-      if (conn.fromNodeId === conn.toNodeId) {
-        return { isAcyclic: false, topologicalOrder: [] };
-      }
-    }
-
-    if (stageIds.length === 1) {
-      return { isAcyclic: true, topologicalOrder: stageIds };
-    }
-
     const adj = new Map<string, string[]>();
     const inDegree = new Map<string, number>();
 
@@ -363,11 +352,37 @@ export class ValidationPipelineBuilder {
       inDegree.set(id, 0);
     });
 
-    // Populate adjacency list
+    // Helper to resolve node ID to stage ID across 'node-' vs 'stage-' prefixes (AUD-WFS-002)
+    const resolveStageId = (id: string): string | undefined => {
+      if (!id) return undefined;
+      if (adj.has(id)) return id;
+      if (adj.has(`stage-${id}`)) return `stage-${id}`;
+      if (id.startsWith('stage-') && adj.has(id.slice(6))) return id.slice(6);
+      if (id.startsWith('node-') && adj.has(`stage-${id}`)) return `stage-${id}`;
+      if (id.startsWith('stage-node-') && adj.has(id.replace('stage-', ''))) return id.replace('stage-', '');
+      return undefined;
+    };
+
+    // PB-002: Check for self-referential cycles regardless of stage count
     for (const conn of connections) {
-      if (adj.has(conn.fromNodeId) && adj.has(conn.toNodeId)) {
-        adj.get(conn.fromNodeId)!.push(conn.toNodeId);
-        inDegree.set(conn.toNodeId, (inDegree.get(conn.toNodeId) || 0) + 1);
+      const from = resolveStageId(conn.fromNodeId);
+      const to = resolveStageId(conn.toNodeId);
+      if (from && to && from === to) {
+        return { isAcyclic: false, topologicalOrder: [] };
+      }
+    }
+
+    if (stageIds.length === 1) {
+      return { isAcyclic: true, topologicalOrder: stageIds };
+    }
+
+    // Populate adjacency list with normalized stage identifiers
+    for (const conn of connections) {
+      const from = resolveStageId(conn.fromNodeId);
+      const to = resolveStageId(conn.toNodeId);
+      if (from && to) {
+        adj.get(from)!.push(to);
+        inDegree.set(to, (inDegree.get(to) || 0) + 1);
       }
     }
 

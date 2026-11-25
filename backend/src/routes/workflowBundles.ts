@@ -107,16 +107,28 @@ workflowBundlesRouter.post('/:id/propose', async (req: Request, res: Response) =
 workflowBundlesRouter.post('/:id/review', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { checkerId, checkerName, action, feedback } = req.body;
+    const { checkerId: bodyCheckerId, checkerName: bodyCheckerName, action, feedback } = req.body;
 
-    if (!checkerId || !action) {
+    // Enforce JWT caller identity (AUD-WFS-004: Anti-Self-Approval bypass prevention)
+    const user = (req as any).user;
+    const authenticatedUserId = user?.id || user?.sub;
+    const effectiveCheckerId = authenticatedUserId || bodyCheckerId;
+    const effectiveCheckerName = user?.name || user?.username || bodyCheckerName || 'Checker Supervisor';
+
+    if (authenticatedUserId && bodyCheckerId && bodyCheckerId !== authenticatedUserId) {
+      return res.status(403).json({
+        error: 'Forbidden: You cannot review promotions under another user identity (checkerId spoofing prevented).'
+      });
+    }
+
+    if (!effectiveCheckerId || !action) {
       return res.status(400).json({ error: 'checkerId and action (APPROVE/REJECT) are required.' });
     }
 
     const reviewed = await workflowBundleService.reviewPromotion(
       id,
-      checkerId,
-      checkerName || 'Checker Supervisor',
+      effectiveCheckerId,
+      effectiveCheckerName,
       action,
       feedback
     );

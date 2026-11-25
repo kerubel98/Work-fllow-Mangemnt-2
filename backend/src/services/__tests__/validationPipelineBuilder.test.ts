@@ -119,6 +119,43 @@ describe('ValidationPipelineBuilder Service', () => {
     );
   });
 
+  it('2b. Throws COMPILATION_ERROR when cyclic dependency uses node- vs stage- prefix discrepancy (AUD-WFS-002)', () => {
+    const cyclicWorkflowWithPrefixDiscrepancy: DatabaseValidationWorkflow = {
+      id: 'wf-cyclic-prefix',
+      name: 'Cyclic Workflow with Node- vs Stage- Prefix Discrepancy',
+      targetDbId: 'db-core',
+      targetTable: 'auth_log_tab',
+      stages: [
+        { ...baseStage1, id: 'stage-node-1' },
+        { ...baseStage2, id: 'stage-node-2' }
+      ],
+      steps: [
+        { ...baseStep1, stageId: 'stage-node-1' },
+        { ...baseStep2, stageId: 'stage-node-2' }
+      ],
+      connections: [
+        {
+          id: 'conn-1',
+          fromNodeId: 'node-1',
+          toNodeId: 'node-2',
+          fromPort: 'pass',
+          action: 'CONTINUE'
+        },
+        {
+          id: 'conn-2',
+          fromNodeId: 'node-2',
+          toNodeId: 'node-1',
+          fromPort: 'pass',
+          action: 'CONTINUE'
+        }
+      ]
+    };
+
+    expect(() => validationPipelineBuilder.compile(cyclicWorkflowWithPrefixDiscrepancy)).toThrow(
+      /COMPILATION_ERROR: Cycle detected/
+    );
+  });
+
   it('3. Throws COMPILATION_ERROR when strictCardinality is enabled and a stage lacks explicit policy', () => {
     const unconfiguredStage: ProcessingStage = {
       id: 'stage-unconfigured',

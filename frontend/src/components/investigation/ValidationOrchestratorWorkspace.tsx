@@ -13,7 +13,7 @@ import {
 import { aggregateParentIssueStatus } from '../../services/statusAggregator';
 import { createBatchPlan } from '../../services/batchPlanner';
 import { executeBatchInvestigation } from '../../services/investigationEngine';
-import { api } from '../../api/client';
+import { api, getAuthToken } from '../../api/client';
 import {
   Database, Search, Download, Terminal, Copy, Check, Filter,
   Eye, EyeOff, Plus, X, Server, ChevronRight, Play, Code2, Table,
@@ -1146,7 +1146,9 @@ export default function ValidationOrchestratorWorkspace({
   useEffect(() => {
     let es: EventSource | null = null;
     try {
-      es = new EventSource('/api/events');
+      const token = getAuthToken();
+      if (!token) return;
+      es = new EventSource(`/api/events?token=${encodeURIComponent(token)}`);
       es.addEventListener('workflow:stage_completed', (e: any) => {
         try {
           const data = JSON.parse(e.data);
