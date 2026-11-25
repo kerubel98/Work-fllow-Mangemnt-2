@@ -5,8 +5,8 @@ Central ledger of all audit scopes, findings, remediation statuses, and sign-off
 ---
 
 ## Overall Audit Status
-- **Active Audits**: 13 (`AUD-INVESTIGATION-CORE-2026-11-24`, `AUD-INTAKE-STAGING-2026-11-24`, `AUD-MAPPING-INGESTION-2026-11-24`, `AUD-DB-GOVERNANCE-APPROVALS-2026-11-24`, `AUD-AUTH-OAUTH-2026-11-24`, `AUD-HASHTAG-SCHEDULER-2026-11-24`, `AUD-SANDBOX-ESCALATIONS-2026-11-24`, `AUD-CASES-PAGE-2026-11-25`, `AUD-TEAM-COLLAB-2026-11-25`, `AUD-WORKFLOW-STUDIO-2026-11-25`, `AUD-AUTOMATION-E2E-2026-11-25`, `AUD-GOV-MISALIGN-2026-11-25`, `AUD-EXTDB-AI-METRICS-2026-11-25`)
-- **Open Findings**: 59 (**14 CRITICAL**, **21 HIGH**, **20 MEDIUM**, **4 LOW**)
+- **Active Audits**: 14 (`AUD-INVESTIGATION-CORE-2026-11-24`, `AUD-INTAKE-STAGING-2026-11-24`, `AUD-MAPPING-INGESTION-2026-11-24`, `AUD-DB-GOVERNANCE-APPROVALS-2026-11-24`, `AUD-AUTH-OAUTH-2026-11-24`, `AUD-HASHTAG-SCHEDULER-2026-11-24`, `AUD-SANDBOX-ESCALATIONS-2026-11-24`, `AUD-CASES-PAGE-2026-11-25`, `AUD-TEAM-COLLAB-2026-11-25`, `AUD-WORKFLOW-STUDIO-2026-11-25`, `AUD-AUTOMATION-E2E-2026-11-25`, `AUD-GOV-MISALIGN-2026-11-25`, `AUD-EXTDB-AI-METRICS-2026-11-25`, `AUD-DATASETUP-DESIGN-2026-11-25`)
+- **Open Findings**: 64 (**14 CRITICAL**, **24 HIGH**, **22 MEDIUM**, **4 LOW**)
 - **Resolved Findings**: 0
 - **Regressions**: 0
 
@@ -15,6 +15,7 @@ Central ledger of all audit scopes, findings, remediation statuses, and sign-off
 ## Audit History
 | Date | Audit ID | Scope | Commit | Findings | Status | Report |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| 2026-11-25 | `AUD-DATASETUP-DESIGN-2026-11-25` | Data Setup vs. Architecture & Frontend Design | `d7bf228` | 0C / 3H / 2M / 0L | `OPEN` | [`AUD-DATASETUP-DESIGN-2026-11-25.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/agent-handoffs/audit/reports/AUD-DATASETUP-DESIGN-2026-11-25.md) |
 | 2026-11-25 | `AUD-EXTDB-AI-METRICS-2026-11-25` | External DB Connectivity, Live Query Engine, AI & Analytics | `d7bf228` | 1C / 1H / 2M / 0L | `OPEN` | [`AUD-EXTDB-AI-METRICS-2026-11-25.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/agent-handoffs/audit/reports/AUD-EXTDB-AI-METRICS-2026-11-25.md) |
 | 2026-11-25 | `AUD-GOV-MISALIGN-2026-11-25` | Governance Misalignments & Architectural Mismatches | `d7bf228` | 1C / 2H / 2M / 0L | `OPEN` | [`AUD-GOV-MISALIGN-2026-11-25.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/agent-handoffs/audit/reports/AUD-GOV-MISALIGN-2026-11-25.md) |
 | 2026-11-25 | `AUD-AUTOMATION-E2E-2026-11-25` | End-to-End Automation Process & Modernization | `d7bf228` | 1C / 2H / 1M / 0L | `OPEN` | [`AUD-AUTOMATION-E2E-2026-11-25.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/agent-handoffs/audit/reports/AUD-AUTOMATION-E2E-2026-11-25.md) |
@@ -94,6 +95,11 @@ Central ledger of all audit scopes, findings, remediation statuses, and sign-off
 | `AUD-EXT-002` | `HIGH` | `OPEN` | `AUD-EXTDB-AI-METRICS-2026-11-25` | `backend/src/routes/ai.ts:48-66` | Unredacted financial `transactionData` sent to external Google Gemini API |
 | `AUD-EXT-003` | `MEDIUM` | `OPEN` | `AUD-EXTDB-AI-METRICS-2026-11-25` | `backend/src/routes/metrics.ts:22-29` | `GET /api/metrics/team/:teamId` exposes team KPIs without checking team membership |
 | `AUD-EXT-004` | `MEDIUM` | `OPEN` | `AUD-EXTDB-AI-METRICS-2026-11-25` | `backend/src/services/dbConnectionManager.ts:376-417` | External DB pool caches lack periodic TTL sweep, omit credential hash in key, and omit TLS/SSL options |
+| `AUD-DSU-001` | `HIGH` | `OPEN` | `AUD-DATASETUP-DESIGN-2026-11-25` | `frontend/src/components/datasetup/DataSetupLandingView.tsx:39-150` | Hardcoded mock resources (`Core Ledger`, `SettlemFTP`) merged permanently with live PostgreSQL DBs |
+| `AUD-DSU-002` | `HIGH` | `OPEN` | `AUD-DATASETUP-DESIGN-2026-11-25` | `frontend/src/components/datasetup/MappingDictionaryView.tsx:72,88,107-141` | `handleAutoClassify` and bulk actions mutate React state only (no DB save); `UNCLASSIFIED` misses `General` |
+| `AUD-DSU-003` | `HIGH` | `OPEN` | `AUD-DATASETUP-DESIGN-2026-11-25` | `backend/src/routes/transactionSettings.ts:26-48,86-120` | `POST /settings/schema` and `POST /schema/config` lack admin role checks and mutate stale `store.globalSchema` |
+| `AUD-DSU-004` | `MEDIUM` | `OPEN` | `AUD-DATASETUP-DESIGN-2026-11-25` | `frontend/src/components/datasetup/ValueDictionariesView.tsx:39,59-80` | `noMatchPolicy` uses `'FALLBACK'` instead of `'USE_FALLBACK'`, omits `'FLAG'`, and seeds mockup counts |
+| `AUD-DSU-005` | `MEDIUM` | `OPEN` | `AUD-DATASETUP-DESIGN-2026-11-25` | `frontend/src/components/datasetup/DataSetupLandingView.tsx:197` | Inline `style={{ zoom: 0.9 }}` compounds with global `html { zoom: 0.8 }` (72% double-scaling) |
 
 ---
 
