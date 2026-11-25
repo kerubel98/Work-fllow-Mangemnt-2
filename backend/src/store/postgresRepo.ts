@@ -174,6 +174,20 @@ async function ensureValueTranslationDictionariesSchema(): Promise<void> {
         ADD COLUMN IF NOT EXISTS pre_transform_rule VARCHAR(64),
         ADD COLUMN IF NOT EXISTS post_transform_rule VARCHAR(64),
         ADD COLUMN IF NOT EXISTS transformation_rules JSONB DEFAULT '[]'::jsonb;
+
+      -- Ensure canonical system dictionaries retain is_system_default = true and original categories
+      UPDATE value_translation_dictionaries
+        SET is_system_default = true, category = 'BANK_CODES'
+        WHERE id = 'dict-bank-codes';
+      UPDATE value_translation_dictionaries
+        SET is_system_default = true, category = 'STATUS_CODES'
+        WHERE id = 'dict-statuses';
+      UPDATE value_translation_dictionaries
+        SET is_system_default = true, category = 'CHANNEL_CODES'
+        WHERE id = 'dict-channels';
+      UPDATE value_translation_dictionaries
+        SET is_system_default = true, category = 'CURRENCIES'
+        WHERE id = 'dict-currencies';
     `);
     valueDictSchemaInitialized = true;
   } catch (err: any) {
@@ -5449,9 +5463,9 @@ async updateDatabaseConnection(id: string, updates: Partial<DatabaseConnection>)
        ON CONFLICT (id) DO UPDATE SET
          name = EXCLUDED.name,
          description = EXCLUDED.description,
-         category = EXCLUDED.category,
+         category = CASE WHEN EXCLUDED.category <> 'CUSTOM' THEN EXCLUDED.category ELSE value_translation_dictionaries.category END,
          mappings = EXCLUDED.mappings,
-         is_system_default = EXCLUDED.is_system_default,
+         is_system_default = CASE WHEN EXCLUDED.is_system_default = true THEN true ELSE value_translation_dictionaries.is_system_default END,
          updated_at = EXCLUDED.updated_at,
          group_name = EXCLUDED.group_name,
          direction = EXCLUDED.direction,

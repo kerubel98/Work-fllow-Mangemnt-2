@@ -131,6 +131,55 @@ export function applyDataTransformationRule(
     }
     case 'STRIP_CURRENCY':
       return str.replace(/[^0-9.-]/g, '');
+    case 'NUMBER_CLEAN': {
+      const cleaned = str.replace(/[^0-9.-]/g, '');
+      const num = parseFloat(cleaned);
+      return isNaN(num) ? str : num.toFixed(2);
+    }
+    case 'ROUND_INT': {
+      const cleaned = str.replace(/[^0-9.-]/g, '');
+      const num = parseFloat(cleaned);
+      return isNaN(num) ? str : String(Math.round(num));
+    }
+    case 'ABS_VALUE': {
+      const cleaned = str.replace(/[^0-9.-]/g, '');
+      const num = parseFloat(cleaned);
+      return isNaN(num) ? str : String(Math.abs(num));
+    }
+    case 'DIVIDE_BY': {
+      const cleaned = str.replace(/[^0-9.-]/g, '');
+      const num = parseFloat(cleaned);
+      const divisor = parseFloat(param1 || '');
+      return isNaN(num) || isNaN(divisor) || divisor === 0 ? str : String(num / divisor);
+    }
+    case 'MULTIPLY_BY': {
+      const cleaned = str.replace(/[^0-9.-]/g, '');
+      const num = parseFloat(cleaned);
+      const factor = parseFloat(param1 || '');
+      return isNaN(num) || isNaN(factor) ? str : String(num * factor);
+    }
+    case 'ADD_NUMBER': {
+      const cleaned = str.replace(/[^0-9.-]/g, '');
+      const num = parseFloat(cleaned);
+      const delta = parseFloat(param1 || '');
+      return isNaN(num) || isNaN(delta) ? str : String(num + delta);
+    }
+    case 'SUBTRACT_NUMBER': {
+      const cleaned = str.replace(/[^0-9.-]/g, '');
+      const num = parseFloat(cleaned);
+      const delta = parseFloat(param1 || '');
+      return isNaN(num) || isNaN(delta) ? str : String(num - delta);
+    }
+    case 'ADD_PREFIX_SUFFIX':
+      return `${param1 || ''}${str}${param2 || ''}`;
+    case 'CHAR_LENGTH': {
+      const targetLen = parseInt(param1 || '', 10);
+      if (isNaN(targetLen) || targetLen <= 0) return str;
+      const [mode, padChar] = (param2 || 'TRUNCATE:0').split(':');
+      if (mode === 'PAD_LEFT') return str.padStart(targetLen, padChar || '0');
+      if (mode === 'PAD_RIGHT') return str.padEnd(targetLen, padChar || ' ');
+      return str.slice(0, targetLen);
+    }
     case 'MASK_MIDDLE':
       if (str.length > 8) {
         const first = str.slice(0, 4);
@@ -156,12 +205,21 @@ export function applyDataTransformationRule(
         const dicts = availableDicts && availableDicts.length > 0
           ? availableDicts
           : DEFAULT_VALUE_TRANSLATION_DICTIONARIES;
-        const dict = dicts.find(d => d.id === param1);
-        if (dict) {
-          const match = dict.mappings.find(
-            m => m.sourceValue.trim().toLowerCase() === str.trim().toLowerCase()
-          );
-          return match ? match.targetValue : str;
+        const dict = dicts.find(d => d.id === param1 || d.name === param1);
+        if (dict && Array.isArray(dict.mappings)) {
+          const needle = str.trim().toLowerCase();
+          const match = dict.mappings.find(m => {
+            const src = String(m.sourceValue ?? (m as any).code ?? (m as any).source ?? '').trim().toLowerCase();
+            const tgt = String(m.targetValue ?? (m as any).name ?? (m as any).target ?? '').trim().toLowerCase();
+            if (src === needle) return true;
+            if ((dict.direction === 'BOTH' || dict.direction === 'REVERSE') && tgt === needle) return true;
+            return false;
+          });
+          if (match) {
+            const src = String(match.sourceValue ?? (match as any).code ?? (match as any).source ?? '').trim();
+            const tgt = String(match.targetValue ?? (match as any).name ?? (match as any).target ?? '').trim();
+            return src.toLowerCase() === needle ? (tgt || src) : (src || tgt);
+          }
         }
       }
       return str;
@@ -179,6 +237,57 @@ export function applyDataTransformationRule(
       return str;
     default:
       return str;
+  }
+}
+
+/**
+ * Computes a readable, descriptive default name for a transformation operation
+ * so it can be identified and referred to in mapping templates and audit trails.
+ */
+export function computeDefaultTransformName(
+  col: string,
+  category: 'TEXT' | 'NUMBER' | 'RULE',
+  ruleType: string,
+  param1?: string,
+  param2?: string,
+  availableDicts?: ValueTranslationDictionary[]
+): string {
+  if (!col) return '';
+  if (category === 'RULE' || ruleType === 'VALUE_TRANSLATION_DICT') {
+    const dict = (availableDicts || []).find(d => d.id === param1 || d.name === param1);
+    const dictName = dict?.name || 'Data Transformation Rule';
+    return `${dictName}: ${col}`;
+  }
+  switch (ruleType) {
+    case 'UPPERCASE': return `UPPERCASE: ${col}`;
+    case 'LOWERCASE': return `lowercase: ${col}`;
+    case 'TITLECASE': return `Title Case: ${col}`;
+    case 'TRIM': return `Trim Spaces: ${col}`;
+    case 'DATE_ISO': return `Standardize ISO Date: ${col}`;
+    case 'MASK_MIDDLE': return `Mask Middle: ${col}`;
+    case 'PHONE_ET': return `Format Phone (+251): ${col}`;
+    case 'ADD_PREFIX_SUFFIX': {
+      if (param1 && param2) return `Prefix "${param1}" & Suffix "${param2}": ${col}`;
+      if (param1) return `Prefix "${param1}": ${col}`;
+      if (param2) return `Suffix "${param2}": ${col}`;
+      return `Prefix/Suffix: ${col}`;
+    }
+    case 'CHAR_LENGTH': {
+      const mode = (param2 || '').split(':')[0] || 'TRUNCATE';
+      const len = param1 || '10';
+      return `${mode === 'PAD_LEFT' ? 'Pad Left' : mode === 'PAD_RIGHT' ? 'Pad Right' : 'Truncate'} (${len} chars): ${col}`;
+    }
+    case 'VALUE_REPLACE': return `Replace "${param1 || ''}" with "${param2 || ''}": ${col}`;
+    case 'REGEX_EXTRACT': return `Regex Extract: ${col}`;
+    case 'STRIP_CURRENCY': return `Strip Currency: ${col}`;
+    case 'NUMBER_CLEAN': return `Clean 2 Decimals: ${col}`;
+    case 'ROUND_INT': return `Round Integer: ${col}`;
+    case 'ABS_VALUE': return `Absolute Value: ${col}`;
+    case 'DIVIDE_BY': return `Divide ${col} by ${param1 || 'number'}`;
+    case 'MULTIPLY_BY': return `Multiply ${col} by ${param1 || 'factor'}`;
+    case 'ADD_NUMBER': return `Add ${param1 || 'number'} to ${col}`;
+    case 'SUBTRACT_NUMBER': return `Subtract ${param1 || 'number'} from ${col}`;
+    default: return `${ruleType}: ${col}`;
   }
 }
 
@@ -719,6 +828,9 @@ export const StandardFileIngestionWorkspace = forwardRef<
   // Column Transformation Dictionary Modal State (PostgreSQL Persisted - Domain 7 / Rule 23)
   const [showTransformModal, setShowTransformModal] = useState<boolean>(false);
   const [transformCol, setTransformCol] = useState<string>('');
+  const [transformName, setTransformName] = useState<string>('');
+  const [isCustomNameEdited, setIsCustomNameEdited] = useState<boolean>(false);
+  const [transformCategory, setTransformCategory] = useState<'TEXT' | 'NUMBER' | 'RULE'>('TEXT');
   const [transformRuleType, setTransformRuleType] = useState<string>('UPPERCASE');
   const [transformParam1, setTransformParam1] = useState<string>('');
   const [transformParam2, setTransformParam2] = useState<string>('');
@@ -1601,9 +1713,13 @@ export const StandardFileIngestionWorkspace = forwardRef<
   // Column Transformation Handlers
   const handleOpenTransformModal = (col: string) => {
     setTransformCol(col);
+    setTransformCategory('TEXT');
     setTransformRuleType('UPPERCASE');
-    setTransformParam1(availableValueDicts[0]?.id || 'dict-bank-codes');
+    setTransformParam1('');
     setTransformParam2('');
+    const defaultName = computeDefaultTransformName(col, 'TEXT', 'UPPERCASE', '', '', availableValueDicts);
+    setTransformName(defaultName);
+    setIsCustomNameEdited(false);
     setShowTransformModal(true);
     setActiveColMenu(null);
   };
@@ -1626,8 +1742,18 @@ export const StandardFileIngestionWorkspace = forwardRef<
 
     setParsedRows(updatedRows);
 
+    const finalName = transformName.trim() || computeDefaultTransformName(
+      transformCol,
+      transformCategory,
+      transformRuleType,
+      transformParam1,
+      transformParam2,
+      availableValueDicts
+    );
+
     const transOp: TransformOperation = {
       id: `trans_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      name: finalName,
       column: transformCol,
       ruleType: transformRuleType,
       param1: transformParam1,
@@ -1636,7 +1762,7 @@ export const StandardFileIngestionWorkspace = forwardRef<
     setAppliedTransformOps(prev => [...prev, transOp]);
 
     setShowTransformModal(false);
-    setCleaningStatusMessage(`Applied "${transformRuleType}" transformation to column "${transformCol}"`);
+    setCleaningStatusMessage(`Applied "${finalName}" to column "${transformCol}"`);
     setTimeout(() => setCleaningStatusMessage(null), 3500);
   };
 
@@ -3253,21 +3379,21 @@ export const StandardFileIngestionWorkspace = forwardRef<
         </div>
       )}
 
-      {/* 7. COLUMN TRANSFORMATION DICTIONARY MODAL */}
+      {/* 7. DATA TRANSFORMATION MODAL (Redesigned UI) */}
       {showTransformModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4 animate-in fade-in duration-150">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0F142A]/55 backdrop-blur-xs p-4 animate-in fade-in duration-150">
           <div className="bg-white border border-slate-200 rounded-2xl p-5 max-w-xl w-full shadow-2xl space-y-4 animate-in zoom-in-95 duration-150">
             <div className="flex items-center justify-between pb-3 border-b border-slate-100">
               <div className="flex items-center space-x-2.5">
-                <div className="w-9 h-9 rounded-xl bg-amber-100 text-amber-700 flex items-center justify-center">
-                  <Wand2 size={18} />
+                <div className="w-9 h-9 rounded-xl bg-orange-50 border border-orange-200 text-[#F27421] flex items-center justify-center">
+                  <Wand2 size={17} />
                 </div>
                 <div>
-                  <h3 className="text-sm font-bold text-slate-900">
-                    Data Transformation: <span className="font-mono text-amber-700 font-semibold">{transformCol}</span>
+                  <h3 className="text-sm font-bold text-[#0F142A]">
+                    Transform Column: <span className="font-mono text-[#F27421]">{transformCol}</span>
                   </h3>
                   <p className="text-[11px] text-slate-500">
-                    Apply data cleansing, case normalization, date formatting, regex or lookup rules
+                    Choose a transformation type and apply operations directly to this column
                   </p>
                 </div>
               </div>
@@ -3281,67 +3407,241 @@ export const StandardFileIngestionWorkspace = forwardRef<
             </div>
 
             <div className="space-y-4">
-              {/* Rule Selection */}
+              {/* Step 1: Transformation Type Dropdown */}
               <div>
-                <label className="block text-[11px] font-bold text-slate-700 uppercase tracking-wider mb-1.5">
-                  Select Transformation Operation
+                <label className="block text-[11px] font-bold text-[#0F142A] uppercase tracking-wider mb-1.5">
+                  Transformation Type
                 </label>
-                <div className="grid grid-cols-2 gap-2 text-xs">
-                  {[
-                    { id: 'UPPERCASE', label: 'UPPERCASE', desc: 'Convert all letters to capital' },
-                    { id: 'LOWERCASE', label: 'lowercase', desc: 'Convert all letters to lowercase' },
-                    { id: 'TITLECASE', label: 'Title Case', desc: 'Capitalize First Letter of Words' },
-                    { id: 'TRIM', label: 'Trim Spaces', desc: 'Remove leading, trailing and extra spaces' },
-                    { id: 'DATE_ISO', label: 'Format ISO Date', desc: 'Convert DD/MM/YYYY to YYYY-MM-DD' },
-                    { id: 'STRIP_CURRENCY', label: 'Strip Currency Symbols', desc: 'Keep only numeric digits and decimals' },
-                    { id: 'MASK_MIDDLE', label: 'Mask Sensitive Data', desc: 'Mask middle characters (1234****5678)' },
-                    { id: 'PHONE_ET', label: 'Ethiopian Phone (+251)', desc: 'Normalize 09/07 to +251 standard' },
-                    { id: 'VALUE_REPLACE', label: 'Find & Replace', desc: 'Replace substring with new text' },
-                    { id: 'REGEX_EXTRACT', label: 'Regex Extraction', desc: 'Extract pattern match or capture group' },
-                    { id: 'VALUE_TRANSLATION_DICT', label: 'Value Translation Dictionary', desc: 'Translate e.g. Bank Name to Bank Code via lookup dictionary' }
-                  ].map(rule => (
-                    <button
-                      key={rule.id}
-                      type="button"
-                      onClick={() => setTransformRuleType(rule.id)}
-                      className={`p-2 rounded-xl border text-left transition cursor-pointer ${
-                        transformRuleType === rule.id
-                          ? 'bg-amber-50 border-amber-400 text-amber-900 shadow-2xs'
-                          : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
-                      }`}
-                    >
-                      <div className="font-bold text-xs">{rule.label}</div>
-                      <div className="text-[10px] text-slate-500 mt-0.5">{rule.desc}</div>
-                    </button>
-                  ))}
-                </div>
+                <select
+                  value={transformCategory}
+                  onChange={(e) => {
+                    const nextCat = e.target.value as 'TEXT' | 'NUMBER' | 'RULE';
+                    setTransformCategory(nextCat);
+                    setTransformParam1('');
+                    setTransformParam2('');
+                    if (nextCat === 'TEXT') setTransformRuleType('UPPERCASE');
+                    else if (nextCat === 'NUMBER') setTransformRuleType('STRIP_CURRENCY');
+                    else {
+                      setTransformRuleType('VALUE_TRANSLATION_DICT');
+                      setTransformParam1(availableValueDicts[0]?.id || '');
+                    }
+                  }}
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-semibold text-[#0F142A] focus:outline-none focus:border-[#F27421] cursor-pointer"
+                >
+                  <option value="TEXT">Text Transformation</option>
+                  <option value="NUMBER">Number Transformation</option>
+                  <option value="RULE">Data Transformation Rule</option>
+                </select>
               </div>
 
-              {/* Extra Parameters */}
-              {transformRuleType === 'VALUE_TRANSLATION_DICT' && (
-                <div className="space-y-1.5 p-3 bg-emerald-50/70 border border-emerald-200 rounded-xl">
-                  <label className="block text-[11px] font-bold text-emerald-900 uppercase font-mono">
-                    Select Value Translation Dictionary
+              {/* Step 2: Simple Operation Buttons for Selected Type */}
+              {transformCategory === 'TEXT' && (
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1.5">
+                    Text Operations
+                  </label>
+                  <div className="flex flex-wrap gap-1.5">
+                    {[
+                      { id: 'UPPERCASE', label: 'UPPERCASE' },
+                      { id: 'LOWERCASE', label: 'lowercase' },
+                      { id: 'TITLECASE', label: 'Title Case' },
+                      { id: 'TRIM', label: 'Trim Spaces' },
+                      { id: 'DATE_ISO', label: 'ISO Date' },
+                      { id: 'MASK_MIDDLE', label: 'Mask Data' },
+                      { id: 'PHONE_ET', label: 'Phone (+251)' },
+                      { id: 'ADD_PREFIX_SUFFIX', label: 'Add Prefix / Suffix' },
+                      { id: 'CHAR_LENGTH', label: 'Character Length' },
+                      { id: 'VALUE_REPLACE', label: 'Find & Replace' },
+                      { id: 'REGEX_EXTRACT', label: 'Regex Extract' }
+                    ].map(rule => (
+                      <button
+                        key={rule.id}
+                        type="button"
+                        onClick={() => {
+                          setTransformRuleType(rule.id);
+                          setTransformParam1('');
+                          setTransformParam2(rule.id === 'CHAR_LENGTH' ? 'TRUNCATE:0' : '');
+                        }}
+                        className={`px-3 py-1.5 rounded-lg border text-xs font-semibold transition cursor-pointer ${
+                          transformRuleType === rule.id
+                            ? 'bg-[#0F142A] border-[#0F142A] text-white shadow-2xs'
+                            : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50 hover:border-slate-300'
+                        }`}
+                      >
+                        {rule.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {transformCategory === 'NUMBER' && (
+                <div>
+                  <label className="block text-[11px] font-bold text-slate-600 uppercase tracking-wider mb-1.5">
+                    Number Operations
+                  </label>
+                  <div className="flex flex-wrap gap-1.5">
+                    {[
+                      { id: 'STRIP_CURRENCY', label: 'Strip Currency' },
+                      { id: 'NUMBER_CLEAN', label: '2 Decimals' },
+                      { id: 'ROUND_INT', label: 'Round Integer' },
+                      { id: 'ABS_VALUE', label: 'Absolute Value' },
+                      { id: 'DIVIDE_BY', label: 'Divide by Number' },
+                      { id: 'MULTIPLY_BY', label: 'Multiply by Number' },
+                      { id: 'ADD_NUMBER', label: 'Add Number' },
+                      { id: 'SUBTRACT_NUMBER', label: 'Subtract Number' }
+                    ].map(rule => (
+                      <button
+                        key={rule.id}
+                        type="button"
+                        onClick={() => {
+                          setTransformRuleType(rule.id);
+                          setTransformParam1('');
+                          setTransformParam2('');
+                        }}
+                        className={`px-3 py-1.5 rounded-lg border text-xs font-semibold transition cursor-pointer ${
+                          transformRuleType === rule.id
+                            ? 'bg-[#0F142A] border-[#0F142A] text-white shadow-2xs'
+                            : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50 hover:border-slate-300'
+                        }`}
+                      >
+                        {rule.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Step 3: Contextual Parameter Inputs */}
+              {transformCategory === 'RULE' && (
+                <div className="space-y-1.5 p-3 bg-slate-50 border border-slate-200 rounded-xl">
+                  <label className="block text-[11px] font-bold text-[#0F142A] uppercase tracking-wider">
+                    Select Data Transformation Rule
                   </label>
                   <select
                     value={transformParam1 || availableValueDicts[0]?.id || ''}
                     onChange={e => setTransformParam1(e.target.value)}
-                    className="w-full bg-white border border-emerald-300 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-slate-800 focus:outline-none focus:ring-2 focus:ring-emerald-500 cursor-pointer"
+                    className="w-full bg-white border border-slate-200 rounded-lg px-2.5 py-2 text-xs font-semibold text-[#0F142A] focus:outline-none focus:border-[#F27421] cursor-pointer"
                   >
                     {availableValueDicts.map(dict => (
                       <option key={dict.id} value={dict.id}>
-                        {dict.name} ({dict.mappings.length} mapping pairs)
+                        {dict.name} ({dict.mappings.length} pairs)
                       </option>
                     ))}
                   </select>
-                  <p className="text-[10px] text-emerald-700">
-                    Translates human-readable descriptions (e.g. Bank Name "Commercial Bank of Ethiopia" or "CBE") to database codes ("01") configured in System Settings.
+                  <p className="text-[10px] text-slate-500">
+                    Rules are managed in Data Setup → Data Transformation Rules.
                   </p>
                 </div>
               )}
 
+              {transformRuleType === 'ADD_PREFIX_SUFFIX' && (
+                <div className="grid grid-cols-2 gap-2.5 p-3 bg-slate-50 border border-slate-200 rounded-xl">
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-700 uppercase mb-1">
+                      Prefix (Before)
+                    </label>
+                    <input
+                      type="text"
+                      value={transformParam1}
+                      onChange={e => setTransformParam1(e.target.value)}
+                      placeholder="e.g. TXN-"
+                      className="w-full bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:border-[#F27421]"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-700 uppercase mb-1">
+                      Suffix (After)
+                    </label>
+                    <input
+                      type="text"
+                      value={transformParam2}
+                      onChange={e => setTransformParam2(e.target.value)}
+                      placeholder="e.g. -ETB"
+                      className="w-full bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:border-[#F27421]"
+                    />
+                  </div>
+                </div>
+              )}
+
+              {transformRuleType === 'CHAR_LENGTH' && (
+                <div className="grid grid-cols-3 gap-2.5 p-3 bg-slate-50 border border-slate-200 rounded-xl">
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-700 uppercase mb-1">
+                      Length
+                    </label>
+                    <input
+                      type="number"
+                      min={1}
+                      value={transformParam1}
+                      onChange={e => setTransformParam1(e.target.value)}
+                      placeholder="e.g. 12"
+                      className="w-full bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:border-[#F27421]"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-700 uppercase mb-1">
+                      Mode
+                    </label>
+                    <select
+                      value={(transformParam2 || 'TRUNCATE:0').split(':')[0]}
+                      onChange={e => {
+                        const padC = (transformParam2 || 'TRUNCATE:0').split(':')[1] || '0';
+                        setTransformParam2(`${e.target.value}:${padC}`);
+                      }}
+                      className="w-full bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:border-[#F27421]"
+                    >
+                      <option value="TRUNCATE">Truncate</option>
+                      <option value="PAD_LEFT">Pad Left</option>
+                      <option value="PAD_RIGHT">Pad Right</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-[10px] font-bold text-slate-700 uppercase mb-1">
+                      Pad Char
+                    </label>
+                    <input
+                      type="text"
+                      maxLength={1}
+                      value={(transformParam2 || 'TRUNCATE:0').split(':')[1] ?? '0'}
+                      onChange={e => {
+                        const mode = (transformParam2 || 'TRUNCATE:0').split(':')[0] || 'TRUNCATE';
+                        setTransformParam2(`${mode}:${e.target.value}`);
+                      }}
+                      placeholder="0"
+                      className="w-full bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs font-mono focus:outline-none focus:border-[#F27421]"
+                    />
+                  </div>
+                </div>
+              )}
+
+              {(transformRuleType === 'DIVIDE_BY' ||
+                transformRuleType === 'MULTIPLY_BY' ||
+                transformRuleType === 'ADD_NUMBER' ||
+                transformRuleType === 'SUBTRACT_NUMBER') && (
+                <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl">
+                  <label className="block text-[10px] font-bold text-slate-700 uppercase mb-1">
+                    {transformRuleType === 'DIVIDE_BY'
+                      ? 'Divide By (Divisor)'
+                      : transformRuleType === 'MULTIPLY_BY'
+                      ? 'Multiply By (Factor)'
+                      : transformRuleType === 'ADD_NUMBER'
+                      ? 'Number to Add'
+                      : 'Number to Subtract'}
+                  </label>
+                  <input
+                    type="number"
+                    step="any"
+                    value={transformParam1}
+                    onChange={e => setTransformParam1(e.target.value)}
+                    placeholder={transformRuleType === 'DIVIDE_BY' ? 'e.g. 100' : 'e.g. 10'}
+                    className="w-full bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs font-mono focus:outline-none focus:border-[#F27421]"
+                  />
+                </div>
+              )}
+
               {transformRuleType === 'VALUE_REPLACE' && (
-                <div className="grid grid-cols-2 gap-2">
+                <div className="grid grid-cols-2 gap-2.5 p-3 bg-slate-50 border border-slate-200 rounded-xl">
                   <div>
                     <label className="block text-[10px] font-bold text-slate-700 uppercase mb-1">
                       Text to Find
@@ -3350,8 +3650,8 @@ export const StandardFileIngestionWorkspace = forwardRef<
                       type="text"
                       value={transformParam1}
                       onChange={e => setTransformParam1(e.target.value)}
-                      placeholder="e.g. USD or pending"
-                      className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1 text-xs"
+                      placeholder="Find text"
+                      className="w-full bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:border-[#F27421]"
                     />
                   </div>
                   <div>
@@ -3362,24 +3662,24 @@ export const StandardFileIngestionWorkspace = forwardRef<
                       type="text"
                       value={transformParam2}
                       onChange={e => setTransformParam2(e.target.value)}
-                      placeholder="e.g. ETB or SETTLED"
-                      className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1 text-xs"
+                      placeholder="Replacement text"
+                      className="w-full bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs focus:outline-none focus:border-[#F27421]"
                     />
                   </div>
                 </div>
               )}
 
               {transformRuleType === 'REGEX_EXTRACT' && (
-                <div>
+                <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl">
                   <label className="block text-[10px] font-bold text-slate-700 uppercase mb-1">
-                    Regular Expression (with capture group)
+                    Regular Expression
                   </label>
                   <input
                     type="text"
                     value={transformParam1}
                     onChange={e => setTransformParam1(e.target.value)}
-                    placeholder="e.g. ^(\d{6}) to extract first 6 digits"
-                    className="w-full bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1 text-xs font-mono"
+                    placeholder="^(\d{6})"
+                    className="w-full bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs font-mono focus:outline-none focus:border-[#F27421]"
                   />
                 </div>
               )}
@@ -3387,14 +3687,14 @@ export const StandardFileIngestionWorkspace = forwardRef<
               {/* Live Preview Table */}
               <div className="space-y-1">
                 <span className="text-[10px] font-bold text-slate-500 uppercase font-mono">
-                  Live Preview (First 4 rows):
+                  Live Preview (First 4 rows)
                 </span>
                 <div className="border border-slate-200 rounded-xl overflow-hidden bg-slate-50/70 text-[11px] font-mono">
                   <table className="w-full text-left border-collapse">
                     <thead>
                       <tr className="bg-slate-100 border-b border-slate-200 text-slate-600 font-bold">
-                        <th className="py-1 px-2 border-r border-slate-200">Before ({transformCol})</th>
-                        <th className="py-1 px-2 text-amber-700 font-bold">After Transformation</th>
+                        <th className="py-1.5 px-2.5 border-r border-slate-200">Before ({transformCol})</th>
+                        <th className="py-1.5 px-2.5 text-[#F27421] font-bold">After Transformation</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
@@ -3409,10 +3709,10 @@ export const StandardFileIngestionWorkspace = forwardRef<
                         );
                         return (
                           <tr key={rIdx}>
-                            <td className="py-1 px-2 border-r border-slate-200 text-slate-500 truncate max-w-[200px]">
+                            <td className="py-1.5 px-2.5 border-r border-slate-200 text-slate-500 truncate max-w-[200px]">
                               {before !== undefined && before !== null && String(before) !== '' ? String(before) : '-'}
                             </td>
-                            <td className="py-1 px-2 text-amber-900 font-semibold truncate max-w-[200px]">
+                            <td className="py-1.5 px-2.5 text-[#0F142A] font-semibold truncate max-w-[200px]">
                               {after || '-'}
                             </td>
                           </tr>
@@ -3435,7 +3735,7 @@ export const StandardFileIngestionWorkspace = forwardRef<
                 <button
                   type="button"
                   onClick={handleApplyTransform}
-                  className="px-4 py-2 bg-amber-600 hover:bg-amber-700 text-white font-bold text-xs rounded-xl shadow-xs transition-colors cursor-pointer flex items-center space-x-1.5"
+                  className="px-4 py-2 bg-[#F27421] hover:bg-[#e06313] text-white font-bold text-xs rounded-xl shadow-xs transition-colors cursor-pointer flex items-center space-x-1.5"
                 >
                   <Wand2 size={13} />
                   <span>Apply Transformation</span>

@@ -311,10 +311,16 @@ export class RecipeExecutionService {
         auditTrail.push({
           stepNum: stepCounter++,
           stage: 'VALUE_TRANSLATIONS',
-          action: `TRANSFORM_${col}`,
+          action: transOp.name ? `TRANSFORM_${transOp.name.replace(/\s+/g, '_').toUpperCase()}` : `TRANSFORM_${col}`,
           affectedRowsCount: affected,
           durationMs: Date.now() - opStart,
-          details: { column: col, ruleType: transOp.ruleType, param1: transOp.param1, param2: transOp.param2 }
+          details: {
+            name: transOp.name || `${col}: ${transOp.ruleType}`,
+            column: col,
+            ruleType: transOp.ruleType,
+            param1: transOp.param1,
+            param2: transOp.param2
+          }
         });
       }
 
@@ -689,6 +695,55 @@ export class RecipeExecutionService {
       case 'STRIP_CURRENCY':
       case 'NUMERIC_CLEAN':
         return this.cleanNumericAmount(strVal);
+      case 'NUMBER_CLEAN': {
+        const cleaned = this.cleanNumericAmount(strVal);
+        const num = parseFloat(cleaned);
+        return isNaN(num) ? strVal : num.toFixed(2);
+      }
+      case 'ROUND_INT': {
+        const cleaned = this.cleanNumericAmount(strVal);
+        const num = parseFloat(cleaned);
+        return isNaN(num) ? strVal : String(Math.round(num));
+      }
+      case 'ABS_VALUE': {
+        const cleaned = this.cleanNumericAmount(strVal);
+        const num = parseFloat(cleaned);
+        return isNaN(num) ? strVal : String(Math.abs(num));
+      }
+      case 'DIVIDE_BY': {
+        const cleaned = this.cleanNumericAmount(strVal);
+        const num = parseFloat(cleaned);
+        const divisor = parseFloat(param1 || '');
+        return isNaN(num) || isNaN(divisor) || divisor === 0 ? strVal : String(num / divisor);
+      }
+      case 'MULTIPLY_BY': {
+        const cleaned = this.cleanNumericAmount(strVal);
+        const num = parseFloat(cleaned);
+        const factor = parseFloat(param1 || '');
+        return isNaN(num) || isNaN(factor) ? strVal : String(num * factor);
+      }
+      case 'ADD_NUMBER': {
+        const cleaned = this.cleanNumericAmount(strVal);
+        const num = parseFloat(cleaned);
+        const delta = parseFloat(param1 || '');
+        return isNaN(num) || isNaN(delta) ? strVal : String(num + delta);
+      }
+      case 'SUBTRACT_NUMBER': {
+        const cleaned = this.cleanNumericAmount(strVal);
+        const num = parseFloat(cleaned);
+        const delta = parseFloat(param1 || '');
+        return isNaN(num) || isNaN(delta) ? strVal : String(num - delta);
+      }
+      case 'ADD_PREFIX_SUFFIX':
+        return `${param1 || ''}${strVal}${param2 || ''}`;
+      case 'CHAR_LENGTH': {
+        const targetLen = parseInt(param1 || '', 10);
+        if (isNaN(targetLen) || targetLen <= 0) return strVal;
+        const [mode, padChar] = (param2 || 'TRUNCATE:0').split(':');
+        if (mode === 'PAD_LEFT') return strVal.padStart(targetLen, padChar || '0');
+        if (mode === 'PAD_RIGHT') return strVal.padEnd(targetLen, padChar || ' ');
+        return strVal.slice(0, targetLen);
+      }
       case 'PHONE_ET':
         return this.normalizeEthiopianPhone(strVal);
       case 'MASK_MIDDLE':

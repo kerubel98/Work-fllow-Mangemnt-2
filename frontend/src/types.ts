@@ -690,6 +690,7 @@ export type TransformRuleType =
 
 export interface TransformOperation {
   id: string;
+  name?: string;
   column: string;
   ruleType: TransformRuleType | string;
   param1?: string;

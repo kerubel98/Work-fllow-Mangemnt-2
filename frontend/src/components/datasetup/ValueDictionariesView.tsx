@@ -3,13 +3,14 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useMemo, useEffect } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import {
   Search, Plus, Upload, Trash2, Check, ArrowRight, Sparkles, BookOpen,
-  ChevronDown, X, Save, ArrowDown, Wand2
+  ChevronDown, X, Save, ArrowDown, Wand2, AlertCircle
 } from 'lucide-react';
 import { api } from '../../api/client';
 import { ValueTranslationDictionary } from '../../types';
+import { DataTablePagination } from '../common/DataTablePagination';
 
 export const PRE_TRANSFORM_OPTIONS = [
   { value: '', label: 'None (Raw Value)' },
@@ -50,6 +51,19 @@ export function ValueDictionariesView() {
   const [isSaving, setIsSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [showNewModal, setShowNewModal] = useState(false);
+  const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
+
+  // New Value Pair Inputs
+  const [newPairCode, setNewPairCode] = useState('');
+  const [newPairName, setNewPairName] = useState('');
+  const [newPairShort, setNewPairShort] = useState('');
+  const newCodeInputRef = useRef<HTMLInputElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Pairs Table Pagination & Search (Cases-style)
+  const [pairSearchQuery, setPairSearchQuery] = useState('');
+  const [pairsPage, setPairsPage] = useState(1);
+  const [pairsPageSize, setPairsPageSize] = useState(7);
 
   // New Dictionary Form
   const [newName, setNewName] = useState('');
@@ -204,7 +218,11 @@ export function ValueDictionariesView() {
         noMatchPolicy: d.noMatchPolicy as any,
         preTransformRule: d.preTransformRule,
         postTransformRule: d.postTransformRule,
-        pairs: (d.mappings || []).map(m => ({ code: m.source, name: m.target, short: m.shortCode })),
+        pairs: (d.mappings || []).map((m: any) => ({
+          code: String(m.code ?? m.sourceValue ?? m.source ?? ''),
+          name: String(m.name ?? m.targetValue ?? m.target ?? ''),
+          short: String(m.short ?? m.shortName ?? m.shortCode ?? m.notes ?? '')
+        })),
         missingPairs: (d.untranslatedSamples || []).map(u => ({ code: u.rawValue, count: u.occurrences }))
       }));
       setDictionaries(mapped);
@@ -238,7 +256,15 @@ export function ValueDictionariesView() {
         trimWhitespace: activeDict.trim,
         ignoreCase: activeDict.ignoreCase,
         noMatchPolicy: activeDict.noMatchPolicy as any,
-        mappings: activeDict.pairs.map(p => ({ source: p.code, target: p.name, shortCode: p.short })),
+        mappings: activeDict.pairs.map(p => ({
+          sourceValue: p.code,
+          targetValue: p.name,
+          shortName: p.short,
+          notes: p.short,
+          source: p.code,
+          target: p.name,
+          shortCode: p.short
+        })),
         preTransformRule: activeDict.preTransformRule,
         postTransformRule: activeDict.postTransformRule
       } as any).then(res => {
@@ -251,10 +277,16 @@ export function ValueDictionariesView() {
         else if (activeDict.preTransformRule === 'STRIP_CURRENCY') val = val.replace(/[^0-9.-]+/g, '');
         else if (activeDict.trim || activeDict.preTransformRule === 'TRIM') val = val.trim();
 
-        const match = activeDict.pairs.find(p =>
-          activeDict.ignoreCase ? p.code.toLowerCase() === val.toLowerCase() : p.code === val
-        );
-        let out = match ? match.name : (activeDict.noMatchPolicy === 'KEEP_ORIGINAL' ? val : '');
+        const match = activeDict.pairs.find(p => {
+          const codeMatch = activeDict.ignoreCase ? p.code.toLowerCase() === val.toLowerCase() : p.code === val;
+          const nameMatch = (activeDict.direction === 'BOTH' || activeDict.direction === 'REVERSE')
+            ? (activeDict.ignoreCase ? p.name.toLowerCase() === val.toLowerCase() : p.name === val)
+            : false;
+          return codeMatch || nameMatch;
+        });
+        let out = match
+          ? (match.code.toLowerCase() === val.toLowerCase() ? match.name : match.code)
+          : (activeDict.noMatchPolicy === 'KEEP_ORIGINAL' ? val : '');
         if (activeDict.postTransformRule === 'UPPERCASE') out = out.toUpperCase();
         setTryResult({
           input: tryInput,
@@ -271,12 +303,16 @@ export function ValueDictionariesView() {
     if (tryResult) return tryResult.output;
     if (!tryInput.trim() || !activeDict) return '';
     const needle = activeDict.trim ? tryInput.trim() : tryInput;
-    const match = activeDict.pairs.find(p =>
-      activeDict.ignoreCase
-        ? p.code.toLowerCase() === needle.toLowerCase()
-        : p.code === needle
-    );
-    if (match) return match.name;
+    const match = activeDict.pairs.find(p => {
+      const codeMatch = activeDict.ignoreCase ? p.code.toLowerCase() === needle.toLowerCase() : p.code === needle;
+      const nameMatch = (activeDict.direction === 'BOTH' || activeDict.direction === 'REVERSE')
+        ? (activeDict.ignoreCase ? p.name.toLowerCase() === needle.toLowerCase() : p.name === needle)
+        : false;
+      return codeMatch || nameMatch;
+    });
+    if (match) {
+      return match.code.toLowerCase() === needle.toLowerCase() ? match.name : match.code;
+    }
     return activeDict.noMatchPolicy === 'KEEP_ORIGINAL' ? tryInput : '(no match)';
   }, [tryResult, tryInput, activeDict]);
 
@@ -290,20 +326,69 @@ export function ValueDictionariesView() {
     const nextPairs = [...activeDict.pairs];
     nextPairs[index] = { ...nextPairs[index], [field]: val };
     updateActiveDict({ pairs: nextPairs });
+    setHasUnsavedChanges(true);
   };
 
   const handleDeletePair = (index: number) => {
     const nextPairs = activeDict.pairs.filter((_, i) => i !== index);
     updateActiveDict({ pairs: nextPairs });
+    setHasUnsavedChanges(true);
+  };
+
+  const handleAddNewPair = () => {
+    if (!newPairCode.trim() && !newPairName.trim()) return;
+    const newPair = {
+      code: newPairCode.trim(),
+      name: newPairName.trim(),
+      short: newPairShort.trim() || undefined
+    };
+    const nextPairs = [newPair, ...activeDict.pairs];
+    updateActiveDict({ pairs: nextPairs });
+    setNewPairCode('');
+    setNewPairName('');
+    setNewPairShort('');
+    setPairsPage(1);
+    setHasUnsavedChanges(true);
+  };
+
+  const handleCsvUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const text = event.target?.result as string;
+      if (!text) return;
+      const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+      const incoming: { code: string; name: string; short?: string }[] = [];
+      for (const line of lines) {
+        const delimiter = line.includes('\t') ? '\t' : line.includes(';') && !line.includes(',') ? ';' : ',';
+        const parts = line.split(delimiter).map(s => s.trim().replace(/^["']|["']$/g, ''));
+        if (parts[0] && parts[1]) {
+          incoming.push({ code: parts[0], name: parts[1], short: parts[2] || undefined });
+        }
+      }
+      if (incoming.length > 0) {
+        const existingCodes = new Set(activeDict.pairs.map(p => p.code.toLowerCase()));
+        const added = incoming.filter(i => !existingCodes.has(i.code.toLowerCase()));
+        const nextPairs = [...added, ...activeDict.pairs];
+        updateActiveDict({ pairs: nextPairs });
+        setHasUnsavedChanges(true);
+        setPairsPage(1);
+      }
+    };
+    reader.readAsText(file);
+    e.target.value = '';
   };
 
   const handleAddPairFromMissing = (missingCode: string) => {
     const defaultName = missingCode === '07' ? 'Oromia Bank' : missingCode === '11' ? 'Cooperative Bank of Oromia' : 'New Bank';
     const defaultShort = missingCode === '07' ? 'OB' : missingCode === '11' ? 'CBO' : undefined;
 
-    const nextPairs = [...activeDict.pairs, { code: missingCode, name: defaultName, short: defaultShort }];
+    const nextPairs = [{ code: missingCode, name: defaultName, short: defaultShort }, ...activeDict.pairs];
     const nextMissing = (activeDict.missingPairs || []).filter(m => m.code !== missingCode);
     updateActiveDict({ pairs: nextPairs, missingPairs: nextMissing });
+    setHasUnsavedChanges(true);
+    setPairsPage(1);
   };
 
   const handleSave = async () => {
@@ -318,15 +403,27 @@ export function ValueDictionariesView() {
         noMatchPolicy: activeDict.noMatchPolicy as any,
         preTransformRule: activeDict.preTransformRule,
         postTransformRule: activeDict.postTransformRule,
-        mappings: activeDict.pairs.map(p => ({ source: p.code, target: p.name, shortCode: p.short }))
+        mappings: activeDict.pairs.map(p => ({
+          sourceValue: p.code,
+          targetValue: p.name,
+          shortName: p.short,
+          notes: p.short,
+          source: p.code,
+          target: p.name,
+          shortCode: p.short,
+          code: p.code,
+          name: p.name
+        }))
       };
       await api.updateValueTranslationDictionary(activeDict.id, payload);
       setSaveSuccess(true);
-      setTimeout(() => setSaveSuccess(false), 2000);
+      setHasUnsavedChanges(false);
+      setTimeout(() => setSaveSuccess(false), 2500);
     } catch (e) {
       console.warn('Failed to save to PostgreSQL, updating locally:', e);
       setSaveSuccess(true);
-      setTimeout(() => setSaveSuccess(false), 2000);
+      setHasUnsavedChanges(false);
+      setTimeout(() => setSaveSuccess(false), 2500);
     } finally {
       setIsSaving(false);
     }
@@ -375,56 +472,137 @@ export function ValueDictionariesView() {
     setNewName('');
   };
 
+  // Reset table pagination on active dictionary or filter change
+  useEffect(() => {
+    setPairsPage(1);
+  }, [selectedId, pairSearchQuery]);
+
+  const filteredPairs = useMemo(() => {
+    const q = pairSearchQuery.trim().toLowerCase();
+    const pairsWithIdx = (activeDict.pairs || []).map((p, origIdx) => ({ ...p, _origIdx: origIdx }));
+    if (!q) return pairsWithIdx;
+    return pairsWithIdx.filter(p =>
+      (p.code || '').toLowerCase().includes(q) ||
+      (p.name || '').toLowerCase().includes(q) ||
+      (p.short || '').toLowerCase().includes(q)
+    );
+  }, [activeDict.pairs, pairSearchQuery]);
+
+  const totalPairsPages = Math.max(1, Math.ceil(filteredPairs.length / pairsPageSize));
+  const safePairsPage = Math.min(pairsPage, totalPairsPages);
+  const paginatedPairs = useMemo(() => {
+    const start = (safePairsPage - 1) * pairsPageSize;
+    return filteredPairs.slice(start, start + pairsPageSize);
+  }, [filteredPairs, safePairsPage, pairsPageSize]);
+
   return (
     <div className="space-y-4 text-xs text-slate-800">
-      {/* 3-Column Grid matching 72_value_dictionaries.png */}
+      {/* 2-Column Expanded Layout: Left Sidebar (3 cols) + Wide Transformation Workbench (9 cols) */}
       <div className="grid grid-cols-12 gap-5 items-start">
-        {/* COLUMN 1: LEFT SIDEBAR (3 cols) */}
-        <div className="col-span-12 lg:col-span-3 bg-white border border-slate-200/80 rounded-2xl p-4 shadow-xs space-y-4">
-          <div className="relative">
-            <Search size={14} className="absolute left-3 top-2.5 text-slate-400" />
-            <input
-              type="text"
-              placeholder="Search dictionaries..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="pl-8 pr-3 py-1.5 border border-slate-200 rounded-xl text-xs w-full focus:outline-none shadow-2xs"
-            />
+        {/* COLUMN 1: LEFT SIDEBAR (3 cols) — Rules List + Try It + Not In Dictionary */}
+        <div className="col-span-12 lg:col-span-3 space-y-5">
+          {/* Rules Selector Card */}
+          <div className="bg-white border border-slate-200/80 rounded-2xl p-4 shadow-xs space-y-4">
+            <div className="relative">
+              <Search size={14} className="absolute left-3 top-2.5 text-slate-400" />
+              <input
+                type="text"
+                placeholder="Search transformation rules..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="pl-8 pr-3 py-1.5 border border-slate-200 rounded-xl text-xs w-full focus:outline-none shadow-2xs"
+              />
+            </div>
+
+            <div className="space-y-5">
+              {groups.map(grp => (
+                <div key={grp.name} className="space-y-1.5">
+                  <div className="text-[11px] font-semibold text-slate-400 px-2">{grp.name}</div>
+                  <div className="space-y-0.5">
+                    {grp.items.map(item => {
+                      const isSelected = item.id === activeDict.id;
+                      return (
+                        <button
+                          key={item.id}
+                          type="button"
+                          onClick={() => setSelectedId(item.id)}
+                          className={`w-full text-left px-3 py-2 rounded-xl transition cursor-pointer flex items-center justify-between text-xs ${
+                            isSelected
+                              ? 'bg-orange-50/40 text-slate-900 font-bold border-l-2 border-[#F27421]'
+                              : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900 font-medium'
+                          }`}
+                        >
+                          <span className="truncate pr-2">{item.name}</span>
+                          <span className={`text-[11px] font-mono px-1.5 py-0.2 rounded ${isSelected ? 'text-slate-900 font-bold' : 'text-slate-400'}`}>
+                            {item.pairs.length}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
 
-          <div className="space-y-5">
-            {groups.map(grp => (
-              <div key={grp.name} className="space-y-1.5">
-                <div className="text-[11px] font-semibold text-slate-400 px-2">{grp.name}</div>
-                <div className="space-y-0.5">
-                  {grp.items.map(item => {
-                    const isSelected = item.id === activeDict.id;
-                    return (
-                      <button
-                        key={item.id}
-                        type="button"
-                        onClick={() => setSelectedId(item.id)}
-                        className={`w-full text-left px-3 py-2 rounded-xl transition cursor-pointer flex items-center justify-between text-xs ${
-                          isSelected
-                            ? 'bg-orange-50/40 text-slate-900 font-bold border-l-2 border-[#F97316]'
-                            : 'text-slate-600 hover:bg-slate-50 hover:text-slate-900 font-medium'
-                        }`}
-                      >
-                        <span className="truncate pr-2">{item.name}</span>
-                        <span className={`text-[11px] font-mono px-1.5 py-0.2 rounded ${isSelected ? 'text-slate-900 font-bold' : 'text-slate-400'}`}>
-                          {item.pairs.length}
-                        </span>
-                      </button>
-                    );
-                  })}
-                </div>
+          {/* Try It Card (Moved to Left) */}
+          <div className="bg-white border border-slate-200/80 rounded-2xl p-5 shadow-xs space-y-3">
+            <div className="flex items-center justify-between">
+              <h3 className="font-bold text-slate-900 text-xs">Try it</h3>
+            </div>
+            <input
+              type="text"
+              value={tryInput}
+              onChange={(e) => setTryInput(e.target.value)}
+              placeholder="e.g. 02, $1,500.00, 0911..."
+              className="w-full px-3 py-2 border border-slate-200 rounded-xl font-mono text-xs focus:outline-none focus:border-[#F27421] shadow-2xs"
+            />
+
+            <div className={`p-3 text-white rounded-xl font-bold text-xs text-center shadow-xs transition-colors ${
+              tryResult?.matched || (activeDict.pairs.some(p => p.code === tryInput) && !tryResult)
+                ? 'bg-[#F27421]'
+                : 'bg-slate-700'
+            }`}>
+              {translationOutput || (tryInput ? '(no match)' : 'Type a code to preview')}
+            </div>
+          </div>
+
+          {/* Not In This Rule Card (Moved to Left) */}
+          <div className="bg-white border border-slate-200/80 rounded-2xl p-5 shadow-xs space-y-3">
+            <div className="flex items-center justify-between">
+              <h3 className="font-bold text-slate-900 text-xs">Not in this rule</h3>
+              <span className="px-1.5 py-0.2 bg-slate-100 text-slate-700 font-bold rounded text-[10px]">
+                {activeDict.missingPairs?.length || 0}
+              </span>
+            </div>
+
+            {(!activeDict.missingPairs || activeDict.missingPairs.length === 0) ? (
+              <div className="text-[11px] text-slate-400">All observed codes in data are mapped.</div>
+            ) : (
+              <div className="space-y-2">
+                {activeDict.missingPairs.map(m => (
+                  <div key={m.code} className="p-2.5 bg-slate-50 border border-slate-100 rounded-xl flex items-center justify-between text-xs">
+                    <div className="flex items-center space-x-2">
+                      <span className="font-mono font-bold text-slate-900">{m.code}</span>
+                      <span className="text-[11px] text-slate-400 font-sans">{m.count} rows</span>
+                    </div>
+
+                    <button
+                      type="button"
+                      onClick={() => handleAddPairFromMissing(m.code)}
+                      className="px-2.5 py-1 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 rounded-lg text-xs font-semibold transition cursor-pointer shadow-2xs"
+                    >
+                      Add name
+                    </button>
+                  </div>
+                ))}
               </div>
-            ))}
+            )}
           </div>
         </div>
 
-        {/* COLUMN 2: CENTER WORKBENCH (6 cols) */}
-        <div className="col-span-12 lg:col-span-6 bg-white border border-slate-200/80 rounded-2xl p-6 shadow-xs space-y-5">
+        {/* COLUMN 2: EXPANDED TRANSFORMATION WORKBENCH (9 cols) */}
+        <div className="col-span-12 lg:col-span-9 bg-white border border-slate-200/80 rounded-2xl p-6 shadow-xs space-y-5">
           {/* Header Row */}
           <div className="flex items-start justify-between">
             <div>
@@ -433,6 +611,12 @@ export function ValueDictionariesView() {
                 <span className="px-2 py-0.5 bg-slate-100 text-slate-600 rounded-full text-[10px] font-medium">
                   {activeDict.group}
                 </span>
+                {hasUnsavedChanges && (
+                  <span className="px-2 py-0.5 bg-amber-50 text-amber-700 border border-amber-200 rounded-full text-[10px] font-medium flex items-center gap-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
+                    Unsaved edits
+                  </span>
+                )}
               </div>
               <div className="text-[11px] text-slate-400 mt-0.5">
                 {activeDict.pairs.length} pairs · {activeDict.appliedTo}
@@ -440,8 +624,16 @@ export function ValueDictionariesView() {
             </div>
 
             <div className="flex items-center space-x-2">
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".csv,.txt,.tsv"
+                onChange={handleCsvUpload}
+                className="hidden"
+              />
               <button
                 type="button"
+                onClick={() => fileInputRef.current?.click()}
                 className="px-3 py-1.5 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 rounded-xl font-semibold text-xs transition cursor-pointer flex items-center space-x-1.5 shadow-2xs"
               >
                 <Upload size={13} className="text-slate-500" />
@@ -452,10 +644,23 @@ export function ValueDictionariesView() {
                 type="button"
                 onClick={handleSave}
                 disabled={isSaving}
-                className="px-4 py-1.5 bg-[#0F142A] hover:bg-slate-800 text-white rounded-xl font-semibold text-xs transition cursor-pointer flex items-center space-x-1.5 shadow-xs"
+                className={`px-4 py-1.5 rounded-xl font-semibold text-xs transition cursor-pointer flex items-center space-x-1.5 shadow-xs ${
+                  hasUnsavedChanges
+                    ? 'bg-[#F27421] hover:bg-[#d86316] text-white shadow-orange-500/20'
+                    : 'bg-[#0F142A] hover:bg-slate-800 text-white'
+                }`}
               >
-                {saveSuccess ? <Check size={13} className="text-emerald-400" /> : <Save size={13} />}
-                <span>{isSaving ? 'Saving...' : saveSuccess ? 'Saved' : 'Save changes'}</span>
+                {saveSuccess ? (
+                  <>
+                    <Check size={13} className="text-emerald-400" />
+                    <span>Saved</span>
+                  </>
+                ) : (
+                  <>
+                    <Save size={13} />
+                    <span>{isSaving ? 'Saving...' : hasUnsavedChanges ? 'Save changes *' : 'Save changes'}</span>
+                  </>
+                )}
               </button>
             </div>
           </div>
@@ -539,165 +744,189 @@ export function ValueDictionariesView() {
                 </select>
               </div>
             </div>
-
-            {/* Row 2: Data Transformation Rules (Pre-Lookup & Post-Lookup) */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 pt-2 border-t border-slate-100/80">
-              <div>
-                <div className="text-[11px] font-semibold text-slate-500 flex items-center gap-1.5 mb-1">
-                  <Wand2 size={12} className="text-[#F27421]" />
-                  <span>Pre-Lookup Data Transform</span>
-                </div>
-                <select
-                  value={activeDict.preTransformRule || ''}
-                  onChange={e => updateActiveDict({ preTransformRule: e.target.value || undefined })}
-                  className="w-full px-2.5 py-1.5 border border-slate-200 rounded-xl text-xs bg-white text-slate-800 font-medium focus:outline-none focus:border-[#F27421] cursor-pointer shadow-2xs"
-                >
-                  {PRE_TRANSFORM_OPTIONS.map(opt => (
-                    <option key={opt.value} value={opt.value}>{opt.label}</option>
-                  ))}
-                </select>
-                <div className="text-[10px] text-slate-400 mt-0.5">Cleans or formats raw input before dictionary lookup</div>
-              </div>
-
-              <div>
-                <div className="text-[11px] font-semibold text-slate-500 flex items-center gap-1.5 mb-1">
-                  <ArrowRight size={12} className="text-blue-500" />
-                  <span>Post-Lookup Data Transform</span>
-                </div>
-                <select
-                  value={activeDict.postTransformRule || ''}
-                  onChange={e => updateActiveDict({ postTransformRule: e.target.value || undefined })}
-                  className="w-full px-2.5 py-1.5 border border-slate-200 rounded-xl text-xs bg-white text-slate-800 font-medium focus:outline-none focus:border-[#F27421] cursor-pointer shadow-2xs"
-                >
-                  {POST_TRANSFORM_OPTIONS.map(opt => (
-                    <option key={opt.value} value={opt.value}>{opt.label}</option>
-                  ))}
-                </select>
-                <div className="text-[10px] text-slate-400 mt-0.5">Formats or masks target result after dictionary lookup</div>
-              </div>
-            </div>
           </div>
 
-          {/* Pairs Table matching 72_value_dictionaries.png */}
-          <div className="border border-slate-200/80 rounded-2xl overflow-hidden shadow-xs">
-            <table className="w-full text-left text-xs border-collapse">
-              <thead>
-                <tr className="border-b border-slate-100 text-slate-400 font-medium text-[11px] bg-slate-50/50">
-                  <th className="py-2.5 px-4 w-28">Code</th>
-                  <th className="py-2.5 px-4">Name</th>
-                  <th className="py-2.5 px-4 w-24">Short</th>
-                  <th className="py-2.5 px-4 text-right w-10"></th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100 font-mono text-xs">
-                {activeDict.pairs.map((p, idx) => (
-                  <tr key={`${p.code}-${idx}`} className="hover:bg-slate-50/60 transition">
-                    <td className="py-2.5 px-4 font-bold text-slate-900">
-                      {p.code}
+          {/* Cases-Style Paginated Pairs Table */}
+          <div className="bg-white border border-slate-200 rounded-2xl shadow-2xs overflow-hidden flex flex-col">
+            {/* Table Toolbar */}
+            <div className="px-4 py-3 border-b border-slate-200 bg-slate-50/50 flex flex-wrap items-center justify-between gap-3">
+              <div className="relative min-w-[220px] max-w-xs flex-1">
+                <Search size={13} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                <input
+                  type="text"
+                  placeholder="Filter mapping pairs..."
+                  value={pairSearchQuery}
+                  onChange={(e) => setPairSearchQuery(e.target.value)}
+                  className="pl-8 pr-3 py-1.5 bg-white border border-slate-200 rounded-xl text-xs w-full focus:outline-none focus:border-[#F27421] shadow-2xs"
+                />
+              </div>
+
+              <div className="flex items-center space-x-3">
+                <button
+                  type="button"
+                  onClick={() => {
+                    newCodeInputRef.current?.focus();
+                  }}
+                  className="px-3 py-1.5 bg-[#0F142A] hover:bg-slate-800 text-white rounded-xl text-xs font-semibold flex items-center space-x-1.5 transition cursor-pointer shadow-xs"
+                >
+                  <Plus size={13} />
+                  <span>Add Value</span>
+                </button>
+                <div className="text-[11px] text-slate-500 font-medium">
+                  Showing <span className="font-bold text-slate-800">{filteredPairs.length}</span> pairs
+                </div>
+              </div>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs border-collapse">
+                <thead>
+                  <tr className="border-b border-slate-200 text-slate-400 font-medium text-[11px] bg-slate-50/70">
+                    <th className="py-3 px-4 font-normal w-12">#</th>
+                    <th className="py-3 px-4 font-medium w-48">Code / Source</th>
+                    <th className="py-3 px-4 font-medium">Target Name / Value</th>
+                    <th className="py-3 px-4 font-medium w-36">Short / Note</th>
+                    <th className="py-3 px-4 font-normal text-right w-14">Action</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 font-mono text-xs">
+                  {/* Quick Inline Add Row */}
+                  <tr className="bg-orange-50/30 border-b border-orange-200/60 transition-colors">
+                    <td className="py-2 px-4 text-center font-sans text-orange-500 w-12 font-bold">
+                      <Plus size={13} className="inline text-[#F27421]" />
                     </td>
-                    <td className="py-2.5 px-4 font-sans font-medium text-slate-800">
+                    <td className="py-2 px-4">
                       <input
+                        ref={newCodeInputRef}
                         type="text"
-                        value={p.name}
-                        onChange={(e) => handlePairChange(idx, 'name', e.target.value)}
-                        className="w-full px-2 py-1 bg-transparent hover:bg-slate-50 border border-transparent hover:border-slate-200 focus:border-orange-500 rounded-lg focus:outline-none"
+                        placeholder="New code / source..."
+                        value={newPairCode}
+                        onChange={(e) => setNewPairCode(e.target.value)}
+                        onKeyDown={(e) => e.key === 'Enter' && handleAddNewPair()}
+                        className="w-full px-2.5 py-1.5 bg-white border border-slate-200 focus:border-[#F27421] rounded-lg font-mono font-bold text-xs text-slate-900 focus:outline-none shadow-2xs"
                       />
                     </td>
-                    <td className="py-2.5 px-4">
-                      {p.short ? (
-                        <span className="px-2 py-0.5 bg-slate-100 text-slate-600 rounded text-[11px] font-mono">
-                          {p.short}
-                        </span>
-                      ) : (
-                        <span className="text-slate-300">-</span>
-                      )}
+                    <td className="py-2 px-4">
+                      <input
+                        type="text"
+                        placeholder="Target name / value..."
+                        value={newPairName}
+                        onChange={(e) => setNewPairName(e.target.value)}
+                        onKeyDown={(e) => e.key === 'Enter' && handleAddNewPair()}
+                        className="w-full px-2.5 py-1.5 bg-white border border-slate-200 focus:border-[#F27421] rounded-lg text-xs text-slate-800 focus:outline-none shadow-2xs font-sans"
+                      />
                     </td>
-                    <td className="py-2.5 px-4 text-right">
+                    <td className="py-2 px-4">
+                      <input
+                        type="text"
+                        placeholder="Short code / note..."
+                        value={newPairShort}
+                        onChange={(e) => setNewPairShort(e.target.value)}
+                        onKeyDown={(e) => e.key === 'Enter' && handleAddNewPair()}
+                        className="w-full px-2.5 py-1.5 bg-white border border-slate-200 focus:border-[#F27421] rounded-lg font-mono text-xs text-slate-600 focus:outline-none shadow-2xs"
+                      />
+                    </td>
+                    <td className="py-2 px-4 text-right whitespace-nowrap">
                       <button
                         type="button"
-                        onClick={() => handleDeletePair(idx)}
-                        className="p-1 text-slate-400 hover:text-rose-600 rounded transition cursor-pointer"
-                        title="Delete pair"
+                        onClick={handleAddNewPair}
+                        disabled={!newPairCode.trim() && !newPairName.trim()}
+                        className="px-3 py-1.5 bg-[#0F142A] hover:bg-slate-800 disabled:opacity-40 text-white rounded-lg text-xs font-semibold transition cursor-pointer flex items-center space-x-1 shadow-2xs ml-auto"
+                        title="Add value pair"
                       >
-                        <Trash2 size={13} />
+                        <Plus size={12} />
+                        <span>Add</span>
                       </button>
                     </td>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
 
-        {/* COLUMN 3: RIGHT SIDEBAR (3 cols) */}
-        <div className="col-span-12 lg:col-span-3 space-y-5">
-          {/* Try It Card matching 72_value_dictionaries.png */}
-          <div className="bg-white border border-slate-200/80 rounded-2xl p-5 shadow-xs space-y-3">
-            <div className="flex items-center justify-between">
-              <h3 className="font-bold text-slate-900 text-xs">Try it</h3>
-              {activeDict.preTransformRule && (
-                <span className="text-[10px] bg-orange-50 text-[#F27421] px-1.5 py-0.5 rounded font-mono font-bold">
-                  Pre: {activeDict.preTransformRule}
+                  {paginatedPairs.length === 0 ? (
+                    <tr>
+                      <td colSpan={5} className="py-10 text-center text-slate-400 font-sans">
+                        {pairSearchQuery ? 'No mapping pairs match your filter.' : 'No mapping pairs yet. Enter a code and target name above to add.'}
+                      </td>
+                    </tr>
+                  ) : (
+                    <>
+                      {paginatedPairs.map((p, pIdx) => {
+                        const displayNum = (safePairsPage - 1) * pairsPageSize + pIdx + 1;
+                        return (
+                          <tr key={`${p.code}-${p._origIdx}`} className="hover:bg-slate-50/70 transition-colors h-11 max-h-11 border-b border-slate-100 group">
+                            <td className="py-2 px-4 font-sans text-slate-400 w-12 whitespace-nowrap">{displayNum}</td>
+                            <td className="py-2 px-4 whitespace-nowrap">
+                              <input
+                                type="text"
+                                value={p.code || ''}
+                                onChange={(e) => handlePairChange(p._origIdx, 'code', e.target.value)}
+                                className="w-full px-2 py-1 bg-transparent hover:bg-white focus:bg-white border border-transparent hover:border-slate-200 focus:border-[#F27421] rounded-lg focus:outline-none font-mono font-bold text-slate-900 text-xs transition"
+                                placeholder="Code / source"
+                              />
+                            </td>
+                            <td className="py-2 px-4">
+                              <input
+                                type="text"
+                                value={p.name || ''}
+                                onChange={(e) => handlePairChange(p._origIdx, 'name', e.target.value)}
+                                className="w-full px-2 py-1 bg-transparent hover:bg-white focus:bg-white border border-transparent hover:border-slate-200 focus:border-[#F27421] rounded-lg focus:outline-none font-sans font-medium text-slate-800 text-xs transition"
+                                placeholder="Target name / value"
+                              />
+                            </td>
+                            <td className="py-2 px-4 whitespace-nowrap">
+                              <input
+                                type="text"
+                                value={p.short || ''}
+                                onChange={(e) => handlePairChange(p._origIdx, 'short', e.target.value)}
+                                className="w-full px-2 py-1 bg-transparent hover:bg-white focus:bg-white border border-transparent hover:border-slate-200 focus:border-[#F27421] rounded-lg focus:outline-none font-mono text-[11px] text-slate-600 transition"
+                                placeholder="—"
+                              />
+                            </td>
+                            <td className="py-2 px-4 text-right whitespace-nowrap">
+                              <button
+                                type="button"
+                                onClick={() => handleDeletePair(p._origIdx)}
+                                className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-lg transition cursor-pointer"
+                                title="Delete pair"
+                              >
+                                <Trash2 size={13} />
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })}
+
+                      {/* Constant Height Empty Slots Filler matching Cases Page */}
+                      {Array.from({ length: Math.max(0, (pairsPageSize <= 10 ? pairsPageSize : 7) - paginatedPairs.length) }).map((_, padIdx) => (
+                        <tr key={`empty-pad-${padIdx}`} className="h-11 max-h-11 border-b border-slate-50/80 bg-slate-50/10 select-none">
+                          <td className="py-2.5 px-4 font-mono text-slate-200 text-xs w-12">-</td>
+                          <td className="py-2.5 px-4 font-mono text-slate-200 text-xs">-</td>
+                          <td className="py-2.5 px-4 font-mono text-slate-200 text-xs">-</td>
+                          <td className="py-2.5 px-4 font-mono text-slate-200 text-xs">-</td>
+                          <td className="py-2.5 px-4 text-right text-slate-200 text-xs"></td>
+                        </tr>
+                      ))}
+                    </>
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Cases-Style Active Pagination Footer */}
+            <DataTablePagination
+              currentPage={safePairsPage}
+              totalItems={filteredPairs.length}
+              pageSize={pairsPageSize}
+              pageSizeOptions={[5, 7, 10, 15, 25, 50]}
+              statusBadge={
+                <span className="text-[10px] text-emerald-600 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200 font-medium">
+                  Ready
                 </span>
-              )}
-            </div>
-            <input
-              type="text"
-              value={tryInput}
-              onChange={(e) => setTryInput(e.target.value)}
-              placeholder="e.g. 02, $1,500.00, 0911..."
-              className="w-full px-3 py-2 border border-slate-200 rounded-xl font-mono text-xs focus:outline-none focus:border-orange-500 shadow-2xs"
+              }
+              onPageChange={(p) => setPairsPage(p)}
+              onPageSizeChange={(newSize) => {
+                setPairsPageSize(newSize);
+                setPairsPage(1);
+              }}
             />
-
-            {/* Pre-transformed Preview (if pre-transform rule is active) */}
-            {tryResult?.preTransformedInput && (
-              <div className="p-2 bg-slate-50 border border-slate-200 rounded-xl text-slate-600 text-[11px] flex items-center justify-between">
-                <span className="text-slate-400">Pre-transformed:</span>
-                <span className="font-mono font-bold text-slate-800">{tryResult.preTransformedInput}</span>
-              </div>
-            )}
-
-            {/* Translation Output Banner */}
-            <div className={`p-3 text-white rounded-xl font-bold text-xs text-center shadow-xs transition-colors ${
-              tryResult?.matched || (activeDict.pairs.some(p => p.code === tryInput) && !tryResult)
-                ? 'bg-[#F97316]'
-                : 'bg-slate-700'
-            }`}>
-              {translationOutput || (tryInput ? '(no match)' : 'Type a code to preview')}
-            </div>
-          </div>
-
-          {/* Not In This Dictionary Card matching 72_value_dictionaries.png */}
-          <div className="bg-white border border-slate-200/80 rounded-2xl p-5 shadow-xs space-y-3">
-            <div className="flex items-center justify-between">
-              <h3 className="font-bold text-slate-900 text-xs">Not in this dictionary</h3>
-              <span className="px-1.5 py-0.2 bg-slate-100 text-slate-700 font-bold rounded text-[10px]">
-                {activeDict.missingPairs?.length || 0}
-              </span>
-            </div>
-
-            {(!activeDict.missingPairs || activeDict.missingPairs.length === 0) ? (
-              <div className="text-[11px] text-slate-400">All observed codes in data are mapped.</div>
-            ) : (
-              <div className="space-y-2">
-                {activeDict.missingPairs.map(m => (
-                  <div key={m.code} className="p-2.5 bg-slate-50 border border-slate-100 rounded-xl flex items-center justify-between text-xs">
-                    <div className="flex items-center space-x-2">
-                      <span className="font-mono font-bold text-slate-900">{m.code}</span>
-                      <span className="text-[11px] text-slate-400 font-sans">{m.count} rows</span>
-                    </div>
-
-                    <button
-                      type="button"
-                      onClick={() => handleAddPairFromMissing(m.code)}
-                      className="px-2.5 py-1 bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 rounded-lg text-xs font-semibold transition cursor-pointer shadow-2xs"
-                    >
-                      Add name
-                    </button>
-                  </div>
-                ))}
-              </div>
-            )}
           </div>
         </div>
       </div>
@@ -707,7 +936,7 @@ export function ValueDictionariesView() {
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-xs animate-in fade-in duration-150">
           <div className="bg-white border border-slate-200 rounded-3xl shadow-2xl w-full max-w-md p-6 space-y-4">
             <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-              <h3 className="font-bold text-slate-900 text-sm">Create value dictionary</h3>
+              <h3 className="font-bold text-slate-900 text-sm">Create data transformation rule</h3>
               <button
                 type="button"
                 onClick={() => setShowNewModal(false)}
@@ -756,7 +985,7 @@ export function ValueDictionariesView() {
                   type="submit"
                   className="px-5 py-2 bg-[#F97316] hover:bg-orange-600 text-white rounded-xl font-semibold text-xs cursor-pointer shadow-xs"
                 >
-                  Create dictionary
+                  Create rule
                 </button>
               </div>
             </form>

@@ -251,7 +251,7 @@ export function DataSetupLandingView({
             : 'border-transparent text-slate-500 hover:text-slate-800'
             }`}
         >
-          Value dictionaries <span className="ml-1 px-1.5 py-0.2 bg-slate-100 rounded text-slate-600">6</span>
+          Data transformation rules <span className="ml-1 px-1.5 py-0.2 bg-slate-100 rounded text-slate-600">6</span>
         </button>
       </div>
 
