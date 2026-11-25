@@ -21,3 +21,6 @@ presentation_ui/
 .opencode/
 .agents/
 ARCHITECTURE_*.md
+.agents/
+.opencode/
+agents-handoffs/
