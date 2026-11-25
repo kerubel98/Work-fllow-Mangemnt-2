@@ -189,6 +189,50 @@ async function ensureValueTranslationDictionariesSchema(): Promise<void> {
         SET is_system_default = true, category = 'CURRENCIES'
         WHERE id = 'dict-currencies';
     `);
+
+    // Ensure dict-bank-codes has valid non-empty mappings (self-healing guard)
+    const { rows: bankRows } = await pool.query("SELECT mappings FROM value_translation_dictionaries WHERE id = 'dict-bank-codes' LIMIT 1;");
+    if (bankRows.length > 0) {
+      const mappings = typeof bankRows[0].mappings === 'string' ? JSON.parse(bankRows[0].mappings) : (bankRows[0].mappings || []);
+      const hasValid = Array.isArray(mappings) && mappings.some((m: any) => (m.sourceValue || m.code || m.source) && (m.targetValue || m.name || m.target));
+      if (!hasValid) {
+        const canonicalBankMappings = [
+          { sourceValue: 'Commercial Bank of Ethiopia', targetValue: '01', shortName: 'CBE', notes: 'CBE Primary Clearing Code' },
+          { sourceValue: 'CBE', targetValue: '01', shortName: 'CBE', notes: 'Abbreviation' },
+          { sourceValue: 'Awash Bank', targetValue: '02', shortName: 'AIB', notes: 'Awash International Bank' },
+          { sourceValue: 'Dashen Bank', targetValue: '03', shortName: 'DB', notes: 'Dashen Bank' },
+          { sourceValue: 'Bank of Abyssinia', targetValue: '04', shortName: 'BoA', notes: 'BoA' },
+          { sourceValue: 'Wegagen Bank', targetValue: '05', shortName: 'WB', notes: 'Wegagen' },
+          { sourceValue: 'United Bank', targetValue: '06', shortName: 'UB', notes: 'Hibret Bank / United Bank' },
+          { sourceValue: 'Hibret Bank', targetValue: '06', shortName: 'HB', notes: 'Hibret Bank' },
+          { sourceValue: 'Nib International Bank', targetValue: '07', shortName: 'NIB', notes: 'Nib' },
+          { sourceValue: 'Cooperative Bank of Oromia', targetValue: '08', shortName: 'CBO', notes: 'Coop' },
+          { sourceValue: 'Lion International Bank', targetValue: '09', shortName: 'LIB', notes: 'LIB' },
+          { sourceValue: 'Zemen Bank', targetValue: '10', shortName: 'ZB', notes: 'Zemen' },
+          { sourceValue: 'Oromia International Bank', targetValue: '11', shortName: 'OIB', notes: 'OIB' },
+          { sourceValue: 'Bunna International Bank', targetValue: '12', shortName: 'BUN', notes: 'Bunna' },
+          { sourceValue: 'Berhan International Bank', targetValue: '13', shortName: 'BRH', notes: 'Berhan' },
+          { sourceValue: 'Abay Bank', targetValue: '14', shortName: 'ABAY', notes: 'Abay' },
+          { sourceValue: 'Addis International Bank', targetValue: '15', shortName: 'ADIB', notes: 'AdIB' },
+          { sourceValue: 'Enat Bank', targetValue: '16', shortName: 'ENAT', notes: 'Enat' },
+          { sourceValue: 'Goh Betoch Bank', targetValue: '17', shortName: 'GOH', notes: 'Goh' },
+          { sourceValue: 'Sinqee Bank', targetValue: '18', shortName: 'SNQ', notes: 'Sinqee' },
+          { sourceValue: 'Tsehay Bank', targetValue: '19', shortName: 'TSH', notes: 'Tsehay' },
+          { sourceValue: 'Ahadu Bank', targetValue: '20', shortName: 'AHD', notes: 'Ahadu' },
+          { sourceValue: 'Amhara Bank', targetValue: '21', shortName: 'AMH', notes: 'Amhara' },
+          { sourceValue: 'Siinqee Bank', targetValue: '18', shortName: 'SNQ', notes: 'Siinqee Variant' }
+        ].map(p => ({
+          ...p,
+          code: p.sourceValue,
+          name: p.targetValue,
+          short: p.shortName,
+          source: p.sourceValue,
+          target: p.targetValue,
+          shortCode: p.shortName
+        }));
+        await pool.query("UPDATE value_translation_dictionaries SET mappings = $1 WHERE id = 'dict-bank-codes';", [JSON.stringify(canonicalBankMappings)]);
+      }
+    }
     valueDictSchemaInitialized = true;
   } catch (err: any) {
     console.warn('[postgresRepo] ensureValueTranslationDictionariesSchema warning:', err.message);

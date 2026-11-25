@@ -714,32 +714,43 @@ export class RecipeExecutionService {
         const cleaned = this.cleanNumericAmount(strVal);
         const num = parseFloat(cleaned);
         const divisor = parseFloat(param1 || '');
-        return isNaN(num) || isNaN(divisor) || divisor === 0 ? strVal : String(num / divisor);
+        if (isNaN(num) || isNaN(divisor) || divisor === 0) return strVal;
+        const res = num / divisor;
+        return parseFloat(res.toFixed(8)).toString();
       }
       case 'MULTIPLY_BY': {
         const cleaned = this.cleanNumericAmount(strVal);
         const num = parseFloat(cleaned);
         const factor = parseFloat(param1 || '');
-        return isNaN(num) || isNaN(factor) ? strVal : String(num * factor);
+        if (isNaN(num) || isNaN(factor)) return strVal;
+        const res = num * factor;
+        return parseFloat(res.toFixed(8)).toString();
       }
       case 'ADD_NUMBER': {
         const cleaned = this.cleanNumericAmount(strVal);
         const num = parseFloat(cleaned);
         const delta = parseFloat(param1 || '');
-        return isNaN(num) || isNaN(delta) ? strVal : String(num + delta);
+        if (isNaN(num) || isNaN(delta)) return strVal;
+        const res = num + delta;
+        return parseFloat(res.toFixed(8)).toString();
       }
       case 'SUBTRACT_NUMBER': {
         const cleaned = this.cleanNumericAmount(strVal);
         const num = parseFloat(cleaned);
         const delta = parseFloat(param1 || '');
-        return isNaN(num) || isNaN(delta) ? strVal : String(num - delta);
+        if (isNaN(num) || isNaN(delta)) return strVal;
+        const res = num - delta;
+        return parseFloat(res.toFixed(8)).toString();
       }
       case 'ADD_PREFIX_SUFFIX':
         return `${param1 || ''}${strVal}${param2 || ''}`;
       case 'CHAR_LENGTH': {
         const targetLen = parseInt(param1 || '', 10);
         if (isNaN(targetLen) || targetLen <= 0) return strVal;
-        const [mode, padChar] = (param2 || 'TRUNCATE:0').split(':');
+        const rawP2 = param2 || 'TRUNCATE:0';
+        const sepIdx = rawP2.indexOf(':');
+        const mode = sepIdx !== -1 ? rawP2.slice(0, sepIdx) : rawP2;
+        const padChar = sepIdx !== -1 ? rawP2.slice(sepIdx + 1) : '0';
         if (mode === 'PAD_LEFT') return strVal.padStart(targetLen, padChar || '0');
         if (mode === 'PAD_RIGHT') return strVal.padEnd(targetLen, padChar || ' ');
         return strVal.slice(0, targetLen);
@@ -771,10 +782,26 @@ export class RecipeExecutionService {
           const dict = valueDictionaries.find(d => d.id === param1 || d.name === param1);
           const mappings = dict?.mappings || (dict as any)?.entries;
           if (dict && Array.isArray(mappings)) {
-            const entry = mappings.find(e => e.sourceValue?.toLowerCase() === strVal.trim().toLowerCase());
-            if (entry) return entry.targetValue;
-            const defVal = (dict as any).defaultValue || (dict as any).defaultTargetValue;
-            if (defVal) return defVal;
+            const ignoreCase = dict.caseSensitive === false || (dict as any).ignoreCase !== false;
+            const normInput = ignoreCase ? strVal.trim().toLowerCase() : strVal.trim();
+            const entry = mappings.find(e => {
+              const src = String(e.sourceValue ?? (e as any).code ?? (e as any).source ?? '').trim();
+              const tgt = String(e.targetValue ?? (e as any).name ?? (e as any).target ?? '').trim();
+              const srcMatch = ignoreCase ? src.toLowerCase() === normInput : src === normInput;
+              const tgtMatch = (dict.direction === 'BOTH' || dict.direction === 'REVERSE')
+                ? (ignoreCase ? tgt.toLowerCase() === normInput : tgt === normInput)
+                : false;
+              return srcMatch || tgtMatch;
+            });
+            if (entry) {
+              const src = String(entry.sourceValue ?? (entry as any).code ?? (entry as any).source ?? '').trim();
+              const tgt = String(entry.targetValue ?? (entry as any).name ?? (entry as any).target ?? '').trim();
+              const srcMatch = ignoreCase ? src.toLowerCase() === normInput : src === normInput;
+              return srcMatch ? (tgt || src) : (src || tgt);
+            }
+            if (dict.noMatchPolicy === 'BLANK') return '';
+            const defVal = (dict as any).defaultFallback || (dict as any).defaultValue || (dict as any).defaultTargetValue;
+            if (dict.noMatchPolicy === 'USE_FALLBACK' && defVal) return defVal;
           }
         }
         return strVal;

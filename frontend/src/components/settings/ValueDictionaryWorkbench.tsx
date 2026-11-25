@@ -716,26 +716,7 @@ const WorkbenchInner: React.FC<ValueDictionaryWorkbenchProps> = ({ dicts, onDict
                   </button>
                 </div>
               </div>
-              <div>
-                <div className="text-xs font-semibold text-slate-600 mb-1">Pre-Lookup Transform</div>
-                <select
-                  value={draft.preTransformRule || ''}
-                  onChange={e => update({ preTransformRule: e.target.value || undefined })}
-                  className="w-full border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-orange-200 cursor-pointer"
-                >
-                  {PRE_TRANSFORM_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-                </select>
-              </div>
-              <div>
-                <div className="text-xs font-semibold text-slate-600 mb-1">Post-Lookup Transform</div>
-                <select
-                  value={draft.postTransformRule || ''}
-                  onChange={e => update({ postTransformRule: e.target.value || undefined })}
-                  className="w-full border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs bg-white focus:outline-none focus:ring-2 focus:ring-orange-200 cursor-pointer"
-                >
-                  {POST_TRANSFORM_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
-                </select>
-              </div>
+
               <div>
                 <div className="text-xs font-semibold text-slate-600 mb-1">If no match</div>
                 <div className="flex gap-2">

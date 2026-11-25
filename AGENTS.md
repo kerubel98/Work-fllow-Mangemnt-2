@@ -159,15 +159,18 @@ Whenever modifying, designing, reviewing, or analyzing features in this reposito
 
 ---
 
-### Custom Directives
 
-#### 1. `/summarize` Directive
+
+
+## Custom Directives
+
+### 1. `/summarize` Directive
 When the user types `/summarize`, treat it as a request to create a session handoff for continuing the current coding task in a new agent conversation.
 
-##### Objective
+#### Objective
 Create a concise, accurate, context-preserving Markdown document that allows a fresh agent session to continue the work without re-investigating everything or asking the user to repeat information.
 
-##### Instructions
+#### Instructions
 1. Review the current conversation and identify the actual task and progress.
 2. Verify important implementation details against the current project files when necessary. Do not assume a change was completed just because it was discussed.
 3. Create or update a Markdown handoff file at:
@@ -180,7 +183,7 @@ Create a concise, accurate, context-preserving Markdown document that allows a f
 9. If a fact is uncertain, explicitly label it as unverified rather than inventing details.
 10. Make the handoff self-contained so a new agent can use it without access to this conversation.
 
-##### Required Markdown Structure
+#### Required Markdown Structure
 ```markdown
 # Session Handoff
 
@@ -217,13 +220,13 @@ Tell the next agent exactly where to start, what to inspect first, what to avoid
 
 ---
 
-#### 2. `/resume` Directive
+### 2. `/resume` Directive
 When the user types `/resume`, resume the coding work from the most recent session handoff.
 
-##### Objective
+#### Objective
 Continue the previous coding session efficiently, preserving its progress, decisions, constraints, and next steps without wasting context on repeated investigations.
 
-##### Instructions
+#### Instructions
 1. Read `agent-handoffs/session-handoff.md` first.
 2. Identify the last task, completed work, current state, and remaining steps.
 3. Inspect only the files necessary to verify the current state of the documented work.
@@ -237,7 +240,7 @@ Continue the previous coding session efficiently, preserving its progress, decis
 11. Do not scan the entire repository unless the task requires it.
 12. Do not treat the handoff file as unquestionable truth; verify relevant details against the current project.
 
-##### Response Behavior
+#### Response Behavior
 After `/resume`, briefly state:
 - What task is being resumed.
 - Where the previous session stopped.
@@ -257,28 +260,29 @@ When `/audit` is invoked without arguments, autonomously determine the audit sco
 4. **Map to Invariants:** Map detected changes to the governing 7 Non-Negotiable Invariants.
 
 #### Audit Execution
-1. Read `agent-handoffs/audit/master-audit.md`, previous relevant audit reports in `agent-handoffs/audit/reports/`, and sign-offs in `agent-handoffs/audit/sign-off/`.
-2. Check if pending audit tasks or unresolved blockers exist from earlier iterations.
-3. Inspect the requested/discovered scope and minimum dependencies against the 7 invariants.
-4. Execute verification: `npm run build --workspaces --if-present`, `npm test --workspaces --if-present`, and `npm run test:e2e`.
+1. Read `agent-handoffs/audit/reports/INDEX.md` (`## Audit TODO Queue`), `agent-handoffs/audit/master-audit.md`, previous relevant audit reports, and `agent-handoffs/audit/sign-off/INDEX.md`.
+2. **Verify & Close Pending Sign-Offs (`TODO_VERIFY_SIGN_OFF`):** For any `TODO_VERIFY_SIGN_OFF` items written by `/sign-off`, verify the implemented fixes and tests; mark verified rows `CLOSED` in both `reports/INDEX.md` and `sign-off/INDEX.md`.
+3. **Inspect Scoped Audit TODOs (`TODO_AUDIT`):** Inspect the `TODO_AUDIT` items (and requested/discovered scope) against the 7 invariants.
+4. Execute verification: `npm run build --workspaces --if-present`, `npm test --workspaces --if-present`, `npm run test:e2e`, `flutter test`, and containerized Java `mvn test` as applicable.
 5. Assign stable finding IDs (`AUD-<SCOPE>-###`) and severity (`CRITICAL`, `HIGH`, `MEDIUM`, `LOW`, `INFO`).
 6. Create a new detailed audit report under `agent-handoffs/audit/reports/`.
-7. Update [`agent-handoffs/audit/reports/INDEX.md`](file:///c:/Users/hp/Downloads/FinSync_Project/agent-handoffs/audit/reports/INDEX.md) with report link, scope summary, and invariant coverage.
-8. Update `agent-handoffs/audit/master-audit.md` without deleting history.
-9. Present scope, finding counts by severity, major risks, audit report path, master register path, and recommended next action. Do not modify application code during an audit unless explicitly requested.
+7. Update [`agent-handoffs/audit/reports/INDEX.md`](file:///c:/Users/hp/Downloads/FinSync_Project/agent-handoffs/audit/reports/INDEX.md) (marking processed `TODO_AUDIT` items `AUDITED` and linking the report).
+8. **Write Sign-Off TODOs:** Add `TODO_SIGN_OFF` rows to [`agent-handoffs/audit/sign-off/INDEX.md`](file:///c:/Users/hp/Downloads/FinSync_Project/agent-handoffs/audit/sign-off/INDEX.md) for any new/open findings, linking the audit report.
+9. Update `agent-handoffs/audit/master-audit.md` without deleting history.
+10. Present scope, finding counts by severity, major risks, audit report path, master register path, and recommend `/sign-off` (or confirm closure). Do not modify application code during an audit unless explicitly requested.
 
 ---
 
 ### 4. `/sign-off` Directive
 When the user types `/sign-off`, execute outstanding audit remediation, verification, and sign-off generation using `.agents/skills/code-audit/SKILL.md`:
-1. Read `agent-handoffs/audit/master-audit.md`, relevant audit reports, and previous sign-offs.
-2. Identify pending findings and their dependencies.
-3. Prepare a prioritized remediation plan and implement fixes safely.
-4. Verify each fix using targeted tests (`npm test --workspaces --if-present` and `npm run test:e2e`).
-5. Create a formal remediation sign-off record at `agent-handoffs/audit/sign-off/SIGN-OFF-<SCOPE>-<DATE>.md`.
-6. Update the original audit report with the sign-off reference.
-7. Update the master register in `agent-handoffs/audit/master-audit.md`.
-8. Report fixes completed, verification results, remaining findings, files modified, sign-off path, and updated register path.
+1. Read `agent-handoffs/audit/sign-off/INDEX.md` (`## Sign-Off TODO Queue`), `agent-handoffs/audit/master-audit.md`, relevant audit reports, and previous sign-offs.
+2. Identify all pending findings (`TODO_SIGN_OFF`, `OPEN`, `NEW`, `PARTIALLY RESOLVED`, `REGRESSION`) and their dependencies.
+3. **Always Remediate Open Gaps:** Even if no code changes were made since the previous audit, if pending findings exist in `sign-off/INDEX.md` or `agent-handoffs/audit/master-audit.md`, do NOT treat `/sign-off` as a no-op — prepare a prioritized remediation plan (starting with `CRITICAL`/`HIGH`) and implement safe fixes immediately.
+4. Verify each fix using targeted tests across affected stacks (`npm test --workspaces --if-present`, `npm run test:e2e`, `flutter test`, and containerized Java `mvn test`).
+5. Create a formal remediation sign-off record at `agent-handoffs/audit/sign-off/SIGN-OFF-<SCOPE>-<DATE>.md` and mark addressed `TODO_SIGN_OFF` rows as `SIGNED_OFF` in `agent-handoffs/audit/sign-off/INDEX.md`.
+6. **Write Verification TODO Back to Audit Index:** Add a `TODO_VERIFY_SIGN_OFF` row to [`agent-handoffs/audit/reports/INDEX.md`](file:///c:/Users/hp/Downloads/FinSync_Project/agent-handoffs/audit/reports/INDEX.md) (`## Audit TODO Queue`) linking the new sign-off file and recommending `/audit` to verify and close the audit.
+7. Update the original audit report with the sign-off reference and update `agent-handoffs/audit/master-audit.md`.
+8. Report fixes completed, verification results, remaining findings, files modified, sign-off path, and updated register/index paths.
 
 ---
 
@@ -340,3 +344,4 @@ Every AI agent operating in this codebase operates in a dual capacity:
   - Executes type-safe, production-ready, clean implementations.
   - Authors empirical, rigorous tests for both happy paths and edge cases (tampering, replays, unauthorized accounts).
   - Drives OpenCode slash commands (`/plan`, `/audit`, `/sign-off`, `/resume`, `/summarize`) with clear scopes, documented assignments, and verified sign-off records.
+

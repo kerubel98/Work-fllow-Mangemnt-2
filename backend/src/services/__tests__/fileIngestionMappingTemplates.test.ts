@@ -318,4 +318,70 @@ describe('File Ingestion Mapping Templates & Template-Scoped Required Column Enf
     // Clean up
     await repo.deleteFileMappingTemplate(complexTemplateId);
   });
+
+  it('verifies recipeExecutionService floating-point precision, colon delimiter, and bidirectional dictionary lookup', async () => {
+    const { recipeExecutionService } = await import('../recipeExecutionService.js');
+    const { postgresRepo } = await import('../../store/postgresRepo.js');
+
+    // Create a bidirectional test dictionary
+    const bidiDictId = `dict-bidi-${Date.now()}`;
+    await postgresRepo.createOrUpdateValueTranslationDictionary({
+      id: bidiDictId,
+      name: 'Test Bidirectional Bank Codes',
+      category: 'BANK_CODES',
+      direction: 'BOTH',
+      mappings: [
+        { sourceValue: 'CBE', targetValue: '01' },
+        { sourceValue: 'Awash Bank', targetValue: '02' }
+      ]
+    });
+
+    const testTpl: FileIngestionMappingTemplate = {
+      id: `tpl-trans-${Date.now()}`,
+      name: 'Transform Arithmetic & Bidi Test',
+      sourceType: 'csv',
+      headerMode: 'ROW_INDEX',
+      headerRowIndex: 1,
+      manualHeaders: {},
+      deletedColumns: [],
+      requiredColumns: [],
+      columnMappings: {},
+      transformOperations: [
+        { id: 't1', column: 'amount', ruleType: 'ADD_NUMBER', param1: '0.2' },
+        { id: 't2', column: 'rate', ruleType: 'DIVIDE_BY', param1: '3' },
+        { id: 't3', column: 'code_padded', ruleType: 'CHAR_LENGTH', param1: '6', param2: 'PAD_LEFT::' },
+        { id: 't4', column: 'bank_from_code', ruleType: 'VALUE_TRANSLATION_DICT', param1: bidiDictId },
+        { id: 't5', column: 'code_from_bank', ruleType: 'VALUE_TRANSLATION_DICT', param1: bidiDictId }
+      ]
+    };
+
+    const rows = [
+      {
+        amount: '0.1',
+        rate: '100',
+        code_padded: '42',
+        bank_from_code: '01', // Should resolve to CBE via bidirectional lookup
+        code_from_bank: 'Awash Bank' // Should resolve to 02 via forward lookup
+      }
+    ];
+
+    const result = await recipeExecutionService.executeRecipe(rows, testTpl);
+    expect(result.processedRows).toHaveLength(1);
+    const transformed = result.processedRows[0];
+
+    // AUD-ING-004: Floating point 0.1 + 0.2 must be strictly '0.3' without float artifacts
+    expect(transformed.amount).toBe('0.3');
+
+    // AUD-ING-004: Division precision clamped cleanly to 8 decimals
+    expect(transformed.rate).toBe('33.33333333');
+
+    // AUD-ING-006: Colon delimiter preserved when padChar is ':'
+    expect(transformed.code_padded).toBe('::::42');
+
+    // AUD-ING-003: Bidirectional resolution in headless execution
+    expect(transformed.bank_from_code).toBe('CBE');
+    expect(transformed.code_from_bank).toBe('02');
+
+    await postgresRepo.deleteValueTranslationDictionary(bidiDictId);
+  });
 });

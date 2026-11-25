@@ -2448,8 +2448,9 @@ export const StandardFileIngestionWorkspace = forwardRef<
                   </div>
                   <div className="text-slate-500 text-[10px] space-y-0.5">
                     {appliedTransformOps.map((op, i) => (
-                      <div key={op.id || i} className="truncate font-mono">
-                        • {op.column}: {op.ruleType}
+                      <div key={op.id || i} className="truncate">
+                        • <span className="font-semibold text-slate-800">{op.name || `${op.column}: ${op.ruleType}`}</span>
+                        {op.name && <span className="text-[9px] font-mono text-slate-400 ml-1.5">[{op.column}]</span>}
                       </div>
                     ))}
                     {appliedCleaningActions.map((act, i) => (
@@ -2930,6 +2931,17 @@ export const StandardFileIngestionWorkspace = forwardRef<
                   <div>• Value Transformations: <span className="font-mono font-bold">{appliedTransformOps.length}</span></div>
                   <div>• Hygiene Rules: <span className="font-mono font-bold">{appliedCleaningActions.length}</span></div>
                 </div>
+                {appliedTransformOps.length > 0 && (
+                  <div className="pt-1.5 border-t border-purple-200/60 text-[10px] space-y-0.5">
+                    <span className="font-semibold text-purple-900 block">Named Transformations:</span>
+                    {appliedTransformOps.map((op, idx) => (
+                      <div key={op.id || idx} className="truncate text-purple-800 flex items-center justify-between">
+                        <span>• {op.name || `${op.column}: ${op.ruleType}`}</span>
+                        <span className="font-mono text-purple-600/70 text-[9px]">[{op.column}]</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
 
               <div className="flex items-center justify-end space-x-2 pt-2 border-t border-slate-100">
@@ -3407,6 +3419,40 @@ export const StandardFileIngestionWorkspace = forwardRef<
             </div>
 
             <div className="space-y-4">
+              {/* Transformation Name Input (for Mapping Template) */}
+              <div className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-1">
+                <div className="flex items-center justify-between">
+                  <label className="text-[11px] font-bold text-[#0F142A] uppercase tracking-wider">
+                    Transformation Name (for Mapping Template)
+                  </label>
+                  {isCustomNameEdited && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsCustomNameEdited(false);
+                        setTransformName(computeDefaultTransformName(transformCol, transformCategory, transformRuleType, transformParam1, transformParam2, availableValueDicts));
+                      }}
+                      className="text-[10px] text-[#F27421] hover:underline cursor-pointer font-medium"
+                    >
+                      Reset to default name
+                    </button>
+                  )}
+                </div>
+                <input
+                  type="text"
+                  value={transformName}
+                  onChange={(e) => {
+                    setTransformName(e.target.value);
+                    setIsCustomNameEdited(true);
+                  }}
+                  placeholder="e.g. Clean Amount (2 Decimals), Bank Names to BIC Codes"
+                  className="w-full bg-white border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs font-semibold text-[#0F142A] focus:outline-none focus:border-[#F27421]"
+                />
+                <p className="text-[10px] text-slate-400">
+                  This name identifies and refers to this transformation step in mapping templates and automated replay.
+                </p>
+              </div>
+
               {/* Step 1: Transformation Type Dropdown */}
               <div>
                 <label className="block text-[11px] font-bold text-[#0F142A] uppercase tracking-wider mb-1.5">
@@ -3417,13 +3463,22 @@ export const StandardFileIngestionWorkspace = forwardRef<
                   onChange={(e) => {
                     const nextCat = e.target.value as 'TEXT' | 'NUMBER' | 'RULE';
                     setTransformCategory(nextCat);
-                    setTransformParam1('');
-                    setTransformParam2('');
-                    if (nextCat === 'TEXT') setTransformRuleType('UPPERCASE');
-                    else if (nextCat === 'NUMBER') setTransformRuleType('STRIP_CURRENCY');
-                    else {
-                      setTransformRuleType('VALUE_TRANSLATION_DICT');
-                      setTransformParam1(availableValueDicts[0]?.id || '');
+                    let nextRule = 'UPPERCASE';
+                    let nextP1 = '';
+                    let nextP2 = '';
+                    if (nextCat === 'TEXT') {
+                      nextRule = 'UPPERCASE';
+                    } else if (nextCat === 'NUMBER') {
+                      nextRule = 'STRIP_CURRENCY';
+                    } else {
+                      nextRule = 'VALUE_TRANSLATION_DICT';
+                      nextP1 = availableValueDicts[0]?.id || '';
+                    }
+                    setTransformRuleType(nextRule);
+                    setTransformParam1(nextP1);
+                    setTransformParam2(nextP2);
+                    if (!isCustomNameEdited) {
+                      setTransformName(computeDefaultTransformName(transformCol, nextCat, nextRule, nextP1, nextP2, availableValueDicts));
                     }
                   }}
                   className="w-full bg-slate-50 border border-slate-200 rounded-xl px-3 py-2 text-xs font-semibold text-[#0F142A] focus:outline-none focus:border-[#F27421] cursor-pointer"
@@ -3460,7 +3515,11 @@ export const StandardFileIngestionWorkspace = forwardRef<
                         onClick={() => {
                           setTransformRuleType(rule.id);
                           setTransformParam1('');
-                          setTransformParam2(rule.id === 'CHAR_LENGTH' ? 'TRUNCATE:0' : '');
+                          const nextP2 = rule.id === 'CHAR_LENGTH' ? 'TRUNCATE:0' : '';
+                          setTransformParam2(nextP2);
+                          if (!isCustomNameEdited) {
+                            setTransformName(computeDefaultTransformName(transformCol, 'TEXT', rule.id, '', nextP2, availableValueDicts));
+                          }
                         }}
                         className={`px-3 py-1.5 rounded-lg border text-xs font-semibold transition cursor-pointer ${
                           transformRuleType === rule.id
@@ -3498,6 +3557,9 @@ export const StandardFileIngestionWorkspace = forwardRef<
                           setTransformRuleType(rule.id);
                           setTransformParam1('');
                           setTransformParam2('');
+                          if (!isCustomNameEdited) {
+                            setTransformName(computeDefaultTransformName(transformCol, 'NUMBER', rule.id, '', '', availableValueDicts));
+                          }
                         }}
                         className={`px-3 py-1.5 rounded-lg border text-xs font-semibold transition cursor-pointer ${
                           transformRuleType === rule.id
@@ -3520,7 +3582,13 @@ export const StandardFileIngestionWorkspace = forwardRef<
                   </label>
                   <select
                     value={transformParam1 || availableValueDicts[0]?.id || ''}
-                    onChange={e => setTransformParam1(e.target.value)}
+                    onChange={e => {
+                      const nextP1 = e.target.value;
+                      setTransformParam1(nextP1);
+                      if (!isCustomNameEdited) {
+                        setTransformName(computeDefaultTransformName(transformCol, 'RULE', 'VALUE_TRANSLATION_DICT', nextP1, '', availableValueDicts));
+                      }
+                    }}
                     className="w-full bg-white border border-slate-200 rounded-lg px-2.5 py-2 text-xs font-semibold text-[#0F142A] focus:outline-none focus:border-[#F27421] cursor-pointer"
                   >
                     {availableValueDicts.map(dict => (
@@ -3584,9 +3652,15 @@ export const StandardFileIngestionWorkspace = forwardRef<
                       Mode
                     </label>
                     <select
-                      value={(transformParam2 || 'TRUNCATE:0').split(':')[0]}
+                      value={(() => {
+                        const raw = transformParam2 || 'TRUNCATE:0';
+                        const idx = raw.indexOf(':');
+                        return idx !== -1 ? raw.slice(0, idx) : raw;
+                      })()}
                       onChange={e => {
-                        const padC = (transformParam2 || 'TRUNCATE:0').split(':')[1] || '0';
+                        const raw = transformParam2 || 'TRUNCATE:0';
+                        const idx = raw.indexOf(':');
+                        const padC = idx !== -1 ? raw.slice(idx + 1) : '0';
                         setTransformParam2(`${e.target.value}:${padC}`);
                       }}
                       className="w-full bg-white border border-slate-200 rounded-lg px-2 py-1.5 text-xs focus:outline-none focus:border-[#F27421]"
@@ -3603,9 +3677,15 @@ export const StandardFileIngestionWorkspace = forwardRef<
                     <input
                       type="text"
                       maxLength={1}
-                      value={(transformParam2 || 'TRUNCATE:0').split(':')[1] ?? '0'}
+                      value={(() => {
+                        const raw = transformParam2 || 'TRUNCATE:0';
+                        const idx = raw.indexOf(':');
+                        return idx !== -1 ? raw.slice(idx + 1) : '0';
+                      })()}
                       onChange={e => {
-                        const mode = (transformParam2 || 'TRUNCATE:0').split(':')[0] || 'TRUNCATE';
+                        const raw = transformParam2 || 'TRUNCATE:0';
+                        const idx = raw.indexOf(':');
+                        const mode = idx !== -1 ? raw.slice(0, idx) : 'TRUNCATE';
                         setTransformParam2(`${mode}:${e.target.value}`);
                       }}
                       placeholder="0"

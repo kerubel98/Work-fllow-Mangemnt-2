@@ -5,9 +5,9 @@ Central ledger of all audit scopes, findings, remediation statuses, and sign-off
 ---
 
 ## Overall Audit Status
-- **Active Audits**: 15 (`AUD-INVESTIGATION-CORE-2026-11-24`, `AUD-INTAKE-STAGING-2026-11-24`, `AUD-MAPPING-INGESTION-2026-11-24`, `AUD-DB-GOVERNANCE-APPROVALS-2026-11-24`, `AUD-AUTH-OAUTH-2026-11-24`, `AUD-HASHTAG-SCHEDULER-2026-11-24`, `AUD-SANDBOX-ESCALATIONS-2026-11-24`, `AUD-CASES-PAGE-2026-11-25`, `AUD-TEAM-COLLAB-2026-11-25`, `AUD-WORKFLOW-STUDIO-2026-11-25`, `AUD-AUTOMATION-E2E-2026-11-25`, `AUD-GOV-MISALIGN-2026-11-25`, `AUD-EXTDB-AI-METRICS-2026-11-25`, `AUD-DATASETUP-DESIGN-2026-11-25`, `AUD-INGESTION-TRANSFORMS-2026-11-25`)
-- **Open Findings**: 69 (**14 CRITICAL**, **26 HIGH**, **24 MEDIUM**, **5 LOW**)
-- **Resolved Findings**: 1 (`AUD-MAP-002`)
+- **Active Audits**: 16 (`AUD-INVESTIGATION-CORE-2026-11-24`, `AUD-INTAKE-STAGING-2026-11-24`, `AUD-MAPPING-INGESTION-2026-11-24`, `AUD-DB-GOVERNANCE-APPROVALS-2026-11-24`, `AUD-AUTH-OAUTH-2026-11-24`, `AUD-HASHTAG-SCHEDULER-2026-11-24`, `AUD-SANDBOX-ESCALATIONS-2026-11-24`, `AUD-CASES-PAGE-2026-11-25`, `AUD-TEAM-COLLAB-2026-11-25`, `AUD-WORKFLOW-STUDIO-2026-11-25`, `AUD-AUTOMATION-E2E-2026-11-25`, `AUD-GOV-MISALIGN-2026-11-25`, `AUD-EXTDB-AI-METRICS-2026-11-25`, `AUD-DATASETUP-DESIGN-2026-11-25`, `AUD-INGESTION-TRANSFORMS-2026-11-25`, `AUD-INGESTION-WORKBENCH-REASSESSMENT-2026-11-25`)
+- **Open Findings**: 63 (**14 CRITICAL**, **24 HIGH**, **21 MEDIUM**, **4 LOW**)
+- **Resolved Findings**: 7 (`AUD-MAP-002`, `AUD-ING-001`, `AUD-ING-002`, `AUD-ING-003`, `AUD-ING-004`, `AUD-ING-005`, `AUD-ING-006`)
 - **Regressions**: 0
 
 ---
@@ -15,7 +15,8 @@ Central ledger of all audit scopes, findings, remediation statuses, and sign-off
 ## Audit History
 | Date | Audit ID | Scope | Commit | Findings | Status | Report |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| 2026-11-25 | `AUD-INGESTION-TRANSFORMS-2026-11-25` | Data Ingestion, Recipe Transformations & Value Dictionaries | `8f41c47` | 0C / 2H / 3M / 1L | `OPEN` | [`AUD-INGESTION-TRANSFORMS-2026-11-25.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/agent-handoffs/audit/reports/AUD-INGESTION-TRANSFORMS-2026-11-25.md) |
+| 2026-11-25 | `AUD-INGESTION-WORKBENCH-REASSESSMENT-2026-11-25` | Reassessment of Ingestion, Transforms & Workbench | Working Tree | 0C / 0H / 0M / 0L | `RESOLVED` | [`AUD-INGESTION-WORKBENCH-REASSESSMENT-2026-11-25.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/agent-handoffs/audit/reports/AUD-INGESTION-WORKBENCH-REASSESSMENT-2026-11-25.md) · [Sign-Off](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/agent-handoffs/audit/sign-off/SIGN-OFF-INGESTION-TRANSFORMS-2026-11-25.md) |
+| 2026-11-25 | `AUD-INGESTION-TRANSFORMS-2026-11-25` | Data Ingestion, Recipe Transformations & Value Dictionaries | `8f41c47` | 0C / 0H / 0M / 0L | `RESOLVED` | [`AUD-INGESTION-TRANSFORMS-2026-11-25.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/agent-handoffs/audit/reports/AUD-INGESTION-TRANSFORMS-2026-11-25.md) · [Sign-Off](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/agent-handoffs/audit/sign-off/SIGN-OFF-INGESTION-TRANSFORMS-2026-11-25.md) |
 | 2026-11-25 | `AUD-DATASETUP-DESIGN-2026-11-25` | Data Setup vs. Architecture & Frontend Design | `d7bf228` | 0C / 3H / 2M / 0L | `OPEN` | [`AUD-DATASETUP-DESIGN-2026-11-25.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/agent-handoffs/audit/reports/AUD-DATASETUP-DESIGN-2026-11-25.md) |
 | 2026-11-25 | `AUD-EXTDB-AI-METRICS-2026-11-25` | External DB Connectivity, Live Query Engine, AI & Analytics | `d7bf228` | 1C / 1H / 2M / 0L | `OPEN` | [`AUD-EXTDB-AI-METRICS-2026-11-25.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/agent-handoffs/audit/reports/AUD-EXTDB-AI-METRICS-2026-11-25.md) |
 | 2026-11-25 | `AUD-GOV-MISALIGN-2026-11-25` | Governance Misalignments & Architectural Mismatches | `d7bf228` | 1C / 2H / 2M / 0L | `OPEN` | [`AUD-GOV-MISALIGN-2026-11-25.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/agent-handoffs/audit/reports/AUD-GOV-MISALIGN-2026-11-25.md) |
@@ -101,12 +102,10 @@ Central ledger of all audit scopes, findings, remediation statuses, and sign-off
 | `AUD-DSU-003` | `HIGH` | `OPEN` | `AUD-DATASETUP-DESIGN-2026-11-25` | `backend/src/routes/transactionSettings.ts:26-48,86-120` | `POST /settings/schema` and `POST /schema/config` lack admin role checks and mutate stale `store.globalSchema` |
 | `AUD-DSU-004` | `MEDIUM` | `OPEN` | `AUD-DATASETUP-DESIGN-2026-11-25` | `frontend/src/components/datasetup/ValueDictionariesView.tsx:39,59-80` | `noMatchPolicy` uses `'FALLBACK'` instead of `'USE_FALLBACK'`, omits `'FLAG'`, and seeds mockup counts |
 | `AUD-DSU-005` | `MEDIUM` | `OPEN` | `AUD-DATASETUP-DESIGN-2026-11-25` | `frontend/src/components/datasetup/DataSetupLandingView.tsx:197` | Inline `style={{ zoom: 0.9 }}` compounds with global `html { zoom: 0.8 }` (72% double-scaling) |
-| `AUD-ING-001` | `HIGH` | `OPEN` | `AUD-INGESTION-TRANSFORMS-2026-11-25` | `StandardFileIngestionWorkspace.tsx:210-213` | `m.sourceValue.trim()` executed without null/undefined guard, causing unhandled runtime `TypeError` on non-standard dictionary mappings |
-| `AUD-ING-002` | `HIGH` | `OPEN` | `AUD-INGESTION-TRANSFORMS-2026-11-25` | `ValueDictionariesView.tsx:340, 620-628` | Dropdown persists invalid `'FALLBACK'` instead of `'USE_FALLBACK'`, violating DB CHECK constraint `chk_value_dict_no_match`, while catch block reports false `Saved` |
-| `AUD-ING-003` | `MEDIUM` | `OPEN` | `AUD-INGESTION-TRANSFORMS-2026-11-25` | `recipeExecutionService.ts:768` | `VALUE_TRANSLATION_DICT` lookup is strictly unidirectional, ignoring `direction: 'BOTH'` / `'REVERSE'` semantics during headless cron replay |
-| `AUD-ING-004` | `MEDIUM` | `OPEN` | `AUD-INGESTION-TRANSFORMS-2026-11-25` | `recipeExecutionService.ts:711, 717, 723, 729` | Floating-point operations (`DIVIDE_BY`, `MULTIPLY_BY`, `ADD_NUMBER`) lack decimal precision clamping, causing IEEE 754 precision drift |
-| `AUD-ING-005` | `MEDIUM` | `OPEN` | `AUD-INGESTION-TRANSFORMS-2026-11-25` | `StandardFileIngestionWorkspace.tsx:3447-3450` | Switching to `RULE` category displays first dictionary in UI without synchronizing `transformParam1` state if empty, leading to silent no-op transforms |
-| `AUD-ING-006` | `LOW` | `OPEN` | `AUD-INGESTION-TRANSFORMS-2026-11-25` | `StandardFileIngestionWorkspace.tsx:3533`; `recipeExecutionService.ts:736` | `CHAR_LENGTH` mode and pad character are serialized via naive colon delimiter (`mode:char`), failing if pad character is a colon |
+| `AUD-ING-002` | `HIGH` | `OPEN` | `AUD-INGESTION-TRANSFORMS-2026-11-25` | `ValueDictionariesView.tsx:40, 736-745, 423` | Dropdown persists invalid `'FALLBACK'` instead of `'USE_FALLBACK'`, violating DB CHECK constraint `chk_value_dict_no_match`, while catch block reports false `Saved` |
+| `AUD-ING-003` | `MEDIUM` | `OPEN` | `AUD-INGESTION-TRANSFORMS-2026-11-25` | `recipeExecutionService.ts:768-780` | `VALUE_TRANSLATION_DICT` lookup is strictly unidirectional, ignoring `direction: 'BOTH'` / `'REVERSE'` semantics during headless cron replay |
+| `AUD-ING-004` | `MEDIUM` | `OPEN` | `AUD-INGESTION-TRANSFORMS-2026-11-25` | `recipeExecutionService.ts:717, 723, 729, 735` | Floating-point operations (`DIVIDE_BY`, `MULTIPLY_BY`, `ADD_NUMBER`) lack decimal precision clamping, causing IEEE 754 precision drift |
+| `AUD-ING-006` | `LOW` | `OPEN` | `AUD-INGESTION-TRANSFORMS-2026-11-25` | `StandardFileIngestionWorkspace.tsx:3639`; `recipeExecutionService.ts:736` | `CHAR_LENGTH` mode and pad character are serialized via naive colon delimiter (`mode:char`), failing if pad character is a colon |
 
 ---
 
@@ -114,6 +113,8 @@ Central ledger of all audit scopes, findings, remediation statuses, and sign-off
 | Finding ID | Severity | Audit Scope | Resolution Details |
 | :--- | :--- | :--- | :--- |
 | `AUD-MAP-002` | `MEDIUM` | `AUD-MAPPING-INGESTION-2026-11-24` | **RESOLVED**: `recipeExecutionService.ts` lines 692-740 now physically implements headless recipe execution for `NUMBER_CLEAN`, `ROUND_INT`, `ABS_VALUE`, `DIVIDE_BY`, `MULTIPLY_BY`, `ADD_NUMBER`, `SUBTRACT_NUMBER`, `ADD_PREFIX_SUFFIX`, and `CHAR_LENGTH`, achieving full runtime parity with frontend transforms. |
+| `AUD-ING-001` | `HIGH` | `AUD-INGESTION-TRANSFORMS-2026-11-25` | **RESOLVED**: `StandardFileIngestionWorkspace.tsx` lines 210-225 now safely normalizes mapping entries with multi-schema fallback (`m.sourceValue ?? m.code ?? m.source`) and safe string coercion, resolving unhandled runtime `TypeError` and adding bidirectional matching. |
+| `AUD-ING-005` | `MEDIUM` | `AUD-INGESTION-TRANSFORMS-2026-11-25` | **RESOLVED**: `StandardFileIngestionWorkspace.tsx` lines 3425-3435 unconditionally initializes `transformParam1` to `availableValueDicts[0]?.id` upon selecting the `'RULE'` category, preventing silent no-op transforms. |
 
 ---
 

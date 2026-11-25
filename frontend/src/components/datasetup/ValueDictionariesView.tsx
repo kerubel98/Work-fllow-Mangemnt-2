@@ -37,7 +37,7 @@ export interface DictionaryItem {
   direction: 'FORWARD' | 'REVERSE' | 'BOTH';
   ignoreCase: boolean;
   trim: boolean;
-  noMatchPolicy: 'KEEP_ORIGINAL' | 'BLANK' | 'FALLBACK';
+  noMatchPolicy: 'KEEP_ORIGINAL' | 'BLANK' | 'USE_FALLBACK' | 'FLAG';
   preTransformRule?: string;
   postTransformRule?: string;
   pairs: { code: string; name: string; short?: string }[];
@@ -50,6 +50,7 @@ export function ValueDictionariesView() {
   const [tryInput, setTryInput] = useState('02');
   const [isSaving, setIsSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [showNewModal, setShowNewModal] = useState(false);
   const [hasUnsavedChanges, setHasUnsavedChanges] = useState(false);
 
@@ -329,13 +330,47 @@ export function ValueDictionariesView() {
     setHasUnsavedChanges(true);
   };
 
-  const handleDeletePair = (index: number) => {
+  const handleDeletePair = async (index: number) => {
     const nextPairs = activeDict.pairs.filter((_, i) => i !== index);
     updateActiveDict({ pairs: nextPairs });
-    setHasUnsavedChanges(true);
+
+    // Recalculate pagination bounds so if the last item on page is deleted, it doesn't show empty
+    const nextFiltered = pairSearchQuery.trim()
+      ? nextPairs.filter(p =>
+          (p.code || '').toLowerCase().includes(pairSearchQuery.trim().toLowerCase()) ||
+          (p.name || '').toLowerCase().includes(pairSearchQuery.trim().toLowerCase()) ||
+          (p.short || '').toLowerCase().includes(pairSearchQuery.trim().toLowerCase())
+        )
+      : nextPairs;
+    const maxPage = Math.max(1, Math.ceil(nextFiltered.length / pairsPageSize));
+    if (pairsPage > maxPage) {
+      setPairsPage(maxPage);
+    }
+
+    try {
+      await api.updateValueTranslationDictionary(activeDict.id, {
+        mappings: nextPairs.map(p => ({
+          sourceValue: p.code,
+          targetValue: p.name,
+          shortName: p.short,
+          notes: p.short,
+          source: p.code,
+          target: p.name,
+          shortCode: p.short,
+          code: p.code,
+          name: p.name
+        }))
+      });
+      setSaveSuccess(true);
+      setHasUnsavedChanges(false);
+      setTimeout(() => setSaveSuccess(false), 1500);
+    } catch (e) {
+      console.warn('Instant delete persist warning:', e);
+      setHasUnsavedChanges(true);
+    }
   };
 
-  const handleAddNewPair = () => {
+  const handleAddNewPair = async () => {
     if (!newPairCode.trim() && !newPairName.trim()) return;
     const newPair = {
       code: newPairCode.trim(),
@@ -348,7 +383,29 @@ export function ValueDictionariesView() {
     setNewPairName('');
     setNewPairShort('');
     setPairsPage(1);
-    setHasUnsavedChanges(true);
+
+    try {
+      await api.updateValueTranslationDictionary(activeDict.id, {
+        mappings: nextPairs.map(p => ({
+          sourceValue: p.code,
+          targetValue: p.name,
+          shortName: p.short,
+          notes: p.short,
+          source: p.code,
+          target: p.name,
+          shortCode: p.short,
+          code: p.code,
+          name: p.name
+        }))
+      });
+      setSaveSuccess(true);
+      setHasUnsavedChanges(false);
+      setTimeout(() => setSaveSuccess(false), 1500);
+      newCodeInputRef.current?.focus();
+    } catch (e) {
+      console.warn('Instant add persist warning:', e);
+      setHasUnsavedChanges(true);
+    }
   };
 
   const handleCsvUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -380,19 +437,41 @@ export function ValueDictionariesView() {
     e.target.value = '';
   };
 
-  const handleAddPairFromMissing = (missingCode: string) => {
+  const handleAddPairFromMissing = async (missingCode: string) => {
     const defaultName = missingCode === '07' ? 'Oromia Bank' : missingCode === '11' ? 'Cooperative Bank of Oromia' : 'New Bank';
     const defaultShort = missingCode === '07' ? 'OB' : missingCode === '11' ? 'CBO' : undefined;
 
     const nextPairs = [{ code: missingCode, name: defaultName, short: defaultShort }, ...activeDict.pairs];
     const nextMissing = (activeDict.missingPairs || []).filter(m => m.code !== missingCode);
     updateActiveDict({ pairs: nextPairs, missingPairs: nextMissing });
-    setHasUnsavedChanges(true);
     setPairsPage(1);
+
+    try {
+      await api.updateValueTranslationDictionary(activeDict.id, {
+        mappings: nextPairs.map(p => ({
+          sourceValue: p.code,
+          targetValue: p.name,
+          shortName: p.short,
+          notes: p.short,
+          source: p.code,
+          target: p.name,
+          shortCode: p.short,
+          code: p.code,
+          name: p.name
+        }))
+      });
+      setSaveSuccess(true);
+      setHasUnsavedChanges(false);
+      setTimeout(() => setSaveSuccess(false), 1500);
+    } catch (e) {
+      console.warn('Instant add from missing persist warning:', e);
+      setHasUnsavedChanges(true);
+    }
   };
 
   const handleSave = async () => {
     setIsSaving(true);
+    setSaveError(null);
     try {
       const payload: Partial<ValueTranslationDictionary> = {
         name: activeDict.name,
@@ -418,12 +497,13 @@ export function ValueDictionariesView() {
       await api.updateValueTranslationDictionary(activeDict.id, payload);
       setSaveSuccess(true);
       setHasUnsavedChanges(false);
+      setSaveError(null);
       setTimeout(() => setSaveSuccess(false), 2500);
-    } catch (e) {
-      console.warn('Failed to save to PostgreSQL, updating locally:', e);
-      setSaveSuccess(true);
-      setHasUnsavedChanges(false);
-      setTimeout(() => setSaveSuccess(false), 2500);
+    } catch (e: any) {
+      console.warn('Failed to save to PostgreSQL:', e);
+      setSaveError(e.message || 'Failed to save dictionary to database');
+      setHasUnsavedChanges(true);
+      setTimeout(() => setSaveError(null), 5000);
     } finally {
       setIsSaving(false);
     }
@@ -740,7 +820,8 @@ export function ValueDictionariesView() {
                 >
                   <option value="KEEP_ORIGINAL">Keep original</option>
                   <option value="BLANK">Leave blank</option>
-                  <option value="FALLBACK">Use default fallback</option>
+                  <option value="USE_FALLBACK">Use default fallback</option>
+                  <option value="FLAG">Flag as review exception</option>
                 </select>
               </div>
             </div>
