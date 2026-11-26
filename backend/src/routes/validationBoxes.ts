@@ -96,8 +96,16 @@ validationBoxesRouter.post('/', async (req: Request, res: Response) => {
       visibility
     } = req.body;
 
+    const CANONICAL_BOX_TYPES = ['INGESTION_SEARCH', 'CONDITION_CHECK', 'RECONCILIATION', 'REPORT'] as const;
+
     if (!name || !boxType) {
       return res.status(400).json({ error: 'Name and boxType (INGESTION_SEARCH, CONDITION_CHECK, RECONCILIATION, or REPORT) are required.' });
+    }
+
+    if (!CANONICAL_BOX_TYPES.includes(boxType as any)) {
+      return res.status(400).json({
+        error: `Invalid boxType "${boxType}". Must be one of canonical types: [${CANONICAL_BOX_TYPES.join(', ')}].`
+      });
     }
 
     let mirrorTableName: string | undefined = undefined;
@@ -174,6 +182,13 @@ validationBoxesRouter.put('/:id', async (req: Request, res: Response) => {
       statusBinding,
       messageTemplate
     } = req.body;
+
+    const CANONICAL_BOX_TYPES = ['INGESTION_SEARCH', 'CONDITION_CHECK', 'RECONCILIATION', 'REPORT'] as const;
+    if (boxType !== undefined && !CANONICAL_BOX_TYPES.includes(boxType as any)) {
+      return res.status(400).json({
+        error: `Invalid boxType "${boxType}". Must be one of canonical types: [${CANONICAL_BOX_TYPES.join(', ')}].`
+      });
+    }
 
     let mirrorTableName: string | undefined = undefined;
     if ((boxType === 'INGESTION_SEARCH' || boxType === 'RECONCILIATION') && targetDbId && targetTable) {

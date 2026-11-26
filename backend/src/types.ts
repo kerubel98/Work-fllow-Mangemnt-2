@@ -1814,6 +1814,7 @@ export interface CentralTransactionRecord {
 }
 
 export type ValidationBoxType = 'INGESTION_SEARCH' | 'CONDITION_CHECK' | 'RECONCILIATION' | 'REPORT';
+export const CANONICAL_VALIDATION_BOX_TYPES = ['INGESTION_SEARCH', 'CONDITION_CHECK', 'RECONCILIATION', 'REPORT'] as const;
 
 export interface ValidationBoxSearchParam {
   inputField: string;

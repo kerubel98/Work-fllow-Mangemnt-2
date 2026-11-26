@@ -404,7 +404,11 @@ databaseRouter.post('/test-connection', async (req: Request, res: Response) => {
 // GET /api/db/databases - List all database connections (filtered by team scoping for non-admins)
 databaseRouter.get('/databases', async (req: Request, res: Response) => {
   try {
-    const { role, teamId, userId } = req.query as { role?: string; teamId?: string; userId?: string };
+    const user = (req as any).user;
+    const callerRole = user?.role || (req.headers['x-user-role'] as string) || '';
+    const callerUserId = user?.id || (req.headers['x-user-id'] as string) || (req.query.userId as string);
+    const callerTeamId = user?.teamId || (req.headers['x-team-id'] as string) || (req.query.teamId as string);
+
     const allDbs = await repo.getDatabases();
 
     const sanitize = (list: DatabaseConnection[]) => list.map(d => ({
@@ -412,15 +416,16 @@ databaseRouter.get('/databases', async (req: Request, res: Response) => {
       password: d.password ? '••••••••' : undefined,
     }));
 
-    // If caller is Admin/Superadmin, return everything
-    if (role === 'admin' || role === 'superadmin') {
+    // If caller is Admin/Superadmin (derived strictly from authenticated user/headers, not spoofable query string), return everything
+    const isAdmin = callerRole === 'admin' || callerRole === 'system_admin' || callerRole === 'superadmin';
+    if (isAdmin) {
       return res.json(sanitize(allDbs));
     }
 
     // Identify user's team ID if provided or discovered via permanent team
-    let effectiveTeamId = teamId;
-    if (!effectiveTeamId && userId) {
-      const userPermTeam = await repo.getUserPermanentTeam(userId);
+    let effectiveTeamId = callerTeamId;
+    if (!effectiveTeamId && callerUserId) {
+      const userPermTeam = await repo.getUserPermanentTeam(callerUserId);
       if (userPermTeam) effectiveTeamId = userPermTeam.id;
     }
 
@@ -546,6 +551,12 @@ databaseRouter.post('/team-databases/:id/review-promotion', async (req: Request,
     const { id } = req.params;
     const { action, reviewerId, notes } = req.body; // action: 'APPROVE' | 'REJECT'
 
+    const user = (req as any).user;
+    const callerRole = user?.role || (req.headers['x-user-role'] as string);
+    if (callerRole !== 'admin' && callerRole !== 'system_admin') {
+      return res.status(403).json({ error: 'Access Denied: Only Workspace Admins can review database promotion requests.' });
+    }
+
     if (!['APPROVE', 'REJECT'].includes(action)) {
       return res.status(400).json({ error: 'Action must be either APPROVE or REJECT' });
     }
@@ -555,34 +566,46 @@ databaseRouter.post('/team-databases/:id/review-promotion', async (req: Request,
 
     const now = new Date().toISOString();
     let updates: Partial<DatabaseConnection> = {};
+    const effectiveReviewerId = user?.id || reviewerId || (req.headers['x-user-id'] as string) || undefined;
 
     if (action === 'APPROVE') {
       updates = {
         scope: 'global',
         promotionStatus: 'APPROVED',
         promotionReviewedAt: now,
-        promotionReviewedBy: reviewerId || undefined,
+        promotionReviewedBy: effectiveReviewerId,
         promotionNotes: notes ? `${db.promotionNotes || ''}\n[Approved]: ${notes}`.trim() : db.promotionNotes
       };
     } else {
       updates = {
         promotionStatus: 'REJECTED',
         promotionReviewedAt: now,
-        promotionReviewedBy: reviewerId || undefined,
+        promotionReviewedBy: effectiveReviewerId,
         promotionNotes: notes ? `${db.promotionNotes || ''}\n[Rejected]: ${notes}`.trim() : db.promotionNotes
       };
     }
 
     const updated = await repo.updateDatabase(id, updates);
-    return res.json(updated);
+    if (!updated) return res.status(404).json({ error: 'Database connection not found' });
+
+    return res.json({
+      ...updated,
+      password: updated.password ? '••••••••' : undefined
+    });
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
   }
 });
 
 // GET /api/db/admin/team-resources - Dedicated monitoring endpoint for Workspace Admins
-databaseRouter.get('/admin/team-resources', async (_req: Request, res: Response) => {
+databaseRouter.get('/admin/team-resources', async (req: Request, res: Response) => {
   try {
+    const user = (req as any).user;
+    const callerRole = user?.role || (req.headers['x-user-role'] as string);
+    if (callerRole !== 'admin' && callerRole !== 'system_admin') {
+      return res.status(403).json({ error: 'Access Denied: Only Workspace Admins can access administrative team resources.' });
+    }
+
     const teamResources = await repo.getAdminTeamResources(true);
     const teams = await repo.getTeams();
     const teamMap = new Map<string, Team>(teams.map(t => [t.id, t]));
@@ -591,6 +614,7 @@ databaseRouter.get('/admin/team-resources', async (_req: Request, res: Response)
       const team = db.teamId ? teamMap.get(db.teamId) : null;
       return {
         ...db,
+        password: db.password ? '••••••••' : undefined,
         teamName: team?.name || 'Unassigned / Global',
         teamManagerName: team?.managerName || 'System Admin',
         teamType: team?.teamType || 'permanent'
@@ -611,13 +635,17 @@ databaseRouter.post('/databases', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Database name, type, and host are required' });
     }
 
-    const callerId = dbData.createdByUserId || dbData.userId || dbData.callerUserId || (req.headers['x-user-id'] as string) || (req.query.userId as string);
-    const callerRole = dbData.userRole || dbData.callerRole || (req.headers['x-user-role'] as string) || (req.query.userRole as string) || '';
-    if (callerId) {
-      const caps = await resolveUserAdminCapabilities(callerId, callerRole);
-      if (!caps.isFullAdmin && !caps.canManageConnections && dbData.scope !== 'team') {
-        return res.status(403).json({ error: 'Access Denied: Only Workspace Admins or authorized Database Teams can register global database connections.' });
-      }
+    const user = (req as any).user;
+    const callerId = user?.id || (req.headers['x-user-id'] as string) || dbData.createdByUserId || dbData.userId || dbData.callerUserId || (req.query.userId as string);
+    const callerRole = user?.role || (req.headers['x-user-role'] as string) || dbData.userRole || dbData.callerRole || (req.query.userRole as string) || '';
+
+    if (!callerId) {
+      return res.status(401).json({ error: 'Authentication required to register database connections.' });
+    }
+
+    const caps = await resolveUserAdminCapabilities(callerId, callerRole);
+    if (!caps.isFullAdmin && !caps.canManageConnections && dbData.scope !== 'team') {
+      return res.status(403).json({ error: 'Access Denied: Only Workspace Admins or authorized Database Teams can register global database connections.' });
     }
 
     let connString = dbData.connectionString || '';
@@ -662,7 +690,11 @@ databaseRouter.post('/databases', async (req: Request, res: Response) => {
     mirrorTableManager.provisionMirrorTablesForConnection(saved).catch(err => {
       console.warn(`[DatabaseRoute] Error auto-provisioning mirrors for ${saved.name}:`, err.message);
     });
-    return res.status(201).json(saved);
+
+    return res.status(201).json({
+      ...saved,
+      password: saved.password ? '••••••••' : undefined
+    });
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
   }
@@ -671,19 +703,42 @@ databaseRouter.post('/databases', async (req: Request, res: Response) => {
 // PUT /api/db/databases/:id - Update database connection settings
 databaseRouter.put('/databases/:id', async (req: Request, res: Response) => {
   try {
-    const callerId = req.body?.createdByUserId || req.body?.userId || req.body?.callerUserId || (req.query.userId as string);
-    const callerRole = req.body?.userRole || req.body?.callerRole || (req.query.userRole as string) || '';
-    if (callerId) {
-      const caps = await resolveUserAdminCapabilities(callerId, callerRole);
-      if (!caps.isFullAdmin && !caps.canManageConnections) {
-        return res.status(403).json({ error: 'Access Denied: Only Workspace Admins or authorized Database Teams can update database connection settings.' });
+    const user = (req as any).user;
+    const callerId = user?.id || (req.headers['x-user-id'] as string) || req.body?.createdByUserId || req.body?.userId || req.body?.callerUserId || (req.query.userId as string);
+    const callerRole = user?.role || (req.headers['x-user-role'] as string) || req.body?.userRole || req.body?.callerRole || (req.query.userRole as string) || '';
+
+    if (!callerId) {
+      return res.status(401).json({ error: 'Authentication required to update database connection settings.' });
+    }
+
+    const existing = await repo.getDatabaseById(req.params.id);
+    if (!existing) return res.status(404).json({ error: 'Database connection not found' });
+
+    const caps = await resolveUserAdminCapabilities(callerId, callerRole);
+    if (existing.scope === 'team' && existing.teamId && !caps.isFullAdmin) {
+      const userTeam = user?.teamId || (req.headers['x-team-id'] as string) || (req.query.teamId as string);
+      if (!userTeam || userTeam !== existing.teamId) {
+        return res.status(403).json({ error: 'Access Denied: You do not have permission to modify this team database.' });
       }
+    } else if (!caps.isFullAdmin && !caps.canManageConnections) {
+      return res.status(403).json({ error: 'Access Denied: Only Workspace Admins or authorized Database Teams can update database connection settings.' });
     }
 
     await evictExternalDbPool(req.params.id);
-    const updated = await repo.updateDatabase(req.params.id, req.body);
+
+    // Credential Protection: Strip masked sentinel '••••••••' before updating database to avoid corrupting stored password
+    const updatePayload = { ...req.body };
+    if (updatePayload.password === '••••••••' || !updatePayload.password) {
+      delete updatePayload.password;
+    }
+
+    const updated = await repo.updateDatabase(req.params.id, updatePayload);
     if (!updated) return res.status(404).json({ error: 'Database connection not found' });
-    return res.json(updated);
+
+    return res.json({
+      ...updated,
+      password: updated.password ? '••••••••' : undefined
+    });
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
   }
@@ -692,13 +747,25 @@ databaseRouter.put('/databases/:id', async (req: Request, res: Response) => {
 // DELETE /api/db/databases/:id - Delete a database connection setting
 databaseRouter.delete('/databases/:id', async (req: Request, res: Response) => {
   try {
-    const callerId = req.body?.createdByUserId || req.body?.userId || req.body?.callerUserId || (req.query.userId as string);
-    const callerRole = req.body?.userRole || req.body?.callerRole || (req.query.userRole as string) || '';
-    if (callerId) {
-      const caps = await resolveUserAdminCapabilities(callerId, callerRole);
-      if (!caps.isFullAdmin && !caps.canManageConnections) {
-        return res.status(403).json({ error: 'Access Denied: Only Workspace Admins or authorized Database Teams can delete database connection settings.' });
+    const user = (req as any).user;
+    const callerId = user?.id || (req.headers['x-user-id'] as string) || req.body?.createdByUserId || req.body?.userId || req.body?.callerUserId || (req.query.userId as string);
+    const callerRole = user?.role || (req.headers['x-user-role'] as string) || req.body?.userRole || req.body?.callerRole || (req.query.userRole as string) || '';
+
+    if (!callerId) {
+      return res.status(401).json({ error: 'Authentication required to delete database connection settings.' });
+    }
+
+    const existing = await repo.getDatabaseById(req.params.id);
+    if (!existing) return res.status(404).json({ error: 'Database connection not found' });
+
+    const caps = await resolveUserAdminCapabilities(callerId, callerRole);
+    if (existing.scope === 'team' && existing.teamId && !caps.isFullAdmin) {
+      const userTeam = user?.teamId || (req.headers['x-team-id'] as string) || (req.query.teamId as string);
+      if (!userTeam || userTeam !== existing.teamId) {
+        return res.status(403).json({ error: 'Access Denied: You do not have permission to delete this team database.' });
       }
+    } else if (!caps.isFullAdmin && !caps.canManageConnections) {
+      return res.status(403).json({ error: 'Access Denied: Only Workspace Admins or authorized Database Teams can delete database connection settings.' });
     }
 
     await evictExternalDbPool(req.params.id);

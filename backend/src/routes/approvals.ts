@@ -82,14 +82,26 @@ approvalsRouter.post('/transactions/:id/approve', async (req: Request, res: Resp
   try {
     const { id } = req.params;
     const { checkerId, checkerName, checkerTeamId, reason } = req.body;
-    if (!checkerId) {
-      return res.status(400).json({ error: 'checkerId is required.' });
+
+    const user = (req as any).user;
+    const effectiveCheckerId = user?.id || (req.headers['x-user-id'] as string) || checkerId;
+    const effectiveCheckerName = user?.username || user?.name || (req.headers['x-user-name'] as string) || checkerName || 'Checker Supervisor';
+    const effectiveCheckerTeamId = user?.teamId || (req.headers['x-team-id'] as string) || checkerTeamId;
+
+    if (!effectiveCheckerId) {
+      return res.status(401).json({ error: 'Authentication required: checker identity could not be verified.' });
     }
+
+    // Anti-spoofing guard: caller cannot claim a different checkerId
+    if (user && checkerId && checkerId !== user.id && user.role !== 'admin') {
+      return res.status(403).json({ error: 'Identity spoofing detected: checkerId must match authenticated user.' });
+    }
+
     const reviewed = await approvalService.reviewProposal({
       id,
-      checkerId,
-      checkerName: checkerName || 'Checker Supervisor',
-      checkerTeamId,
+      checkerId: effectiveCheckerId,
+      checkerName: effectiveCheckerName,
+      checkerTeamId: effectiveCheckerTeamId,
       action: 'APPROVE',
       reason
     });
@@ -107,14 +119,26 @@ approvalsRouter.post('/transactions/:id/reject', async (req: Request, res: Respo
   try {
     const { id } = req.params;
     const { checkerId, checkerName, checkerTeamId, reason } = req.body;
-    if (!checkerId) {
-      return res.status(400).json({ error: 'checkerId is required.' });
+
+    const user = (req as any).user;
+    const effectiveCheckerId = user?.id || (req.headers['x-user-id'] as string) || checkerId;
+    const effectiveCheckerName = user?.username || user?.name || (req.headers['x-user-name'] as string) || checkerName || 'Checker Supervisor';
+    const effectiveCheckerTeamId = user?.teamId || (req.headers['x-team-id'] as string) || checkerTeamId;
+
+    if (!effectiveCheckerId) {
+      return res.status(401).json({ error: 'Authentication required: checker identity could not be verified.' });
     }
+
+    // Anti-spoofing guard: caller cannot claim a different checkerId
+    if (user && checkerId && checkerId !== user.id && user.role !== 'admin') {
+      return res.status(403).json({ error: 'Identity spoofing detected: checkerId must match authenticated user.' });
+    }
+
     const reviewed = await approvalService.reviewProposal({
       id,
-      checkerId,
-      checkerName: checkerName || 'Checker Supervisor',
-      checkerTeamId,
+      checkerId: effectiveCheckerId,
+      checkerName: effectiveCheckerName,
+      checkerTeamId: effectiveCheckerTeamId,
       action: 'REJECT',
       reason
     });
@@ -133,15 +157,25 @@ approvalsRouter.post('/:id/review', async (req: Request, res: Response) => {
     const { id } = req.params;
     const { checkerId, checkerName, checkerTeamId, action, reason } = req.body;
 
-    if (!checkerId || !action) {
+    const user = (req as any).user;
+    const effectiveCheckerId = user?.id || (req.headers['x-user-id'] as string) || checkerId;
+    const effectiveCheckerName = user?.username || user?.name || (req.headers['x-user-name'] as string) || checkerName || 'Checker Supervisor';
+    const effectiveCheckerTeamId = user?.teamId || (req.headers['x-team-id'] as string) || checkerTeamId;
+
+    if (!effectiveCheckerId || !action) {
       return res.status(400).json({ error: 'checkerId and action (APPROVE/REJECT) are required.' });
+    }
+
+    // Anti-spoofing guard: caller cannot claim a different checkerId
+    if (user && checkerId && checkerId !== user.id && user.role !== 'admin') {
+      return res.status(403).json({ error: 'Identity spoofing detected: checkerId must match authenticated user.' });
     }
 
     const reviewed = await approvalService.reviewProposal({
       id,
-      checkerId,
-      checkerName: checkerName || 'Checker Supervisor',
-      checkerTeamId,
+      checkerId: effectiveCheckerId,
+      checkerName: effectiveCheckerName,
+      checkerTeamId: effectiveCheckerTeamId,
       action: action as 'APPROVE' | 'REJECT',
       reason
     });
