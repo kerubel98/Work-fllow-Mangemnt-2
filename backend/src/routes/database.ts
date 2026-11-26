@@ -11,6 +11,7 @@ import { discoverFtpFilesRecursive } from '../services/ftpConnectionService.js';
 import { ftpSchedulerService } from '../services/ftpSchedulerService.js';
 import { stagingService } from '../services/messaging/stagingService.js';
 import { resolveUserAdminCapabilities } from '../utils/capabilityHelper.js';
+import { getVerifiedActor } from '../utils/auth.js';
 
 export const databaseRouter = Router();
 
@@ -404,10 +405,10 @@ databaseRouter.post('/test-connection', async (req: Request, res: Response) => {
 // GET /api/db/databases - List all database connections (filtered by team scoping for non-admins)
 databaseRouter.get('/databases', async (req: Request, res: Response) => {
   try {
-    const user = (req as any).user;
-    const callerRole = user?.role || (req.headers['x-user-role'] as string) || '';
-    const callerUserId = user?.id || (req.headers['x-user-id'] as string) || (req.query.userId as string);
-    const callerTeamId = user?.teamId || (req.headers['x-team-id'] as string) || (req.query.teamId as string);
+    const actor = getVerifiedActor(req);
+    const callerRole = actor.role;
+    const callerUserId = actor.id;
+    const callerTeamId = actor.teamId || (req.query.teamId as string);
 
     const allDbs = await repo.getDatabases();
 
@@ -551,8 +552,8 @@ databaseRouter.post('/team-databases/:id/review-promotion', async (req: Request,
     const { id } = req.params;
     const { action, reviewerId, notes } = req.body; // action: 'APPROVE' | 'REJECT'
 
-    const user = (req as any).user;
-    const callerRole = user?.role || (req.headers['x-user-role'] as string);
+    const actor = getVerifiedActor(req);
+    const callerRole = actor.role;
     if (callerRole !== 'admin' && callerRole !== 'system_admin') {
       return res.status(403).json({ error: 'Access Denied: Only Workspace Admins can review database promotion requests.' });
     }
@@ -566,7 +567,7 @@ databaseRouter.post('/team-databases/:id/review-promotion', async (req: Request,
 
     const now = new Date().toISOString();
     let updates: Partial<DatabaseConnection> = {};
-    const effectiveReviewerId = user?.id || reviewerId || (req.headers['x-user-id'] as string) || undefined;
+    const effectiveReviewerId = actor.id || reviewerId || undefined;
 
     if (action === 'APPROVE') {
       updates = {
@@ -600,8 +601,8 @@ databaseRouter.post('/team-databases/:id/review-promotion', async (req: Request,
 // GET /api/db/admin/team-resources - Dedicated monitoring endpoint for Workspace Admins
 databaseRouter.get('/admin/team-resources', async (req: Request, res: Response) => {
   try {
-    const user = (req as any).user;
-    const callerRole = user?.role || (req.headers['x-user-role'] as string);
+    const actor = getVerifiedActor(req);
+    const callerRole = actor.role;
     if (callerRole !== 'admin' && callerRole !== 'system_admin') {
       return res.status(403).json({ error: 'Access Denied: Only Workspace Admins can access administrative team resources.' });
     }
@@ -635,9 +636,9 @@ databaseRouter.post('/databases', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Database name, type, and host are required' });
     }
 
-    const user = (req as any).user;
-    const callerId = user?.id || (req.headers['x-user-id'] as string) || dbData.createdByUserId || dbData.userId || dbData.callerUserId || (req.query.userId as string);
-    const callerRole = user?.role || (req.headers['x-user-role'] as string) || dbData.userRole || dbData.callerRole || (req.query.userRole as string) || '';
+    const actor = getVerifiedActor(req);
+    const callerId = actor.id;
+    const callerRole = actor.role;
 
     if (!callerId) {
       return res.status(401).json({ error: 'Authentication required to register database connections.' });
@@ -703,9 +704,9 @@ databaseRouter.post('/databases', async (req: Request, res: Response) => {
 // PUT /api/db/databases/:id - Update database connection settings
 databaseRouter.put('/databases/:id', async (req: Request, res: Response) => {
   try {
-    const user = (req as any).user;
-    const callerId = user?.id || (req.headers['x-user-id'] as string) || req.body?.createdByUserId || req.body?.userId || req.body?.callerUserId || (req.query.userId as string);
-    const callerRole = user?.role || (req.headers['x-user-role'] as string) || req.body?.userRole || req.body?.callerRole || (req.query.userRole as string) || '';
+    const actor = getVerifiedActor(req);
+    const callerId = actor.id;
+    const callerRole = actor.role;
 
     if (!callerId) {
       return res.status(401).json({ error: 'Authentication required to update database connection settings.' });
@@ -716,7 +717,7 @@ databaseRouter.put('/databases/:id', async (req: Request, res: Response) => {
 
     const caps = await resolveUserAdminCapabilities(callerId, callerRole);
     if (existing.scope === 'team' && existing.teamId && !caps.isFullAdmin) {
-      const userTeam = user?.teamId || (req.headers['x-team-id'] as string) || (req.query.teamId as string);
+      const userTeam = actor.teamId || (req.headers['x-team-id'] as string) || (req.query.teamId as string);
       if (!userTeam || userTeam !== existing.teamId) {
         return res.status(403).json({ error: 'Access Denied: You do not have permission to modify this team database.' });
       }
@@ -747,9 +748,9 @@ databaseRouter.put('/databases/:id', async (req: Request, res: Response) => {
 // DELETE /api/db/databases/:id - Delete a database connection setting
 databaseRouter.delete('/databases/:id', async (req: Request, res: Response) => {
   try {
-    const user = (req as any).user;
-    const callerId = user?.id || (req.headers['x-user-id'] as string) || req.body?.createdByUserId || req.body?.userId || req.body?.callerUserId || (req.query.userId as string);
-    const callerRole = user?.role || (req.headers['x-user-role'] as string) || req.body?.userRole || req.body?.callerRole || (req.query.userRole as string) || '';
+    const actor = getVerifiedActor(req);
+    const callerId = actor.id;
+    const callerRole = actor.role;
 
     if (!callerId) {
       return res.status(401).json({ error: 'Authentication required to delete database connection settings.' });
@@ -760,7 +761,7 @@ databaseRouter.delete('/databases/:id', async (req: Request, res: Response) => {
 
     const caps = await resolveUserAdminCapabilities(callerId, callerRole);
     if (existing.scope === 'team' && existing.teamId && !caps.isFullAdmin) {
-      const userTeam = user?.teamId || (req.headers['x-team-id'] as string) || (req.query.teamId as string);
+      const userTeam = actor.teamId || (req.headers['x-team-id'] as string) || (req.query.teamId as string);
       if (!userTeam || userTeam !== existing.teamId) {
         return res.status(403).json({ error: 'Access Denied: You do not have permission to delete this team database.' });
       }
@@ -784,9 +785,9 @@ databaseRouter.get('/databases/:id/tables', async (req: Request, res: Response) 
     if (!db) return res.status(404).json({ error: 'Database connection not found' });
 
     // Team scoping verification (Governance Principle 19)
-    const user = (req as any).user;
-    const callerTeamId = user?.teamId || (req.query.teamId as string) || (req.headers['x-team-id'] as string);
-    const callerRole = user?.role || (req.headers['x-user-role'] as string);
+    const actor = getVerifiedActor(req);
+    const callerTeamId = actor.teamId || (req.query.teamId as string);
+    const callerRole = actor.role;
     if (db.scope === 'team' && db.teamId && callerRole !== 'admin' && callerRole !== 'system_admin') {
       if (!callerTeamId || callerTeamId !== db.teamId) {
         return res.status(403).json({ error: `Access Denied: Database "${db.name}" is private to its designated team.` });
@@ -988,9 +989,9 @@ databaseRouter.get('/databases/:id/tables/:tableName/preview', async (req: Reque
     if (!db) return res.status(404).json({ error: 'Database connection not found' });
 
     // Team scoping verification (Governance Principle 19)
-    const user = (req as any).user;
-    const callerTeamId = user?.teamId || (req.query.teamId as string) || (req.headers['x-team-id'] as string);
-    const callerRole = user?.role || (req.headers['x-user-role'] as string);
+    const actor = getVerifiedActor(req);
+    const callerTeamId = actor.teamId || (req.query.teamId as string);
+    const callerRole = actor.role;
     if (db.scope === 'team' && db.teamId && callerRole !== 'admin' && callerRole !== 'system_admin') {
       if (!callerTeamId || callerTeamId !== db.teamId) {
         return res.status(403).json({ error: `Access Denied: Database "${db.name}" is private to its designated team.` });
@@ -1188,8 +1189,9 @@ databaseRouter.post('/column-configurations', async (req: Request, res: Response
     if (!ruleType) return res.status(400).json({ error: 'Rule type is required' });
 
     // Resource Ownership & Governance Check for non-admins
-    const callerId = createdByUserId || userId || (req.headers['x-user-id'] as string) || (req.query.userId as string);
-    const callerRole = userRole || (req.headers['x-user-role'] as string) || (req.query.userRole as string) || '';
+    const actor = getVerifiedActor(req);
+    const callerId = actor.id;
+    const callerRole = actor.role;
     const isAdmin = callerRole === 'admin' || callerRole === 'system_admin' || callerRole === 'administrator';
     if (!isAdmin && callerId) {
       const caps = await resolveUserAdminCapabilities(callerId, callerRole);
@@ -1254,8 +1256,9 @@ databaseRouter.put('/column-configurations/:id', async (req: Request, res: Respo
     if (!existing) return res.status(404).json({ error: 'Column configuration not found' });
 
     // Resource Ownership & Governance Check for non-admins
-    const callerId = req.body.createdByUserId || req.body.userId;
-    const callerRole = req.body.userRole || '';
+    const actor = getVerifiedActor(req);
+    const callerId = actor.id;
+    const callerRole = actor.role;
     const isAdmin = callerRole === 'admin' || callerRole === 'system_admin' || callerRole === 'administrator';
     if (!isAdmin && callerId) {
       const caps = await resolveUserAdminCapabilities(callerId, callerRole);
@@ -1291,8 +1294,9 @@ databaseRouter.delete('/column-configurations/:id', async (req: Request, res: Re
     const existing = await repo.getColumnConfigurationById(req.params.id);
     if (!existing) return res.status(404).json({ error: 'Column configuration not found' });
 
-    const callerId = req.query.userId as string || req.body?.userId;
-    const callerRole = req.query.userRole as string || req.body?.userRole || '';
+    const actor = getVerifiedActor(req);
+    const callerId = actor.id;
+    const callerRole = actor.role;
     const isAdmin = callerRole === 'admin' || callerRole === 'system_admin' || callerRole === 'administrator';
     if (!isAdmin && callerId) {
       const caps = await resolveUserAdminCapabilities(callerId, callerRole);
@@ -3030,7 +3034,10 @@ databaseRouter.delete('/saved-queries/:id', async (req: Request, res: Response) 
 
 databaseRouter.put('/query/approvals/:id', async (req: Request, res: Response) => {
   try {
-    const { status, callerUserId, callerRole } = req.body;
+    const { status } = req.body;
+    const actor = getVerifiedActor(req);
+    const callerUserId = actor.id;
+    const callerRole = actor.role;
     if (callerUserId) {
       const caps = await resolveUserAdminCapabilities(callerUserId, callerRole);
       if (!caps.isFullAdmin && !caps.canManageAccessRequests && !caps.canManageConnections) {
@@ -3082,7 +3089,10 @@ databaseRouter.post('/access-requests', async (req: Request, res: Response) => {
 
 databaseRouter.put('/access-requests/:id', async (req: Request, res: Response) => {
   try {
-    const { status, callerUserId, callerRole } = req.body;
+    const { status } = req.body;
+    const actor = getVerifiedActor(req);
+    const callerUserId = actor.id;
+    const callerRole = actor.role;
     if (callerUserId) {
       const caps = await resolveUserAdminCapabilities(callerUserId, callerRole);
       if (!caps.isFullAdmin && !caps.canManageAccessRequests && !caps.canManageConnections) {

@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { postgresRepo } from '../store/postgresRepo.js';
 import { eventService } from '../services/events.js';
 import { WorkspaceSettingProposal, SettingProposalType } from '../types.js';
+import { getVerifiedActor } from '../utils/auth.js';
 
 export const workspaceSettingsProposalsRouter = Router();
 
@@ -81,10 +82,10 @@ workspaceSettingsProposalsRouter.post('/', async (req: Request, res: Response) =
 const handleProposalReview = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const user = (req as any).user;
-    const callerId = user?.id || (req.headers['x-user-id'] as string) || req.body.checkerId;
-    const callerName = user?.username || user?.name || (req.headers['x-user-name'] as string) || req.body.checkerName || 'Checker Lead';
-    const callerRole = user?.role || (req.headers['x-user-role'] as string) || 'checker';
+    const actor = getVerifiedActor(req);
+    const callerId = actor.id;
+    const callerName = actor.name || 'Checker Lead';
+    const callerRole = actor.role || 'checker';
     const { action, feedback } = req.body;
 
     if (!callerId || !action) {
@@ -92,6 +93,7 @@ const handleProposalReview = async (req: Request, res: Response) => {
     }
 
     // Anti-spoofing check: if req.body.checkerId was provided and user is authenticated, must match callerId
+    const user = (req as any).user;
     if (user && req.body.checkerId && req.body.checkerId !== user.id && callerRole !== 'admin') {
       return res.status(403).json({ error: 'Forbidden: Cannot spoof checker identity' });
     }

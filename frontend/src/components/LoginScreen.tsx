@@ -128,7 +128,7 @@ export default function LoginScreen({ users, onLoginSuccess, onRegisterUser }: L
   };
 
   return (
-    <div className="min-h-[calc(100vh-3rem)] bg-slate-50 flex flex-col items-center justify-center p-4" id="login-container">
+    <div className="w-full h-full flex-1 min-h-0 bg-slate-50 flex flex-col items-center justify-center p-4 overflow-y-auto" id="login-container">
       <div className="w-full max-w-4xl bg-white rounded-2xl shadow-xl border border-slate-200 flex flex-col md:flex-row overflow-hidden transition-all duration-300">
         
         {/* Left Branding and Info Panel */}

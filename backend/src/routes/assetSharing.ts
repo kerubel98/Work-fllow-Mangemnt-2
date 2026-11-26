@@ -1,6 +1,7 @@
 import { Router, Request, Response } from 'express';
 import { assetSharingService, AssetType, ShareTargetType } from '../services/assetSharingService.js';
 import { assetVerificationService } from '../services/assetVerificationService.js';
+import { getVerifiedActor } from '../utils/auth.js';
 
 export const assetSharingRouter = Router();
 
@@ -11,14 +12,9 @@ export const assetSharingRouter = Router();
 assetSharingRouter.post('/share', async (req: Request, res: Response) => {
   try {
     const { assetType, assetId, targetType, targetId, targetName, message } = req.body;
-    const user = (req as any).user || (req.headers['x-user-id'] ? {
-      id: req.headers['x-user-id'] as string,
-      name: (req.headers['x-user-name'] as string) || 'Operator',
-      role: (req.headers['x-user-role'] as string) || 'operational',
-      teamId: (req.headers['x-team-id'] as string) || undefined
-    } : null);
+    const actor = getVerifiedActor(req);
 
-    if (!user) {
+    if (!actor.id || actor.id === 'system') {
       return res.status(401).json({ error: 'Authentication required to share operational assets.' });
     }
 
@@ -29,10 +25,10 @@ assetSharingRouter.post('/share', async (req: Request, res: Response) => {
     const shareRecord = await assetSharingService.shareAsset({
       assetType: assetType as AssetType,
       assetId,
-      senderId: user.id,
-      senderName: user.name || user.username || 'Operator',
-      senderTeamId: user.teamId || (req.headers['x-team-id'] as string),
-      senderRole: user.role,
+      senderId: actor.id,
+      senderName: actor.name || actor.username || 'Operator',
+      senderTeamId: actor.teamId || (req.headers['x-team-id'] as string),
+      senderRole: actor.role,
       targetType: targetType as ShareTargetType,
       targetId,
       targetName,
@@ -197,20 +193,16 @@ assetSharingRouter.post('/:type/:id/unlock', async (req: Request, res: Response)
   try {
     const assetType = req.params.type.toUpperCase() as AssetType;
     const assetId = req.params.id;
-    const user = (req as any).user || (req.headers['x-user-id'] ? {
-      id: req.headers['x-user-id'] as string,
-      name: (req.headers['x-user-name'] as string) || 'Checker',
-      role: (req.headers['x-user-role'] as string) || 'checker'
-    } : null);
+    const actor = getVerifiedActor(req);
 
-    if (!user) {
+    if (!actor.id || actor.id === 'system') {
       return res.status(401).json({ error: 'Authentication required to unlock operational assets.' });
     }
 
     const result = await assetVerificationService.unlockAsset({
       assetType,
       assetId,
-      requestingUser: { id: user.id, name: user.name || user.username || 'Checker', role: user.role }
+      requestingUser: { id: actor.id, name: actor.name || actor.username || 'Checker', role: actor.role }
     });
 
     return res.status(200).json(result);
@@ -242,18 +234,15 @@ assetSharingRouter.get('/team-staged/:teamId', async (req: Request, res: Respons
  */
 assetSharingRouter.get('/direct-shares', async (req: Request, res: Response) => {
   try {
-    const user = (req as any).user || (req.headers['x-user-id'] ? {
-      id: req.headers['x-user-id'] as string,
-      role: (req.headers['x-user-role'] as string) || 'operational'
-    } : null);
+    const actor = getVerifiedActor(req);
 
-    if (!user) {
+    if (!actor.id || actor.id === 'system') {
       return res.status(401).json({ error: 'Authentication required to view direct shares.' });
     }
 
-    const userId = (req.query.userId as string) || user.id;
-    const isAdmin = user.role === 'admin' || user.role === 'system_admin';
-    if (!isAdmin && userId !== user.id) {
+    const userId = (req.query.userId as string) || actor.id;
+    const isAdmin = actor.role === 'admin' || actor.role === 'system_admin';
+    if (!isAdmin && userId !== actor.id) {
       return res.status(403).json({ error: 'Access Denied: You cannot view direct shares for other users.' });
     }
 

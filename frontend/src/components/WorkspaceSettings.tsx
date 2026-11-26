@@ -110,15 +110,7 @@ export default function WorkspaceSettings({
   onNavigateToAuthorityCenter,
   selectedWorkflowId
 }: WorkspaceSettingsProps) {
-  const [config, setConfig] = useState<WorkspaceConfig>(() => {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY);
-      if (saved) return { ...DEFAULT_WORKSPACE_CONFIG, ...JSON.parse(saved) };
-    } catch {
-      // Fallback
-    }
-    return DEFAULT_WORKSPACE_CONFIG;
-  });
+  const [config, setConfig] = useState<WorkspaceConfig>(DEFAULT_WORKSPACE_CONFIG);
 
   const [activeTab, setActiveTab] = useState<SettingsTab>('general');
   const [feedbackBanner, setFeedbackBanner] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
@@ -133,9 +125,6 @@ export default function WorkspaceSettings({
         const matching = proposals.find(p => p.settingKey === STORAGE_KEY);
         if (matching && matching.proposedChanges) {
           setConfig(prev => ({ ...prev, ...matching.proposedChanges }));
-          try {
-            localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...DEFAULT_WORKSPACE_CONFIG, ...matching.proposedChanges }));
-          } catch {}
         }
       })
       .catch(err => {
@@ -146,13 +135,8 @@ export default function WorkspaceSettings({
   }, [currentUser.teamId]);
 
   const handleSaveDraft = () => {
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
-      setFeedbackBanner({ type: 'success', text: 'Workspace preferences saved as offline draft.' });
-      setTimeout(() => setFeedbackBanner(null), 3000);
-    } catch (err) {
-      console.warn('Could not save workspace draft:', err);
-    }
+    setFeedbackBanner({ type: 'success', text: 'Workspace preferences staged in local draft.' });
+    setTimeout(() => setFeedbackBanner(null), 3000);
   };
 
   const handleApplyChanges = async () => {
@@ -201,7 +185,7 @@ export default function WorkspaceSettings({
 
   return (
     <div 
-      className={`flex flex-col ${isDedicatedScreen ? 'w-full h-[calc(100vh-2.25rem)] min-h-0 overflow-hidden' : 'max-w-7xl mx-auto space-y-4'}`} 
+      className={`flex flex-col ${isDedicatedScreen ? 'w-full h-full flex-1 min-h-0 overflow-hidden' : 'max-w-7xl mx-auto space-y-4'}`} 
       id="workspace-settings-container"
     >
       {/* 1. Header with Title and Environment Badge */}

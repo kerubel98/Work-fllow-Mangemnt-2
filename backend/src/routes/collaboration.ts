@@ -2,23 +2,20 @@ import { Router, Request, Response } from 'express';
 import { repo } from '../store/repository.js';
 import { DirectMessage, AppNotification, NotificationType } from '../types.js';
 import { eventService } from '../services/events.js';
+import { getVerifiedActor } from '../utils/auth.js';
 
 export const collaborationRouter = Router();
 
 // ================= DIRECT MESSAGES =================
 collaborationRouter.get('/messages/direct', async (req: Request, res: Response) => {
   try {
-    const user = (req as any).user || (req.headers['x-user-id'] ? {
-      id: req.headers['x-user-id'] as string,
-      role: (req.headers['x-user-role'] as string) || 'operational'
-    } : null);
-
+    const actor = getVerifiedActor(req);
     const user1Id = req.query.user1Id as string | undefined;
     const user2Id = req.query.user2Id as string | undefined;
 
-    if (user && user.role !== 'admin' && user.role !== 'system_admin') {
-      if ((user1Id && user.id !== user1Id && user.id !== user2Id) ||
-          (user2Id && user.id !== user1Id && user.id !== user2Id)) {
+    if (actor.id && actor.role !== 'admin' && actor.role !== 'system_admin') {
+      if ((user1Id && actor.id !== user1Id && actor.id !== user2Id) ||
+          (user2Id && actor.id !== user1Id && actor.id !== user2Id)) {
         return res.status(403).json({ error: 'Access Denied: You can only view direct messages you participate in.' });
       }
     }
@@ -32,24 +29,20 @@ collaborationRouter.get('/messages/direct', async (req: Request, res: Response) 
 
 collaborationRouter.post('/messages/direct', async (req: Request, res: Response) => {
   try {
-    const user = (req as any).user || (req.headers['x-user-id'] ? {
-      id: req.headers['x-user-id'] as string,
-      name: (req.headers['x-user-name'] as string) || 'User',
-      role: (req.headers['x-user-role'] as string) || 'operational'
-    } : null);
-
+    const actor = getVerifiedActor(req);
     const data: Partial<DirectMessage> = req.body;
     if (!data.receiverId || !data.content) {
       return res.status(400).json({ error: 'receiverId and content are required' });
     }
 
-    const effectiveSenderId = user?.id || data.senderId;
+    const effectiveSenderId = actor.id || data.senderId;
     if (!effectiveSenderId) {
       return res.status(400).json({ error: 'senderId is required' });
     }
 
     // Anti-spoofing: senderId must be the authenticated user unless admin
-    const isAdmin = user && (user.role === 'admin' || user.role === 'system_admin');
+    const isAdmin = actor.role === 'admin' || actor.role === 'system_admin';
+    const user = (req as any).user;
     if (user && data.senderId && data.senderId !== user.id && !isAdmin) {
       return res.status(403).json({ error: 'Sender identity spoofing detected: senderId must match authenticated user.' });
     }
@@ -60,8 +53,8 @@ collaborationRouter.post('/messages/direct', async (req: Request, res: Response)
     const newMsg: DirectMessage = {
       id: data.id || `dm-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
       senderId: effectiveSenderId,
-      senderName: (user && user.id === effectiveSenderId ? (user.username || user.name) : (data.senderName || sender?.username)) || 'User',
-      senderRole: (user && user.id === effectiveSenderId ? user.role : (data.senderRole || sender?.role)) || 'operational',
+      senderName: (user && user.id === effectiveSenderId ? (user.username || user.name) : (data.senderName || sender?.username)) || actor.name || 'User',
+      senderRole: (user && user.id === effectiveSenderId ? user.role : (data.senderRole || sender?.role)) || actor.role || 'operational',
       receiverId: data.receiverId,
       receiverName: data.receiverName || receiver?.username || 'User',
       content: data.content,
@@ -99,18 +92,14 @@ collaborationRouter.put('/messages/direct/read', async (req: Request, res: Respo
 // ================= NOTIFICATIONS =================
 collaborationRouter.get('/notifications', async (req: Request, res: Response) => {
   try {
-    const user = (req as any).user || (req.headers['x-user-id'] ? {
-      id: req.headers['x-user-id'] as string,
-      role: (req.headers['x-user-role'] as string) || 'operational'
-    } : null);
-
+    const actor = getVerifiedActor(req);
     const userId = req.query.userId as string | undefined;
-    const isAdmin = user && (user.role === 'admin' || user.role === 'system_admin');
-    if (user && !isAdmin && userId && userId !== user.id && userId !== 'all') {
+    const isAdmin = actor.role === 'admin' || actor.role === 'system_admin';
+    if (!isAdmin && userId && userId !== actor.id && userId !== 'all') {
       return res.status(403).json({ error: 'Access Denied: You cannot view notifications for other users.' });
     }
 
-    const notifs = await repo.getNotifications(userId || user?.id);
+    const notifs = await repo.getNotifications(userId || actor.id);
     return res.json(notifs);
   } catch (err: any) {
     return res.status(500).json({ error: err.message });

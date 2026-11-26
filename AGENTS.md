@@ -148,14 +148,7 @@ Whenever modifying, designing, reviewing, or analyzing features in this reposito
 
 ## Project Agent Guidelines & Directives
 
-### Non-Negotiable Architectural Invariants (FinSync v2 on EthSwitch)
-1. **National Custody Rule:** Banks hold all funds; EthSwitch coordinates rails; FinSync never holds deposits or acts as a custodial wallet.
-2. **Beneficiary Lockdown:** Money flows strictly to authorized `MerchantAccount` destinations. Cashiers are never beneficiaries.
-3. **Authority of Price:** Callers send item IDs and quantities, never prices. Prices strictly resolve from inventory catalogs (`IPriceSource`).
-4. **Asymmetric QR Tokens:** Signed with NIST P-256 (`secp256r1`) ECDSA private keys. Mobile apps cache public keys for instant offline verification. Single-use nonces are invalidated atomically in Redis.
-5. **Cashier Separation of Interest:** Cashiers cannot own unrelated businesses; active cashiers cannot register businesses.
-6. **Double-Entry Balance Constraint:** Every journal posting requires $\sum \text{Debits} = \sum \text{Credits} \neq 0$ enforced at the PostgreSQL constraint level.
-7. **Pre-Consumption Escrow:** Delivery handover codes are only burned after verifying GPS proximity ($\le 100\text{m}$), recipient identity, and order status.
+The 25 Non-Negotiable Governance Principles detailed above govern all architecture, data persistence, reconciliation, security, and lifecycle management within the Operational Workflow Management platform.
 
 ---
 

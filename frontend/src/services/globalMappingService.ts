@@ -100,49 +100,10 @@ export class GlobalMappingService {
   }
 
   /**
-   * Loads cached configuration as an initial non-authoritative fallback.
+   * Loads initial in-memory baseline configuration.
    * True source of truth resides in PostgreSQL database.
    */
   private loadConfig(): GlobalMappingConfig {
-    try {
-      const saved = localStorage.getItem(STORAGE_KEY);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (parsed.standardFields && parsed.tableMappings) {
-          // Clean up legacy mock mappings that referenced fake db IDs (db-1..db-5, sys-1..sys-3)
-          const cleanedMappings: Record<string, DbTableMappingConfig> = {};
-          const mockDbIds = ['db-1', 'db-2', 'db-3', 'db-4', 'db-5', 'sys-1', 'sys-2', 'sys-3'];
-          let hadLegacy = false;
-
-          Object.keys(parsed.tableMappings).forEach(key => {
-            const dbId = parsed.tableMappings[key].dbId;
-            if (!mockDbIds.includes(dbId)) {
-              cleanedMappings[key] = parsed.tableMappings[key];
-            } else {
-              hadLegacy = true;
-            }
-          });
-
-          if (hadLegacy) {
-            parsed.tableMappings = cleanedMappings;
-            try {
-              localStorage.setItem(STORAGE_KEY, JSON.stringify(parsed));
-            } catch (err) {
-              // ignore
-            }
-          }
-
-          if (!parsed.standardFields || parsed.standardFields.length === 0) {
-            parsed.standardFields = [...DEFAULT_GLOBAL_STANDARD_FIELDS];
-          }
-
-          return parsed;
-        }
-      }
-    } catch (e) {
-      console.warn('Failed to load global mapping config from offline cache, using defaults:', e);
-    }
-
     return {
       version: '2.2.0',
       updatedAt: new Date().toISOString(),
@@ -185,12 +146,6 @@ export class GlobalMappingService {
         updatedAt: new Date().toISOString()
       };
 
-      // Persist to non-authoritative offline cache
-      try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(this.config));
-      } catch (err) {
-        // non-blocking
-      }
       this.isHydrated = true;
       this.notifyListeners();
       return this.config;
@@ -230,11 +185,6 @@ export class GlobalMappingService {
       ...newConfig,
       updatedAt: new Date().toISOString()
     };
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(this.config));
-    } catch (e) {
-      console.error('Failed to save global mapping config to offline cache:', e);
-    }
 
     // Authoritative asynchronous persist to PostgreSQL
     api.saveGlobalSchemaConfig(this.config).catch(err => {
@@ -264,11 +214,6 @@ export class GlobalMappingService {
   public updateStandardFields(fields: GlobalTransactionSchemaField[]): void {
     if (Array.isArray(fields) && fields.length > 0) {
       this.config.standardFields = fields;
-      try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(this.config));
-      } catch (err) {
-        // ignore storage error
-      }
       api.saveGlobalSchemaConfig(this.config).catch(err => {
         console.warn('[GlobalMappingService] Could not persist updated fields to PostgreSQL:', err.message);
       });
@@ -1616,14 +1561,8 @@ export class GlobalMappingService {
           : this.config.standardFields,
         tableMappings: mergedMappings
       };
-
-      try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(this.config));
-      } catch (e) {
-        // ignore
-      }
     } catch (err: any) {
-      console.warn('[GlobalMappingService] Backend fetch fallback to local cache:', err.message);
+      console.warn('[GlobalMappingService] Backend fetch fallback to memory state:', err.message);
     }
     return this.getConfig();
   }

@@ -5,6 +5,7 @@ import { eventService } from '../services/events.js';
 import { queryPg, isPostgresConnected } from '../config/postgres.js';
 import { resolveUserAdminCapabilities } from '../utils/capabilityHelper.js';
 import { analyticsService } from '../services/analyticsService.js';
+import { getVerifiedActor } from '../utils/auth.js';
 
 export const teamsRouter = Router();
 
@@ -140,9 +141,9 @@ teamsRouter.put('/:id/member-privileges', async (req: Request, res: Response) =>
     if (!team) return res.status(404).json({ error: 'Team not found' });
 
     // Authorization check (AUD-TEAM-001): Only team manager or admin can allocate member privileges
-    const user = (req as any).user;
-    const effectiveUserId = user?.id || callerUserId;
-    const effectiveRole = user?.role || callerRole;
+    const actor = getVerifiedActor(req);
+    const effectiveUserId = actor.id;
+    const effectiveRole = actor.role;
 
     const isManager = Boolean(effectiveUserId && team.managerId === effectiveUserId);
     const isAdmin = Boolean(effectiveRole === 'admin' || effectiveRole === 'system_admin');
@@ -214,17 +215,16 @@ teamsRouter.put('/:id/member-privileges', async (req: Request, res: Response) =>
 teamsRouter.put('/:id/admin-privileges', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const user = (req as any).user;
-    // Strict Authorization: Prioritize verified JWT claims; prevent body spoofing
-    const effectiveRole = user?.role || (req.headers['x-user-role'] as string) || (req.body.callerRole as string);
+    const actor = getVerifiedActor(req);
+    const effectiveRole = actor.role;
     const { adminPrivileges } = req.body;
 
     const team = await repo.getTeamById(id);
     if (!team) return res.status(404).json({ error: 'Team not found' });
 
     // Reject if caller is not an admin, or if an authenticated non-admin attempts body spoofing
-    const isAdmin = effectiveRole === 'admin' || effectiveRole === 'system_admin' || (user?.role === 'admin');
-    if (!isAdmin || (user && user.role !== 'admin' && user.role !== 'system_admin')) {
+    const isAdmin = effectiveRole === 'admin' || effectiveRole === 'system_admin';
+    if (!isAdmin) {
       return res.status(403).json({
         error: 'Access Denied: Only a Workspace Administrator can delegate administrative privileges to a team.'
       });
@@ -257,8 +257,9 @@ teamsRouter.put('/:id/admin-privileges', async (req: Request, res: Response) => 
 teamsRouter.put('/:id/allocated-databases', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const callerRole = (req.body.callerRole || req.headers['x-user-role'] || (req as any).user?.role) as string;
-    const callerUserId = (req.body.callerUserId || req.headers['x-user-id'] || (req as any).user?.id) as string;
+    const actor = getVerifiedActor(req);
+    const callerRole = actor.role;
+    const callerUserId = actor.id;
     const { allowedDbIds } = req.body;
 
     const team = await repo.getTeamById(id);

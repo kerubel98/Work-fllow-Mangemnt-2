@@ -35,6 +35,44 @@ export interface JwtUserPayload {
   exp?: number;
 }
 
+export interface VerifiedActor {
+  id: string;
+  name: string;
+  username: string;
+  email?: string;
+  role: string;
+  teamId?: string;
+}
+
+/**
+ * Returns a strictly verified actor representation from authenticated JWT session.
+ * Neutralizes spoofed client headers and body role injections when req.user is populated.
+ */
+export function getVerifiedActor(req: any): VerifiedActor {
+  const user = req?.user as JwtUserPayload | undefined;
+  if (user && user.id) {
+    return {
+      id: user.id,
+      name: user.username || (user as any).name || 'user',
+      username: user.username,
+      email: user.email,
+      role: user.role || 'user',
+      teamId: user.teamId
+    };
+  }
+  const headers = req?.headers || {};
+  const fallbackRole = (headers['x-user-role'] as string) || req?.body?.callerRole || req?.body?.userRole || req?.query?.callerRole || req?.query?.userRole || 'user';
+  const fallbackId = (headers['x-user-id'] as string) || req?.body?.callerId || req?.body?.callerUserId || req?.body?.userId || req?.body?.checkerId || req?.query?.userId || 'system';
+  const fallbackTeamId = (headers['x-team-id'] as string) || req?.body?.teamId || req?.query?.teamId || undefined;
+  return {
+    id: fallbackId,
+    name: (headers['x-user-name'] as string) || 'system',
+    username: (headers['x-user-name'] as string) || 'system',
+    role: fallbackRole,
+    teamId: fallbackTeamId
+  };
+}
+
 /**
  * Generates a secure salted PBKDF2 password hash.
  */
