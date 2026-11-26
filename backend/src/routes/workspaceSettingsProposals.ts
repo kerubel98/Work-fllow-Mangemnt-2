@@ -81,10 +81,19 @@ workspaceSettingsProposalsRouter.post('/', async (req: Request, res: Response) =
 const handleProposalReview = async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const { checkerId, checkerName, action, feedback } = req.body;
+    const user = (req as any).user;
+    const callerId = user?.id || (req.headers['x-user-id'] as string) || req.body.checkerId;
+    const callerName = user?.username || user?.name || (req.headers['x-user-name'] as string) || req.body.checkerName || 'Checker Lead';
+    const callerRole = user?.role || (req.headers['x-user-role'] as string) || 'checker';
+    const { action, feedback } = req.body;
 
-    if (!checkerId || !action) {
+    if (!callerId || !action) {
       return res.status(400).json({ error: 'checkerId and action (APPROVE/REJECT) are required.' });
+    }
+
+    // Anti-spoofing check: if req.body.checkerId was provided and user is authenticated, must match callerId
+    if (user && req.body.checkerId && req.body.checkerId !== user.id && callerRole !== 'admin') {
+      return res.status(403).json({ error: 'Forbidden: Cannot spoof checker identity' });
     }
 
     const existing = await postgresRepo.getWorkspaceSettingProposalById(id);
@@ -93,7 +102,7 @@ const handleProposalReview = async (req: Request, res: Response) => {
     }
 
     // Anti-Self-Approval Enforcement (Four-Eyes Principle)
-    if (existing.makerId === checkerId) {
+    if (existing.makerId === callerId) {
       return res.status(403).json({
         error: `Anti-Self-Approval Violation: Maker '${existing.makerName}' cannot approve their own setting proposal.`
       });
@@ -101,8 +110,8 @@ const handleProposalReview = async (req: Request, res: Response) => {
 
     const updated = await postgresRepo.reviewWorkspaceSettingProposal(
       id,
-      checkerId,
-      checkerName || 'Checker Lead',
+      callerId,
+      callerName,
       action as 'APPROVE' | 'REJECT',
       feedback
     );

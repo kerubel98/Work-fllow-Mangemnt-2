@@ -54,7 +54,7 @@ export class AssetSharingService {
 
     if (assetType === 'VALIDATION_BOX') {
       const { rows } = await pool.query(
-        'SELECT id, name, category, box_type, target_db_id, target_table, search_parameters, check_step, description, is_public, visibility, created_at, updated_at FROM validation_boxes WHERE id = $1 LIMIT 1;',
+        'SELECT id, name, category, box_type, target_db_id, target_table, search_parameters, check_step, description, is_public, visibility, team_id, maker_id, created_at, updated_at FROM validation_boxes WHERE id = $1 LIMIT 1;',
         [assetId]
       );
       if (rows.length === 0) return null;
@@ -74,7 +74,7 @@ export class AssetSharingService {
 
     if (assetType === 'WORKFLOW') {
       const { rows } = await pool.query(
-        'SELECT id, name, description, steps, stages, target_db_id, target_table, category, created_at, updated_at FROM database_validation_workflows WHERE id = $1 LIMIT 1;',
+        'SELECT id, name, description, steps, stages, target_db_id, target_table, category, team_id, maker_id, created_at, updated_at FROM database_validation_workflows WHERE id = $1 LIMIT 1;',
         [assetId]
       );
       if (rows.length === 0) return null;
@@ -91,7 +91,7 @@ export class AssetSharingService {
 
     if (assetType === 'DB_CONFIG') {
       const { rows } = await pool.query(
-        'SELECT id, db_id, db_name, table_name, columns, updated_at FROM database_table_mappings WHERE id = $1 LIMIT 1;',
+        'SELECT id, db_id, db_name, table_name, columns, team_id, maker_id, updated_at FROM database_table_mappings WHERE id = $1 LIMIT 1;',
         [assetId]
       );
       if (rows.length === 0) return null;
@@ -139,6 +139,8 @@ export class AssetSharingService {
     assetId: string;
     senderId: string;
     senderName: string;
+    senderTeamId?: string;
+    senderRole?: string;
     targetType: ShareTargetType;
     targetId: string;
     targetName?: string;
@@ -147,6 +149,18 @@ export class AssetSharingService {
     const payloadData = await this.getAssetPayload(params.assetType, params.assetId);
     if (!payloadData) {
       throw new Error(`Asset not found: [${params.assetType}] ID ${params.assetId}`);
+    }
+
+    const origAsset = payloadData.asset;
+    const origTeamId = origAsset.team_id || origAsset.teamId;
+    const origMakerId = origAsset.maker_id || origAsset.makerId || origAsset.creator_id || origAsset.created_by;
+
+    // Boundary Isolation: If asset is team-owned, only owners or admins can share it
+    const isAdmin = params.senderRole === 'admin' || params.senderRole === 'system_admin';
+    if (origTeamId && !isAdmin) {
+      if (params.senderTeamId && params.senderTeamId !== origTeamId && params.senderId !== origMakerId) {
+        throw new Error(`Access Denied: You cannot share assets belonging to team '${origTeamId}'`);
+      }
     }
 
     const pool = getPostgresPool();
@@ -163,7 +177,7 @@ export class AssetSharingService {
       shareId
     };
 
-    // If sharing to a TEAM, update the asset's team staging state
+    // If sharing to a TEAM, update the asset's staging status to PENDING_CHECKER_TEST without hijacking team_id
     if (params.targetType === 'TEAM') {
       let tableName = '';
       if (params.assetType === 'VALIDATION_BOX') tableName = 'validation_boxes';
@@ -173,9 +187,9 @@ export class AssetSharingService {
       if (tableName) {
         await pool.query(
           `UPDATE ${tableName} 
-           SET team_id = $1, status = 'PENDING_CHECKER_TEST', updated_at = NOW() 
-           WHERE id = $2;`,
-          [params.targetId, params.assetId]
+           SET status = 'PENDING_CHECKER_TEST', updated_at = NOW() 
+           WHERE id = $1;`,
+          [params.assetId]
         );
       }
     }
@@ -387,18 +401,21 @@ export class AssetSharingService {
       pool.query(
         `SELECT * FROM validation_boxes 
          WHERE team_id = $1 
+            OR id IN (SELECT asset_id FROM asset_shares WHERE target_type = 'TEAM' AND target_id = $1)
          ORDER BY created_at DESC;`,
         [teamId]
       ),
       pool.query(
         `SELECT * FROM database_validation_workflows 
          WHERE team_id = $1 
+            OR id IN (SELECT asset_id FROM asset_shares WHERE target_type = 'TEAM' AND target_id = $1)
          ORDER BY created_at DESC;`,
         [teamId]
       ),
       pool.query(
         `SELECT * FROM database_table_mappings 
          WHERE team_id = $1 
+            OR id IN (SELECT asset_id FROM asset_shares WHERE target_type = 'TEAM' AND target_id = $1)
          ORDER BY updated_at DESC;`,
         [teamId]
       )

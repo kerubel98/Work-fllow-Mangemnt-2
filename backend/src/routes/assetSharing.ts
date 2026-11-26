@@ -11,10 +11,16 @@ export const assetSharingRouter = Router();
 assetSharingRouter.post('/share', async (req: Request, res: Response) => {
   try {
     const { assetType, assetId, targetType, targetId, targetName, message } = req.body;
-    const user = (req as any).user || {
-      id: req.headers['x-user-id'] || 'usr-1',
-      name: req.headers['x-user-name'] || 'Operator'
-    };
+    const user = (req as any).user || (req.headers['x-user-id'] ? {
+      id: req.headers['x-user-id'] as string,
+      name: (req.headers['x-user-name'] as string) || 'Operator',
+      role: (req.headers['x-user-role'] as string) || 'operational',
+      teamId: (req.headers['x-team-id'] as string) || undefined
+    } : null);
+
+    if (!user) {
+      return res.status(401).json({ error: 'Authentication required to share operational assets.' });
+    }
 
     if (!assetType || !assetId || !targetType || !targetId) {
       return res.status(400).json({ error: 'Missing required parameters: assetType, assetId, targetType, targetId' });
@@ -24,7 +30,9 @@ assetSharingRouter.post('/share', async (req: Request, res: Response) => {
       assetType: assetType as AssetType,
       assetId,
       senderId: user.id,
-      senderName: user.name,
+      senderName: user.name || user.username || 'Operator',
+      senderTeamId: user.teamId || (req.headers['x-team-id'] as string),
+      senderRole: user.role,
       targetType: targetType as ShareTargetType,
       targetId,
       targetName,
@@ -38,7 +46,8 @@ assetSharingRouter.post('/share', async (req: Request, res: Response) => {
     });
   } catch (err: any) {
     console.error('Error sharing asset:', err);
-    return res.status(500).json({ error: err.message || 'Failed to share operational asset' });
+    const status = err.message?.includes('Access Denied') ? 403 : 500;
+    return res.status(status).json({ error: err.message || 'Failed to share operational asset' });
   }
 });
 
@@ -50,16 +59,20 @@ assetSharingRouter.post('/:type/:id/adopt', async (req: Request, res: Response) 
   try {
     const assetType = req.params.type.toUpperCase() as AssetType;
     const assetId = req.params.id;
-    const user = (req as any).user || {
-      id: req.headers['x-user-id'] || 'usr-1',
-      name: req.headers['x-user-name'] || 'Operator'
-    };
+    const user = (req as any).user || (req.headers['x-user-id'] ? {
+      id: req.headers['x-user-id'] as string,
+      name: (req.headers['x-user-name'] as string) || 'Operator'
+    } : null);
+
+    if (!user) {
+      return res.status(401).json({ error: 'Authentication required to adopt assets.' });
+    }
 
     const result = await assetSharingService.adoptAsset({
       assetType,
       assetId,
       recipientId: user.id,
-      recipientName: user.name,
+      recipientName: user.name || user.username || 'Operator',
       customName: req.body.customName
     });
 
@@ -83,15 +96,19 @@ assetSharingRouter.post('/:type/:id/test', async (req: Request, res: Response) =
   try {
     const assetType = req.params.type.toUpperCase() as AssetType;
     const assetId = req.params.id;
-    const user = (req as any).user || {
-      id: req.headers['x-user-id'] || 'usr-checker',
-      name: req.headers['x-user-name'] || 'Checker'
-    };
+    const user = (req as any).user || (req.headers['x-user-id'] ? {
+      id: req.headers['x-user-id'] as string,
+      name: (req.headers['x-user-name'] as string) || 'Checker'
+    } : null);
+
+    if (!user) {
+      return res.status(401).json({ error: 'Authentication required to test assets.' });
+    }
 
     const testResult = await assetVerificationService.testAssetAgainstTransactions({
       assetType,
       assetId,
-      checkerUser: { id: user.id, name: user.name },
+      checkerUser: { id: user.id, name: user.name || user.username || 'Checker' },
       sampleLimit: req.body.sampleLimit ? Number(req.body.sampleLimit) : 10
     });
 
@@ -113,15 +130,19 @@ assetSharingRouter.post('/:type/:id/approve', async (req: Request, res: Response
   try {
     const assetType = req.params.type.toUpperCase() as AssetType;
     const assetId = req.params.id;
-    const user = (req as any).user || {
-      id: req.headers['x-user-id'] || 'usr-checker',
-      name: req.headers['x-user-name'] || 'Checker'
-    };
+    const user = (req as any).user || (req.headers['x-user-id'] ? {
+      id: req.headers['x-user-id'] as string,
+      name: (req.headers['x-user-name'] as string) || 'Checker'
+    } : null);
+
+    if (!user) {
+      return res.status(401).json({ error: 'Authentication required to approve operational assets.' });
+    }
 
     const result = await assetVerificationService.approveAsset({
       assetType,
       assetId,
-      checkerUser: { id: user.id, name: user.name },
+      checkerUser: { id: user.id, name: user.name || user.username || 'Checker' },
       feedback: req.body.feedback
     });
 
@@ -141,10 +162,14 @@ assetSharingRouter.post('/:type/:id/decline', async (req: Request, res: Response
   try {
     const assetType = req.params.type.toUpperCase() as AssetType;
     const assetId = req.params.id;
-    const user = (req as any).user || {
-      id: req.headers['x-user-id'] || 'usr-checker',
-      name: req.headers['x-user-name'] || 'Checker'
-    };
+    const user = (req as any).user || (req.headers['x-user-id'] ? {
+      id: req.headers['x-user-id'] as string,
+      name: (req.headers['x-user-name'] as string) || 'Checker'
+    } : null);
+
+    if (!user) {
+      return res.status(401).json({ error: 'Authentication required to decline operational assets.' });
+    }
 
     if (!req.body.feedback) {
       return res.status(400).json({ error: 'Checker feedback is required when declining an asset' });
@@ -153,7 +178,7 @@ assetSharingRouter.post('/:type/:id/decline', async (req: Request, res: Response
     const result = await assetVerificationService.declineAsset({
       assetType,
       assetId,
-      checkerUser: { id: user.id, name: user.name },
+      checkerUser: { id: user.id, name: user.name || user.username || 'Checker' },
       feedback: req.body.feedback
     });
 
@@ -172,16 +197,20 @@ assetSharingRouter.post('/:type/:id/unlock', async (req: Request, res: Response)
   try {
     const assetType = req.params.type.toUpperCase() as AssetType;
     const assetId = req.params.id;
-    const user = (req as any).user || {
-      id: req.headers['x-user-id'] || 'usr-checker',
-      name: req.headers['x-user-name'] || 'Checker',
-      role: req.headers['x-user-role'] || 'checker'
-    };
+    const user = (req as any).user || (req.headers['x-user-id'] ? {
+      id: req.headers['x-user-id'] as string,
+      name: (req.headers['x-user-name'] as string) || 'Checker',
+      role: (req.headers['x-user-role'] as string) || 'checker'
+    } : null);
+
+    if (!user) {
+      return res.status(401).json({ error: 'Authentication required to unlock operational assets.' });
+    }
 
     const result = await assetVerificationService.unlockAsset({
       assetType,
       assetId,
-      requestingUser: { id: user.id, name: user.name, role: user.role }
+      requestingUser: { id: user.id, name: user.name || user.username || 'Checker', role: user.role }
     });
 
     return res.status(200).json(result);
@@ -213,7 +242,21 @@ assetSharingRouter.get('/team-staged/:teamId', async (req: Request, res: Respons
  */
 assetSharingRouter.get('/direct-shares', async (req: Request, res: Response) => {
   try {
-    const userId = (req.query.userId as string) || (req.headers['x-user-id'] as string) || 'usr-1';
+    const user = (req as any).user || (req.headers['x-user-id'] ? {
+      id: req.headers['x-user-id'] as string,
+      role: (req.headers['x-user-role'] as string) || 'operational'
+    } : null);
+
+    if (!user) {
+      return res.status(401).json({ error: 'Authentication required to view direct shares.' });
+    }
+
+    const userId = (req.query.userId as string) || user.id;
+    const isAdmin = user.role === 'admin' || user.role === 'system_admin';
+    if (!isAdmin && userId !== user.id) {
+      return res.status(403).json({ error: 'Access Denied: You cannot view direct shares for other users.' });
+    }
+
     const shares = await assetSharingService.getDirectSharesForUser(userId);
     return res.status(200).json({ success: true, shares });
   } catch (err: any) {

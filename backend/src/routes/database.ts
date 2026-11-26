@@ -717,10 +717,11 @@ databaseRouter.get('/databases/:id/tables', async (req: Request, res: Response) 
     if (!db) return res.status(404).json({ error: 'Database connection not found' });
 
     // Team scoping verification (Governance Principle 19)
-    const callerTeamId = (req.query.teamId as string) || (req.headers['x-team-id'] as string);
-    const callerRole = (req.headers['x-user-role'] as string);
-    if (db.scope === 'team' && db.teamId && callerRole !== 'admin') {
-      if (callerTeamId && callerTeamId !== db.teamId) {
+    const user = (req as any).user;
+    const callerTeamId = user?.teamId || (req.query.teamId as string) || (req.headers['x-team-id'] as string);
+    const callerRole = user?.role || (req.headers['x-user-role'] as string);
+    if (db.scope === 'team' && db.teamId && callerRole !== 'admin' && callerRole !== 'system_admin') {
+      if (!callerTeamId || callerTeamId !== db.teamId) {
         return res.status(403).json({ error: `Access Denied: Database "${db.name}" is private to its designated team.` });
       }
     }
@@ -920,10 +921,11 @@ databaseRouter.get('/databases/:id/tables/:tableName/preview', async (req: Reque
     if (!db) return res.status(404).json({ error: 'Database connection not found' });
 
     // Team scoping verification (Governance Principle 19)
-    const callerTeamId = (req.query.teamId as string) || (req.headers['x-team-id'] as string);
-    const callerRole = (req.headers['x-user-role'] as string);
-    if (db.scope === 'team' && db.teamId && callerRole !== 'admin') {
-      if (callerTeamId && callerTeamId !== db.teamId) {
+    const user = (req as any).user;
+    const callerTeamId = user?.teamId || (req.query.teamId as string) || (req.headers['x-team-id'] as string);
+    const callerRole = user?.role || (req.headers['x-user-role'] as string);
+    if (db.scope === 'team' && db.teamId && callerRole !== 'admin' && callerRole !== 'system_admin') {
+      if (!callerTeamId || callerTeamId !== db.teamId) {
         return res.status(403).json({ error: `Access Denied: Database "${db.name}" is private to its designated team.` });
       }
     }

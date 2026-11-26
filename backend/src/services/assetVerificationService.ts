@@ -126,7 +126,8 @@ export class AssetVerificationService {
     }
 
     // Four-Eyes Principle: Anti-Self-Approval
-    if (asset.maker_id && asset.maker_id === params.checkerUser.id) {
+    const makerId = asset.maker_id || asset.creator_id || asset.created_by || asset.author_id || asset.author;
+    if (makerId && makerId === params.checkerUser.id) {
       throw new Error(`Anti-Self-Approval violation: Operator '${params.checkerUser.name}' cannot approve their own operational asset. A separate Checker must test and verify.`);
     }
 

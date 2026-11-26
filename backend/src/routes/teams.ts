@@ -99,6 +99,12 @@ teamsRouter.put('/:id', async (req: Request, res: Response) => {
     const existing = await repo.getTeamById(req.params.id);
     if (!existing) return res.status(404).json({ error: 'Team not found' });
 
+    // Authorization Guard (AUD-TEAM-002): Only admin or team manager can mutate team definition
+    const user = (req as any).user;
+    if (user && user.role !== 'admin' && user.role !== 'system_admin' && existing.managerId !== user.id) {
+      return res.status(403).json({ error: 'Access Denied: Only a Workspace Admin or Team Manager can update team settings.' });
+    }
+
     const effectiveTeamType = req.body.teamType !== undefined ? req.body.teamType : existing.teamType;
     const isPermanent = (effectiveTeamType || 'working') === 'permanent';
     const effectiveManagerId = req.body.managerId !== undefined ? req.body.managerId : existing.managerId;
@@ -133,13 +139,18 @@ teamsRouter.put('/:id/member-privileges', async (req: Request, res: Response) =>
     const team = await repo.getTeamById(id);
     if (!team) return res.status(404).json({ error: 'Team not found' });
 
-    // Authorization check: Only team manager or admin can allocate member privileges
-    if (callerUserId && callerRole !== 'admin') {
-      if (team.managerId !== callerUserId) {
-        return res.status(403).json({
-          error: 'Access Denied: Only the designated Team Manager or a Workspace Admin can allocate member privileges.'
-        });
-      }
+    // Authorization check (AUD-TEAM-001): Only team manager or admin can allocate member privileges
+    const user = (req as any).user;
+    const effectiveUserId = user?.id || callerUserId;
+    const effectiveRole = user?.role || callerRole;
+
+    const isManager = Boolean(effectiveUserId && team.managerId === effectiveUserId);
+    const isAdmin = Boolean(effectiveRole === 'admin' || effectiveRole === 'system_admin');
+
+    if (!isManager && !isAdmin) {
+      return res.status(403).json({
+        error: 'Access Denied: Only the designated Team Manager or a Workspace Admin can allocate member privileges.'
+      });
     }
 
     if (!memberPrivileges || typeof memberPrivileges !== 'object') {
@@ -199,24 +210,21 @@ teamsRouter.put('/:id/member-privileges', async (req: Request, res: Response) =>
   }
 });
 
-// PUT /api/teams/:id/admin-privileges - Workspace Admin delegates admin privileges to a team
+// PUT /api/teams/:id/admin-privileges - Workspace Admin delegates admin privileges to a team (AUD-TEAM-001)
 teamsRouter.put('/:id/admin-privileges', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
-    const callerRole = (req.body.callerRole || req.headers['x-user-role'] || (req as any).user?.role) as string;
-    const callerUserId = (req.body.callerUserId || req.headers['x-user-id'] || (req as any).user?.id) as string;
+    const user = (req as any).user;
+    // Strict Authorization: Prioritize verified JWT claims; prevent body spoofing
+    const effectiveRole = user?.role || (req.headers['x-user-role'] as string) || (req.body.callerRole as string);
     const { adminPrivileges } = req.body;
 
     const team = await repo.getTeamById(id);
     if (!team) return res.status(404).json({ error: 'Team not found' });
 
-    // Strict Authorization: Only Workspace Admin can grant/revoke team administrative privileges
-    const isAdmin = 
-      callerRole === 'admin' || 
-      callerRole === 'system_admin' || 
-      (callerRole as string)?.toLowerCase() === 'administrator';
-
-    if (!isAdmin) {
+    // Reject if caller is not an admin, or if an authenticated non-admin attempts body spoofing
+    const isAdmin = effectiveRole === 'admin' || effectiveRole === 'system_admin' || (user?.role === 'admin');
+    if (!isAdmin || (user && user.role !== 'admin' && user.role !== 'system_admin')) {
       return res.status(403).json({
         error: 'Access Denied: Only a Workspace Administrator can delegate administrative privileges to a team.'
       });
@@ -289,6 +297,14 @@ teamsRouter.put('/:id/allocated-databases', async (req: Request, res: Response) 
 
 teamsRouter.delete('/:id', async (req: Request, res: Response) => {
   try {
+    const user = (req as any).user;
+    // Strict Authorization & Data Loss Prevention (Rule 17 / AUD-TEAM-002)
+    if (user && user.role !== 'admin' && user.role !== 'system_admin') {
+      return res.status(403).json({
+        error: 'Access Denied: Only a Workspace Administrator can permanently delete operational teams.'
+      });
+    }
+
     const success = await repo.deleteTeam(req.params.id);
     eventService.broadcastEvent('team:deleted', { id: req.params.id });
     return res.json({ success });
