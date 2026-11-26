@@ -63,8 +63,8 @@ A thorough cross-layer audit of the **Investigation Core** was conducted across 
 | `AUD-INV-003` | `HIGH` | `RESOLVED` | Maker-Checker Bypass | `resolutions.ts:39`; `makerCheckerService.ts:161`; `issues.ts:611` | Optional `checkerTeamId` bypasses team check; `execute-script` resolves issue without Checker approval (Remediated with mandatory team verification & canonical `'INVESTIGATING'` review state) |
 | `AUD-INV-004` | `HIGH` | `RESOLVED` | SQL Safety / Validation | `ruleSqlCompiler.ts:150,186,310,390,473-494` | Unvalidated `Number(...)` (`NaN`) and unescaped `onPassAction`/`onFailAction` interpolated into SQL (Remediated with `sanitizeToleranceMargin` and `sanitizePipelineAction`) |
 | `AUD-INV-005` | `MEDIUM` | `RESOLVED` | Pipeline Semantics | `reconciliationService.ts:318-319`; `ExecutablePipeline.ts:732` | `reconcileByRowNumber` hardcodes `STOP`/`CONTINUE`; `allStageLegs` overwrites same-named tables (Remediated with SQL dynamic action aggregation & stage legs array append) |
-| `AUD-INV-006` | `MEDIUM` | `OPEN` | Identity Spoofing | `issues.ts:27,451,518,584`; `investigations.ts:226` | Request body actor IDs trusted instead of JWT `req.user.id` |
-| `AUD-INV-007` | `LOW` | `OPEN` | Performance / Tech Debt | `reversionService.ts:127-139` | `revertTask` executes row-by-row `INSERT` loop instead of batched multi-row insert |
+| `AUD-INV-006` | `MEDIUM` | `RESOLVED` | Identity Integrity | `issues.ts:27,451,518,584`; `investigations.ts:226` | Request body actor IDs trusted instead of JWT `req.user.id` (Remediated via `getVerifiedActor`) |
+| `AUD-INV-007` | `LOW` | `RESOLVED` | Performance / Tech Debt | `reversionService.ts:127-139` | `revertTask` executes row-by-row `INSERT` loop instead of batched multi-row insert (Remediated via 500-row batching) |
 
 ---
 

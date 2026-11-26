@@ -10,6 +10,7 @@ import { executeWorkflowForTransaction } from '../services/investigationEngine.j
 import { executeExternalChunkQuery } from '../services/externalDataQueryService.js';
 import { aggregateParentIssueStatus } from '../services/statusAggregator.js';
 import { investigationOrchestratorService } from '../services/investigationOrchestratorService.js';
+import { getVerifiedActor } from '../utils/auth.js';
 import {
   InvestigationTask,
   InvestigationBatch,
@@ -212,6 +213,9 @@ investigationsRouter.post('/execute-universal', async (req: Request, res: Respon
 
     const { investigationOrchestratorService } = await import('../services/investigationOrchestratorService.js');
     
+    const actor = getVerifiedActor(req);
+    const effectiveExecutedBy = (actor.username && actor.username !== 'system') ? actor.username : (actor.name !== 'system' ? actor.name : (executedBy || 'investigator'));
+
     // Unconditional execution via compiled ExecutablePipeline (§3.2, §7.2)
     const result = await investigationOrchestratorService.executeViaNewPipeline({
       workflowId,
@@ -223,7 +227,7 @@ investigationsRouter.post('/execute-universal', async (req: Request, res: Respon
       priority: priority || 'HIGH',
       options,
       forceRerun: forceRerun !== false,
-      executedBy: executedBy || (req as any).user?.name || (req as any).user?.username || 'investigator'
+      executedBy: effectiveExecutedBy
     } as any);
 
     return res.json(result);
@@ -244,6 +248,9 @@ investigationsRouter.post('/execute-pipeline', async (req: Request, res: Respons
       return res.status(400).json({ error: 'records array is required and must not be empty' });
     }
 
+    const actor = getVerifiedActor(req);
+    const effectiveExecutedBy = (actor.username && actor.username !== 'system') ? actor.username : (actor.name !== 'system' ? actor.name : (executedBy || 'investigator'));
+
     const { investigationOrchestratorService } = await import('../services/investigationOrchestratorService.js');
     const result = await investigationOrchestratorService.executeViaNewPipeline({
       workflowId,
@@ -252,7 +259,7 @@ investigationsRouter.post('/execute-pipeline', async (req: Request, res: Respons
       sourceId,
       options,
       forceRerun: forceRerun !== false,
-      executedBy: executedBy || (req as any).user?.name || (req as any).user?.username || 'investigator'
+      executedBy: effectiveExecutedBy
     } as any);
 
     return res.json(result);

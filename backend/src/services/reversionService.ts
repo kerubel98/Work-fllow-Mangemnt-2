@@ -124,18 +124,32 @@ export const reversionService = {
       );
       await client.query('DELETE FROM task_dataset_transactions WHERE task_id = $1;', [taskId]);
 
-      for (let i = 0; i < originalRows.length; i++) {
-        const row = originalRows[i];
-        const rowNum = row.row_number || (i + 1);
-        const batchId = row.batch_id || 'DEFAULT_RESTORE';
-        const canonical = row.canonical_data || row;
-        const raw = row.raw_data || row;
+      // Batched multi-row INSERT (AUD-INV-007) complying with Rule 11 parameter bounds (< 30,000)
+      if (originalRows.length > 0) {
+        const BATCH_SIZE = 500;
+        for (let offset = 0; offset < originalRows.length; offset += BATCH_SIZE) {
+          const chunk = originalRows.slice(offset, offset + BATCH_SIZE);
+          const values: any[] = [];
+          const placeholders: string[] = [];
+          let paramIdx = 1;
 
-        await client.query(
-          `INSERT INTO task_dataset_transactions (task_id, batch_id, row_number, canonical_data, raw_data, created_at)
-           VALUES ($1, $2, $3, $4, $5, CURRENT_TIMESTAMP);`,
-          [taskId, batchId, rowNum, JSON.stringify(canonical), JSON.stringify(raw)]
-        );
+          for (let i = 0; i < chunk.length; i++) {
+            const row = chunk[i];
+            const rowNum = row.row_number || (offset + i + 1);
+            const batchId = row.batch_id || 'DEFAULT_RESTORE';
+            const canonical = row.canonical_data || row;
+            const raw = row.raw_data || row;
+
+            placeholders.push(`($${paramIdx++}, $${paramIdx++}, $${paramIdx++}, $${paramIdx++}, $${paramIdx++}, CURRENT_TIMESTAMP)`);
+            values.push(taskId, batchId, rowNum, JSON.stringify(canonical), JSON.stringify(raw));
+          }
+
+          await client.query(
+            `INSERT INTO task_dataset_transactions (task_id, batch_id, row_number, canonical_data, raw_data, created_at)
+             VALUES ${placeholders.join(', ')};`,
+            values
+          );
+        }
       }
 
       const canonicalRows = originalRows.map(r => r.canonical_data || r);

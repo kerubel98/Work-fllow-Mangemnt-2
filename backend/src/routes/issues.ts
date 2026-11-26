@@ -2,6 +2,7 @@ import { Router, Request, Response } from 'express';
 import { repo } from '../store/repository.js';
 import { Issue, ChatMessage } from '../types.js';
 import { eventService } from '../services/events.js';
+import { getVerifiedActor } from '../utils/auth.js';
 
 export const issuesRouter = Router();
 
@@ -23,17 +24,21 @@ issuesRouter.get('/', async (req: Request, res: Response) => {
 
 issuesRouter.post('/', async (req: Request, res: Response) => {
   try {
+    const actor = getVerifiedActor(req);
     const issueData: Partial<Issue> = req.body;
-    if (!issueData.title || !issueData.creatorId) {
+    const effectiveCreatorId = (actor.id && actor.id !== 'system') ? actor.id : (issueData.creatorId || actor.id);
+    const effectiveCreatorName = (actor.name && actor.name !== 'system') ? actor.name : (issueData.creatorName || actor.name || 'Unknown User');
+
+    if (!issueData.title || !effectiveCreatorId) {
       return res.status(400).json({ error: 'Title and creatorId are required' });
     }
 
     // Resolve team membership for default visibility
-    let effectiveTeamId = issueData.teamId;
+    let effectiveTeamId = issueData.teamId || actor.teamId;
     let effectiveVisibility = issueData.visibility;
 
-    if (!effectiveTeamId && issueData.creatorId) {
-      const creator = await repo.getUserById(issueData.creatorId);
+    if (!effectiveTeamId && effectiveCreatorId) {
+      const creator = await repo.getUserById(effectiveCreatorId);
       if (creator) {
         if (creator.permanentTeamId) {
           effectiveTeamId = creator.permanentTeamId;
@@ -190,8 +195,8 @@ issuesRouter.post('/', async (req: Request, res: Response) => {
       description: issueData.description || '',
       status: issueData.status || 'Open',
       priority: issueData.priority || 'Medium',
-      creatorId: issueData.creatorId,
-      creatorName: issueData.creatorName || 'Unknown User',
+      creatorId: effectiveCreatorId,
+      creatorName: effectiveCreatorName,
       createdAt: new Date().toISOString(),
       type: issueData.type || (sanitizedRows ? 'file' : 'single'),
       transactionId: issueData.transactionId,
@@ -461,15 +466,20 @@ issuesRouter.delete('/:id', async (req: Request, res: Response) => {
 
 issuesRouter.post('/:id/chat', async (req: Request, res: Response) => {
   try {
+    const actor = getVerifiedActor(req);
     const { senderId, senderName, senderRole, text, mentions, attachedSummary, solutionProposal, issueContext } = req.body;
-    if (!senderId || (!text && !attachedSummary && !solutionProposal)) {
+    const effectiveSenderId = (actor.id && actor.id !== 'system') ? actor.id : (senderId || 'user-1');
+    const effectiveSenderName = (actor.name && actor.name !== 'system') ? actor.name : (senderName || 'User');
+    const effectiveSenderRole = actor.role || senderRole || 'operational';
+
+    if (!effectiveSenderId || (!text && !attachedSummary && !solutionProposal)) {
       return res.status(400).json({ error: 'senderId and content (text, summary, or proposal) are required' });
     }
     const newMessage: ChatMessage = {
       id: `msg-${Date.now()}`,
-      senderId,
-      senderName: senderName || 'User',
-      senderRole: senderRole || 'operational',
+      senderId: effectiveSenderId,
+      senderName: effectiveSenderName,
+      senderRole: effectiveSenderRole,
       text: text || '',
       timestamp: new Date().toISOString(),
       mentions: Array.isArray(mentions) ? mentions : undefined,
@@ -478,8 +488,8 @@ issuesRouter.post('/:id/chat', async (req: Request, res: Response) => {
         id: `prop-${Date.now()}`,
         script: solutionProposal.script,
         processType: solutionProposal.processType || 'INTERNAL_STAGED_FIX',
-        proposedBy: senderId,
-        proposedByName: senderName || 'User',
+        proposedBy: effectiveSenderId,
+        proposedByName: effectiveSenderName,
         proposedAt: new Date().toISOString(),
         accepted: false
       } : undefined
@@ -626,8 +636,8 @@ issuesRouter.post('/:id/execute-script', async (req: Request, res: Response) => 
     const issue = await repo.getIssueById(req.params.id);
     if (!issue) return res.status(404).json({ error: 'Issue not found' });
 
-    const user = (req as any).user;
-    const executedBy = user?.id || req.body.executedBy || issue.creatorId;
+    const actor = getVerifiedActor(req);
+    const executedBy = (actor.id && actor.id !== 'system') ? actor.id : (req.body.executedBy || issue.creatorId);
 
     // Maker-Checker Invariant (Rule 7 & AUD-INV-003): Direct script execution requires Four-Eyes verification.
     // An operator cannot self-resolve an issue without independent Checker review.
@@ -678,12 +688,13 @@ issuesRouter.patch('/:id/stage', async (req: Request, res: Response) => {
     const issue = await repo.getIssueById(req.params.id);
     if (!issue) return res.status(404).json({ error: 'Issue not found' });
 
-    const currentUserId = stagedByUserId || (req as any).user?.id || 'tech-user';
-    const currentUserName = stagedByUserName || (req as any).user?.name || (req as any).user?.username || 'Technician';
+    const actor = getVerifiedActor(req);
+    const currentUserId = (actor.id && actor.id !== 'system') ? actor.id : (stagedByUserId || 'tech-user');
+    const currentUserName = (actor.name && actor.name !== 'system') ? actor.name : (stagedByUserName || 'Technician');
 
     // Anti-self-approval / 4-Eyes principle: Direct staging to PRODUCTION requires explicit authorization
     if (environment === 'PRODUCTION') {
-      const userRole = (req as any).user?.role;
+      const userRole = actor.role;
       if (userRole !== 'admin' && userRole !== 'lead' && userRole !== 'checker') {
         // Must have checker authorization or admin privileges
         return res.status(403).json({
