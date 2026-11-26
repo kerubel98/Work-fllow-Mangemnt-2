@@ -1,6 +1,26 @@
 import crypto from 'node:crypto';
 
-const JWT_SECRET = process.env.JWT_SECRET || 'op_workflow_secret_key_prod_2026_x89f_secure_auth';
+/**
+ * Returns the effective JWT secret.
+ * Enforces strong, production-grade secrets in production mode.
+ */
+export function getJwtSecret(): string {
+  const secret = process.env.JWT_SECRET;
+  if (process.env.NODE_ENV === 'production') {
+    if (
+      !secret ||
+      secret.trim().length < 32 ||
+      secret === 'op_workflow_secret_key_prod_2026_x89f_secure_auth' ||
+      secret === 'your-secret-key-change-in-production'
+    ) {
+      throw new Error(
+        'FATAL: JWT_SECRET environment variable must be set to a secure, unique key (at least 32 characters) in production.'
+      );
+    }
+    return secret;
+  }
+  return secret || 'op_workflow_secret_key_dev_2026_x89f_secure_auth';
+}
 
 export interface JwtUserPayload {
   id: string;
@@ -8,6 +28,7 @@ export interface JwtUserPayload {
   email: string;
   role: string;
   isApproved: boolean;
+  teamId?: string;
   canExecuteSelect?: boolean;
   canExecuteUpdate?: boolean;
   iat?: number;
@@ -24,20 +45,29 @@ export function hashPassword(password: string): string {
 }
 
 /**
- * Verifies a password against a salted PBKDF2 hash or plaintext fallback for seeded users.
+ * Verifies a password against a salted PBKDF2 hash.
+ * Plaintext comparison is strictly prohibited in production.
  */
 export function verifyPassword(password: string, storedHash: string): boolean {
-  if (!storedHash) return false;
+  if (!storedHash || !password) return false;
   
   // If stored as salt:hash
   if (storedHash.includes(':')) {
     const [salt, originalHash] = storedHash.split(':');
     if (!salt || !originalHash) return false;
     const testHash = crypto.pbkdf2Sync(password, salt, 10000, 64, 'sha512').toString('hex');
-    return crypto.timingSafeEqual(Buffer.from(testHash, 'hex'), Buffer.from(originalHash, 'hex'));
+    const testBuf = Buffer.from(testHash, 'hex');
+    const origBuf = Buffer.from(originalHash, 'hex');
+    if (testBuf.length !== origBuf.length) return false;
+    return crypto.timingSafeEqual(testBuf, origBuf);
   }
 
-  // Plaintext fallback for initial mock users (admin123, tech123, etc.)
+  // Plaintext fallback is strictly prohibited in production mode
+  if (process.env.NODE_ENV === 'production') {
+    return false;
+  }
+
+  // Plaintext fallback for legacy dev/test seeded accounts
   return password === storedHash;
 }
 
@@ -84,7 +114,7 @@ export function generateToken(payload: JwtUserPayload, expiresInHours = 24): str
   const data = `${encodedHeader}.${encodedPayload}`;
 
   const signature = crypto
-    .createHmac('sha256', JWT_SECRET)
+    .createHmac('sha256', getJwtSecret())
     .update(data)
     .digest('base64')
     .replace(/=/g, '')
@@ -107,7 +137,7 @@ export function verifyToken<T = JwtUserPayload>(token: string): T | null {
     const data = `${encodedHeader}.${encodedPayload}`;
 
     const expectedSignature = crypto
-      .createHmac('sha256', JWT_SECRET)
+      .createHmac('sha256', getJwtSecret())
       .update(data)
       .digest('base64')
       .replace(/=/g, '')
@@ -134,11 +164,13 @@ export function verifyToken<T = JwtUserPayload>(token: string): T | null {
 }
 
 /**
- * Express middleware to authenticate JWT token from Authorization header.
+ * Express middleware to authenticate JWT token from Authorization or x-auth-token header.
  */
 export function requireAuth(req: any, res: any, next: any) {
-  const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.startsWith('Bearer ') ? authHeader.slice(7) : null;
+  const authHeader = req.headers['authorization'] || req.headers['x-auth-token'];
+  const token = typeof authHeader === 'string' && authHeader.startsWith('Bearer ')
+    ? authHeader.slice(7).trim()
+    : (typeof authHeader === 'string' ? authHeader.trim() : null);
 
   if (!token) {
     return res.status(401).json({ error: 'Authentication required: missing or invalid Bearer token.' });
@@ -159,13 +191,19 @@ export function requireAuth(req: any, res: any, next: any) {
 export function requireRole(allowedRoles: string | string[]) {
   const roles = Array.isArray(allowedRoles) ? allowedRoles : [allowedRoles];
   return (req: any, res: any, next: any) => {
-    requireAuth(req, res, () => {
-      if (!req.user || !roles.includes(req.user.role)) {
+    const checkRole = () => {
+      if (!req.user || !roles.some(r => r.toLowerCase() === req.user.role?.toLowerCase() || req.user.role === 'admin')) {
         return res.status(403).json({
           error: `Forbidden: Requires one of [${roles.join(', ')}] role privileges.`
         });
       }
       next();
-    });
+    };
+
+    if (!req.user) {
+      requireAuth(req, res, checkRole);
+    } else {
+      checkRole();
+    }
   };
 }

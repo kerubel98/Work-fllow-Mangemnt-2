@@ -49,25 +49,34 @@ export function optionalAuth(req: AuthenticatedRequest, res: Response, next: Nex
 
 /**
  * Middleware: Requires the user to have one of the specified roles.
+ * Defensively executes requireAuth first if req.user is not yet populated.
  */
 export function requireRole(...allowedRoles: string[]) {
   return (req: AuthenticatedRequest, res: Response, next: NextFunction): void => {
+    const checkRole = () => {
+      if (!req.user) {
+        res.status(401).json({ error: 'Authentication required.' });
+        return;
+      }
+
+      const userRole = req.user.role?.toLowerCase();
+      const isAllowed = allowedRoles.some(r => r.toLowerCase() === userRole || userRole === 'admin');
+
+      if (!isAllowed) {
+        res.status(403).json({ 
+          error: `Forbidden: Insufficient privileges. Required role: [${allowedRoles.join(', ')}], current role: ${req.user.role}.` 
+        });
+        return;
+      }
+
+      next();
+    };
+
     if (!req.user) {
-      res.status(401).json({ error: 'Authentication required.' });
-      return;
+      requireAuth(req, res, checkRole);
+    } else {
+      checkRole();
     }
-
-    const userRole = req.user.role?.toLowerCase();
-    const isAllowed = allowedRoles.some(r => r.toLowerCase() === userRole || userRole === 'admin');
-
-    if (!isAllowed) {
-      res.status(403).json({ 
-        error: `Forbidden: Insufficient privileges. Required role: [${allowedRoles.join(', ')}], current role: ${req.user.role}.` 
-      });
-      return;
-    }
-
-    next();
   };
 }
 

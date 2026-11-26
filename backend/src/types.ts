@@ -968,6 +968,7 @@ export interface FtpFileStagingConfig {
   onlyColumnsWithData?: boolean;
   stagingMode?: 'APPEND' | 'REPLACE';
   isPermanentTable?: boolean;
+  attachedWorkflowId?: string;
   sampleFileName?: string;
   lastStagedAt?: string;
   lastStagedStatus?: 'IDLE' | 'STAGED_READY' | 'FAILED';

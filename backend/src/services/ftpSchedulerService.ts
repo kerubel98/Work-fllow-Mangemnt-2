@@ -159,20 +159,19 @@ export const ftpSchedulerService = {
                 const { investigationOrchestratorService } = await import('./investigationOrchestratorService.js');
                 console.log(`[ftpSchedulerService] Auto-dispatching staged records to attached workflow '${config.attachedWorkflowId}'...`);
                 // Register background task tracking
+                const taskId = `task-ftp-${Date.now()}`;
                 const task = await repo.createInvestigationTask({
-                  name: `Auto FTP: ${config.name} [${stageRes.stagingTableName}]`,
-                  type: 'DATASET',
+                  id: taskId,
                   workflowId: config.attachedWorkflowId,
-                  status: 'INVESTIGATING',
-                  priority: 'MEDIUM',
-                  teamId: (config as any).teamId || 'default-team',
-                  creatorId: 'SYSTEM_FTP_SCHEDULER',
-                  creatorName: 'Autonomous FTP Ingest Engine',
-                  inputData: {
-                    stagingTable: stageRes.stagingTableName,
-                    stagedCount: stageRes.stagedCount,
-                    files: stageRes.filesProcessed
-                  }
+                  totalTransactions: stageRes.stagedCount || 0,
+                  processedTransactions: 0,
+                  reconciledTransactions: 0,
+                  flaggedTransactions: 0,
+                  closedTransactions: 0,
+                  failedTransactions: 0,
+                  status: 'RUNNING',
+                  createdAt: new Date().toISOString(),
+                  startedAt: new Date().toISOString()
                 });
                 console.log(`[ftpSchedulerService] Successfully dispatched task ${task.id} for workflow ${config.attachedWorkflowId}`);
               } catch (wfErr: any) {

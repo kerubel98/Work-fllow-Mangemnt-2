@@ -9,6 +9,7 @@ import { messageIntakeService } from '../services/messaging/messageIntakeService
 import { outboundDispatchService } from '../services/messaging/outboundDispatchService.js';
 import { SupportedMessageChannel } from '../models/messageTypes.js';
 import { getPostgresPool } from '../config/postgres.js';
+import { requireAuth, requireRole, AuthenticatedRequest } from '../middleware/auth.js';
 
 export const messagesRouter = Router();
 
@@ -744,8 +745,8 @@ messagesRouter.post('/oauth2/test', async (req: Request, res: Response) => {
  * ========================================================
  */
 
-// GET /api/messages/admin/oauth2 - List Admin-configured OAuth2 Connections
-messagesRouter.get('/admin/oauth2', async (req: Request, res: Response) => {
+// GET /api/messages/admin/oauth2 - List Admin-configured OAuth2 Connections (Admin only)
+messagesRouter.get('/admin/oauth2', requireAuth, requireRole('admin'), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { stagingService } = await import('../services/messaging/stagingService.js');
     const connections = await stagingService.getAdminOAuth2Connections();
@@ -763,8 +764,8 @@ messagesRouter.get('/admin/oauth2', async (req: Request, res: Response) => {
   }
 });
 
-// GET /api/messages/admin/oauth2/available - Public catalog for teams and users to pick from
-messagesRouter.get('/admin/oauth2/available', async (req: Request, res: Response) => {
+// GET /api/messages/admin/oauth2/available - Public catalog for authenticated teams and users to pick from
+messagesRouter.get('/admin/oauth2/available', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { stagingService } = await import('../services/messaging/stagingService.js');
     const connections = await stagingService.getAdminOAuth2Connections();
@@ -787,8 +788,8 @@ messagesRouter.get('/admin/oauth2/available', async (req: Request, res: Response
   }
 });
 
-// POST /api/messages/admin/oauth2 - Create or update Admin OAuth2 Connection
-messagesRouter.post('/admin/oauth2', async (req: Request, res: Response) => {
+// POST /api/messages/admin/oauth2 - Create or update Admin OAuth2 Connection (Admin only)
+messagesRouter.post('/admin/oauth2', requireAuth, requireRole('admin'), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { stagingService } = await import('../services/messaging/stagingService.js');
     const { id, displayName, channel, config, status, createdBy } = req.body;
@@ -842,7 +843,7 @@ messagesRouter.post('/admin/oauth2', async (req: Request, res: Response) => {
       displayName,
       status: status || 'ACTIVE',
       config: mergedConfig,
-      createdBy: createdBy || 'admin'
+      createdBy: req.user?.username || req.user?.id || createdBy || 'admin'
     });
 
     return res.status(201).json({
@@ -858,8 +859,8 @@ messagesRouter.post('/admin/oauth2', async (req: Request, res: Response) => {
   }
 });
 
-// DELETE /api/messages/admin/oauth2/:id - Delete an Admin OAuth2 Connection
-messagesRouter.delete('/admin/oauth2/:id', async (req: Request, res: Response) => {
+// DELETE /api/messages/admin/oauth2/:id - Delete an Admin OAuth2 Connection (Admin only)
+messagesRouter.delete('/admin/oauth2/:id', requireAuth, requireRole('admin'), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { stagingService } = await import('../services/messaging/stagingService.js');
     const deleted = await stagingService.deleteProviderConnection(req.params.id);

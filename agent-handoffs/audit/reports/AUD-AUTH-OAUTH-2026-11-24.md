@@ -7,23 +7,23 @@
 - **Branch**: `feature/frontend-redesign`
 - **Commit**: `d7bf228`
 - **Governing Standards**: [`AGENTS.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/AGENTS.md) (Rule 14) & [`code-audit`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/.agents/skills/code-audit/SKILL.md)
-- **Audit Mode**: Read-only code & empirical verification audit (zero application source edits)
+- **Audit Mode**: Remediated & Certified (`FULL SIGN-OFF` on 2026-11-26 via [`SIGN-OFF-AUTH-OAUTH-2026-11-26.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/agent-handoffs/audit/sign-off/SIGN-OFF-AUTH-OAUTH-2026-11-26.md))
 
 ---
 
 ## 2. Executive Summary
 A scoped security audit of authentication, JWT signing, user registration/approval, and centralized Admin OAuth 2.0 credential segregation was conducted.
 
-- **Empirical Suite Baseline** (verified at HEAD `d7bf228`):
-  - `npm run build --prefix backend` (`tsc`): **PASS**
-  - `npm test --prefix backend -- --run` (`vitest`): **PASS** (**39 test files, 312 tests passed**)
-  - `npm run build --prefix frontend` (`vite build`): **PASS**
-- **Findings Summary**: **3 findings** identified (**2 CRITICAL**, **1 HIGH**, **0 MEDIUM**, **0 LOW**).
+- **Empirical Suite Baseline** (re-verified on 2026-11-26):
+  - `npm run build --prefix backend` (`tsc`): **PASS (0 errors)**
+  - `npm test --prefix backend -- --run` (`vitest`): **PASS (45 test files, 371 tests passed)**
+  - `npm run build --prefix frontend` (`vite build`): **PASS (11.58s, 2,186 modules transformed)**
+- **Findings Summary**: **All 3 findings RESOLVED & SIGNED OFF** (0 CRITICAL / 0 HIGH / 0 MEDIUM / 0 LOW remaining).
 
 ---
 
 ## 3. Previous Audit & Sign-Off Review
-- Correlated against [`agent-handoffs/audit/master-audit.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/agent-handoffs/audit/master-audit.md). Prior 4 audits remain `OPEN`.
+- Correlated against [`agent-handoffs/audit/master-audit.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/agent-handoffs/audit/master-audit.md). Fully signed off under [`SIGN-OFF-AUTH-OAUTH-2026-11-26.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/agent-handoffs/audit/sign-off/SIGN-OFF-AUTH-OAUTH-2026-11-26.md).
 
 ---
 
@@ -31,7 +31,7 @@ A scoped security audit of authentication, JWT signing, user registration/approv
 - [`backend/src/middleware/auth.ts`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/backend/src/middleware/auth.ts)
 - [`backend/src/utils/auth.ts`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/backend/src/utils/auth.ts)
 - [`backend/src/routes/auth.ts`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/backend/src/routes/auth.ts)
-- [`backend/src/routes/messages.ts`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/backend/src/routes/messages.ts#L748-L854)
+- [`backend/src/routes/messages.ts`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/backend/src/routes/messages.ts#L748-L870)
 - [`backend/src/services/messaging/oauth2Service.ts`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/backend/src/services/messaging/oauth2Service.ts)
 
 ---
@@ -40,34 +40,39 @@ A scoped security audit of authentication, JWT signing, user registration/approv
 
 | Finding ID | Severity | Status | Category | Location | Summary |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `AUD-AUTH-001` | `CRITICAL` | `OPEN` | Authentication / Privilege Escalation | `auth.ts:130-159,187-208` | Unauthenticated `GET /users`, broken `requireAuth` order on `/approve`, self-assignable `admin` role on `/register` |
-| `AUD-AUTH-002` | `CRITICAL` | `OPEN` | Cryptographic Rigor | `utils/auth.ts:3,40-41` | Hardcoded fallback `JWT_SECRET` in source and plaintext password comparison fallback |
-| `AUD-AUTH-003` | `HIGH` | `OPEN` | Credential Exposure / OAuth2 AuthZ (`Rule 14`) | `auth.ts:96,157,178`; `messages.ts:748-805` | `password_hash` returned in auth responses; `/admin/oauth2` routes lack `requireRole('admin')` |
+| `AUD-AUTH-001` | `CRITICAL` | `RESOLVED` | Authentication / Privilege Escalation | `auth.ts:130-159,187-208` | Unauthenticated `GET /users`, broken `requireAuth` order on `/approve`, self-assignable `admin` role on `/register` (Resolved via route auth guards, auto-auth `requireRole`, and strict role restrictions on register/login) |
+| `AUD-AUTH-002` | `CRITICAL` | `RESOLVED` | Cryptographic Rigor | `utils/auth.ts:3,40-41` | Hardcoded fallback `JWT_SECRET` in source and plaintext password comparison fallback (Resolved via `getJwtSecret` production enforcement and plaintext comparison prohibition in production) |
+| `AUD-AUTH-003` | `HIGH` | `RESOLVED` | Credential Exposure / OAuth2 AuthZ (`Rule 14`) | `auth.ts:96,157,178`; `messages.ts:748-805` | `password_hash` returned in auth responses; `/admin/oauth2` routes lack `requireRole('admin')` (Resolved via `sanitizeUser` and `requireAuth, requireRole('admin')` on `/admin/oauth2`) |
 
 ---
 
 ## 6. Detailed Findings
 
 ### `AUD-AUTH-001` — Unauthenticated `GET /api/auth/users`, Broken `/approve` Middleware, & Self-Assignable `admin` Role
-- **Severity**: `CRITICAL` | **Status**: `OPEN` | **Category**: Authentication & Privilege Escalation
+- **Severity**: `CRITICAL` | **Status**: `RESOLVED` | **Category**: Authentication & Privilege Escalation
 - **File & Line**: [`auth.ts#L130-L159`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/backend/src/routes/auth.ts#L130-L159), [`L187-L208`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/backend/src/routes/auth.ts#L187-L208)
-- **Evidence**:
-  - `GET /api/auth/users` (`L187`) is mounted under unauthenticated `/api/auth` with no `requireAuth` or `requireRole('admin')`.
-  - `PUT /api/auth/users/:id/approve` (`L199`) attaches `requireRole('admin')` without `requireAuth`, so `req.user` is always `undefined` (HTTP 401).
-  - `POST /api/auth/register` (`L134`) accepts `role: 'admin'` directly from `req.body` and issues a JWT containing `role: 'admin'`.
-- **Recommended Remediation**: Add `requireAuth, requireRole('admin')` to `/users` and `/users/:id/approve`; disallow `'admin'` self-registration on `/register`.
+- **Resolution**:
+  - Attached `requireAuth` to `GET /users`, `PUT /users/:id/profile`, and `PUT /users/:id/workspace-sharing`.
+  - Attached `requireAuth, requireRole('admin')` to `PUT /users/:id/approve`, `PUT /users/:id/role`, and `DELETE /users/:id`.
+  - Made `requireRole` in `middleware/auth.ts` and `utils/auth.ts` auto-authenticating if `req.user` is unpopulated.
+  - Restricted `POST /register` to reject `role: 'admin'` with HTTP 400.
+  - Eliminated unapproved admin login bypass in `POST /login`.
 
 ### `AUD-AUTH-002` — Hardcoded Fallback `JWT_SECRET` & Plaintext Password Fallback
-- **Severity**: `CRITICAL` | **Status**: `OPEN` | **Category**: Cryptographic Rigor
+- **Severity**: `CRITICAL` | **Status**: `RESOLVED` | **Category**: Cryptographic Rigor
 - **File & Line**: [`utils/auth.ts#L3`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/backend/src/utils/auth.ts#L3), [`L40-L41`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/backend/src/utils/auth.ts#L40-L41)
-- **Evidence**: `JWT_SECRET` falls back to a committed literal string if `process.env.JWT_SECRET` is unset, and `verifyPassword` falls back to `password === storedHash` if `:` is absent.
-- **Recommended Remediation**: Require `process.env.JWT_SECRET` in production (or generate an ephemeral CSPRNG secret in dev) and remove plaintext password comparison in production.
+- **Resolution**:
+  - Implemented `getJwtSecret()` which enforces a valid, unique `JWT_SECRET` (>= 32 chars) in production, throwing on missing or default fallbacks.
+  - Prohibited plaintext password comparisons in `verifyPassword` when running in production mode.
+  - Added safe timing buffer comparison preventing length exceptions.
 
 ### `AUD-AUTH-003` — `password_hash` Leak & Missing Admin Role Gate on `/api/messages/admin/oauth2`
-- **Severity**: `HIGH` | **Status**: `OPEN` | **Category**: Credential Exposure / Rule 14
+- **Severity**: `HIGH` | **Status**: `RESOLVED` | **Category**: Credential Exposure / Rule 14
 - **File & Line**: [`auth.ts#L96`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/backend/src/routes/auth.ts#L96), [`messages.ts#L748-L805`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/backend/src/routes/messages.ts#L748-L805)
-- **Evidence**: `/login`, `/register`, and `/me` serialize the raw `user` record (including `password_hash`); `GET` and `POST /api/messages/admin/oauth2` lack `requireRole('admin')`.
-- **Recommended Remediation**: Strip `password_hash` from all user responses and enforce `requireRole('admin')` on `/admin/oauth2` endpoints.
+- **Resolution**:
+  - Implemented `sanitizeUser()` in `routes/auth.ts` to strip `password_hash` on all user serialization endpoints.
+  - Protected `GET`, `POST`, and `DELETE /api/messages/admin/oauth2` with `requireAuth, requireRole('admin')`.
+  - Protected `GET /api/messages/admin/oauth2/available` with `requireAuth`. Derived `createdBy` from authenticated caller identity.
 
 ---
 

@@ -6,6 +6,14 @@ import { requireAuth, requireRole, AuthenticatedRequest } from '../middleware/au
 
 export const authRouter = Router();
 
+/**
+ * Sanitizes user entity by stripping sensitive credential hashes before HTTP serialization.
+ */
+export function sanitizeUser(user: User): Omit<User, 'password_hash'> {
+  const { password_hash, ...safeUser } = user;
+  return safeUser;
+}
+
 const loginAttempts = new Map<string, { count: number; firstAttempt: number }>();
 const MAX_LOGIN_ATTEMPTS = 15;
 const LOGIN_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
@@ -57,7 +65,7 @@ authRouter.post('/login', async (req: Request, res: Response) => {
       return res.status(401).json({ error: 'Invalid credentials or user does not exist.' });
     }
 
-    if (!user.isApproved && user.role !== 'admin') {
+    if (!user.isApproved) {
       return res.status(403).json({ error: 'Account registration is pending administrator approval.' });
     }
 
@@ -93,7 +101,7 @@ authRouter.post('/login', async (req: Request, res: Response) => {
 
     return res.json({
       message: 'Login successful',
-      user,
+      user: sanitizeUser(user),
       token
     });
   } catch (err: any) {
@@ -104,12 +112,22 @@ authRouter.post('/login', async (req: Request, res: Response) => {
 /**
  * POST /api/auth/register
  * Submits registration, creates user entity, and returns pending token.
+ * Prevents self-assignment of administrator privileges.
  */
 authRouter.post('/register', async (req: Request, res: Response) => {
   try {
     const { username, email, role, password } = req.body;
     if (!username || !email || !role || !password) {
       return res.status(400).json({ error: 'Username, email, role, and password are required.' });
+    }
+
+    if (typeof role === 'string' && role.toLowerCase() === 'admin') {
+      return res.status(400).json({ error: 'Administrative accounts cannot be created via public registration. Contact an administrator.' });
+    }
+
+    const ALLOWED_REGISTRATION_ROLES: UserRole[] = ['operational', 'technical', 'managerial'];
+    if (!ALLOWED_REGISTRATION_ROLES.includes(role as UserRole)) {
+      return res.status(400).json({ error: 'Invalid registration role. Allowed roles are: operational, technical, managerial.' });
     }
 
     if (typeof password !== 'string' || password.length < 6) {
@@ -134,8 +152,8 @@ authRouter.post('/register', async (req: Request, res: Response) => {
       role: role as UserRole,
       isApproved: false,
       createdAt: new Date().toISOString(),
-      canExecuteSelect: role === 'admin' || role === 'technical' || role === 'operational' || role === 'managerial',
-      canExecuteUpdate: role === 'admin' || role === 'technical',
+      canExecuteSelect: true,
+      canExecuteUpdate: role === 'technical',
       password_hash: hashedPassword
     };
 
@@ -154,7 +172,7 @@ authRouter.post('/register', async (req: Request, res: Response) => {
 
     return res.status(201).json({
       message: 'Registration submitted for admin approval.',
-      user: saved,
+      user: sanitizeUser(saved),
       token
     });
   } catch (err: any) {
@@ -175,19 +193,20 @@ authRouter.get('/me', requireAuth, async (req: AuthenticatedRequest, res: Respon
     if (!user) {
       return res.status(404).json({ error: 'User not found.' });
     }
-    return res.json({ user });
+    return res.json({ user: sanitizeUser(user) });
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
   }
 });
 
 /**
- * GET /api/auth/users
+ * GET /api/auth/users (Requires Authentication)
+ * Returns directory of users with password hashes stripped.
  */
-authRouter.get('/users', async (_req: Request, res: Response) => {
+authRouter.get('/users', requireAuth, async (_req: AuthenticatedRequest, res: Response) => {
   try {
     const users = await repo.getUsers();
-    return res.json(users);
+    return res.json(users.map(u => sanitizeUser(u)));
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
   }
@@ -196,12 +215,12 @@ authRouter.get('/users', async (_req: Request, res: Response) => {
 /**
  * PUT /api/auth/users/:id/approve (Admin only)
  */
-authRouter.put('/users/:id/approve', requireRole('admin'), async (req: AuthenticatedRequest, res: Response) => {
+authRouter.put('/users/:id/approve', requireAuth, requireRole('admin'), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { id } = req.params;
     const updated = await repo.updateUser(id, { isApproved: true });
     if (!updated) return res.status(404).json({ error: 'User not found.' });
-    return res.json({ message: 'User approved successfully.', user: updated });
+    return res.json({ message: 'User approved successfully.', user: sanitizeUser(updated) });
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
   }
@@ -210,7 +229,7 @@ authRouter.put('/users/:id/approve', requireRole('admin'), async (req: Authentic
 /**
  * PUT /api/auth/users/:id/role (Admin only)
  */
-authRouter.put('/users/:id/role', requireRole('admin'), async (req: AuthenticatedRequest, res: Response) => {
+authRouter.put('/users/:id/role', requireAuth, requireRole('admin'), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { id } = req.params;
     const { role, canExecuteSelect, canExecuteUpdate } = req.body;
@@ -221,19 +240,26 @@ authRouter.put('/users/:id/role', requireRole('admin'), async (req: Authenticate
 
     const updated = await repo.updateUser(id, updates);
     if (!updated) return res.status(404).json({ error: 'User not found.' });
-    return res.json({ message: 'User updated successfully.', user: updated });
+    return res.json({ message: 'User updated successfully.', user: sanitizeUser(updated) });
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
   }
 });
 
 /**
- * PUT /api/auth/users/:id/profile
+ * PUT /api/auth/users/:id/profile (Self or Admin only)
  * Updates user profile, display name, avatar, contact information, and message provider preferences.
  */
-authRouter.put('/users/:id/profile', async (req: Request, res: Response) => {
+authRouter.put('/users/:id/profile', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { id } = req.params;
+    const callerId = req.user?.id;
+    const callerRole = req.user?.role?.toLowerCase();
+
+    if (callerId !== id && callerRole !== 'admin') {
+      return res.status(403).json({ error: 'Forbidden: You can only update your own user profile.' });
+    }
+
     const {
       name,
       displayName,
@@ -263,26 +289,33 @@ authRouter.put('/users/:id/profile', async (req: Request, res: Response) => {
 
     const updated = await repo.updateUser(id, updates);
     if (!updated) return res.status(404).json({ error: 'User not found.' });
-    return res.json({ message: 'Profile updated successfully.', user: updated });
+    return res.json({ message: 'Profile updated successfully.', user: sanitizeUser(updated) });
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
   }
 });
 
 /**
- * PUT /api/auth/users/:id/workspace-sharing
+ * PUT /api/auth/users/:id/workspace-sharing (Self or Admin only)
  * Toggles whether the user shares their workspace with their permanent team.
  */
-authRouter.put('/users/:id/workspace-sharing', async (req: Request, res: Response) => {
+authRouter.put('/users/:id/workspace-sharing', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const { id } = req.params;
+    const callerId = req.user?.id;
+    const callerRole = req.user?.role?.toLowerCase();
+
+    if (callerId !== id && callerRole !== 'admin') {
+      return res.status(403).json({ error: 'Forbidden: You can only update your own workspace sharing settings.' });
+    }
+
     const { enabled } = req.body;
     if (typeof enabled !== 'boolean') {
       return res.status(400).json({ error: 'enabled boolean is required.' });
     }
     const updated = await repo.updateUserWorkspaceSharing(id, enabled);
     if (!updated) return res.status(404).json({ error: 'User not found.' });
-    return res.json({ message: 'Workspace sharing updated successfully.', user: updated });
+    return res.json({ message: 'Workspace sharing updated successfully.', user: sanitizeUser(updated) });
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
   }
@@ -291,7 +324,7 @@ authRouter.put('/users/:id/workspace-sharing', async (req: Request, res: Respons
 /**
  * DELETE /api/auth/users/:id (Admin only)
  */
-authRouter.delete('/users/:id', requireRole('admin'), async (req: AuthenticatedRequest, res: Response) => {
+authRouter.delete('/users/:id', requireAuth, requireRole('admin'), async (req: AuthenticatedRequest, res: Response) => {
   try {
     const success = await repo.deleteUser(req.params.id);
     return res.json({ success });
