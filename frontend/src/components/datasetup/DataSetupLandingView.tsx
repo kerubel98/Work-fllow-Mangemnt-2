@@ -33,72 +33,10 @@ export function DataSetupLandingView({
 
   // Active Resource for Resource Detail View (Screens 69 & 70)
   const [selectedResourceDetail, setSelectedResourceDetail] = useState<any | null>(null);
-  const [mappingCount, setMappingCount] = useState<number>(119);
+  const [mappingCount, setMappingCount] = useState<number>(0);
 
-  // Initial resources matching 61_resources_list.png
-  const [resources, setResources] = useState<any[]>([
-    {
-      id: 'res-core-ledger',
-      name: 'Core Ledger',
-      type: 'PostgreSQL',
-      host: '10.0.4.12:5432',
-      contents: '3 tables',
-      setupStep: 3,
-      totalSteps: 5,
-      status: 'SETUP_NOT_FINISHED',
-      statusLabel: 'Setup not finished',
-      isMapped: false,
-      missingFields: ['refnum']
-    },
-    {
-      id: 'res-sett',
-      name: 'Sett',
-      type: 'MySQL',
-      host: '127.0.0.1:3306',
-      contents: '4 tables',
-      setupStep: 5,
-      totalSteps: 5,
-      status: 'READY',
-      statusLabel: 'Ready',
-      isMapped: true
-    },
-    {
-      id: 'res-local-ftp',
-      name: 'LocalFTP',
-      type: 'SFTP',
-      host: '127.0.0.1:22',
-      contents: '1 feeds',
-      setupStep: 5,
-      totalSteps: 5,
-      status: 'READY',
-      statusLabel: 'Ready',
-      isMapped: true
-    },
-    {
-      id: 'res-mongo',
-      name: 'MongoDB Operational Workflow',
-      type: 'MongoDB',
-      host: '127.0.0.1:27017',
-      contents: '0 tables',
-      setupStep: 0,
-      totalSteps: 5,
-      status: 'DIAGNOSTIC_ONLY',
-      statusLabel: 'Diagnostic only',
-      isMapped: false
-    },
-    {
-      id: 'res-settlem-ftp',
-      name: 'SettlemFTP',
-      type: 'SFTP',
-      host: '192.168.22.210:2222',
-      contents: '1 feeds',
-      setupStep: 5,
-      totalSteps: 5,
-      status: 'OFFLINE',
-      statusLabel: 'Offline',
-      isMapped: true
-    }
-  ]);
+  // Resources state initialized cleanly from live backend
+  const [resources, setResources] = useState<any[]>([]);
 
   // Load real databases and FTP configs from PostgreSQL backend
   useEffect(() => {
@@ -109,46 +47,36 @@ export function DataSetupLandingView({
       api.getGlobalStandardDirectory()
     ]).then(([dbsRes, ftpRes, dirRes]) => {
       if (!isMounted) return;
-      if (dirRes.status === 'fulfilled' && Array.isArray(dirRes.value) && dirRes.value.length > 0) {
+      if (dirRes.status === 'fulfilled' && Array.isArray(dirRes.value)) {
         setMappingCount(dirRes.value.length);
       }
       const loadedDbs = dbsRes.status === 'fulfilled' && Array.isArray(dbsRes.value) ? dbsRes.value : [];
       const loadedFtp = ftpRes.status === 'fulfilled' && Array.isArray(ftpRes.value) ? ftpRes.value : [];
 
-      if (loadedDbs.length > 0 || loadedFtp.length > 0) {
-        setResources(prev => {
-          const list = [...prev];
-          loadedDbs.forEach(db => {
-            const isFtp = db.type?.toUpperCase() === 'SFTP' || db.type?.toUpperCase() === 'FTP';
-            const matchingFtp = loadedFtp.filter((c: any) => c.connectionId === db.id || c.ftpConnectionId === db.id);
-            const isOnline = db.status === 'online' || db.status === 'ACTIVE' || db.status === 'CONNECTED';
-            const mappedItem = {
-              id: db.id,
-              name: db.name || db.databaseName || db.database,
-              type: db.type?.toUpperCase() || (isFtp ? 'SFTP' : 'POSTGRESQL'),
-              host: `${db.host || '127.0.0.1'}:${db.port || (isFtp ? 22 : 5432)}`,
-              port: db.port || (isFtp ? 22 : 5432),
-              database: db.databaseName || db.database || (isFtp ? '/' : ''),
-              username: db.username,
-              password: db.password,
-              contents: isFtp ? `${matchingFtp.length} feeds` : `${(db.availableTables || db.allowedTables || []).length} tables`,
-              setupStep: 5,
-              totalSteps: 5,
-              status: isOnline ? 'READY' : 'OFFLINE',
-              statusLabel: isOnline ? 'Ready' : 'Offline',
-              isMapped: true
-            };
-
-            const existingIdx = list.findIndex(r => r.id === db.id || r.name?.toLowerCase() === db.name?.toLowerCase());
-            if (existingIdx !== -1) {
-              list[existingIdx] = { ...list[existingIdx], ...mappedItem, id: db.id };
-            } else {
-              list.push(mappedItem);
-            }
-          });
-          return list;
-        });
-      }
+      const list: any[] = [];
+      loadedDbs.forEach(db => {
+        const isFtp = db.type?.toUpperCase() === 'SFTP' || db.type?.toUpperCase() === 'FTP';
+        const matchingFtp = loadedFtp.filter((c: any) => c.connectionId === db.id || c.ftpConnectionId === db.id);
+        const isOnline = db.status === 'online' || db.status === 'ACTIVE' || db.status === 'CONNECTED';
+        const mappedItem = {
+          id: db.id,
+          name: db.name || db.databaseName || db.database,
+          type: db.type?.toUpperCase() || (isFtp ? 'SFTP' : 'POSTGRESQL'),
+          host: `${db.host || '127.0.0.1'}:${db.port || (isFtp ? 22 : 5432)}`,
+          port: db.port || (isFtp ? 22 : 5432),
+          database: db.databaseName || db.database || (isFtp ? '/' : ''),
+          username: db.username,
+          password: db.password,
+          contents: isFtp ? `${matchingFtp.length} feeds` : `${(db.availableTables || db.allowedTables || []).length} tables`,
+          setupStep: 5,
+          totalSteps: 5,
+          status: isOnline ? 'READY' : 'OFFLINE',
+          statusLabel: isOnline ? 'Ready' : 'Offline',
+          isMapped: true
+        };
+        list.push(mappedItem);
+      });
+      setResources(list);
     });
 
     return () => { isMounted = false; };
@@ -194,7 +122,7 @@ export function DataSetupLandingView({
   }
 
   return (
-    <div className="flex-1 flex flex-col h-full bg-slate-50 overflow-y-auto text-slate-800 text-xs p-8" style={{ zoom: 0.9 }}>
+    <div className="flex-1 flex flex-col h-full bg-slate-50 overflow-y-auto text-slate-800 text-xs p-8">
       {/* Top Header matching 61, 71 & 72 */}
       <div className="flex items-center justify-between">
         <div>

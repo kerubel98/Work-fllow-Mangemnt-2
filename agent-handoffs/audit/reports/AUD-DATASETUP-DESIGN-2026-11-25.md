@@ -12,7 +12,7 @@
 
 **Target Scope**: `DataSetupLandingView.tsx`, `MappingDictionaryView.tsx`, `ValueDictionariesView.tsx`, `ResourceDetailView.tsx`, `DataSetupWizardModal.tsx`, and `backend/src/routes/transactionSettings.ts`  
 **Branch / Commit**: `feature/frontend-redesign` (`d7bf228`)  
-**Status**: `OPEN`  
+**Status**: `RESOLVED` (Signed off in `SIGN-OFF-DATASETUP-DESIGN-2026-11-26.md`)  
 
 ---
 
@@ -44,11 +44,11 @@ While the visual layout and 5-step wizard structure closely align with the redes
 
 | Finding ID | Severity | Spec / Rule | Location | Summary |
 | :--- | :---: | :--- | :--- | :--- |
-| `AUD-DSU-001` | **HIGH** | Rule 1 & Rule 20 | `DataSetupLandingView.tsx:39-150` | Hardcoded mock resources (`Core Ledger`, `SettlemFTP`) merged permanently with live PostgreSQL DBs; hardcoded `mappingCount = 119`. |
-| `AUD-DSU-002` | **HIGH** | Rule 1 & Spec §2.2 | `MappingDictionaryView.tsx:72, 88, 107-141` | `handleAutoClassify`, `handleBulkSetCategory`, and `handleBulkMarkRequired` mutate local React state only (lost on reload); `UNCLASSIFIED` filter misses `General`/table-named fields. |
-| `AUD-DSU-003` | **HIGH** | Rule 19 & Admin Auth | `backend/src/routes/transactionSettings.ts:26-48, 86-120` | `POST /settings/schema` and `POST /schema/config` lack admin role checks and mutate stale in-memory `store.globalSchema`. |
-| `AUD-DSU-004` | **MEDIUM** | Spec §1 & §2.1 | `ValueDictionariesView.tsx:39, 59-80` | `noMatchPolicy` uses `'FALLBACK'` instead of `'USE_FALLBACK'`, omits `'FLAG'`, and seeds designer mockup counts (`128`, `9`). |
-| `AUD-DSU-005` | **MEDIUM** | Redesign UI / Rule 16 | `DataSetupLandingView.tsx:197` | Inline `style={{ zoom: 0.9 }}` compounds with global `html { zoom: 0.8 }` (`index.css:90`), shrinking Data Setup to 72% scale. |
+| `AUD-DSU-001` | **HIGH** | Rule 1 & Rule 20 | `DataSetupLandingView.tsx:39-150` | Hardcoded mock resources (`Core Ledger`, `SettlemFTP`) merged permanently with live PostgreSQL DBs; hardcoded `mappingCount = 119` (Resolved in `SIGN-OFF-DATASETUP-DESIGN-2026-11-26.md`) |
+| `AUD-DSU-002` | **HIGH** | Rule 1 & Spec §2.2 | `MappingDictionaryView.tsx:72, 88, 107-141` | `handleAutoClassify`, `handleBulkSetCategory`, and `handleBulkMarkRequired` mutate local React state only (lost on reload); `UNCLASSIFIED` filter misses `General`/table-named fields (Resolved in `SIGN-OFF-DATASETUP-DESIGN-2026-11-26.md`) |
+| `AUD-DSU-003` | **HIGH** | Rule 19 & Admin Auth | `backend/src/routes/transactionSettings.ts:26-48, 86-120` | `POST /settings/schema` and `POST /schema/config` lack admin role checks and mutate stale in-memory `store.globalSchema` (Resolved in `SIGN-OFF-DATASETUP-DESIGN-2026-11-26.md`) |
+| `AUD-DSU-004` | **MEDIUM** | Spec §1 & §2.1 | `ValueDictionariesView.tsx:39, 59-80` | `noMatchPolicy` uses `'FALLBACK'` instead of `'USE_FALLBACK'`, omits `'FLAG'`, and seeds designer mockup counts (`128`, `9`) (Resolved in `SIGN-OFF-DATASETUP-DESIGN-2026-11-26.md`) |
+| `AUD-DSU-005` | **MEDIUM** | Redesign UI / Rule 16 | `DataSetupLandingView.tsx:197` | Inline `style={{ zoom: 0.9 }}` compounds with global `html { zoom: 0.8 }` (`index.css:90`), shrinking Data Setup to 72% scale (Resolved in `SIGN-OFF-DATASETUP-DESIGN-2026-11-26.md`) |
 
 ---
 

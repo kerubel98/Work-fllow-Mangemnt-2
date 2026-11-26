@@ -90,10 +90,7 @@ export function ValueDictionariesView() {
         { code: '06', name: 'Buna Bank', short: 'BUN' },
         { code: '99', name: 'EthSwitch', short: 'ETS' }
       ],
-      missingPairs: [
-        { code: '07', count: 128 },
-        { code: '11', count: 9 }
-      ]
+      missingPairs: []
     },
     {
       id: 'dict-status',

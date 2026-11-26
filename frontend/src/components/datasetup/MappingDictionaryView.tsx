@@ -3,17 +3,24 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import {
   Search, Plus, Sparkles, Upload, Download, MoreHorizontal,
   Check, AlertTriangle, ChevronLeft, ChevronRight, X, Filter
 } from 'lucide-react';
 import { globalMappingService } from '../../services/globalMappingService';
 import { GlobalTransactionSchemaField } from '../../types';
+import { api } from '../../api/client';
 
 export interface MappingDictionaryViewProps {
   onAddFieldClick?: () => void;
 }
+
+export const isUnclassifiedField = (f: GlobalTransactionSchemaField): boolean => {
+  if (!f.category) return true;
+  const c = f.category.trim().toLowerCase();
+  return c === 'unclassified' || c === 'general' || c.startsWith('table_');
+};
 
 export function MappingDictionaryView({ onAddFieldClick }: MappingDictionaryViewProps) {
   const [fields, setFields] = useState<GlobalTransactionSchemaField[]>(() =>
@@ -69,7 +76,7 @@ export function MappingDictionaryView({ onAddFieldClick }: MappingDictionaryView
       // Filter Mode Pills
       let matchesMode = true;
       if (filterMode === 'REQUIRED') matchesMode = !!f.required;
-      if (filterMode === 'UNCLASSIFIED') matchesMode = !f.category || f.category === 'Unclassified';
+      if (filterMode === 'UNCLASSIFIED') matchesMode = isUnclassifiedField(f);
 
       return matchesSearch && matchesCat && matchesMode;
     });
@@ -85,8 +92,21 @@ export function MappingDictionaryView({ onAddFieldClick }: MappingDictionaryView
 
   // Unclassified count
   const unclassifiedCount = useMemo(() => {
-    return fields.filter(f => !f.category || f.category === 'Unclassified').length;
+    return fields.filter(isUnclassifiedField).length;
   }, [fields]);
+
+  // Hydrate fields from PostgreSQL
+  useEffect(() => {
+    let isMounted = true;
+    api.getGlobalStandardDirectory().then(res => {
+      if (isMounted && Array.isArray(res) && res.length > 0) {
+        setFields(res);
+      }
+    }).catch(err => {
+      console.warn('Failed to hydrate fields from PostgreSQL:', err);
+    });
+    return () => { isMounted = false; };
+  }, []);
 
   const toggleSelectRow = (key: string) => {
     setSelectedKeys(prev =>
@@ -104,43 +124,54 @@ export function MappingDictionaryView({ onAddFieldClick }: MappingDictionaryView
     }
   };
 
-  const handleAutoClassify = () => {
+  const handleAutoClassify = async () => {
     setIsAutoClassifying(true);
-    setTimeout(() => {
-      setFields(prev =>
-        prev.map(f => {
-          if (!f.category || f.category === 'Unclassified') {
-            const k = f.key.toLowerCase();
-            let cat = 'General';
-            if (k.includes('date') || k.includes('time') || k.includes('stamp')) cat = 'Audit & timestamps';
-            else if (k.includes('amt') || k.includes('amount') || k.includes('fee') || k.includes('rate')) cat = 'Financial & amounts';
-            else if (k.includes('ref') || k.includes('id') || k.includes('trace') || k.includes('num')) cat = 'Identity & reference';
-            else if (k.includes('merch') || k.includes('pos') || k.includes('terminal')) cat = 'Merchant & POS';
-            return { ...f, category: cat };
-          }
-          return f;
-        })
-      );
-      setIsAutoClassifying(false);
-      setBannerDismissed(true);
-    }, 600);
+    const updated = fields.map(f => {
+      if (isUnclassifiedField(f)) {
+        const k = f.key.toLowerCase();
+        let cat = 'General';
+        if (k.includes('date') || k.includes('time') || k.includes('stamp')) cat = 'Audit & timestamps';
+        else if (k.includes('amt') || k.includes('amount') || k.includes('fee') || k.includes('rate')) cat = 'Financial & amounts';
+        else if (k.includes('ref') || k.includes('id') || k.includes('trace') || k.includes('num')) cat = 'Identity & reference';
+        else if (k.includes('merch') || k.includes('pos') || k.includes('terminal')) cat = 'Merchant & POS';
+        return { ...f, category: cat };
+      }
+      return f;
+    });
+
+    setFields(updated);
+    try {
+      await api.saveGlobalSchemaConfig({ standardFields: updated });
+    } catch (err: any) {
+      console.warn('Failed to persist auto-classified standard fields:', err);
+    }
+    setIsAutoClassifying(false);
+    setBannerDismissed(true);
   };
 
-  const handleBulkSetCategory = (cat: string) => {
-    setFields(prev =>
-      prev.map(f => (selectedKeys.includes(f.key) ? { ...f, category: cat } : f))
-    );
+  const handleBulkSetCategory = async (cat: string) => {
+    const updated = fields.map(f => (selectedKeys.includes(f.key) ? { ...f, category: cat } : f));
+    setFields(updated);
     setSelectedKeys([]);
+    try {
+      await api.saveGlobalSchemaConfig({ standardFields: updated });
+    } catch (err: any) {
+      console.warn('Failed to persist bulk categories:', err);
+    }
   };
 
-  const handleBulkMarkRequired = () => {
-    setFields(prev =>
-      prev.map(f => (selectedKeys.includes(f.key) ? { ...f, required: true } : f))
-    );
+  const handleBulkMarkRequired = async () => {
+    const updated = fields.map(f => (selectedKeys.includes(f.key) ? { ...f, required: true } : f));
+    setFields(updated);
     setSelectedKeys([]);
+    try {
+      await api.saveGlobalSchemaConfig({ standardFields: updated });
+    } catch (err: any) {
+      console.warn('Failed to persist bulk required fields:', err);
+    }
   };
 
-  const handleCreateField = (e: React.FormEvent) => {
+  const handleCreateField = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!newKey.trim()) return;
 
@@ -155,7 +186,13 @@ export function MappingDictionaryView({ onAddFieldClick }: MappingDictionaryView
     };
 
     globalMappingService.addStandardField(newField);
-    setFields(prev => [newField, ...prev]);
+    const updated = [newField, ...fields];
+    setFields(updated);
+    try {
+      await api.saveGlobalSchemaConfig({ standardFields: updated });
+    } catch (err: any) {
+      console.warn('Failed to persist new standard field:', err);
+    }
     setShowAddModal(false);
     setNewKey('');
     setNewLabel('');

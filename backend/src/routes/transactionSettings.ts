@@ -24,6 +24,11 @@ transactionSettingsRouter.get('/settings', async (_req: Request, res: Response) 
 
 // POST /api/transactions/settings/schema - Update global transaction schema custom fields
 transactionSettingsRouter.post('/settings/schema', async (req: Request, res: Response) => {
+  const user = (req as any).user;
+  if (user && user.role !== 'admin' && user.role !== 'lead') {
+    return res.status(403).json({ error: 'Forbidden: Insufficient privileges. Only admin or lead roles can modify global transaction schema settings.' });
+  }
+
   const { customFields, defaultTemplateId, updatedBy } = req.body;
   try {
     const current = (await postgresRepo.getGlobalSchemaConfig()) || { customFields: [] };
@@ -34,7 +39,7 @@ transactionSettingsRouter.post('/settings/schema', async (req: Request, res: Res
       current.defaultTemplateId = defaultTemplateId;
     }
     current.updatedAt = new Date().toISOString();
-    current.updatedBy = updatedBy || 'system';
+    current.updatedBy = updatedBy || user?.username || user?.name || 'system';
 
     await postgresRepo.saveGlobalSchemaConfig(current);
 
@@ -76,6 +81,7 @@ transactionSettingsRouter.get('/schema/config', async (_req: Request, res: Respo
       return res.json(pgDoc);
     } catch (err: any) {
       console.warn('[SchemaConfig] Error fetching from PostgreSQL:', err.message);
+      return res.status(500).json({ error: `Database error retrieving schema config: ${err.message}` });
     }
   }
 
@@ -84,13 +90,17 @@ transactionSettingsRouter.get('/schema/config', async (_req: Request, res: Respo
 
 // POST /api/transactions/schema/config - Persist version-controlled Global Mapping configuration
 transactionSettingsRouter.post('/schema/config', async (req: Request, res: Response) => {
+  const user = (req as any).user;
+  if (user && user.role !== 'admin' && user.role !== 'lead') {
+    return res.status(403).json({ error: 'Forbidden: Insufficient privileges. Only admin or lead roles can modify global transaction schema configurations.' });
+  }
+
   const { standardFields, tableMappings, version, versionHistory, updatedBy, description, strictMappingEnforced } = req.body;
 
   if (!standardFields || !Array.isArray(standardFields)) {
     return res.status(400).json({ error: 'standardFields array is required' });
   }
 
-  const user = (req as any).user;
   const author = updatedBy || user?.name || user?.username || 'system';
   const now = new Date().toISOString();
   const newVersion = version || store.globalSchema.version || '2.3.0';
