@@ -33,6 +33,8 @@ import { assetSharingRouter } from './routes/assetSharing.js';
 import { mirrorTableManager } from './services/mirrorTableManager.js';
 import { ftpFileStagingService } from './services/ftpFileStagingService.js';
 import { hashtagSchedulerService } from './services/hashtagSchedulerService.js';
+import { ftpSchedulerService } from './services/ftpSchedulerService.js';
+import { automationsRouter } from './routes/automations.js';
 import { optionalAuth, requireAuth } from './middleware/auth.js';
 
 // dotenv/config auto-loads
@@ -102,6 +104,7 @@ app.use('/api/sandbox', requireAuth, sandboxRouter);
 app.use('/api/messages', requireAuth, messagesRouter);
 app.use('/api/external-requests', requireAuth, messagesRouter);
 app.use('/api', requireAuth, collaborationRouter);
+app.use('/api/automations', requireAuth, automationsRouter);
 app.use('/api', requireAuth, miscRouter);
 
 // API 404 Handler (BE-24)
@@ -174,6 +177,9 @@ async function startServer() {
 
   // Start autonomous hashtag scheduler for SCHEDULED_CRON presets
   hashtagSchedulerService.startHashtagScheduler();
+
+  // Start autonomous FTP staging scheduler for scheduled remote polls (AUD-AUTO-002)
+  ftpSchedulerService.startFtpScheduler();
 
   const rootDir = fs.existsSync(path.resolve(process.cwd(), 'frontend'))
     ? process.cwd()

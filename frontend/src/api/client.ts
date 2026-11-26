@@ -463,6 +463,33 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ folderPath, connectionId })
     }),
+  // UNIFIED AUTOMATION ENGINE (AUD-AUTO-001..006)
+  getAutomations: (teamId?: string) =>
+    fetchApi<any[]>(teamId ? `/automations?teamId=${teamId}` : '/automations'),
+  getAutomationMetrics: (teamId?: string) =>
+    fetchApi<any>(teamId ? `/automations/metrics?teamId=${teamId}` : '/automations/metrics'),
+  getAutomationRuns: (jobId?: string) =>
+    fetchApi<any[]>(jobId ? `/automations/runs?jobId=${jobId}` : '/automations/runs'),
+  getAutomationDLQ: (teamId?: string) =>
+    fetchApi<any[]>(teamId ? `/automations/dlq?teamId=${teamId}` : '/automations/dlq'),
+  createAutomation: (data: any) =>
+    fetchApi<any>('/automations', {
+      method: 'POST',
+      body: JSON.stringify(data)
+    }),
+  updateAutomation: (id: string, data: any) =>
+    fetchApi<any>(`/automations/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify(data)
+    }),
+  deleteAutomation: (id: string) =>
+    fetchApi<{ success: boolean; deletedId: string }>(`/automations/${id}`, {
+      method: 'DELETE'
+    }),
+  runAutomation: (id: string) =>
+    fetchApi<{ success: boolean; run: any; details?: any }>(`/automations/${id}/run`, {
+      method: 'POST'
+    }),
   detectFtpPatterns: (
     params: {
       connectionId: string;

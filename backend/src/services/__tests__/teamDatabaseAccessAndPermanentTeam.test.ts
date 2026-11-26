@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { generateToken } from '../../utils/auth.js';
 
 describe('Team Database Access & Permanent Team Membership Governance', () => {
-  const BASE_URL = 'http://localhost:5002/api';
+  const BASE_URL = 'http://127.0.0.1:5002/api';
 
   const adminToken = generateToken({
     id: 'usr-1',

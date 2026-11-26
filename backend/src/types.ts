@@ -2308,6 +2308,64 @@ export interface SystemTransformationRule {
   updatedAt?: string;
 }
 
+// ==========================================
+// UNIFIED AUTOMATION JOBS & DLQ (AUD-AUTO-001..006)
+// ==========================================
+
+export type AutomationTriggerType = 'CRON' | 'FTP_POLL' | 'EVENT';
+export type AutomationRunStatus = 'RUNNING' | 'SUCCESS' | 'FAILED' | 'PENDING';
+
+export interface AutomationJob {
+  id: string;
+  name: string;
+  description?: string;
+  triggerType: AutomationTriggerType;
+  scheduleCron?: string;
+  attachedWorkflowId?: string;
+  targetDbId?: string;
+  isActive: boolean;
+  teamId?: string;
+  config?: Record<string, any>;
+  lastRunAt?: string;
+  lastRunStatus?: AutomationRunStatus;
+  lastRunDurationMs?: number;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export interface AutomationRun {
+  id: string;
+  jobId: string;
+  triggerSource: 'MANUAL' | 'CRON_DAEMON' | 'FTP_DAEMON';
+  status: AutomationRunStatus;
+  durationMs: number;
+  rowsProcessed: number;
+  anomaliesDetected: number;
+  errorMessage?: string;
+  executedAt?: string;
+}
+
+export interface AutomationDLQEntry {
+  id: string;
+  jobId: string;
+  jobName?: string;
+  runId?: string;
+  errorPayload?: Record<string, any>;
+  retryCount: number;
+  status: 'PENDING' | 'REPLAYED' | 'DISCARDED';
+  createdAt?: string;
+}
+
+export interface AutomationMetrics {
+  totalJobs: number;
+  activeJobs: number;
+  totalRuns: number;
+  successfulRuns: number;
+  failedRuns: number;
+  dlqPendingCount: number;
+}
+
+
 
 
 

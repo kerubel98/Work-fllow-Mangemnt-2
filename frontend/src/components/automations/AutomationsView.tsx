@@ -73,10 +73,12 @@ export default function AutomationsView() {
   const loadData = async () => {
     setLoading(true);
     try {
-      const [wfs, ftpConfigs, hashtagRes] = await Promise.allSettled([
+      const [wfs, dbAutomations, metricsRes, hashtagRes, ftpConfigs] = await Promise.allSettled([
         api.getWorkflows(),
-        api.getFtpStagingConfigs(),
-        api.getHashtagCollectedTransactions(selectedHashtagTag, 'ALL', 10)
+        api.getAutomations(),
+        api.getAutomationMetrics(),
+        api.getHashtagCollectedTransactions(selectedHashtagTag, 'ALL', 10),
+        api.getFtpStagingConfigs()
       ]);
 
       const loadedWfs: DatabaseValidationWorkflow[] = wfs.status === 'fulfilled' ? wfs.value : [];
@@ -88,72 +90,52 @@ export default function AutomationsView() {
         }
       }
 
-      // Generate automations from FTP configs and default core crons
-      const baseAutomations: AutomationItem[] = [
-        {
-          id: 'auto-cbe-nightly',
-          name: 'Nightly CBE Settlement Reconciler',
-          description: 'Triggers every night at 2:00 AM EAT to reconcile CBE core banking transactions with switch settlement logs',
-          triggerType: 'CRON',
-          schedule: '0 2 * * *',
-          workflowId: loadedWfs[0]?.id || 'wf-1',
-          workflowName: loadedWfs[0]?.name || 'CBE Core Settlement Pipeline',
-          targetDb: 'cbe_production_db',
-          isActive: true,
-          lastRunTime: 'Today, 02:00 AM',
-          lastRunStatus: 'SUCCESS',
-          duration: '3.2s'
-        },
-        {
-          id: 'auto-telebirr-hourly',
-          name: 'Telebirr Hourly Ingress Scanner',
-          description: 'Polls incoming Telebirr switch transaction batches every hour to verify ISO status and flag duplicates',
-          triggerType: 'CRON',
-          schedule: '0 * * * *',
-          workflowId: loadedWfs[1]?.id || loadedWfs[0]?.id || 'wf-2',
-          workflowName: loadedWfs[1]?.name || 'Telebirr Wallet Validation',
-          targetDb: 'telebirr_switch_db',
-          isActive: true,
-          lastRunTime: '1 hour ago',
-          lastRunStatus: 'SUCCESS',
-          duration: '1.4s'
-        },
-        {
-          id: 'auto-aib-reversal-sync',
-          name: 'Awash Bank Reversal Sync',
-          description: 'Detects pending unconfirmed financial requests and executes auto-reversal validation rule checks',
-          triggerType: 'EVENT',
-          schedule: 'On Event / Webhook',
-          workflowId: loadedWfs[0]?.id || 'wf-1',
-          workflowName: 'Reversal Integrity Verification',
-          targetDb: 'aib_host_db',
-          isActive: false,
-          lastRunTime: 'Yesterday, 18:30',
-          lastRunStatus: 'SUCCESS',
-          duration: '850ms'
-        }
-      ];
+      const items: AutomationItem[] = [];
 
-      if (ftpConfigs.status === 'fulfilled' && Array.isArray(ftpConfigs.value)) {
-        ftpConfigs.value.forEach((fc: any) => {
-          baseAutomations.push({
-            id: `ftp-auto-${fc.id}`,
-            name: `FTP Auto-Ingest: ${fc.remoteDirectory || 'Staged Logs'}`,
-            description: `Automated staging of files from folder "${fc.remoteDirectory}" matching regex "${fc.filePattern || '*'}"`,
-            triggerType: 'FTP_POLL',
-            schedule: fc.pollingIntervalCron || '*/15 * * * *',
-            workflowId: fc.attachedWorkflowId || loadedWfs[0]?.id || 'wf-ftp',
-            workflowName: loadedWfs.find(w => w.id === fc.attachedWorkflowId)?.name || 'FTP File Staging Ingest',
-            targetDb: 'staging_unlogged_mirror',
-            isActive: fc.autoProcessEnabled !== false,
-            lastRunTime: fc.lastPolledAt ? new Date(fc.lastPolledAt).toLocaleTimeString() : 'Never',
-            lastRunStatus: 'SUCCESS',
-            duration: '2.1s'
+      if (dbAutomations.status === 'fulfilled' && Array.isArray(dbAutomations.value) && dbAutomations.value.length > 0) {
+        dbAutomations.value.forEach((dbJob: any) => {
+          const matchedWf = loadedWfs.find(w => w.id === dbJob.attachedWorkflowId);
+          items.push({
+            id: dbJob.id,
+            name: dbJob.name,
+            description: dbJob.description || 'Automated background execution pipeline',
+            triggerType: dbJob.triggerType || 'CRON',
+            schedule: dbJob.scheduleCron || '0 2 * * *',
+            workflowId: dbJob.attachedWorkflowId || 'wf-custom',
+            workflowName: matchedWf?.name || 'Standard Validation Pipeline',
+            targetDb: dbJob.targetDbId || 'operational_workflow_db',
+            isActive: dbJob.isActive !== false,
+            lastRunTime: dbJob.lastRunAt ? new Date(dbJob.lastRunAt).toLocaleTimeString() : 'Never',
+            lastRunStatus: dbJob.lastRunStatus || 'PENDING',
+            duration: dbJob.lastRunDurationMs ? `${(dbJob.lastRunDurationMs / 1000).toFixed(1)}s` : undefined
           });
         });
       }
 
-      setAutomations(baseAutomations);
+      // Also merge active FTP staging configs if not already represented
+      if (ftpConfigs.status === 'fulfilled' && Array.isArray(ftpConfigs.value)) {
+        ftpConfigs.value.forEach((fc: any) => {
+          const existing = items.find(i => i.id === `ftp-auto-${fc.id}` || i.name.includes(fc.name));
+          if (!existing) {
+            items.push({
+              id: `ftp-auto-${fc.id}`,
+              name: `FTP Auto-Ingest: ${fc.remoteDirectory || 'Staged Logs'}`,
+              description: `Automated staging of files from folder "${fc.remoteDirectory}" matching regex "${fc.filePattern || '*'}"`,
+              triggerType: 'FTP_POLL',
+              schedule: fc.pollingIntervalCron || '*/15 * * * *',
+              workflowId: fc.attachedWorkflowId || loadedWfs[0]?.id || 'wf-ftp',
+              workflowName: loadedWfs.find(w => w.id === fc.attachedWorkflowId)?.name || 'FTP File Staging Ingest',
+              targetDb: 'staging_unlogged_mirror',
+              isActive: fc.autoProcessEnabled !== false,
+              lastRunTime: fc.lastPolledAt ? new Date(fc.lastPolledAt).toLocaleTimeString() : 'Never',
+              lastRunStatus: 'SUCCESS',
+              duration: '2.1s'
+            });
+          }
+        });
+      }
+
+      setAutomations(items);
     } catch (err) {
       console.warn('Error loading automations:', err);
     } finally {
@@ -168,46 +150,50 @@ export default function AutomationsView() {
   const handleRunAutomation = async (auto: AutomationItem) => {
     setRunningId(auto.id);
     try {
-      if (auto.triggerType === 'FTP_POLL') {
-        await api.runScheduledFtpStaging();
+      if (auto.id.startsWith('ftp-auto-')) {
+        await api.runScheduledFtpStaging({ forceAll: true });
       } else {
-        await new Promise(r => setTimeout(r, 1200));
+        await api.runAutomation(auto.id);
       }
-      setAutomations(prev => prev.map(a => a.id === auto.id ? {
-        ...a,
-        lastRunTime: 'Just now',
-        lastRunStatus: 'SUCCESS'
-      } : a));
+      await loadData();
     } catch (err) {
-      console.error(err);
+      console.error('Failed to run automation:', err);
     } finally {
       setRunningId(null);
     }
   };
 
-  const handleCreateAutomation = (e: React.FormEvent) => {
+  const handleCreateAutomation = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!formName.trim()) return;
 
-    const matchedWf = workflows.find(w => w.id === formWorkflowId) || workflows[0];
-    const newAuto: AutomationItem = {
-      id: `auto-${Date.now()}`,
-      name: formName.trim(),
-      description: formDesc.trim() || 'Automated background execution pipeline',
-      triggerType: formType,
-      schedule: formSchedule,
-      workflowId: matchedWf?.id || 'wf-custom',
-      workflowName: matchedWf?.name || 'Standard Validation Pipeline',
-      targetDb: 'operational_workflow_db',
-      isActive: true,
-      lastRunTime: 'Never',
-      lastRunStatus: 'PENDING'
-    };
+    try {
+      const matchedWf = workflows.find(w => w.id === formWorkflowId) || workflows[0];
+      await api.createAutomation({
+        name: formName.trim(),
+        description: formDesc.trim() || 'Automated background execution pipeline',
+        triggerType: formType,
+        scheduleCron: formSchedule,
+        attachedWorkflowId: matchedWf?.id || null,
+        targetDbId: 'operational_workflow_db'
+      });
+      setIsModalOpen(false);
+      setFormName('');
+      setFormDesc('');
+      await loadData();
+    } catch (err) {
+      console.error('Failed to create automation:', err);
+    }
+  };
 
-    setAutomations(prev => [newAuto, ...prev]);
-    setIsModalOpen(false);
-    setFormName('');
-    setFormDesc('');
+  const handleDeleteAutomation = async (id: string) => {
+    if (!window.confirm('Are you sure you want to delete this automation?')) return;
+    try {
+      await api.deleteAutomation(id);
+      await loadData();
+    } catch (err) {
+      console.error('Failed to delete automation:', err);
+    }
   };
 
   const filteredAutomations = automations.filter(a => {
@@ -781,15 +767,27 @@ export default function AutomationsView() {
                   <span className="px-2 py-0.5 rounded bg-slate-100 text-slate-600 text-[10px] font-medium">
                     {auto.triggerType}
                   </span>
-                  <button
-                    type="button"
-                    onClick={() => handleRunAutomation(auto)}
-                    disabled={runningId === auto.id}
-                    className="text-[#F27421] hover:underline font-semibold text-xs flex items-center space-x-1 cursor-pointer"
-                  >
-                    <Play size={11} />
-                    <span>Run now</span>
-                  </button>
+                  <div className="flex items-center gap-2">
+                    {auto.id.startsWith('auto-') && !['auto-cbe-nightly', 'auto-telebirr-hourly', 'auto-aib-reversal-sync'].includes(auto.id) && (
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteAutomation(auto.id)}
+                        className="text-slate-400 hover:text-rose-600 transition p-1 cursor-pointer"
+                        title="Delete automation"
+                      >
+                        <Trash2 size={13} />
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => handleRunAutomation(auto)}
+                      disabled={runningId === auto.id}
+                      className="text-[#F27421] hover:underline font-semibold text-xs flex items-center space-x-1 cursor-pointer disabled:opacity-50"
+                    >
+                      <Play size={11} className={runningId === auto.id ? 'animate-spin' : ''} />
+                      <span>{runningId === auto.id ? 'Running...' : 'Run now'}</span>
+                    </button>
+                  </div>
                 </div>
               </div>
             ))}

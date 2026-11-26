@@ -10,7 +10,8 @@ import {
   DatabaseColumnConfiguration, TeamRelationship, TeamRelationshipType,
   WorkspaceSettingProposal, SettingProposalType, SettingProposalStatus,
   FileIngestionMappingTemplate, ValueTranslationDictionary, ValueDictionaryColumnLink, SystemTransformationRule,
-  EscalationAgreement, SavedQuery, UserNotificationPreferences, HashtagCollectedTransaction
+  EscalationAgreement, SavedQuery, UserNotificationPreferences, HashtagCollectedTransaction,
+  AutomationJob, AutomationRun, AutomationDLQEntry, AutomationMetrics
 } from '../types.js';
 
 function parseJson(val: any, fallback: any = null) {
@@ -161,6 +162,70 @@ async function ensureFtpStagingSchema(): Promise<void> {
     ftpSchemaInitialized = true;
   } catch (err: any) {
     console.warn('[postgresRepo] ensureFtpStagingSchema warning:', err.message);
+  }
+}
+
+let automationJobsSchemaInitialized = false;
+async function ensureAutomationJobsSchema(): Promise<void> {
+  if (automationJobsSchemaInitialized) return;
+  try {
+    const pool = getPostgresPool();
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS automation_jobs (
+        id VARCHAR(64) PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        description TEXT,
+        trigger_type VARCHAR(32) NOT NULL DEFAULT 'CRON',
+        schedule_cron VARCHAR(64) DEFAULT '0 2 * * *',
+        attached_workflow_id VARCHAR(64),
+        target_db_id VARCHAR(64),
+        is_active BOOLEAN NOT NULL DEFAULT true,
+        team_id VARCHAR(64),
+        config JSONB DEFAULT '{}'::jsonb,
+        last_run_at TIMESTAMPTZ,
+        last_run_status VARCHAR(32) DEFAULT 'PENDING',
+        last_run_duration_ms INTEGER DEFAULT 0,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_automation_jobs_team ON automation_jobs(team_id);
+      CREATE INDEX IF NOT EXISTS idx_automation_jobs_active_trigger ON automation_jobs(is_active, trigger_type);
+
+      CREATE TABLE IF NOT EXISTS automation_runs (
+        id VARCHAR(64) PRIMARY KEY,
+        job_id VARCHAR(64) NOT NULL REFERENCES automation_jobs(id) ON DELETE CASCADE,
+        trigger_source VARCHAR(32) NOT NULL DEFAULT 'MANUAL',
+        status VARCHAR(32) NOT NULL DEFAULT 'RUNNING',
+        duration_ms INTEGER DEFAULT 0,
+        rows_processed INTEGER DEFAULT 0,
+        anomalies_detected INTEGER DEFAULT 0,
+        error_message TEXT,
+        executed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_automation_runs_job_id ON automation_runs(job_id, executed_at DESC);
+
+      CREATE TABLE IF NOT EXISTS automation_dlq (
+        id VARCHAR(64) PRIMARY KEY,
+        job_id VARCHAR(64) NOT NULL,
+        job_name VARCHAR(255),
+        run_id VARCHAR(64),
+        error_payload JSONB DEFAULT '{}'::jsonb,
+        retry_count INTEGER DEFAULT 0,
+        status VARCHAR(32) DEFAULT 'PENDING',
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      );
+      CREATE INDEX IF NOT EXISTS idx_automation_dlq_status ON automation_dlq(status, created_at DESC);
+
+      INSERT INTO automation_jobs (id, name, description, trigger_type, schedule_cron, attached_workflow_id, target_db_id, is_active, team_id, last_run_at, last_run_status, last_run_duration_ms)
+      VALUES 
+        ('auto-cbe-nightly', 'Nightly CBE Settlement Reconciler', 'Triggers every night at 2:00 AM EAT to reconcile CBE core banking transactions with switch settlement logs', 'CRON', '0 2 * * *', 'wf-cbe-settlement', 'cbe_production_db', true, 'default-team', NOW() - INTERVAL '12 hours', 'SUCCESS', 3200),
+        ('auto-telebirr-hourly', 'Telebirr Hourly Ingress Scanner', 'Polls incoming Telebirr switch transaction batches every hour to verify ISO status and flag duplicates', 'CRON', '0 * * * *', 'wf-telebirr-validation', 'telebirr_switch_db', true, 'default-team', NOW() - INTERVAL '45 minutes', 'SUCCESS', 1400),
+        ('auto-aib-reversal-sync', 'Awash Bank Reversal Sync', 'Detects pending unconfirmed financial requests and executes auto-reversal validation rule checks', 'EVENT', 'On Event / Webhook', 'wf-aib-reversal', 'aib_host_db', false, 'default-team', NOW() - INTERVAL '1 day', 'SUCCESS', 850)
+      ON CONFLICT (id) DO NOTHING;
+    `);
+    automationJobsSchemaInitialized = true;
+  } catch (err: any) {
+    console.warn('[postgresRepo] ensureAutomationJobsSchema warning:', err.message);
   }
 }
 
@@ -5932,6 +5997,341 @@ async updateDatabaseConnection(id: string, updates: Partial<DatabaseConnection>)
       clockStartedAt: r.clock_started_at ? new Date(r.clock_started_at).toISOString() : undefined,
       createdAt: new Date(r.created_at).toISOString(),
       updatedAt: new Date(r.updated_at).toISOString()
+    };
+  },
+
+  // ================= UNIFIED AUTOMATION ENGINE (AUD-AUTO-001..006) =================
+  async getAutomationJobs(teamId?: string): Promise<AutomationJob[]> {
+    await ensureAutomationJobsSchema();
+    const pool = getPostgresPool();
+    let query = 'SELECT * FROM automation_jobs';
+    const params: any[] = [];
+    if (teamId) {
+      query += ' WHERE team_id = $1 OR team_id IS NULL OR team_id = \'default-team\'';
+      params.push(teamId);
+    }
+    query += ' ORDER BY created_at DESC;';
+    const { rows } = await pool.query(query, params);
+    return rows.map((r: any) => ({
+      id: r.id,
+      name: r.name,
+      description: r.description || undefined,
+      triggerType: r.trigger_type || 'CRON',
+      scheduleCron: r.schedule_cron || undefined,
+      attachedWorkflowId: r.attached_workflow_id || undefined,
+      targetDbId: r.target_db_id || undefined,
+      isActive: r.is_active !== false,
+      teamId: r.team_id || undefined,
+      config: parseJson(r.config, {}),
+      lastRunAt: r.last_run_at ? new Date(r.last_run_at).toISOString() : undefined,
+      lastRunStatus: r.last_run_status || 'PENDING',
+      lastRunDurationMs: Number(r.last_run_duration_ms || 0),
+      createdAt: new Date(r.created_at).toISOString(),
+      updatedAt: new Date(r.updated_at).toISOString()
+    }));
+  },
+
+  async getAutomationJob(id: string): Promise<AutomationJob | null> {
+    await ensureAutomationJobsSchema();
+    const pool = getPostgresPool();
+    const { rows } = await pool.query('SELECT * FROM automation_jobs WHERE id = $1;', [id]);
+    if (rows.length === 0) return null;
+    const r = rows[0];
+    return {
+      id: r.id,
+      name: r.name,
+      description: r.description || undefined,
+      triggerType: r.trigger_type || 'CRON',
+      scheduleCron: r.schedule_cron || undefined,
+      attachedWorkflowId: r.attached_workflow_id || undefined,
+      targetDbId: r.target_db_id || undefined,
+      isActive: r.is_active !== false,
+      teamId: r.team_id || undefined,
+      config: parseJson(r.config, {}),
+      lastRunAt: r.last_run_at ? new Date(r.last_run_at).toISOString() : undefined,
+      lastRunStatus: r.last_run_status || 'PENDING',
+      lastRunDurationMs: Number(r.last_run_duration_ms || 0),
+      createdAt: new Date(r.created_at).toISOString(),
+      updatedAt: new Date(r.updated_at).toISOString()
+    };
+  },
+
+  async createAutomationJob(job: Partial<AutomationJob>): Promise<AutomationJob> {
+    await ensureAutomationJobsSchema();
+    const pool = getPostgresPool();
+    const id = job.id || `auto-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const query = `
+      INSERT INTO automation_jobs (
+        id, name, description, trigger_type, schedule_cron, attached_workflow_id, target_db_id,
+        is_active, team_id, config, last_run_at, last_run_status, last_run_duration_ms, created_at, updated_at
+      ) VALUES (
+        $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, NOW(), NOW()
+      ) RETURNING *;
+    `;
+    const params = [
+      id,
+      job.name || 'Untitled Automation',
+      job.description || null,
+      job.triggerType || 'CRON',
+      job.scheduleCron || '0 2 * * *',
+      job.attachedWorkflowId || null,
+      job.targetDbId || null,
+      job.isActive !== false,
+      job.teamId || 'default-team',
+      JSON.stringify(job.config || {}),
+      job.lastRunAt ? new Date(job.lastRunAt) : null,
+      job.lastRunStatus || 'PENDING',
+      job.lastRunDurationMs || 0
+    ];
+    const { rows } = await pool.query(query, params);
+    const r = rows[0];
+    return {
+      id: r.id,
+      name: r.name,
+      description: r.description || undefined,
+      triggerType: r.trigger_type || 'CRON',
+      scheduleCron: r.schedule_cron || undefined,
+      attachedWorkflowId: r.attached_workflow_id || undefined,
+      targetDbId: r.target_db_id || undefined,
+      isActive: r.is_active !== false,
+      teamId: r.team_id || undefined,
+      config: parseJson(r.config, {}),
+      lastRunAt: r.last_run_at ? new Date(r.last_run_at).toISOString() : undefined,
+      lastRunStatus: r.last_run_status || 'PENDING',
+      lastRunDurationMs: Number(r.last_run_duration_ms || 0),
+      createdAt: new Date(r.created_at).toISOString(),
+      updatedAt: new Date(r.updated_at).toISOString()
+    };
+  },
+
+  async updateAutomationJob(id: string, updates: Partial<AutomationJob>): Promise<AutomationJob | null> {
+    await ensureAutomationJobsSchema();
+    const pool = getPostgresPool();
+    const existing = await this.getAutomationJob(id);
+    if (!existing) return null;
+
+    const merged = { ...existing, ...updates };
+    const query = `
+      UPDATE automation_jobs SET
+        name = $2,
+        description = $3,
+        trigger_type = $4,
+        schedule_cron = $5,
+        attached_workflow_id = $6,
+        target_db_id = $7,
+        is_active = $8,
+        team_id = $9,
+        config = $10,
+        last_run_at = $11,
+        last_run_status = $12,
+        last_run_duration_ms = $13,
+        updated_at = NOW()
+      WHERE id = $1
+      RETURNING *;
+    `;
+    const params = [
+      id,
+      merged.name,
+      merged.description || null,
+      merged.triggerType,
+      merged.scheduleCron || null,
+      merged.attachedWorkflowId || null,
+      merged.targetDbId || null,
+      merged.isActive,
+      merged.teamId || null,
+      JSON.stringify(merged.config || {}),
+      merged.lastRunAt ? new Date(merged.lastRunAt) : null,
+      merged.lastRunStatus || 'PENDING',
+      merged.lastRunDurationMs || 0
+    ];
+    const { rows } = await pool.query(query, params);
+    if (rows.length === 0) return null;
+    const r = rows[0];
+    return {
+      id: r.id,
+      name: r.name,
+      description: r.description || undefined,
+      triggerType: r.trigger_type || 'CRON',
+      scheduleCron: r.schedule_cron || undefined,
+      attachedWorkflowId: r.attached_workflow_id || undefined,
+      targetDbId: r.target_db_id || undefined,
+      isActive: r.is_active !== false,
+      teamId: r.team_id || undefined,
+      config: parseJson(r.config, {}),
+      lastRunAt: r.last_run_at ? new Date(r.last_run_at).toISOString() : undefined,
+      lastRunStatus: r.last_run_status || 'PENDING',
+      lastRunDurationMs: Number(r.last_run_duration_ms || 0),
+      createdAt: new Date(r.created_at).toISOString(),
+      updatedAt: new Date(r.updated_at).toISOString()
+    };
+  },
+
+  async deleteAutomationJob(id: string): Promise<boolean> {
+    await ensureAutomationJobsSchema();
+    const pool = getPostgresPool();
+    const { rowCount } = await pool.query('DELETE FROM automation_jobs WHERE id = $1;', [id]);
+    return (rowCount ?? 0) > 0;
+  },
+
+  async recordAutomationRun(run: Partial<AutomationRun>): Promise<AutomationRun> {
+    await ensureAutomationJobsSchema();
+    const pool = getPostgresPool();
+    const id = run.id || `run-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const jobId = run.jobId!;
+    const status = run.status || 'SUCCESS';
+    const durationMs = run.durationMs || 0;
+
+    const query = `
+      INSERT INTO automation_runs (
+        id, job_id, trigger_source, status, duration_ms, rows_processed, anomalies_detected, error_message, executed_at
+      ) VALUES (
+        $1, $2, $3, $4, $5, $6, $7, $8, NOW()
+      ) RETURNING *;
+    `;
+    const params = [
+      id,
+      jobId,
+      run.triggerSource || 'MANUAL',
+      status,
+      durationMs,
+      run.rowsProcessed || 0,
+      run.anomaliesDetected || 0,
+      run.errorMessage || null
+    ];
+    const { rows } = await pool.query(query, params);
+
+    // Update parent job status and timing
+    await pool.query(`
+      UPDATE automation_jobs SET
+        last_run_at = NOW(),
+        last_run_status = $2,
+        last_run_duration_ms = $3,
+        updated_at = NOW()
+      WHERE id = $1;
+    `, [jobId, status, durationMs]);
+
+    const r = rows[0];
+    return {
+      id: r.id,
+      jobId: r.job_id,
+      triggerSource: r.trigger_source,
+      status: r.status,
+      durationMs: Number(r.duration_ms || 0),
+      rowsProcessed: Number(r.rows_processed || 0),
+      anomaliesDetected: Number(r.anomalies_detected || 0),
+      errorMessage: r.error_message || undefined,
+      executedAt: new Date(r.executed_at).toISOString()
+    };
+  },
+
+  async getAutomationRuns(jobId?: string, limit: number = 50): Promise<AutomationRun[]> {
+    await ensureAutomationJobsSchema();
+    const pool = getPostgresPool();
+    let query = 'SELECT * FROM automation_runs';
+    const params: any[] = [];
+    if (jobId) {
+      query += ' WHERE job_id = $1';
+      params.push(jobId);
+    }
+    query += ` ORDER BY executed_at DESC LIMIT $${params.length + 1};`;
+    params.push(limit);
+
+    const { rows } = await pool.query(query, params);
+    return rows.map((r: any) => ({
+      id: r.id,
+      jobId: r.job_id,
+      triggerSource: r.trigger_source,
+      status: r.status,
+      durationMs: Number(r.duration_ms || 0),
+      rowsProcessed: Number(r.rows_processed || 0),
+      anomaliesDetected: Number(r.anomalies_detected || 0),
+      errorMessage: r.error_message || undefined,
+      executedAt: new Date(r.executed_at).toISOString()
+    }));
+  },
+
+  async recordAutomationDLQ(entry: Partial<AutomationDLQEntry>): Promise<AutomationDLQEntry> {
+    await ensureAutomationJobsSchema();
+    const pool = getPostgresPool();
+    const id = entry.id || `dlq-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const query = `
+      INSERT INTO automation_dlq (
+        id, job_id, job_name, run_id, error_payload, retry_count, status, created_at
+      ) VALUES (
+        $1, $2, $3, $4, $5, $6, $7, NOW()
+      ) RETURNING *;
+    `;
+    const params = [
+      id,
+      entry.jobId || 'unknown',
+      entry.jobName || 'Unknown Job',
+      entry.runId || null,
+      JSON.stringify(entry.errorPayload || {}),
+      entry.retryCount || 1,
+      entry.status || 'PENDING'
+    ];
+    const { rows } = await pool.query(query, params);
+    const r = rows[0];
+    return {
+      id: r.id,
+      jobId: r.job_id,
+      jobName: r.job_name || undefined,
+      runId: r.run_id || undefined,
+      errorPayload: parseJson(r.error_payload, {}),
+      retryCount: Number(r.retry_count || 1),
+      status: r.status,
+      createdAt: new Date(r.created_at).toISOString()
+    };
+  },
+
+  async getAutomationDLQ(teamId?: string): Promise<AutomationDLQEntry[]> {
+    await ensureAutomationJobsSchema();
+    const pool = getPostgresPool();
+    const query = 'SELECT * FROM automation_dlq WHERE status = \'PENDING\' ORDER BY created_at DESC;';
+    const { rows } = await pool.query(query);
+    return rows.map((r: any) => ({
+      id: r.id,
+      jobId: r.job_id,
+      jobName: r.job_name || undefined,
+      runId: r.run_id || undefined,
+      errorPayload: parseJson(r.error_payload, {}),
+      retryCount: Number(r.retry_count || 1),
+      status: r.status,
+      createdAt: new Date(r.created_at).toISOString()
+    }));
+  },
+
+  async getAutomationMetrics(teamId?: string): Promise<AutomationMetrics> {
+    await ensureAutomationJobsSchema();
+    const pool = getPostgresPool();
+    const jobRes = await pool.query(`
+      SELECT 
+        COUNT(*) AS total_jobs,
+        COUNT(*) FILTER (WHERE is_active = true) AS active_jobs
+      FROM automation_jobs;
+    `);
+    const runRes = await pool.query(`
+      SELECT 
+        COUNT(*) AS total_runs,
+        COUNT(*) FILTER (WHERE status = 'SUCCESS') AS successful_runs,
+        COUNT(*) FILTER (WHERE status = 'FAILED') AS failed_runs
+      FROM automation_runs;
+    `);
+    const dlqRes = await pool.query(`
+      SELECT COUNT(*) AS dlq_count FROM automation_dlq WHERE status = 'PENDING';
+    `);
+
+    const j = jobRes.rows[0] || {};
+    const r = runRes.rows[0] || {};
+    const d = dlqRes.rows[0] || {};
+
+    return {
+      totalJobs: Number(j.total_jobs || 0),
+      activeJobs: Number(j.active_jobs || 0),
+      totalRuns: Number(r.total_runs || 0),
+      successfulRuns: Number(r.successful_runs || 0),
+      failedRuns: Number(r.failed_runs || 0),
+      dlqPendingCount: Number(d.dlq_count || 0)
     };
   }
 

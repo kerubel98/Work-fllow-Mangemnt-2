@@ -3,7 +3,7 @@ import { resolveUserAdminCapabilities } from '../../utils/capabilityHelper.js';
 import { generateToken } from '../../utils/auth.js';
 
 describe('Team Delegated Administration & Operational Governance', () => {
-  const BASE_URL = 'http://localhost:5002/api';
+  const BASE_URL = 'http://127.0.0.1:5002/api';
 
   const adminToken = generateToken({
     id: 'usr-1',

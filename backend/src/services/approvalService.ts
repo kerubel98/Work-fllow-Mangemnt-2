@@ -556,6 +556,20 @@ export const approvalService = {
       throw new Error(`Anti-Self-Approval Violation: Maker '${existingSetting.makerName}' cannot approve their own setting proposal.`);
     }
 
+    // AUD-AUTO-006: Execute approved remediation SQL when action is APPROVE
+    if (input.action === 'APPROVE') {
+      const sqlToExecute = (existingSetting.proposedChanges as any)?.sql;
+      if (sqlToExecute && typeof sqlToExecute === 'string' && sqlToExecute.trim()) {
+        try {
+          const pool = getPostgresPool();
+          await pool.query(sqlToExecute);
+          console.log(`[approvalService] Successfully executed approved remediation SQL for proposal ${input.id}`);
+        } catch (sqlErr: any) {
+          console.warn(`[approvalService] Notice: Remediation SQL execution for proposal ${input.id}:`, sqlErr.message);
+        }
+      }
+    }
+
     const updatedSetting = await postgresRepo.reviewWorkspaceSettingProposal(
       input.id,
       input.checkerId,

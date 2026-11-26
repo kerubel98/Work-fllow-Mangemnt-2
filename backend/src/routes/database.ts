@@ -2495,14 +2495,16 @@ databaseRouter.post('/ftp-staging/stage-file', async (req: Request, res: Respons
   }
 });
 
-// POST /api/db/ftp-staging/run-scheduled - Trigger scheduled ingestion event (type-based or all)
+// POST /api/db/ftp-staging/run-scheduled - Trigger scheduled ingestion event (AUD-AUTO-004)
 databaseRouter.post('/ftp-staging/run-scheduled', async (req: Request, res: Response) => {
   try {
     const { targetType, connectionId, forceAll } = req.body;
+    // Default to false for autonomous sweeps; allow true for explicit user/admin trigger
+    const shouldForceAll = forceAll === true;
     const result = await ftpSchedulerService.runScheduledFtpStaging({
       targetType,
       connectionId,
-      forceAll: forceAll !== undefined ? forceAll : true
+      forceAll: shouldForceAll
     });
     return res.json(result);
   } catch (err: any) {

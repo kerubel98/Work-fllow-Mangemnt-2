@@ -9,6 +9,7 @@
 
 import { repo } from '../store/repository.js';
 import { HashtagPreset } from '../types.js';
+import { getPostgresPool } from '../config/postgres.js';
 import {
   executeDatabaseDirectScan,
   executeExtractionStaging,
@@ -17,6 +18,47 @@ import {
 
 let schedulerInterval: NodeJS.Timeout | null = null;
 let isExecuting = false;
+
+/**
+ * Evaluates whether a 5-part cron expression is currently due.
+ * Supports: '*', exact integer, step 'star/step', and comma-separated values.
+ */
+export function isCronDue(cronExpr?: string, lastRunAt?: string | Date | null): boolean {
+  if (!cronExpr || cronExpr.trim() === '' || cronExpr.trim() === '* * * * *') return true;
+  if (lastRunAt) {
+    const lastRunTime = new Date(lastRunAt).getTime();
+    if (!isNaN(lastRunTime) && Date.now() - lastRunTime < 50000) {
+      return false; // Prevent re-triggering within the same minute
+    }
+  }
+
+  const parts = cronExpr.trim().split(/\s+/);
+  if (parts.length < 5) return true;
+
+  const now = new Date();
+  const [minRule, hourRule, domRule, monRule, dowRule] = parts;
+
+  const matchesPart = (rule: string, val: number): boolean => {
+    if (rule === '*') return true;
+    if (rule.startsWith('*/')) {
+      const step = parseInt(rule.slice(2), 10);
+      return !isNaN(step) && step > 0 ? (val % step === 0) : true;
+    }
+    if (rule.includes(',')) {
+      return rule.split(',').some(r => parseInt(r.trim(), 10) === val);
+    }
+    const num = parseInt(rule, 10);
+    return !isNaN(num) && num === val;
+  };
+
+  return (
+    matchesPart(minRule, now.getMinutes()) &&
+    matchesPart(hourRule, now.getHours()) &&
+    matchesPart(domRule, now.getDate()) &&
+    matchesPart(monRule, now.getMonth() + 1) &&
+    matchesPart(dowRule, now.getDay())
+  );
+}
 
 export interface ScheduledHashtagRunSummary {
   tag: string;
@@ -45,11 +87,33 @@ export const hashtagSchedulerService = {
     const startTime = Date.now();
     const results: ScheduledHashtagRunSummary[] = [];
 
+    // Rule 10: 64-Bit Cryptographic Advisory Locking for multi-instance cluster coordination
+    let pgClient: any = null;
+    let lockAcquired = false;
+    let lockKey: string | null = null;
+
     try {
+      try {
+        const pool = getPostgresPool();
+        pgClient = await pool.connect();
+        const keyRes = await pgClient.query(`SELECT ('x' || substr(md5('hashtag_scheduler_sweep'), 1, 16))::bit(64)::bigint AS lock_key;`);
+        lockKey = keyRes.rows[0].lock_key;
+        const lockRes = await pgClient.query(`SELECT pg_try_advisory_lock($1) AS locked;`, [lockKey]);
+        lockAcquired = lockRes.rows[0]?.locked === true;
+        if (!lockAcquired) {
+          console.log('[HashtagScheduler] Another cluster worker currently holds the 64-bit advisory lock. Skipping sweep.');
+          return { executedCount: 0, results: [], durationMs: 0 };
+        }
+      } catch (lockErr: any) {
+        console.warn('[HashtagScheduler] Notice: Advisory lock probe failed, falling back to process isolation:', lockErr.message);
+      }
+
       const allPresets = await repo.getHashtags();
-      const scheduledPresets = allPresets.filter(p =>
-        forceAll || p.executionTrigger === 'SCHEDULED_CRON'
-      );
+      const scheduledPresets = allPresets.filter(p => {
+        if (p.executionTrigger !== 'SCHEDULED_CRON') return false;
+        if (forceAll) return true;
+        return isCronDue((p as any).scheduleCron, (p as any).lastRunAt);
+      });
 
       for (const preset of scheduledPresets) {
         const type = preset.hashtagType || 'FILE_INGESTION';
@@ -73,7 +137,7 @@ export const hashtagSchedulerService = {
                     justification: `Autonomous cron scan passed. Triggering conditional action: ${action}`,
                     makerId: 'SYSTEM_SCHEDULER',
                     makerName: 'Autonomous Scheduler',
-                    teamId: 'default-team',
+                    teamId: (preset as any).teamId || 'default-team',
                     proposedChanges: {
                       action,
                       sql: preset.solutionTemplate || null,
@@ -192,6 +256,14 @@ export const hashtagSchedulerService = {
         }
       }
     } finally {
+      if (pgClient && lockAcquired && lockKey) {
+        try {
+          await pgClient.query(`SELECT pg_advisory_unlock($1);`, [lockKey]);
+        } catch {}
+      }
+      if (pgClient) {
+        try { pgClient.release(); } catch {}
+      }
       isExecuting = false;
     }
 
