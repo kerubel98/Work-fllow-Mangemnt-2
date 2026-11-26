@@ -10,8 +10,8 @@
 - **Frontend**: [`AutomationsView.tsx`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/frontend/src/components/automations/AutomationsView.tsx), [`HashtagOwnerDetailView.tsx`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/frontend/src/components/automations/HashtagOwnerDetailView.tsx), [`HashtagFileUploadModal.tsx`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/frontend/src/components/automations/HashtagFileUploadModal.tsx)
 - **Backend Schedulers & Daemons**: [`server.ts`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/backend/src/server.ts), [`hashtagSchedulerService.ts`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/backend/src/services/hashtagSchedulerService.ts), [`ftpSchedulerService.ts`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/backend/src/services/ftpSchedulerService.ts), [`ftpFileStagingService.ts`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/backend/src/services/ftpFileStagingService.ts), [`hashtagService.ts`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/backend/src/services/hashtagService.ts)
 - **Routes & Persistence**: [`routes/database.ts`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/backend/src/routes/database.ts), [`routes/misc.ts`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/backend/src/routes/misc.ts), [`approvalService.ts`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/backend/src/services/approvalService.ts), PostgreSQL Migrations (`026_universal_hashtag_engine.sql`, `046_ftp_ingested_files_storage.sql`)
-**Branch / Commit**: `feature/frontend-redesign` (`207716f`)  
-**Status**: `OPEN`  
+**Branch / Commit**: `feature/frontend-redesign` (`ca4bd5d`)  
+**Status**: `RESOLVED` · [Sign-Off Record](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/agent-handoffs/audit/sign-off/SIGN-OFF-AUTOMATION-PROCESS-2026-11-26.md)  
 
 ---
 
