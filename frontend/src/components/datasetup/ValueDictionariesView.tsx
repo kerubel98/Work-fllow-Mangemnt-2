@@ -548,8 +548,11 @@ export function ValueDictionariesView() {
       if (persisted && persisted.id) {
         created.id = persisted.id;
       }
-    } catch (err) {
-      console.warn('PostgreSQL creation fallback:', err);
+    } catch (err: any) {
+      console.error('PostgreSQL creation failed:', err);
+      setSaveError(err.message || 'Failed to create dictionary in database');
+      setTimeout(() => setSaveError(null), 5000);
+      return;
     }
 
     setDictionaries(prev => [created, ...prev]);

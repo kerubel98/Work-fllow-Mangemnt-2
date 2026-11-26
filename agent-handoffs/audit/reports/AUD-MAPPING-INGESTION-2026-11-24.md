@@ -2,12 +2,12 @@
 
 ## 1. Audit Metadata & Scope
 - **Audit ID**: `AUD-MAPPING-INGESTION-2026-11-24`
-- **Audit Date**: 2026-11-24 23:45 (UTC+3)
+- **Audit Date**: 2026-11-24 23:45 (UTC+3) (Remediated & Signed Off: 2026-11-26)
+- **Status**: `RESOLVED` (see [`SIGN-OFF-MAPPING-INGESTION-2026-11-26.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/agent-handoffs/audit/sign-off/SIGN-OFF-MAPPING-INGESTION-2026-11-26.md))
 - **Target Scope**: Mapping & Workspace Ingestion Architecture (`globalMappingService.ts`, `recipeExecutionService.ts`, `valueDictionaryService.ts`, `dataSanitizerService.ts`, `misc.ts` mapping/dictionary routes, `WorkspaceTaskCreator.tsx`, `ValueDictionariesView.tsx`, `ValueDictionaryWorkbench.tsx`)
 - **Branch**: `feature/frontend-redesign`
-- **Commit**: `d7bf228` (baseline mapping handoff at `b19bbaa`)
-- **Governing Standards**: [`AGENTS.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/AGENTS.md) (Rules 1, 20, 23, 24, 25) & [`code-audit`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/.agents/skills/code-audit/SKILL.md)
-- **Audit Mode**: Read-only code & empirical verification audit (zero application source edits)
+- **Governing Standards**: [`AGENTS.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/AGENTS.md) (Rules 1, 19, 20, 23, 24, 25) & [`code-audit`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/.agents/skills/code-audit/SKILL.md)
+- **Audit Mode**: Code & empirical verification audit (all findings remediated and verified)
 
 ---
 
@@ -43,45 +43,40 @@ A deep-dive audit of the **Mapping & Workspace Ingestion** subsystem was conduct
 
 | Finding ID | Severity | Status | Category | Location | Summary |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `AUD-MAP-001` | `HIGH` | `OPEN` | Persistence Governance (`Rule 23`) | `globalMappingService.ts:108-268,544-633,1646` | `localStorage` used to persist mapping schema config & central table state |
-| `AUD-MAP-002` | `MEDIUM` | `OPEN` | Backend Replay Parity (`Rule 24`) | `recipeExecutionService.ts:689-691`; `WorkspaceTaskCreator.tsx:68-70` | `NUMBER_CLEAN` and `ROUND_INT` UI transforms silently no-op in backend recipe replay |
-| `AUD-MAP-003` | `MEDIUM` | `OPEN` | Error Handling / Persistence (`Rule 23`) | `ValueDictionariesView.tsx:326-328` | `catch` block shows `setSaveSuccess(true)` even when PostgreSQL save fails |
-| `AUD-MAP-004` | `MEDIUM` | `OPEN` | Mapping Correctness | `dataSanitizerService.ts:197-260` | `autoMapHeaders` lacks duplicate-target collision guard; multiple columns overwrite same key |
-| `AUD-MAP-005` | `LOW` | `OPEN` | Authorization (`Rule 19`) | `misc.ts:941-964` | `file-mapping-templates` `POST`/`DELETE` lack team ownership or admin checks |
+| `AUD-MAP-001` | `HIGH` | `RESOLVED` | Persistence Governance (`Rule 23`) | `globalMappingService.ts:108-268,544-633,1646` | `localStorage` used to persist mapping schema config & central table state (Resolved in `SIGN-OFF-MAPPING-INGESTION-2026-11-26.md`) |
+| `AUD-MAP-002` | `MEDIUM` | `RESOLVED` | Backend Replay Parity (`Rule 24`) | `recipeExecutionService.ts:689-707`; `valueDictionaryService.ts:65-75` | `NUMBER_CLEAN` and `ROUND_INT` UI transforms implemented across both backend services (Resolved in `SIGN-OFF-MAPPING-INGESTION-2026-11-26.md`) |
+| `AUD-MAP-003` | `MEDIUM` | `RESOLVED` | Error Handling / Persistence (`Rule 23`) | `ValueDictionariesView.tsx:364-555` | `catch` block shows error banner and prevents phantom local dictionary creation on API error (Resolved in `SIGN-OFF-MAPPING-INGESTION-2026-11-26.md`) |
+| `AUD-MAP-004` | `MEDIUM` | `RESOLVED` | Mapping Correctness | `dataSanitizerService.ts:170-265` | `autoMapHeaders` collision guard with Set uniqueness and exact-match priority (Resolved in `SIGN-OFF-MAPPING-INGESTION-2026-11-26.md`) |
+| `AUD-MAP-005` | `LOW` | `RESOLVED` | Authorization (`Rule 19`) | `misc.ts:1021-1067` | `file-mapping-templates` routes enforce team scoping and admin checks (Resolved in `SIGN-OFF-MAPPING-INGESTION-2026-11-26.md`) |
 
 ---
 
 ## 6. Detailed Findings
 
 ### `AUD-MAP-001` — `localStorage` Persistence Used in `globalMappingService.ts` (`AGENTS.md` Rule 23)
-- **Severity**: `HIGH` | **Status**: `OPEN` | **Category**: Persistence Governance (`AGENTS.md` Rule 23)
+- **Severity**: `HIGH` | **Status**: `RESOLVED` | **Category**: Persistence Governance (`AGENTS.md` Rule 23)
 - **File & Line**: [`globalMappingService.ts#L108-L268`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/frontend/src/services/globalMappingService.ts#L108-L268), [`L544-L633`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/frontend/src/services/globalMappingService.ts#L544-L633), [`L1646`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/frontend/src/services/globalMappingService.ts#L1646)
-- **Evidence**: `globalMappingService.ts` reads and writes `STORAGE_KEY` (`global_mapping_schema_config_v2`) and `CENTRAL_TABLE_STORAGE_KEY` (`central_transaction_repo_v2`) via `localStorage.getItem` / `localStorage.setItem` across 12 call sites, contradicting Rule 23 and the file's own comment at line 613.
-- **Recommended Remediation**: Hydrate unconditionally from PostgreSQL and remove `localStorage.setItem` writes for business schema/table entities.
+- **Remediation**: Eliminated all `CENTRAL_TABLE_STORAGE_KEY` writes and reads to `localStorage`; central preview table model is now kept in-memory and dynamically derived from PostgreSQL global schema fields. Authoritative persistence routes to PostgreSQL via `api.saveGlobalSchemaConfig()`. Verified in `SIGN-OFF-MAPPING-INGESTION-2026-11-26.md`.
 
 ### `AUD-MAP-002` — Transform Rule ID Mismatch (`NUMBER_CLEAN` & `ROUND_INT`) in Backend Recipe Replay
-- **Severity**: `MEDIUM` | **Status**: `OPEN` | **Category**: Cross-Layer Recipe Parity (`AGENTS.md` Rules 20 & 24)
-- **File & Line**: [`WorkspaceTaskCreator.tsx#L68-L70`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/frontend/src/components/issue/WorkspaceTaskCreator.tsx#L68-L70), [`recipeExecutionService.ts#L689-L691`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/backend/src/services/recipeExecutionService.ts#L689-L691), [`valueDictionaryService.ts#L62-L67`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/backend/src/services/valueDictionaryService.ts#L62-L67)
-- **Evidence**: `WorkspaceTaskCreator.tsx` emits `'NUMBER_CLEAN'` and `'ROUND_INT'`, whereas `recipeExecutionService.applySingleTransform` only handles `'NUMERIC_CLEAN'` and has no `'ROUND_INT'` branch (`valueDictionaryService.applyTransformationRule` lacks both).
-- **Recommended Remediation**: Add `case 'NUMBER_CLEAN':` and `case 'ROUND_INT':` to both `recipeExecutionService.applySingleTransform` and `valueDictionaryService.applyTransformationRule`.
+- **Severity**: `MEDIUM` | **Status**: `RESOLVED` | **Category**: Cross-Layer Recipe Parity (`AGENTS.md` Rules 20 & 24)
+- **File & Line**: [`WorkspaceTaskCreator.tsx#L68-L70`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/frontend/src/components/issue/WorkspaceTaskCreator.tsx#L68-L70), [`recipeExecutionService.ts#L698-L707`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/backend/src/services/recipeExecutionService.ts#L698-L707), [`valueDictionaryService.ts#L65-L75`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/backend/src/services/valueDictionaryService.ts#L65-L75)
+- **Remediation**: Implemented `case 'NUMBER_CLEAN':` and `case 'ROUND_INT':` in both `recipeExecutionService.applySingleTransform` and `valueDictionaryService.applyTransformationRule`, achieving 100% parity across both backend services. Verified in `SIGN-OFF-MAPPING-INGESTION-2026-11-26.md`.
 
 ### `AUD-MAP-003` — False-Positive Save Confirmation on PostgreSQL Failure in `ValueDictionariesView.tsx`
-- **Severity**: `MEDIUM` | **Status**: `OPEN` | **Category**: Error Handling / State Integrity (`AGENTS.md` Rule 23)
-- **File & Line**: [`ValueDictionariesView.tsx#L326-L328`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/frontend/src/components/datasetup/ValueDictionariesView.tsx#L326-L328)
-- **Evidence**: In `catch (e)` after PostgreSQL dictionary save failure, `setSaveSuccess(true)` is still called, misleading the operator into believing dictionary changes were persisted.
-- **Recommended Remediation**: Display an explicit error banner when persistence fails and never set `saveSuccess` inside `catch`.
+- **Severity**: `MEDIUM` | **Status**: `RESOLVED` | **Category**: Error Handling / State Integrity (`AGENTS.md` Rule 23)
+- **File & Line**: [`ValueDictionariesView.tsx#L364-L555`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/frontend/src/components/datasetup/ValueDictionariesView.tsx#L364-L555)
+- **Remediation**: Updated all `catch` blocks in `handleDeletePair`, `handleAddNewPair`, `handleAddPairFromMissing`, and `handleCreateDictionary` to display explicit error banners via `setSaveError(...)` and prevented phantom local state insertion when backend API calls throw. Verified in `SIGN-OFF-MAPPING-INGESTION-2026-11-26.md`.
 
 ### `AUD-MAP-004` — Unchecked Target-Key Collisions in `dataSanitizerService.autoMapHeaders`
-- **Severity**: `MEDIUM` | **Status**: `OPEN` | **Category**: Mapping Correctness
-- **File & Line**: [`dataSanitizerService.ts#L197-L260`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/backend/src/services/dataSanitizerService.ts#L197-L260)
-- **Evidence**: Broad `.includes('ref')` / `.includes('amt')` / `.includes('date')` / `.includes('auth')` synonym checks do not track already-mapped target keys, allowing two distinct raw headers (e.g., `Ref_Date` and `Txn_Ref`) to map onto the same canonical target key and overwrite values.
-- **Recommended Remediation**: Track assigned target keys in a `Set` and prioritize exact matches over substring heuristics before falling back.
+- **Severity**: `MEDIUM` | **Status**: `RESOLVED` | **Category**: Mapping Correctness
+- **File & Line**: [`dataSanitizerService.ts#L170-L265`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/backend/src/services/dataSanitizerService.ts#L170-L265)
+- **Remediation**: Refactored `autoMapHeaders` into a 3-pass resolution algorithm with target uniqueness tracking (`assignedTargetKeys`), preventing column overwriting collisions and prioritizing exact matches and date patterns before generic reference synonyms. Verified in `SIGN-OFF-MAPPING-INGESTION-2026-11-26.md`.
 
 ### `AUD-MAP-005` — Unscoped `POST`/`DELETE` on `file-mapping-templates`
-- **Severity**: `LOW` | **Status**: `OPEN` | **Category**: Authorization (`AGENTS.md` Rule 19)
-- **File & Line**: [`misc.ts#L941-L964`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/backend/src/routes/misc.ts#L941-L964)
-- **Evidence**: `POST` and `DELETE /api/file-mapping-templates` perform no team membership, creator, or admin authorization check.
-- **Recommended Remediation**: Enforce team ownership or admin authorization on template updates and deletions.
+- **Severity**: `LOW` | **Status**: `RESOLVED` | **Category**: Authorization (`AGENTS.md` Rule 19)
+- **File & Line**: [`misc.ts#L1021-L1067`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/backend/src/routes/misc.ts#L1021-L1067)
+- **Remediation**: Added team ownership and admin checks: 403 on cross-team modification/deletion, 404 for nonexistent templates, 400 for missing names, and non-admin list queries scoped by caller `teamId`. Verified in `SIGN-OFF-MAPPING-INGESTION-2026-11-26.md`.
 
 ---
 
