@@ -176,8 +176,8 @@ export const investigationOrchestratorService = {
       return keys.length > 0 ? keys : [`ROW-${(idx ?? 0) + 1}`];
     };
 
-    // 0. Check task_workflow_executions lookup table to prevent redundant execution
-    if (sourceId && !forceRerun) {
+    // 0. Check task_workflow_executions lookup table to prevent redundant execution (skip on dryRun or forceRerun)
+    if (sourceId && !forceRerun && !envelope.options?.dryRun) {
       try {
         const existingExec = await repo.getTaskWorkflowExecution(sourceId, workflowId);
         if (existingExec && existingExec.status === 'COMPLETED') {
@@ -1044,7 +1044,7 @@ export const investigationOrchestratorService = {
     }
 
     // Record execution in task_workflow_executions lookup table and sync task_dataset_transactions in PostgreSQL
-    if (sourceId) {
+    if (sourceId && !envelope.options?.dryRun) {
       try {
         const sanitizeTargetRecord = (tr: any) => {
           if (!tr || typeof tr !== 'object') return tr;
@@ -1234,8 +1234,8 @@ export const investigationOrchestratorService = {
       );
     }
 
-    // 0. Check task_workflow_executions lookup table to prevent redundant execution
-    if (sourceId && !forceRerun) {
+    // 0. Check task_workflow_executions lookup table to prevent redundant execution (skip on dryRun or forceRerun)
+    if (sourceId && !forceRerun && !envelope.options?.dryRun) {
       try {
         const existingExec = await repo.getTaskWorkflowExecution(sourceId, workflowId);
         if (existingExec && existingExec.status === 'COMPLETED') {
@@ -1406,7 +1406,7 @@ export const investigationOrchestratorService = {
       durationMs: Date.now() - startTime
     });
 
-    if (sourceId) {
+    if (sourceId && !envelope.options?.dryRun) {
       try {
         const resultMap: Record<string, any> = {};
         for (const rec of evaluatedRecords) {

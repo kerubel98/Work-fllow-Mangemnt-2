@@ -31,6 +31,16 @@ escalationsRouter.get('/agreements/:id', async (req: Request, res: Response) => 
     if (!agreement) {
       return res.status(404).json({ error: 'Escalation agreement not found' });
     }
+
+    const requestingUser = (req as any).user;
+    if (requestingUser && requestingUser.role !== 'admin') {
+      if (requestingUser.teamId &&
+          requestingUser.teamId !== agreement.escalatingTeamId &&
+          requestingUser.teamId !== agreement.receivingTeamId) {
+        return res.status(403).json({ error: 'Access denied: Agreement belongs to other teams' });
+      }
+    }
+
     return res.json(agreement);
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
@@ -46,7 +56,17 @@ escalationsRouter.post('/agreements', async (req: Request, res: Response) => {
       raisedByUserId, raisedByUsername, kpis, payloadOptions
     } = req.body;
 
-    if (!issueId || !escalatingTeamId || !receivingTeamId || !reason || !raisedByUserId) {
+    const requestingUser = (req as any).user;
+    if (requestingUser && requestingUser.role !== 'admin') {
+      if (requestingUser.teamId && escalatingTeamId && requestingUser.teamId !== escalatingTeamId) {
+        return res.status(403).json({ error: `Forbidden: Cannot create escalation for team '${escalatingTeamId}' from team '${requestingUser.teamId}'` });
+      }
+    }
+
+    const effectiveRaisedByUserId = requestingUser?.id || raisedByUserId;
+    const effectiveRaisedByUsername = requestingUser?.username || requestingUser?.name || raisedByUsername || 'Operator';
+
+    if (!issueId || !escalatingTeamId || !receivingTeamId || !reason || !effectiveRaisedByUserId) {
       return res.status(400).json({ error: 'issueId, escalatingTeamId, receivingTeamId, reason, and raisedByUserId are required' });
     }
 
@@ -67,8 +87,8 @@ escalationsRouter.post('/agreements', async (req: Request, res: Response) => {
     const initialLedger: EscalationLedgerEvent[] = [
       {
         id: `ledg-${Date.now()}-1`,
-        event: `Raised by @${raisedByUsername || 'operator'}`,
-        actor: `@${raisedByUsername || 'operator'}`,
+        event: `Raised by @${effectiveRaisedByUsername}`,
+        actor: `@${effectiveRaisedByUsername}`,
         timestamp: timeStr,
         type: 'raised',
         details: reason
@@ -92,8 +112,8 @@ escalationsRouter.post('/agreements', async (req: Request, res: Response) => {
       workflowName,
       flaggedCount: flaggedCount || 24,
       totalCount: totalCount || 500,
-      raisedByUserId,
-      raisedByUsername: raisedByUsername || 'Operator',
+      raisedByUserId: effectiveRaisedByUserId,
+      raisedByUsername: effectiveRaisedByUsername,
       kpis: defaultKpis,
       payloadOptions: payloadOptions || { sendSummary: true, sendWorkflow: true, sendFlaggedRows: true, sendChatHistory: false },
       ledger: initialLedger
@@ -121,6 +141,33 @@ escalationsRouter.post('/agreements/:id/sign-escalating', async (req: Request, r
     const agreement = await postgresRepo.getEscalationAgreementById(id);
     if (!agreement) return res.status(404).json({ error: 'Agreement not found' });
 
+    // 1. State transition guard
+    if (agreement.status !== 'AWAITING_ESCALATING_SIGNATURE') {
+      return res.status(400).json({
+        error: `Invalid state transition: Cannot sign agreement in status '${agreement.status}'. Expected 'AWAITING_ESCALATING_SIGNATURE'.`
+      });
+    }
+
+    // 2. Team membership & actor verification
+    const requestingUser = (req as any).user;
+    if (requestingUser && requestingUser.role !== 'admin') {
+      if (requestingUser.teamId && agreement.escalatingTeamId && requestingUser.teamId !== agreement.escalatingTeamId) {
+        return res.status(403).json({
+          error: `Forbidden: Only members of the escalating team ('${agreement.escalatingTeamId}') can sign this agreement.`
+        });
+      }
+    }
+
+    const effectiveLeadId = requestingUser?.id || leadId;
+    const effectiveSignature = signature || requestingUser?.username || requestingUser?.name || 'lead';
+
+    // 3. Anti-Self-Approval guard: Escalating lead cannot assign themselves as assigned checker
+    if (checkerId && effectiveLeadId && checkerId === effectiveLeadId) {
+      return res.status(400).json({
+        error: 'Anti-Self-Approval violation: Escalating lead cannot assign themselves as assigned checker.'
+      });
+    }
+
     const now = new Date();
     const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
@@ -128,8 +175,8 @@ escalationsRouter.post('/agreements/:id/sign-escalating', async (req: Request, r
       ...agreement.ledger,
       {
         id: `ledg-${Date.now()}-2`,
-        event: `Signed by @${signature || 'lead'}, checker @${checkerName || 'checker'} assigned`,
-        actor: `@${signature || 'lead'}`,
+        event: `Signed by @${effectiveSignature}, checker @${checkerName || 'checker'} assigned`,
+        actor: `@${effectiveSignature}`,
         timestamp: timeStr,
         type: 'signed',
         details: `Assigned checker: ${checkerName || checkerId}`
@@ -138,8 +185,8 @@ escalationsRouter.post('/agreements/:id/sign-escalating', async (req: Request, r
 
     const updated = await postgresRepo.updateEscalationAgreement(id, {
       status: 'AWAITING_RECEIVING_ACCEPTANCE',
-      escalatingLeadId: leadId,
-      escalatingLeadSignature: signature,
+      escalatingLeadId: effectiveLeadId,
+      escalatingLeadSignature: effectiveSignature,
       escalatingSignedAt: now.toISOString(),
       assignedCheckerId: checkerId,
       assignedCheckerName: checkerName,
@@ -161,6 +208,26 @@ escalationsRouter.post('/agreements/:id/accept-receiving', async (req: Request, 
     const agreement = await postgresRepo.getEscalationAgreementById(id);
     if (!agreement) return res.status(404).json({ error: 'Agreement not found' });
 
+    // 1. State transition guard
+    if (agreement.status !== 'AWAITING_RECEIVING_ACCEPTANCE') {
+      return res.status(400).json({
+        error: `Invalid state transition: Cannot accept agreement in status '${agreement.status}'. Expected 'AWAITING_RECEIVING_ACCEPTANCE'.`
+      });
+    }
+
+    // 2. Team membership & actor verification
+    const requestingUser = (req as any).user;
+    if (requestingUser && requestingUser.role !== 'admin') {
+      if (requestingUser.teamId && agreement.receivingTeamId && requestingUser.teamId !== agreement.receivingTeamId) {
+        return res.status(403).json({
+          error: `Forbidden: Only members of the receiving team ('${agreement.receivingTeamId}') can accept this agreement.`
+        });
+      }
+    }
+
+    const effectiveLeadId = requestingUser?.id || leadId;
+    const effectiveSignature = signature || requestingUser?.username || requestingUser?.name || 'lead';
+
     const now = new Date();
     const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
@@ -168,8 +235,8 @@ escalationsRouter.post('/agreements/:id/accept-receiving', async (req: Request, 
       ...agreement.ledger,
       {
         id: `ledg-${Date.now()}-3`,
-        event: `Accepted by @${signature || 'lead'}, technician @${technicianName || 'tech'} assigned`,
-        actor: `@${signature || 'lead'}`,
+        event: `Accepted by @${effectiveSignature}, technician @${technicianName || 'tech'} assigned`,
+        actor: `@${effectiveSignature}`,
         timestamp: timeStr,
         type: 'accepted',
         details: `Assigned technician: ${technicianName || technicianId}`
@@ -179,8 +246,8 @@ escalationsRouter.post('/agreements/:id/accept-receiving', async (req: Request, 
     // Clock starts strictly upon acceptance (Governance Rule)
     const updated = await postgresRepo.updateEscalationAgreement(id, {
       status: 'ACTIVE',
-      receivingLeadId: leadId,
-      receivingLeadSignature: signature,
+      receivingLeadId: effectiveLeadId,
+      receivingLeadSignature: effectiveSignature,
       receivingAcceptedAt: now.toISOString(),
       assignedTechnicianId: technicianId,
       assignedTechnicianName: technicianName,
@@ -203,6 +270,25 @@ escalationsRouter.post('/agreements/:id/decline-receiving', async (req: Request,
     const agreement = await postgresRepo.getEscalationAgreementById(id);
     if (!agreement) return res.status(404).json({ error: 'Agreement not found' });
 
+    // 1. State transition guard
+    if (agreement.status !== 'AWAITING_RECEIVING_ACCEPTANCE') {
+      return res.status(400).json({
+        error: `Invalid state transition: Cannot decline agreement in status '${agreement.status}'. Expected 'AWAITING_RECEIVING_ACCEPTANCE'.`
+      });
+    }
+
+    // 2. Team membership & actor verification
+    const requestingUser = (req as any).user;
+    if (requestingUser && requestingUser.role !== 'admin') {
+      if (requestingUser.teamId && agreement.receivingTeamId && requestingUser.teamId !== agreement.receivingTeamId) {
+        return res.status(403).json({
+          error: `Forbidden: Only members of the receiving team ('${agreement.receivingTeamId}') can decline this agreement.`
+        });
+      }
+    }
+
+    const effectiveLeadId = requestingUser?.id || leadId || 'lead';
+
     const now = new Date();
     const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
@@ -211,7 +297,7 @@ escalationsRouter.post('/agreements/:id/decline-receiving', async (req: Request,
       {
         id: `ledg-${Date.now()}-decl`,
         event: `Declined by receiving lead: ${reason || 'Capacity constraint'}`,
-        actor: leadId || 'lead',
+        actor: effectiveLeadId,
         timestamp: timeStr,
         type: 'closed',
         details: reason
@@ -272,6 +358,27 @@ escalationsRouter.patch('/agreements/:id/close', async (req: Request, res: Respo
     const agreement = await postgresRepo.getEscalationAgreementById(id);
     if (!agreement) return res.status(404).json({ error: 'Agreement not found' });
 
+    // 1. State transition guard
+    if (agreement.status === 'CLOSED' || agreement.status === 'DECLINED') {
+      return res.status(400).json({
+        error: `Cannot close agreement that is already '${agreement.status}'.`
+      });
+    }
+
+    // 2. Team membership & actor verification
+    const requestingUser = (req as any).user;
+    if (requestingUser && requestingUser.role !== 'admin') {
+      if (requestingUser.teamId &&
+          requestingUser.teamId !== agreement.escalatingTeamId &&
+          requestingUser.teamId !== agreement.receivingTeamId) {
+        return res.status(403).json({
+          error: 'Forbidden: Only members of the escalating or receiving team can close this agreement.'
+        });
+      }
+    }
+
+    const effectiveClosedBy = requestingUser?.username || requestingUser?.name || closedBy || 'lead';
+
     const now = new Date();
     const timeStr = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
@@ -279,8 +386,8 @@ escalationsRouter.patch('/agreements/:id/close', async (req: Request, res: Respo
       ...agreement.ledger,
       {
         id: `ledg-${Date.now()}-close`,
-        event: `Case closed under agreement by ${closedBy || 'lead'}`,
-        actor: closedBy || 'lead',
+        event: `Case closed under agreement by ${effectiveClosedBy}`,
+        actor: effectiveClosedBy,
         timestamp: timeStr,
         type: 'closed'
       }

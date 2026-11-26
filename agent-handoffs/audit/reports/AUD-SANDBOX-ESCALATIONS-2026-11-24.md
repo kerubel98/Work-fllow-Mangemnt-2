@@ -6,6 +6,7 @@
 - **Target Scope**: Query Sandbox Execution (`routes/sandbox.ts`, `sandboxExecutionService.ts`) and Bilateral Escalation Agreements (`routes/escalations.ts`)
 - **Branch**: `feature/frontend-redesign`
 - **Commit**: `d7bf228`
+- **Status**: `RESOLVED` (Signed off in `SIGN-OFF-SANDBOX-ESCALATIONS-2026-11-26.md`)
 - **Governing Standards**: [`AGENTS.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/AGENTS.md) (Rules 1, 7, 12, 20) & [`code-audit`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/.agents/skills/code-audit/SKILL.md)
 - **Audit Mode**: Read-only code & empirical verification audit (zero application source edits)
 
@@ -38,21 +39,21 @@ A scoped audit was conducted on the Query Sandbox simulation engine and Bilatera
 
 | Finding ID | Severity | Status | Category | Location | Summary |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `AUD-SBX-001` | `HIGH` | `OPEN` | State Machine / AuthZ (`Rule 7`) | `escalations.ts:116-205` | Escalation `sign`/`accept`/`decline` skip status transition guards, JWT actor checks, and team checks |
-| `AUD-SBX-002` | `MEDIUM` | `OPEN` | Persistence / Dry-Run Isolation | `sandboxExecutionService.ts:39,60-74` | Sandbox history is in-memory only; `dryRun: true` still writes `task_workflow_executions` rows |
+| `AUD-SBX-001` | `HIGH` | `RESOLVED` | State Machine / AuthZ (`Rule 7`) | `escalations.ts:116-205` | Escalation `sign`/`accept`/`decline` skip status transition guards, JWT actor checks, and team checks (Resolved in `SIGN-OFF-SANDBOX-ESCALATIONS-2026-11-26.md`) |
+| `AUD-SBX-002` | `MEDIUM` | `RESOLVED` | Persistence / Dry-Run Isolation | `sandboxExecutionService.ts:39,60-74` | Sandbox history is in-memory only; `dryRun: true` still writes `task_workflow_executions` rows (Resolved in `SIGN-OFF-SANDBOX-ESCALATIONS-2026-11-26.md`) |
 
 ---
 
 ## 6. Detailed Findings
 
 ### `AUD-SBX-001` — Unchecked State Transitions & Actor Spoofing in `escalations.ts`
-- **Severity**: `HIGH` | **Status**: `OPEN` | **Category**: State Machine & Authorization
+- **Severity**: `HIGH` | **Status**: `RESOLVED` | **Category**: State Machine & Authorization
 - **File & Line**: [`escalations.ts#L116-L205`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/backend/src/routes/escalations.ts#L116-L205)
 - **Evidence**: `sign-escalating`, `accept-receiving`, and `decline-receiving` do not verify `agreement.status` before mutating state, trust `req.body.leadId` over `req.user.id`, and do not validate team membership against `escalatingTeamId` / `receivingTeamId`.
 - **Recommended Remediation**: Enforce valid state transition preconditions (`AWAITING_ESCALATING_SIGNATURE` → `AWAITING_RECEIVING_ACCEPTANCE` → `ACTIVE`), derive `leadId` from `req.user.id`, and verify team membership.
 
 ### `AUD-SBX-002` — In-Memory Sandbox History & `dryRun` Persistence Leakage
-- **Severity**: `MEDIUM` | **Status**: `OPEN` | **Category**: Persistence / Dry-Run Isolation
+- **Severity**: `MEDIUM` | **Status**: `RESOLVED` | **Category**: Persistence / Dry-Run Isolation
 - **File & Line**: [`sandboxExecutionService.ts#L39`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/backend/src/services/sandboxExecutionService.ts#L39), [`L60-L74`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/backend/src/services/sandboxExecutionService.ts#L60-L74)
 - **Evidence**: `sandboxRunsHistory` is stored in a volatile `Map`, while `simulateWorkflow` passes `sourceId: 'sandbox-' + Date.now()` to `executeUniversalWorkflow`, causing `executeViaNewPipeline` to persist `task_workflow_executions` records despite `dryRun: true`.
 - **Recommended Remediation**: Respect `envelope.options?.dryRun` in `executeViaNewPipeline` to skip `recordTaskWorkflowExecution` / `updateTaskDatasetValidationStatus`, and persist sandbox audit logs cleanly if needed.

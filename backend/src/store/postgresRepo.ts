@@ -6333,6 +6333,57 @@ async updateDatabaseConnection(id: string, updates: Partial<DatabaseConnection>)
       failedRuns: Number(r.failed_runs || 0),
       dlqPendingCount: Number(d.dlq_count || 0)
     };
+  },
+
+  async recordSandboxSimulationRun(evidence: any): Promise<void> {
+    try {
+      const pool = getPostgresPool();
+      await pool.query(
+        `INSERT INTO sandbox_simulation_runs (
+          id, workflow_id, executed_by, total_records, passed_count, failed_count,
+          duration_ms, is_diagnostic_only, summary, executed_at
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())
+        ON CONFLICT (id) DO NOTHING;`,
+        [
+          evidence.id,
+          evidence.workflowId,
+          evidence.executedBy || 'anonymous_tester',
+          evidence.totalRecords || 0,
+          evidence.passedCount || 0,
+          evidence.failedCount || 0,
+          evidence.durationMs || 0,
+          evidence.isDiagnosticOnly !== false,
+          JSON.stringify(evidence.summary || {})
+        ]
+      );
+    } catch (err: any) {
+      console.warn(`[postgresRepo] recordSandboxSimulationRun notice: ${err.message}`);
+    }
+  },
+
+  async getSandboxSimulationRuns(workflowId: string): Promise<any[]> {
+    try {
+      const pool = getPostgresPool();
+      const { rows } = await pool.query(
+        `SELECT * FROM sandbox_simulation_runs WHERE workflow_id = $1 ORDER BY executed_at DESC LIMIT 20;`,
+        [workflowId]
+      );
+      return rows.map(r => ({
+        id: r.id,
+        workflowId: r.workflow_id,
+        executedBy: r.executed_by,
+        totalRecords: r.total_records,
+        passedCount: r.passed_count,
+        failedCount: r.failed_count,
+        durationMs: r.duration_ms,
+        executedAt: r.executed_at?.toISOString ? r.executed_at.toISOString() : r.executed_at,
+        isDiagnosticOnly: true,
+        summary: parseJson(r.summary, { passRatePercent: 0, stagesEvaluated: 1, dryRunConfirmed: true })
+      }));
+    } catch (err: any) {
+      console.warn(`[postgresRepo] getSandboxSimulationRuns notice: ${err.message}`);
+      return [];
+    }
   }
 
 };

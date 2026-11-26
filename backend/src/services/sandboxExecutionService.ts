@@ -5,6 +5,7 @@
 
 import { investigationOrchestratorService } from './investigationOrchestratorService.js';
 import { ValidationPayloadEnvelope, WorkflowJobResult } from './workflowEngineSingleton.js';
+import { postgresRepo } from '../store/postgresRepo.js';
 
 export interface SandboxSimulateInput {
   workflowId: string;
@@ -104,7 +105,13 @@ export const sandboxExecutionService = {
       }
     };
 
-    // Store in history
+    // Persist to PostgreSQL and update in-memory cache
+    try {
+      await postgresRepo.recordSandboxSimulationRun(evidence);
+    } catch (persistErr: any) {
+      console.warn(`[sandboxExecutionService] Simulation persistence warning: ${persistErr.message}`);
+    }
+
     const existing = sandboxRunsHistory.get(input.workflowId) || [];
     sandboxRunsHistory.set(input.workflowId, [evidence, ...existing.slice(0, 20)]);
 
@@ -117,7 +124,15 @@ export const sandboxExecutionService = {
   /**
    * Retrieves sandbox execution history for a workflow.
    */
-  getSandboxHistory(workflowId: string): SandboxExecutionEvidence[] {
+  async getSandboxHistory(workflowId: string): Promise<SandboxExecutionEvidence[]> {
+    try {
+      const dbRuns = await postgresRepo.getSandboxSimulationRuns(workflowId);
+      if (dbRuns && dbRuns.length > 0) {
+        return dbRuns;
+      }
+    } catch (err: any) {
+      console.warn(`[sandboxExecutionService] DB history retrieval notice: ${err.message}`);
+    }
     return sandboxRunsHistory.get(workflowId) || [];
   }
 };

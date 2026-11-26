@@ -36,7 +36,7 @@ sandboxRouter.post('/simulate', async (req: Request, res: Response) => {
 sandboxRouter.get('/history/:workflowId', async (req: Request, res: Response) => {
   try {
     const { workflowId } = req.params;
-    const history = sandboxExecutionService.getSandboxHistory(workflowId);
+    const history = await sandboxExecutionService.getSandboxHistory(workflowId);
     return res.json(history);
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
