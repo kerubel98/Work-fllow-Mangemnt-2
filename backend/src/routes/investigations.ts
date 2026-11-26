@@ -357,6 +357,21 @@ investigationsRouter.post('/transactions/:key/remove-from-task', async (req: Req
 investigationsRouter.delete('/:taskId/workflow-executions', async (req: Request, res: Response) => {
   try {
     const { taskId } = req.params;
+    const task = await repo.getIssueById(taskId);
+    if (!task) {
+      return res.status(404).json({ error: `Task '${taskId}' not found.` });
+    }
+
+    // AUD-INV-002: Enforce admin role or team/creator task ownership
+    const user = (req as any).user;
+    if (user) {
+      const isAdmin = user.role?.toLowerCase() === 'admin';
+      const isOwner = !task.teamId || task.teamId === user.teamId || task.creatorId === user.id;
+      if (!isAdmin && !isOwner) {
+        return res.status(403).json({ error: 'Forbidden: You do not have permission to clear validation history for this task.' });
+      }
+    }
+
     const deleted = await repo.clearTaskWorkflowExecutions(taskId);
     const { eventService } = await import('../services/events.js');
     eventService.broadcastEvent('investigation:executions_cleared', { taskId, deleted });
@@ -372,9 +387,15 @@ investigationsRouter.delete('/:taskId/workflow-executions', async (req: Request,
   }
 });
 
-// DELETE /api/investigations/executions/clear-all - Wipe ALL validation run data (global reset)
-investigationsRouter.delete('/executions/clear-all', async (_req: Request, res: Response) => {
+// DELETE /api/investigations/executions/clear-all - Wipe ALL validation run data (global reset - Admin only)
+investigationsRouter.delete('/executions/clear-all', async (req: Request, res: Response) => {
   try {
+    // AUD-INV-002: Require administrative role for global data purge
+    const user = (req as any).user;
+    if (!user || user.role?.toLowerCase() !== 'admin') {
+      return res.status(403).json({ error: 'Forbidden: Global execution purge requires administrative privileges.' });
+    }
+
     const result = await repo.clearAllValidationExecutions();
     const { eventService } = await import('../services/events.js');
     eventService.broadcastEvent('investigation:all_cleared', result);

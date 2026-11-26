@@ -6,8 +6,8 @@ Central ledger of all audit scopes, findings, remediation statuses, and sign-off
 
 ## Overall Audit Status
 - **Active Audits**: 16 (`AUD-INVESTIGATION-CORE-2026-11-24`, `AUD-INTAKE-STAGING-2026-11-24`, `AUD-MAPPING-INGESTION-2026-11-24`, `AUD-DB-GOVERNANCE-APPROVALS-2026-11-24`, `AUD-AUTH-OAUTH-2026-11-24`, `AUD-HASHTAG-SCHEDULER-2026-11-24`, `AUD-SANDBOX-ESCALATIONS-2026-11-24`, `AUD-CASES-PAGE-2026-11-25`, `AUD-TEAM-COLLAB-2026-11-25`, `AUD-WORKFLOW-STUDIO-2026-11-25`, `AUD-AUTOMATION-E2E-2026-11-25`, `AUD-GOV-MISALIGN-2026-11-25`, `AUD-EXTDB-AI-METRICS-2026-11-25`, `AUD-DATASETUP-DESIGN-2026-11-25`, `AUD-INGESTION-TRANSFORMS-2026-11-25`, `AUD-INGESTION-WORKBENCH-REASSESSMENT-2026-11-25`)
-- **Open Findings**: 56 (**11 CRITICAL**, **21 HIGH**, **20 MEDIUM**, **4 LOW**)
-- **Resolved Findings**: 14 (`AUD-MAP-002`, `AUD-ING-001`, `AUD-ING-002`, `AUD-ING-003`, `AUD-ING-004`, `AUD-ING-005`, `AUD-ING-006`, `AUD-WFS-001`, `AUD-WFS-002`, `AUD-WFS-003`, `AUD-WFS-004`, `AUD-WFS-005`, `AUD-WFS-006`, `AUD-GOV-001`)
+- **Open Findings**: 51 (**9 CRITICAL**, **19 HIGH**, **19 MEDIUM**, **4 LOW**)
+- **Resolved Findings**: 19 (`AUD-MAP-002`, `AUD-ING-001`..`006`, `AUD-WFS-001`..`006`, `AUD-GOV-001`, `AUD-INV-001`..`005`)
 - **Regressions**: 0
 
 ---
@@ -31,7 +31,7 @@ Central ledger of all audit scopes, findings, remediation statuses, and sign-off
 | 2026-11-24 | `AUD-DB-GOVERNANCE-APPROVALS-2026-11-24` | DB Connections, Approvals & Validation Boxes | `d7bf228` | 2C / 1H / 1M / 0L | `OPEN` | [`AUD-DB-GOVERNANCE-APPROVALS-2026-11-24.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/agent-handoffs/audit/reports/AUD-DB-GOVERNANCE-APPROVALS-2026-11-24.md) |
 | 2026-11-24 | `AUD-MAPPING-INGESTION-2026-11-24` | Mapping & Workspace Ingestion (`b19bbaa`) | `d7bf228` | 0C / 1H / 3M / 1L | `OPEN` | [`AUD-MAPPING-INGESTION-2026-11-24.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/agent-handoffs/audit/reports/AUD-MAPPING-INGESTION-2026-11-24.md) |
 | 2026-11-24 | `AUD-INTAKE-STAGING-2026-11-24` | Intake Page & Messaging Staging (`1dc1a71`) | `d7bf228` | 0C / 2H / 2M / 1L | `OPEN` | [`AUD-INTAKE-STAGING-2026-11-24.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/agent-handoffs/audit/reports/AUD-INTAKE-STAGING-2026-11-24.md) |
-| 2026-11-24 | `AUD-INVESTIGATION-CORE-2026-11-24` | Investigation Core (Backend & Frontend) | `d7bf228` | 2C / 2H / 2M / 1L | `OPEN` | [`AUD-INVESTIGATION-CORE-2026-11-24.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/agent-handoffs/audit/reports/AUD-INVESTIGATION-CORE-2026-11-24.md) |
+| 2026-11-24 | `AUD-INVESTIGATION-CORE-2026-11-24` | Investigation Core (Backend & Frontend) | Working Tree | 0C / 0H / 1M / 1L | `RESOLVED` | [`AUD-INVESTIGATION-CORE-2026-11-24.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/agent-handoffs/audit/reports/AUD-INVESTIGATION-CORE-2026-11-24.md) · [Sign-Off](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/agent-handoffs/audit/sign-off/SIGN-OFF-INVESTIGATION-CORE-2026-11-26.md) |
 
 ---
 
@@ -39,11 +39,6 @@ Central ledger of all audit scopes, findings, remediation statuses, and sign-off
 
 | Finding ID | Severity | Status | Audit Scope | Location | Summary |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| `AUD-INV-001` | `CRITICAL` | `OPEN` | `AUD-INVESTIGATION-CORE-2026-11-24` | `backend/src/services/pipeline/ExecutablePipeline.ts:410,693-759` | `PAUSED_DB_OFFLINE` stage status silently rolls up as `PASS` in `executeBatch` |
-| `AUD-INV-002` | `CRITICAL` | `OPEN` | `AUD-INVESTIGATION-CORE-2026-11-24` | `backend/src/routes/investigations.ts:357,376`; `issues.ts:439` | Global `clear-all` and task `DELETE` endpoints lack admin/team ownership authorization |
-| `AUD-INV-003` | `HIGH` | `OPEN` | `AUD-INVESTIGATION-CORE-2026-11-24` | `backend/src/routes/resolutions.ts:39`; `makerCheckerService.ts:161`; `issues.ts:611` | Omitting `checkerTeamId` bypasses team check; `execute-script` resolves issue without Checker approval |
-| `AUD-INV-004` | `HIGH` | `OPEN` | `AUD-INVESTIGATION-CORE-2026-11-24` | `backend/src/services/ruleSqlCompiler.ts:150,186,310,390,473-494` | Unvalidated `Number(...)` (`NaN`) and unescaped `onPassAction`/`onFailAction` interpolated into SQL |
-| `AUD-INV-005` | `MEDIUM` | `OPEN` | `AUD-INVESTIGATION-CORE-2026-11-24` | `backend/src/services/reconciliationService.ts:318-319`; `ExecutablePipeline.ts:732` | `reconcileByRowNumber` hardcodes `STOP`/`CONTINUE`; `allStageLegs` overwrites same-named tables |
 | `AUD-INV-006` | `MEDIUM` | `OPEN` | `AUD-INVESTIGATION-CORE-2026-11-24` | `backend/src/routes/issues.ts:27,451,518,584`; `investigations.ts:226` | Client-supplied actor IDs trusted over JWT `req.user.id` |
 | `AUD-INV-007` | `LOW` | `OPEN` | `AUD-INVESTIGATION-CORE-2026-11-24` | `backend/src/services/reversionService.ts:127-139` | `revertTask` performs row-by-row `INSERT` loop instead of batched multi-row inserts |
 | `AUD-INT-001` | `HIGH` | `OPEN` | `AUD-INTAKE-STAGING-2026-11-24` | `frontend/src/components/intake/IntakeView.tsx:914-1007` | API failures in reply/close/archive/reopen silently show success or mutate local UI state |
@@ -113,6 +108,11 @@ Central ledger of all audit scopes, findings, remediation statuses, and sign-off
 ## Resolved Findings
 | Finding ID | Severity | Audit Scope | Resolution Details |
 | :--- | :--- | :--- | :--- |
+| `AUD-INV-001` | `CRITICAL` | `AUD-INVESTIGATION-CORE-2026-11-24` | **RESOLVED**: `ExecutablePipeline.ts:693-760` enforces rollup precedence `ERROR > PAUSED_DB_OFFLINE > FAIL > PASS`. Rows with `PAUSED_DB_OFFLINE` are marked failed/unverified and excluded from `passedCount`, preventing fail-open passes. |
+| `AUD-INV-002` | `CRITICAL` | `AUD-INVESTIGATION-CORE-2026-11-24` | **RESOLVED**: `investigations.ts:356-385` and `issues.ts:439-447` enforce admin role check (`user.role === 'admin'`) on `clear-all` and task/issue ownership (`teamId`/`creatorId`) on `:taskId/workflow-executions` and `DELETE /api/issues/:id`. |
+| `AUD-INV-003` | `HIGH` | `AUD-INVESTIGATION-CORE-2026-11-24` | **RESOLVED**: `issues.ts:624-650` stages script execution tasks in `'INVESTIGATING'` awaiting Checker approval instead of automatically resolving. `makerCheckerService.ts:160-165` and `resolutions.ts:39-44` enforce `checkerTeamId` matching proposal `team_id`. |
+| `AUD-INV-004` | `HIGH` | `AUD-INVESTIGATION-CORE-2026-11-24` | **RESOLVED**: `ruleSqlCompiler.ts:7-20, 150-186, 483-508` adds `sanitizeToleranceMargin` (defaults invalid/`NaN` inputs to `0.00`) and `sanitizePipelineAction` (allowlists actions against `'CONTINUE'`, `'STOP'`, `'CLOSE'`, `'FLAG'`, `'REPORT'`). |
+| `AUD-INV-005` | `MEDIUM` | `AUD-INVESTIGATION-CORE-2026-11-24` | **RESOLVED**: `reconciliationService.ts:318-325` replaces hardcoded actions with dynamic precedence-based SQL aggregation. `ExecutablePipeline.ts:728-734` appends target records in `allStageLegs[tbl]` via array spread, preventing key collision overwrites. |
 | `AUD-MAP-002` | `MEDIUM` | `AUD-MAPPING-INGESTION-2026-11-24` | **RESOLVED**: `recipeExecutionService.ts` lines 692-740 now physically implements headless recipe execution for `NUMBER_CLEAN`, `ROUND_INT`, `ABS_VALUE`, `DIVIDE_BY`, `MULTIPLY_BY`, `ADD_NUMBER`, `SUBTRACT_NUMBER`, `ADD_PREFIX_SUFFIX`, and `CHAR_LENGTH`, achieving full runtime parity with frontend transforms. |
 | `AUD-ING-001` | `HIGH` | `AUD-INGESTION-TRANSFORMS-2026-11-25` | **RESOLVED**: `StandardFileIngestionWorkspace.tsx` lines 210-225 now safely normalizes mapping entries with multi-schema fallback (`m.sourceValue ?? m.code ?? m.source`) and safe string coercion, resolving unhandled runtime `TypeError` and adding bidirectional matching. |
 | `AUD-ING-005` | `MEDIUM` | `AUD-INGESTION-TRANSFORMS-2026-11-25` | **RESOLVED**: `StandardFileIngestionWorkspace.tsx` lines 3425-3435 unconditionally initializes `transformParam1` to `availableValueDicts[0]?.id` upon selecting the `'RULE'` category, preventing silent no-op transforms. |

@@ -689,11 +689,13 @@ export class ExecutablePipeline {
       }
 
       // Rollup across all stages:
-      // Status precedence: ERROR > FAIL > PASS (AUD-008: Earlier failures are NEVER overwritten by later passes)
-      let finalStatus: 'PASS' | 'FAIL' | 'ERROR' = 'PASS';
-      if (history.some(h => h.validationStatus === 'ERROR')) {
+      // Status precedence: ERROR > PAUSED_DB_OFFLINE > FAIL > PASS (Rule 2 & AUD-INV-001: Earlier failures or circuit trips are NEVER rolled up as PASS)
+      let finalStatus: 'PASS' | 'FAIL' | 'ERROR' | 'PAUSED_DB_OFFLINE' = 'PASS';
+      if (history.some(h => (h.validationStatus as string) === 'ERROR')) {
         finalStatus = 'ERROR';
-      } else if (history.some(h => h.validationStatus === 'FAIL')) {
+      } else if (history.some(h => (h.validationStatus as string) === 'PAUSED_DB_OFFLINE')) {
+        finalStatus = 'PAUSED_DB_OFFLINE';
+      } else if (history.some(h => (h.validationStatus as string) === 'FAIL')) {
         finalStatus = 'FAIL';
       }
 
@@ -724,12 +726,12 @@ export class ExecutablePipeline {
         })),
       };
 
-      // Collect all stage legs across stages in history
+      // Collect all stage legs across stages in history (AUD-INV-005: prevent table key collisions)
       const allStageLegs: Record<string, any[]> = {};
       for (const h of history) {
         const tbl = h.targetTable || 'default';
         if (Array.isArray(h.targetRecords) && h.targetRecords.length > 0) {
-          allStageLegs[tbl] = h.targetRecords;
+          allStageLegs[tbl] = [...(allStageLegs[tbl] || []), ...h.targetRecords];
         }
       }
 
@@ -754,9 +756,9 @@ export class ExecutablePipeline {
       });
     }
 
-    // AUD-011: Transaction counts calculated over unique input transactions, not double-counted stage sums
+    // AUD-011 & AUD-INV-001: Transaction counts calculated over unique input transactions, counting PAUSED_DB_OFFLINE as failed/unverified
     const passedCount = rowOutcomes.filter(o => o.validationStatus === 'PASS').length;
-    const failedCount = rowOutcomes.filter(o => o.validationStatus === 'FAIL' || o.validationStatus === 'ERROR').length;
+    const failedCount = rowOutcomes.filter(o => o.validationStatus === 'FAIL' || o.validationStatus === 'ERROR' || (o.validationStatus as string) === 'PAUSED_DB_OFFLINE').length;
 
     return {
       taskId: batchCtx.taskId,

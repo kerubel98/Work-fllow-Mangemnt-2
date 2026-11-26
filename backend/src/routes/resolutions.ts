@@ -39,7 +39,8 @@ router.post('/review', requireAuth, async (req: AuthenticatedRequest, res) => {
     const reviewData = {
       ...req.body,
       checkerId: req.user!.id,
-      checkerName: req.user!.username || req.user!.email || 'Checker'
+      checkerName: req.user!.username || req.user!.email || 'Checker',
+      checkerTeamId: req.user!.teamId || req.body.checkerTeamId
     };
     const result = await makerCheckerService.reviewResolutionProposal(reviewData);
     res.status(200).json(result);

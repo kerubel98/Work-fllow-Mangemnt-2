@@ -438,6 +438,19 @@ issuesRouter.put('/:id', async (req: Request, res: Response) => {
 
 issuesRouter.delete('/:id', async (req: Request, res: Response) => {
   try {
+    const issue = await repo.getIssueById(req.params.id);
+    if (!issue) return res.status(404).json({ error: 'Issue not found' });
+
+    // AUD-INV-002: Enforce admin role or team/creator task ownership
+    const user = (req as any).user;
+    if (user) {
+      const isAdmin = user.role?.toLowerCase() === 'admin';
+      const isOwner = !issue.teamId || issue.teamId === user.teamId || issue.creatorId === user.id;
+      if (!isAdmin && !isOwner) {
+        return res.status(403).json({ error: 'Forbidden: You do not have permission to delete this task.' });
+      }
+    }
+
     const success = await repo.deleteIssue(req.params.id);
     eventService.broadcastEvent('issue:deleted', { id: req.params.id });
     return res.json({ success });
@@ -613,13 +626,21 @@ issuesRouter.post('/:id/execute-script', async (req: Request, res: Response) => 
     const issue = await repo.getIssueById(req.params.id);
     if (!issue) return res.status(404).json({ error: 'Issue not found' });
 
+    const user = (req as any).user;
+    const executedBy = user?.id || req.body.executedBy || issue.creatorId;
+
+    // Maker-Checker Invariant (Rule 7 & AUD-INV-003): Direct script execution requires Four-Eyes verification.
+    // An operator cannot self-resolve an issue without independent Checker review.
+    const isPreApproved = (issue as any).checkerApproved === true || (req.body.checkerApprovalToken && req.body.checkerId && req.body.checkerId !== executedBy);
+    const targetStatus = isPreApproved ? 'RESOLVED' : 'INVESTIGATING';
+
     // Pre-change snapshot prior to script execution
     try {
       const { reversionService } = await import('../services/reversionService.js');
       await reversionService.createSnapshot(
         issue.id,
         issue.processType || 'INTERNAL_STAGED_FIX',
-        req.body.executedBy || issue.creatorId,
+        executedBy,
         'Auto-snapshot before script execution'
       );
     } catch (snapErr: any) {
@@ -627,7 +648,7 @@ issuesRouter.post('/:id/execute-script', async (req: Request, res: Response) => 
     }
 
     const updated = await repo.updateIssue(req.params.id, {
-      status: 'Resolved',
+      status: targetStatus,
       solutionExecuted: true,
       solutionExecutedAt: new Date().toISOString()
     });
@@ -636,7 +657,9 @@ issuesRouter.post('/:id/execute-script', async (req: Request, res: Response) => 
 
     return res.json({
       success: true,
-      message: `Resolution script successfully executed for issue ${req.params.id}.`,
+      message: isPreApproved
+        ? `Resolution script successfully executed for issue ${req.params.id}.`
+        : `Resolution script staged and issue ${req.params.id} locked in 'Pending Review' awaiting Checker approval.`,
       issue: updated
     });
   } catch (err: any) {

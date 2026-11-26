@@ -4,7 +4,20 @@
  * Ensures rule configuration updates made in the UI take effect immediately in database execution.
  */
 
-import { ValidationCheckStep } from '../types.js';
+import { ValidationCheckStep, PipelineAction } from '../types.js';
+
+const VALID_PIPELINE_ACTIONS = new Set<string>(['CONTINUE', 'STOP', 'CLOSE', 'FLAG', 'REPORT']);
+export function sanitizePipelineAction(action: any, fallback: PipelineAction = 'CONTINUE'): PipelineAction {
+  if (typeof action === 'string' && VALID_PIPELINE_ACTIONS.has(action.trim().toUpperCase())) {
+    return action.trim().toUpperCase() as PipelineAction;
+  }
+  return fallback;
+}
+
+export function sanitizeToleranceMargin(val: any, fallback: number = 0.00): number {
+  const n = Number(val);
+  return isNaN(n) || !isFinite(n) || n < 0 ? fallback : n;
+}
 
 /**
  * Sanitizes a table name to prevent SQL injection.
@@ -136,7 +149,7 @@ export const ruleSqlCompiler = {
       const exprA = resolveOperandSqlExpr(dsc.sourceA, mirrorColPrefix, inputColPrefix, validColumns);
       const exprB = resolveOperandSqlExpr(dsc.sourceB, mirrorColPrefix, inputColPrefix, validColumns);
       const comp = dsc.comparator || 'EQUALS';
-      const margin = Number(dsc.toleranceMargin ?? rule.toleranceMargin ?? 0.00);
+      const margin = sanitizeToleranceMargin(dsc.toleranceMargin ?? rule.toleranceMargin ?? 0.00);
 
       if (comp === 'EQUALS' || comp === '==' || comp === '=') {
         baseSql = `LOWER(COALESCE(${exprA}::text, '')) = LOWER(COALESCE(${exprB}::text, ''))`;
@@ -183,7 +196,7 @@ export const ruleSqlCompiler = {
           }
 
           case 'AMOUNT_MATCH': {
-            const margin = Number(rule.toleranceMargin ?? rule.tolerance ?? 0.00);
+            const margin = sanitizeToleranceMargin(rule.toleranceMargin ?? rule.tolerance ?? 0.00);
             if (rule.targetField && rule.sourceField && rule.targetField !== rule.sourceField) {
               const sourceColExpr = resolveColExpr(sanitizeCol(rule.sourceField), mirrorColPrefix, validColumns);
               const targetColExpr = resolveColExpr(sanitizeCol(rule.targetField), mirrorColPrefix, validColumns);
@@ -470,7 +483,7 @@ export const ruleSqlCompiler = {
     if (options?.cardinalityPolicy === 'STRICT_SINGLE') {
       const countSubquery = `(SELECT COUNT(*) FROM ${safeMirrorTableName} _cnt WHERE _cnt._batch_id = m._batch_id AND _cnt._task_id = m._task_id AND _cnt._row_number = m._row_number)`;
       statusWhenBranches.push(`WHEN ${countSubquery} > 1 THEN 'FAIL'`);
-      actionWhenBranches.push(`WHEN ${countSubquery} > 1 THEN '${rules[0]?.onFailAction || 'STOP'}'`);
+      actionWhenBranches.push(`WHEN ${countSubquery} > 1 THEN '${sanitizePipelineAction(rules[0]?.onFailAction, 'STOP')}'`);
       detailFields.push(`'cardinality', jsonb_build_object('status', CASE WHEN ${countSubquery} > 1 THEN 'CARDINALITY_BREACH' ELSE 'EXACT_MATCH' END, 'breach', (${countSubquery} > 1), 'policy', 'STRICT_SINGLE')`);
     }
 
@@ -483,13 +496,14 @@ export const ruleSqlCompiler = {
         const condition = this.compileStepCondition(rule, 'm', validColumns, 't', mirrorTableName);
         const failLabel = rule.name ? rule.name.toUpperCase().replace(/[^A-Z0-9_]/g, '_') : 'CRITERIA_FAILED';
 
+        const safeFailAction = sanitizePipelineAction(rule.onFailAction, 'STOP');
         statusWhenBranches.push(`WHEN NOT (${condition}) THEN 'FAIL'`);
-        actionWhenBranches.push(`WHEN NOT (${condition}) THEN '${rule.onFailAction || 'STOP'}'`);
-        detailFields.push(`'${rule.id || failLabel}', jsonb_build_object('rule', '${rule.name ? rule.name.replace(/'/g, "''") : failLabel}', 'passed', (${condition}), 'action', '${rule.onFailAction || 'STOP'}')`);
+        actionWhenBranches.push(`WHEN NOT (${condition}) THEN '${safeFailAction}'`);
+        detailFields.push(`'${rule.id || failLabel}', jsonb_build_object('rule', '${rule.name ? rule.name.replace(/'/g, "''") : failLabel}', 'passed', (${condition}), 'action', '${safeFailAction}')`);
       }
 
       // Default pass fallback preserving configured onPassAction
-      const defaultPassAction = rules[0]?.onPassAction || 'CONTINUE';
+      const defaultPassAction = sanitizePipelineAction(rules[0]?.onPassAction, 'CONTINUE');
       statusWhenBranches.push(`ELSE 'PASS'`);
       actionWhenBranches.push(`ELSE '${defaultPassAction}'`);
     }

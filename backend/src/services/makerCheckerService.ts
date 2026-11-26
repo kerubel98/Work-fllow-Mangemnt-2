@@ -157,9 +157,14 @@ export const makerCheckerService = {
         throw new Error(`Anti-Self-Approval Enforcement: Maker '${proposal.maker_name}' cannot approve their own proposal.`);
       }
 
-      // 2b. Enforce Team Authorization (DESIGN-08)
-      if (input.checkerTeamId && proposal.team_id && input.checkerTeamId !== proposal.team_id) {
-        throw new Error(`Authorization Failure: Checker team '${input.checkerTeamId}' does not match proposal team '${proposal.team_id}'.`);
+      // 2b. Enforce Team Authorization (DESIGN-08 & AUD-INV-003)
+      if (proposal.team_id) {
+        if (!input.checkerTeamId) {
+          throw new Error(`Authorization Failure: checkerTeamId is required to review proposal for team '${proposal.team_id}'.`);
+        }
+        if (input.checkerTeamId !== proposal.team_id) {
+          throw new Error(`Authorization Failure: Checker team '${input.checkerTeamId}' does not match proposal team '${proposal.team_id}'.`);
+        }
       }
 
       const isApprove = input.action === 'APPROVE';

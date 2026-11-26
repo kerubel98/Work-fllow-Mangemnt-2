@@ -315,8 +315,20 @@ export const reconciliationService = {
           SELECT
             _task_id,
             _row_number,
-            (CASE WHEN bool_or(_validation_status = 'FAIL') THEN 'FAIL' ELSE 'PASS' END) AS _validation_status,
-            (CASE WHEN bool_or(_validation_status = 'FAIL') THEN 'STOP' ELSE 'CONTINUE' END) AS _validation_action,
+            (CASE 
+              WHEN bool_or(_validation_status = 'ERROR') THEN 'ERROR'
+              WHEN bool_or(_validation_status = 'PAUSED_DB_OFFLINE') THEN 'PAUSED_DB_OFFLINE'
+              WHEN bool_or(_validation_status = 'FAIL') THEN 'FAIL' 
+              ELSE 'PASS' 
+            END) AS _validation_status,
+            COALESCE(
+              MAX(CASE WHEN _validation_action = 'STOP' THEN 'STOP' END),
+              MAX(CASE WHEN _validation_action = 'CLOSE' THEN 'CLOSE' END),
+              MAX(CASE WHEN _validation_action = 'FLAG' THEN 'FLAG' END),
+              MAX(CASE WHEN _validation_action = 'REPORT' THEN 'REPORT' END),
+              MAX(_validation_action),
+              'CONTINUE'
+            ) AS _validation_action,
             jsonb_agg(
               COALESCE(m.payload, to_jsonb(m)) - '_batch_id' - '_rule_block_id' - '_task_id' - '_mirrored_at' - '_validation_status' - '_validation_action' - '_validation_details' - '_row_number' - 'row_num' - '_mirror_id'
             ) AS mirror_legs,
