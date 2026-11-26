@@ -991,11 +991,47 @@ messagesRouter.post('/staging/:id/create-task', async (req: Request, res: Respon
   }
 });
 
+// Helper to extract actor and verify team access for staged requests (AUD-INT-002, AUD-INT-003)
+async function authorizeStagedMessageAccess(
+  req: Request,
+  res: Response,
+  id: string,
+  stagingService: any
+): Promise<{ stagedMsg: any; actor: { id: string; name: string } } | null> {
+  const stagedMsg = await stagingService.getStagedMessageById(id);
+  if (!stagedMsg) {
+    res.status(404).json({ error: `Staged message with ID "${id}" was not found.` });
+    return null;
+  }
+
+  const user = (req as any).user;
+  const isAdmin = user && (user.role === 'admin' || user.role === 'system_admin');
+  if (stagedMsg.teamId && !isAdmin) {
+    const callerTeamId = user?.teamId || user?.permanentTeamId;
+    if (callerTeamId && callerTeamId !== stagedMsg.teamId) {
+      res.status(403).json({
+        error: `Forbidden: You do not have permission to manage staged messages for team "${stagedMsg.teamId}".`
+      });
+      return null;
+    }
+  }
+
+  const actor = {
+    id: user?.id || (req.body && req.body.actorId) || 'sys',
+    name: user?.name || user?.username || (req.body && req.body.actorName) || 'Operator'
+  };
+
+  return { stagedMsg, actor };
+}
+
 // POST /api/messages/staging/:id/escalate - Escalate to another team
 messagesRouter.post('/staging/:id/escalate', async (req: Request, res: Response) => {
   try {
     const { stagingService } = await import('../services/messaging/stagingService.js');
-    const { targetTeamId, actorId, actorName, reason } = req.body;
+    const auth = await authorizeStagedMessageAccess(req, res, req.params.id, stagingService);
+    if (!auth) return;
+
+    const { targetTeamId, reason } = req.body;
     if (!targetTeamId) {
       return res.status(400).json({ error: 'targetTeamId is required.' });
     }
@@ -1003,7 +1039,7 @@ messagesRouter.post('/staging/:id/escalate', async (req: Request, res: Response)
     const updated = await stagingService.escalateStagedMessage(
       req.params.id,
       targetTeamId,
-      { id: actorId || 'operator', name: actorName || 'Lead' },
+      auth.actor,
       reason || 'Escalated from triage queue'
     );
     return res.json({ success: true, staged: updated });
@@ -1015,11 +1051,18 @@ messagesRouter.post('/staging/:id/escalate', async (req: Request, res: Response)
 // POST /api/messages/staging/:id/link-attachment-task - Link a specific attachment to a created task/case
 messagesRouter.post('/staging/:id/link-attachment-task', async (req: Request, res: Response) => {
   try {
-    const { stagingService } = await import('../services/messaging/stagingService.js');
     const { attachmentId, filename, issueId } = req.body;
     if (!issueId) {
       return res.status(400).json({ error: 'issueId is required.' });
     }
+    if (!attachmentId && !filename) {
+      return res.status(400).json({ error: 'Either attachmentId or filename is required.' });
+    }
+
+    const { stagingService } = await import('../services/messaging/stagingService.js');
+    const auth = await authorizeStagedMessageAccess(req, res, req.params.id, stagingService);
+    if (!auth) return;
+
     const updated = await stagingService.linkAttachmentTask(req.params.id, attachmentId || filename, issueId);
     return res.json({ success: true, staged: updated });
   } catch (err: any) {
@@ -1031,11 +1074,13 @@ messagesRouter.post('/staging/:id/link-attachment-task', async (req: Request, re
 messagesRouter.post('/staging/:id/close', async (req: Request, res: Response) => {
   try {
     const { stagingService } = await import('../services/messaging/stagingService.js');
-    const { actorId, actorName, reason } = req.body;
+    const auth = await authorizeStagedMessageAccess(req, res, req.params.id, stagingService);
+    if (!auth) return;
+
     const updated = await stagingService.closeStagedMessage(
       req.params.id,
-      { id: actorId || 'sys', name: actorName || 'Operator' },
-      reason
+      auth.actor,
+      req.body.reason
     );
     return res.json({ success: true, staged: updated });
   } catch (err: any) {
@@ -1047,10 +1092,12 @@ messagesRouter.post('/staging/:id/close', async (req: Request, res: Response) =>
 messagesRouter.post('/staging/:id/archive', async (req: Request, res: Response) => {
   try {
     const { stagingService } = await import('../services/messaging/stagingService.js');
-    const { actorId, actorName } = req.body;
+    const auth = await authorizeStagedMessageAccess(req, res, req.params.id, stagingService);
+    if (!auth) return;
+
     const updated = await stagingService.archiveStagedMessage(
       req.params.id,
-      { id: actorId || 'sys', name: actorName || 'Operator' }
+      auth.actor
     );
     return res.json({ success: true, staged: updated });
   } catch (err: any) {
@@ -1062,10 +1109,12 @@ messagesRouter.post('/staging/:id/archive', async (req: Request, res: Response) 
 messagesRouter.post('/staging/:id/reopen', async (req: Request, res: Response) => {
   try {
     const { stagingService } = await import('../services/messaging/stagingService.js');
-    const { actorId, actorName } = req.body;
+    const auth = await authorizeStagedMessageAccess(req, res, req.params.id, stagingService);
+    if (!auth) return;
+
     const updated = await stagingService.reopenStagedMessage(
       req.params.id,
-      { id: actorId || 'sys', name: actorName || 'Operator' }
+      auth.actor
     );
     return res.json({ success: true, staged: updated });
   } catch (err: any) {
@@ -1081,17 +1130,20 @@ messagesRouter.post('/staging/:id/reply', async (req: Request, res: Response) =>
       return res.status(400).json({ error: 'Recipient "to" and "textBody" are required.' });
     }
     const { stagingService } = await import('../services/messaging/stagingService.js');
-    const stagedMsg = await stagingService.getStagedMessageById(req.params.id);
+    const auth = await authorizeStagedMessageAccess(req, res, req.params.id, stagingService);
+    if (!auth) return;
 
-    const result = await messageIntakeService.replyToMessage(stagedMsg?.teamId || '', {
-      channel: channel || stagedMsg?.channel || 'email',
+    const stagedMsg = auth.stagedMsg;
+
+    const result = await messageIntakeService.replyToMessage(stagedMsg.teamId || '', {
+      channel: channel || stagedMsg.channel || 'email',
       to,
-      subject: subject || (stagedMsg?.subject ? `Re: ${stagedMsg.subject}` : 'Re: External Request'),
+      subject: subject || (stagedMsg.subject ? `Re: ${stagedMsg.subject}` : 'Re: External Request'),
       textBody,
       htmlBody,
-      conversationId: stagedMsg?.conversationId || stagedMsg?.threadId,
-      threadId: stagedMsg?.threadId,
-      inReplyToMessageId: stagedMsg?.sourceMessageId || stagedMsg?.id,
+      conversationId: stagedMsg.conversationId || stagedMsg.threadId,
+      threadId: stagedMsg.threadId,
+      inReplyToMessageId: stagedMsg.sourceMessageId || stagedMsg.id,
       senderAddress
     });
 

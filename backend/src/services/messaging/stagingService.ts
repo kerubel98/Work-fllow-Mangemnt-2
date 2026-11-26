@@ -199,17 +199,25 @@ export class StagingService {
     `;
 
     const res = await pool.query(sql, values);
-    const messages: StagedMessage[] = [];
-
-    for (const r of res.rows) {
-      const attRes = await pool.query(
-        `SELECT * FROM staged_message_attachments WHERE staged_message_id = $1 ORDER BY created_at ASC;`,
-        [r.id]
-      );
-      messages.push(this.mapStagedRow(r, attRes.rows));
+    if (res.rows.length === 0) {
+      return [];
     }
 
-    return messages;
+    // AUD-INT-004: Batch load attachments to eliminate N+1 queries
+    const messageIds = res.rows.map(r => r.id);
+    const attRes = await pool.query(
+      `SELECT * FROM staged_message_attachments WHERE staged_message_id = ANY($1) ORDER BY created_at ASC;`,
+      [messageIds]
+    );
+
+    const attachmentsByMessageId = new Map<string, any[]>();
+    for (const att of attRes.rows) {
+      const list = attachmentsByMessageId.get(att.staged_message_id) || [];
+      list.push(att);
+      attachmentsByMessageId.set(att.staged_message_id, list);
+    }
+
+    return res.rows.map(r => this.mapStagedRow(r, attachmentsByMessageId.get(r.id) || []));
   }
 
   /**
@@ -465,7 +473,10 @@ export class StagingService {
     targetTeamId: string,
     actor: { id: string; name: string },
     reason: string
-  ): Promise<StagedMessage> {
+  ): Promise<StagedMessage | null> {
+    const existing = await this.getStagedMessageById(id);
+    if (!existing) return null;
+
     const pool = getPostgresPool();
     await pool.query(
       `UPDATE staged_messages
@@ -478,7 +489,7 @@ export class StagingService {
       [targetTeamId, `Escalated to ${targetTeamId} by ${actor.name}: ${reason}`, id]
     );
     eventService.broadcastEvent('message:escalated', { stagedId: id, targetTeamId });
-    return (await this.getStagedMessageById(id))!;
+    return await this.getStagedMessageById(id);
   }
 
   /**
@@ -486,7 +497,8 @@ export class StagingService {
    */
   async getExternalRequestSummary(teamId?: string): Promise<ExternalRequestSummary> {
     const pool = getPostgresPool();
-    const teamFilter = teamId ? `WHERE team_id = $1` : '';
+    // AUD-INT-004: Align team filter semantics with getStagedMessages
+    const teamFilter = teamId ? `WHERE (team_id = $1 OR team_id IS NULL)` : '';
     const params = teamId ? [teamId] : [];
 
     const statsRes = await pool.query(
@@ -496,7 +508,7 @@ export class StagingService {
         COUNT(*) FILTER (WHERE status = 'READY_FOR_TASK_CREATION') as ready_for_task,
         COUNT(*) FILTER (WHERE status = 'CONVERTED_TO_TASK') as converted,
         COUNT(*) FILTER (WHERE status = 'ESCALATED') as escalated,
-        COUNT(*) FILTER (WHERE sla_due_at < NOW() AND status NOT IN ('CONVERTED_TO_TASK', 'REJECTED')) as sla_breached
+        COUNT(*) FILTER (WHERE sla_due_at < NOW() AND status NOT IN ('CONVERTED_TO_TASK', 'REJECTED', 'CLOSED', 'ARCHIVED')) as sla_breached
        FROM staged_messages
        ${teamFilter};`,
       params
@@ -821,7 +833,10 @@ export class StagingService {
     stagedMessageId: string,
     attachmentIdOrFilename: string,
     issueId: string
-  ): Promise<StagedMessage> {
+  ): Promise<StagedMessage | null> {
+    const existing = await this.getStagedMessageById(stagedMessageId);
+    if (!existing) return null;
+
     const pool = getPostgresPool();
 
     // 1. Update the attachment row
@@ -843,7 +858,7 @@ export class StagingService {
       [issueId, stagedMessageId]
     );
 
-    return (await this.getStagedMessageById(stagedMessageId))!;
+    return await this.getStagedMessageById(stagedMessageId);
   }
 
   /**
@@ -853,7 +868,10 @@ export class StagingService {
     id: string,
     actor: { id: string; name: string },
     reason?: string
-  ): Promise<StagedMessage> {
+  ): Promise<StagedMessage | null> {
+    const existing = await this.getStagedMessageById(id);
+    if (!existing) return null;
+
     const pool = getPostgresPool();
     await pool.query(
       `UPDATE staged_messages
@@ -865,7 +883,7 @@ export class StagingService {
        WHERE id = $3;`,
       [reason || 'Closed during triage review', actor.name || actor.id, id]
     );
-    return (await this.getStagedMessageById(id))!;
+    return await this.getStagedMessageById(id);
   }
 
   /**
@@ -874,7 +892,10 @@ export class StagingService {
   async archiveStagedMessage(
     id: string,
     actor: { id: string; name: string }
-  ): Promise<StagedMessage> {
+  ): Promise<StagedMessage | null> {
+    const existing = await this.getStagedMessageById(id);
+    if (!existing) return null;
+
     const pool = getPostgresPool();
     await pool.query(
       `UPDATE staged_messages
@@ -885,7 +906,7 @@ export class StagingService {
        WHERE id = $2;`,
       [actor.name || actor.id, id]
     );
-    return (await this.getStagedMessageById(id))!;
+    return await this.getStagedMessageById(id);
   }
 
   /**
@@ -894,7 +915,10 @@ export class StagingService {
   async reopenStagedMessage(
     id: string,
     actor: { id: string; name: string }
-  ): Promise<StagedMessage> {
+  ): Promise<StagedMessage | null> {
+    const existing = await this.getStagedMessageById(id);
+    if (!existing) return null;
+
     const pool = getPostgresPool();
     await pool.query(
       `UPDATE staged_messages
@@ -907,7 +931,7 @@ export class StagingService {
        WHERE id = $2;`,
       [actor.name || actor.id, id]
     );
-    return (await this.getStagedMessageById(id))!;
+    return await this.getStagedMessageById(id);
   }
 
   private mapStagedRow(r: any, attachments: any[] = []): StagedMessage {

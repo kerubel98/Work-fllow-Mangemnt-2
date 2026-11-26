@@ -520,7 +520,7 @@ const IntakeViewContent: React.FC<IntakeViewProps> = ({
     escalatedCount: 0,
     slaBreachCount: 101
   });
-  const [stagedMessages, setStagedMessages] = useState<any[]>(DEFAULT_INTAKE_ITEMS);
+  const [stagedMessages, setStagedMessages] = useState<any[]>([]);
   const [providers, setProviders] = useState<any[]>([]);
   const [configs, setConfigs] = useState<any[]>([]);
   const [ftpConfigs, setFtpConfigs] = useState<FtpFileStagingConfig[]>([]);
@@ -702,7 +702,7 @@ const IntakeViewContent: React.FC<IntakeViewProps> = ({
         api.getIssues().catch(() => [])
       ]);
       if (summ) setSummary(summ);
-      if (Array.isArray(staged) && staged.length > 0) {
+      if (Array.isArray(staged)) {
         setStagedMessages(staged);
         setSelectedStaged((prev: any) => {
           if (!prev) return null;
@@ -926,9 +926,9 @@ const IntakeViewContent: React.FC<IntakeViewProps> = ({
       setReplySuccessMsg(`Reply successfully dispatched to ${recipient}!`);
       setTimeout(() => setReplySuccessMsg(null), 5000);
     } catch (err: any) {
-      console.warn('Could not send reply via API, recording in UI log:', err);
-      setReplySuccessMsg(`Reply dispatched and recorded in outgoing log.`);
-      setTimeout(() => setReplySuccessMsg(null), 5000);
+      console.error('Failed to send reply via API:', err);
+      setErrorMsg(`Failed to send reply: ${err?.message || 'Server error'}`);
+      setTimeout(() => setErrorMsg(null), 5000);
     } finally {
       setIsSendingReply(false);
     }
@@ -948,12 +948,10 @@ const IntakeViewContent: React.FC<IntakeViewProps> = ({
       }
       setSuccessMsg('Request marked as CLOSED.');
       setTimeout(() => setSuccessMsg(null), 3000);
-    } catch (err) {
-      console.warn('Failed to close request in API, applying local state update:', err);
-      setStagedMessages(prev => prev.map(m => m.id === id ? { ...m, status: 'CLOSED' } : m));
-      if (selectedStaged && selectedStaged.id === id) {
-        setSelectedStaged((prev: any) => ({ ...prev, status: 'CLOSED' }));
-      }
+    } catch (err: any) {
+      console.error('Failed to close request in API:', err);
+      setErrorMsg(`Failed to close request: ${err?.message || 'Server error'}`);
+      setTimeout(() => setErrorMsg(null), 5000);
     } finally {
       setIsProcessingAction(false);
     }
@@ -972,12 +970,10 @@ const IntakeViewContent: React.FC<IntakeViewProps> = ({
       }
       setSuccessMsg('Request ARCHIVED.');
       setTimeout(() => setSuccessMsg(null), 3000);
-    } catch (err) {
-      console.warn('Failed to archive request in API, applying local state update:', err);
-      setStagedMessages(prev => prev.map(m => m.id === id ? { ...m, status: 'ARCHIVED' } : m));
-      if (selectedStaged && selectedStaged.id === id) {
-        setSelectedStaged((prev: any) => ({ ...prev, status: 'ARCHIVED' }));
-      }
+    } catch (err: any) {
+      console.error('Failed to archive request in API:', err);
+      setErrorMsg(`Failed to archive request: ${err?.message || 'Server error'}`);
+      setTimeout(() => setErrorMsg(null), 5000);
     } finally {
       setIsProcessingAction(false);
     }
@@ -996,11 +992,10 @@ const IntakeViewContent: React.FC<IntakeViewProps> = ({
       }
       setSuccessMsg('Request REOPENED.');
       setTimeout(() => setSuccessMsg(null), 3000);
-    } catch (err) {
-      setStagedMessages(prev => prev.map(m => m.id === id ? { ...m, status: 'NEW' } : m));
-      if (selectedStaged && selectedStaged.id === id) {
-        setSelectedStaged((prev: any) => ({ ...prev, status: 'NEW' }));
-      }
+    } catch (err: any) {
+      console.error('Failed to reopen request in API:', err);
+      setErrorMsg(`Failed to reopen request: ${err?.message || 'Server error'}`);
+      setTimeout(() => setErrorMsg(null), 5000);
     } finally {
       setIsProcessingAction(false);
     }

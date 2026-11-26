@@ -106,7 +106,7 @@ aiRouter.post('/generate-sql', async (req: Request, res: Response) => {
     try {
       const ai = new GoogleGenAI({ apiKey });
       const systemInstruction = `You are an expert database administrator and SQL generator for payment operations. Generate clean, safe SQL queries for ${safeDbType} table: ${safeTableName}. Return ONLY the raw SQL statement inside markdown codeblocks (\`\`\`sql ... \`\`\`).`;
-      
+
       const response = await ai.models.generateContent({
         model: 'gemini-2.5-flash',
         contents: `${systemInstruction}\nUser Request: ${prompt}`
@@ -146,7 +146,7 @@ aiRouter.post('/analyze-discrepancy', async (req: Request, res: Response) => {
     try {
       const ai = new GoogleGenAI({ apiKey });
       const promptText = `Analyze the following operational transaction discrepancy and suggest root cause and resolution SQL:\nDescription: ${issueDescription || 'Unknown'}\nData: ${JSON.stringify(redactedData)}`;
-      
+
       const response = await ai.models.generateContent({
         model: 'gemini-2.5-flash',
         contents: promptText
