@@ -267,6 +267,17 @@ investigationsRouter.post('/execute-pipeline', async (req: Request, res: Respons
 investigationsRouter.get('/:taskId/central-records', async (req: Request, res: Response) => {
   try {
     const { taskId } = req.params;
+    const issue = await repo.getIssueById(taskId);
+    if (!issue) {
+      return res.status(404).json({ error: 'Task not found' });
+    }
+    const user = (req as any).user;
+    if (user && user.role !== 'admin' && issue.teamId) {
+      if (user.teamId !== issue.teamId || (issue.visibility === 'PERSONAL_PRIVATE' && user.id !== issue.creatorId)) {
+        return res.status(403).json({ error: 'Access denied to task records' });
+      }
+    }
+
     const records = await repo.getCentralTransactionsByTaskId(taskId);
     return res.json({
       taskId,
@@ -297,6 +308,17 @@ investigationsRouter.get('/:taskId/central-records', async (req: Request, res: R
 investigationsRouter.get('/:taskId/workflow-executions', async (req: Request, res: Response) => {
   try {
     const { taskId } = req.params;
+    const issue = await repo.getIssueById(taskId);
+    if (!issue) {
+      return res.status(404).json({ error: 'Task not found' });
+    }
+    const user = (req as any).user;
+    if (user && user.role !== 'admin' && issue.teamId) {
+      if (user.teamId !== issue.teamId || (issue.visibility === 'PERSONAL_PRIVATE' && user.id !== issue.creatorId)) {
+        return res.status(403).json({ error: 'Access denied to task records' });
+      }
+    }
+
     const executions = await repo.getTaskWorkflowExecutionsByTaskId(taskId);
     return res.json({ taskId, count: executions.length, executions });
   } catch (err: any) {

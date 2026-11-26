@@ -8,10 +8,11 @@ import { Issue, HashtagPreset, User, TransactionInvestigationStatus, GlobalTrans
 import {
   Play, Download, MessageSquare, MoreHorizontal, Clock, Tag,
   Search, SlidersHorizontal, RotateCcw, ChevronRight, ChevronLeft, ChevronDown, CheckCircle2,
-  AlertCircle, Link2, Check, FileSpreadsheet, Paperclip, Plus, X,
+  AlertCircle, AlertTriangle, Link2, Check, FileSpreadsheet, Paperclip, Plus, X,
   Grid, FileText, CheckCheck, CircleDot, FolderOpen, Activity, Database, Terminal,
   PanelRightClose, PanelRightOpen
 } from 'lucide-react';
+import { ErrorBoundary } from '../ErrorBoundary';
 import TransactionInvestigationDrawer from './TransactionInvestigationDrawer';
 import { DataTablePagination } from '../common/DataTablePagination';
 import InvestigationRunningView from './InvestigationRunningView';
@@ -95,6 +96,7 @@ export default function CasesWorkspaceView({
   // Autonomous state if props were not provided with rows
   const [internalTaskRows, setInternalTaskRows] = useState<any[]>([]);
   const [internalCentralRows, setInternalCentralRows] = useState<any[]>([]);
+  const [totalServerCount, setTotalServerCount] = useState<number | null>(null);
   const [isLoadingInternal, setIsLoadingInternal] = useState(false);
   const [isDiscussionDrawerOpen, setIsDiscussionDrawerOpen] = useState(false);
   const [isEscalateModalOpen, setIsEscalateModalOpen] = useState(false);
@@ -129,6 +131,9 @@ export default function CasesWorkspaceView({
         .then(([txnRes, centralRes]: [any, any]) => {
           if (txnRes && Array.isArray(txnRes.rows)) {
             setInternalTaskRows(txnRes.rows);
+            if (typeof txnRes.totalCount === 'number') {
+              setTotalServerCount(txnRes.totalCount);
+            }
           }
           if (centralRes && Array.isArray(centralRes.records)) {
             setInternalCentralRows(centralRes.records);
@@ -793,55 +798,62 @@ export default function CasesWorkspaceView({
                         No tasks match your search.
                       </div>
                     ) : (
-                      availableTasks.map(t => {
-                        const isSelected = t.id === currentIssue?.id;
-                        return (
-                          <div
-                            key={t.id}
-                            onClick={() => {
-                              if (onSelectIssueId) {
-                                onSelectIssueId(t.id);
-                              }
-                              setIsTaskSwitcherOpen(false);
-                            }}
-                            className={`p-2.5 rounded-xl border transition cursor-pointer text-left space-y-1 ${
-                              isSelected
-                                ? 'bg-[#F27421]/5 border-[#F27421] shadow-2xs'
-                                : 'bg-white border-slate-200 hover:border-slate-300 hover:bg-slate-50/80'
-                            }`}
-                          >
-                            <div className="flex items-center justify-between text-[11px]">
-                              <span className="font-mono font-bold text-slate-900">{t.id}</span>
-                              <div className="flex items-center space-x-1.5">
-                                <span className={`px-1.5 py-0.2 rounded text-[10px] font-medium ${
-                                  t.status === 'Closed'
-                                    ? 'bg-slate-100 text-slate-600'
-                                    : 'bg-emerald-50 text-emerald-700 border border-emerald-200/60'
-                                }`}>
-                                  {t.status || 'Open'}
-                                </span>
-                                {t.priority && (
+                      <>
+                        {availableTasks.slice(0, 100).map(t => {
+                          const isSelected = t.id === currentIssue?.id;
+                          return (
+                            <div
+                              key={t.id}
+                              onClick={() => {
+                                if (onSelectIssueId) {
+                                  onSelectIssueId(t.id);
+                                }
+                                setIsTaskSwitcherOpen(false);
+                              }}
+                              className={`p-2.5 rounded-xl border transition cursor-pointer text-left space-y-1 ${
+                                isSelected
+                                  ? 'bg-[#F27421]/5 border-[#F27421] shadow-2xs'
+                                  : 'bg-white border-slate-200 hover:border-slate-300 hover:bg-slate-50/80'
+                              }`}
+                            >
+                              <div className="flex items-center justify-between text-[11px]">
+                                <span className="font-mono font-bold text-slate-900">{t.id}</span>
+                                <div className="flex items-center space-x-1.5">
                                   <span className={`px-1.5 py-0.2 rounded text-[10px] font-medium ${
-                                    t.priority === 'Critical' || t.priority === 'High'
-                                      ? 'bg-rose-50 text-rose-700'
-                                      : 'bg-amber-50 text-amber-700'
+                                    t.status === 'Closed'
+                                      ? 'bg-slate-100 text-slate-600'
+                                      : 'bg-emerald-50 text-emerald-700 border border-emerald-200/60'
                                   }`}>
-                                    {t.priority}
+                                    {t.status || 'Open'}
                                   </span>
-                                )}
+                                  {t.priority && (
+                                    <span className={`px-1.5 py-0.2 rounded text-[10px] font-medium ${
+                                      t.priority === 'Critical' || t.priority === 'High'
+                                        ? 'bg-rose-50 text-rose-700'
+                                        : 'bg-amber-50 text-amber-700'
+                                    }`}>
+                                      {t.priority}
+                                    </span>
+                                  )}
+                                </div>
                               </div>
-                            </div>
-                            <div className="text-xs font-bold text-slate-800 truncate">
-                              {t.title || 'Untitled Case'}
-                            </div>
-                            {t.description && (
-                              <div className="text-[11px] text-slate-500 line-clamp-1">
-                                {t.description}
+                              <div className="text-xs font-bold text-slate-800 truncate">
+                                {t.title || 'Untitled Case'}
                               </div>
-                            )}
+                              {t.description && (
+                                <div className="text-[11px] text-slate-500 line-clamp-1">
+                                  {t.description}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                        {availableTasks.length > 100 && (
+                          <div className="text-[10px] text-center text-slate-400 py-1.5 font-mono border-t border-slate-100">
+                            Showing first 100 of {availableTasks.length} tasks. Use search to filter.
                           </div>
-                        );
-                      })
+                        )}
+                      </>
                     )}
                   </div>
                 </div>
@@ -1147,6 +1159,15 @@ export default function CasesWorkspaceView({
           {/* View 1: Task Transactions */}
           {activeTab === 'transactions' && (
             <>
+              {totalServerCount !== null && totalServerCount > internalTaskRows.length && (
+                <div className="bg-amber-50/90 border-b border-amber-200 px-4 py-2 flex items-center justify-between text-xs text-amber-800 shrink-0">
+                  <div className="flex items-center space-x-2 font-medium">
+                    <AlertTriangle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                    <span>Loaded first {internalTaskRows.length.toLocaleString()} of {totalServerCount.toLocaleString()} total dataset transactions (server paginated).</span>
+                  </div>
+                  <span className="text-amber-700 font-mono text-[11px] bg-amber-100/70 px-2 py-0.5 rounded">Limit: 5,000</span>
+                </div>
+              )}
               {/* Table Toolbar */}
               <div className="p-4 border-b border-slate-100 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
                 <div className="flex items-center space-x-2 flex-1 max-w-sm">
@@ -1783,103 +1804,121 @@ export default function CasesWorkspaceView({
       )}
 
       {/* Slide-over Transaction Investigation Drawer */}
-      <TransactionInvestigationDrawer
-        isOpen={Boolean(investigatingTxn)}
-        onClose={() => setInvestigatingTxn(null)}
-        transaction={investigatingTxn}
-        caseItem={currentIssue}
-        onUpdateInvestigationStatus={(rowId, status) => {
-          const label = status === 'VERIFIED_MATCH' ? 'Reconciled' : status === 'FLAGGED_DISCREPANCY' ? 'Flagged' : status === 'CLOSED' ? 'Closed' : status === 'IN_PROGRESS' ? 'Investigating' : 'Pending';
-          setRowOverrides(prev => ({
-            ...prev,
-            [rowId]: { ...(prev[rowId] || {}), investigationStatus: status, investigationLabel: label }
-          }));
-          if (investigatingTxn) {
-            setInvestigatingTxn({ ...investigatingTxn, investigationStatus: status, investigationLabel: label });
-          }
-          if (onUpdateIssue && currentIssue) {
-            const currentData = currentIssue.firstLevelMappedData || [];
-            const updatedData = currentData.map((r: any) => {
-              if (r.id === rowId || r.transaction_id === rowId || r.tx_id === rowId) {
-                return { ...r, investigationStatus: status };
-              }
-              return r;
-            });
-            onUpdateIssue(currentIssue.id, { firstLevelMappedData: updatedData });
-          }
-        }}
-        onCloseTransaction={(rowId, note) => {
-          setRowOverrides(prev => ({
-            ...prev,
-            [rowId]: { ...(prev[rowId] || {}), investigationStatus: 'CLOSED', investigationLabel: 'Closed', isClosed: true, resolutionNote: note }
-          }));
-          if (investigatingTxn) {
-            setInvestigatingTxn({ ...investigatingTxn, investigationStatus: 'CLOSED', investigationLabel: 'Closed', isClosed: true, resolutionNote: note });
-          }
-          if (onUpdateIssue && currentIssue) {
-            const currentData = currentIssue.firstLevelMappedData || [];
-            const updatedData = currentData.map((r: any) => {
-              if (r.id === rowId || r.transaction_id === rowId || r.tx_id === rowId) {
-                return { ...r, investigationStatus: 'CLOSED', isClosed: true, resolutionNote: note };
-              }
-              return r;
-            });
-            onUpdateIssue(currentIssue.id, { firstLevelMappedData: updatedData });
-          }
-        }}
-        onTraceInDatabase={(txn) => {
-          console.log('Tracing transaction:', txn);
-        }}
-        onRevertTransaction={(txn) => {
-          const rowId = txn?.id || txn?.transaction_id || investigatingTxn?.id;
-          if (rowId) {
+      <ErrorBoundary fallbackTitle="Transaction Investigation Error" fallbackMessage="Could not render transaction deep-dive drawer.">
+        <TransactionInvestigationDrawer
+          isOpen={Boolean(investigatingTxn)}
+          onClose={() => setInvestigatingTxn(null)}
+          transaction={investigatingTxn}
+          caseItem={currentIssue}
+          onUpdateInvestigationStatus={async (rowId, status) => {
+            const previousOverrides = { ...rowOverrides };
+            const label = status === 'VERIFIED_MATCH' ? 'Reconciled' : status === 'FLAGGED_DISCREPANCY' ? 'Flagged' : status === 'CLOSED' ? 'Closed' : status === 'IN_PROGRESS' ? 'Investigating' : 'Pending';
             setRowOverrides(prev => ({
               ...prev,
-              [rowId]: { ...(prev[rowId] || {}), investigationStatus: 'UNINVESTIGATED', investigationLabel: 'Pending', isClosed: false }
+              [rowId]: { ...(prev[rowId] || {}), investigationStatus: status, investigationLabel: label }
             }));
-          }
-          if (investigatingTxn) {
-            setInvestigatingTxn({ ...investigatingTxn, investigationStatus: 'UNINVESTIGATED', investigationLabel: 'Pending', isClosed: false });
-          }
-        }}
-        onOpenCompareResolve={(txn) => {
-          setCompareResolveTxn(txn);
-        }}
-      />
+            if (investigatingTxn) {
+              setInvestigatingTxn({ ...investigatingTxn, investigationStatus: status, investigationLabel: label });
+            }
+            if (onUpdateIssue && currentIssue) {
+              try {
+                const currentData = currentIssue.firstLevelMappedData || [];
+                const updatedData = currentData.map((r: any) => {
+                  if (r.id === rowId || r.transaction_id === rowId || r.tx_id === rowId) {
+                    return { ...r, investigationStatus: status };
+                  }
+                  return r;
+                });
+                await onUpdateIssue(currentIssue.id, { firstLevelMappedData: updatedData });
+              } catch (err) {
+                console.error('Failed to persist investigation status, rolling back optimistic state:', err);
+                setRowOverrides(previousOverrides);
+              }
+            }
+          }}
+          onCloseTransaction={async (rowId, note) => {
+            const previousOverrides = { ...rowOverrides };
+            setRowOverrides(prev => ({
+              ...prev,
+              [rowId]: { ...(prev[rowId] || {}), investigationStatus: 'CLOSED', investigationLabel: 'Closed', isClosed: true, resolutionNote: note }
+            }));
+            if (investigatingTxn) {
+              setInvestigatingTxn({ ...investigatingTxn, investigationStatus: 'CLOSED', investigationLabel: 'Closed', isClosed: true, resolutionNote: note });
+            }
+            if (onUpdateIssue && currentIssue) {
+              try {
+                const currentData = currentIssue.firstLevelMappedData || [];
+                const updatedData = currentData.map((r: any) => {
+                  if (r.id === rowId || r.transaction_id === rowId || r.tx_id === rowId) {
+                    return { ...r, investigationStatus: 'CLOSED', isClosed: true, resolutionNote: note };
+                  }
+                  return r;
+                });
+                await onUpdateIssue(currentIssue.id, { firstLevelMappedData: updatedData });
+              } catch (err) {
+                console.error('Failed to persist transaction close, rolling back optimistic state:', err);
+                setRowOverrides(previousOverrides);
+              }
+            }
+          }}
+          onTraceInDatabase={(txn) => {
+            console.log('Tracing transaction:', txn);
+          }}
+          onRevertTransaction={(txn) => {
+            const rowId = txn?.id || txn?.transaction_id || investigatingTxn?.id;
+            if (rowId) {
+              setRowOverrides(prev => ({
+                ...prev,
+                [rowId]: { ...(prev[rowId] || {}), investigationStatus: 'UNINVESTIGATED', investigationLabel: 'Pending', isClosed: false }
+              }));
+            }
+            if (investigatingTxn) {
+              setInvestigatingTxn({ ...investigatingTxn, investigationStatus: 'UNINVESTIGATED', investigationLabel: 'Pending', isClosed: false });
+            }
+          }}
+          onOpenCompareResolve={(txn) => {
+            setCompareResolveTxn(txn);
+          }}
+        />
+      </ErrorBoundary>
 
       {/* Screen 23: Compare & Resolve Modal */}
       {compareResolveTxn && (
-        <CompareAndResolveModal
-          isOpen={Boolean(compareResolveTxn)}
-          onClose={() => setCompareResolveTxn(null)}
-          transaction={compareResolveTxn}
-          caseId={currentIssue?.id || 'ISS-1792258589203-7468'}
-          stageName="Stage 2 Settlement clearing"
-          sourceDatabase="Sett"
-          sourceTable="auth_log_tab"
-          currentUserId={currentUser?.id}
-          currentUserName={currentUser?.username}
-          onSubmitSuccess={(prop) => {
-            console.log('Resolution proposed successfully:', prop);
-          }}
-        />
+        <ErrorBoundary fallbackTitle="Compare & Resolve Error" fallbackMessage="Could not render comparison resolution dialog.">
+          <CompareAndResolveModal
+            isOpen={Boolean(compareResolveTxn)}
+            onClose={() => setCompareResolveTxn(null)}
+            transaction={compareResolveTxn}
+            caseId={currentIssue?.id || 'ISS-1792258589203-7468'}
+            stageName="Stage 2 Settlement clearing"
+            sourceDatabase="Sett"
+            sourceTable="auth_log_tab"
+            currentUserId={currentUser?.id}
+            currentUserName={currentUser?.username}
+            onSubmitSuccess={(prop) => {
+              console.log('Resolution proposed successfully:', prop);
+            }}
+          />
+        </ErrorBoundary>
       )}
 
       {/* Screen 27: Case Discussion Drawer */}
       {isDiscussionDrawerOpen && currentIssue && (
-        <CaseDiscussionDrawer
-          isOpen={isDiscussionDrawerOpen}
-          onClose={() => setIsDiscussionDrawerOpen(false)}
-          issue={currentIssue}
-          currentUser={currentUser}
-          onOpenEscalateModal={() => {
-            if (isAlreadyEscalated) {
-              alert('This case has already been escalated and cannot be escalated more than once.');
-              return;
-            }
-            setIsEscalateModalOpen(true);
-          }}
-        />
+        <ErrorBoundary fallbackTitle="Case Discussion Error" fallbackMessage="Could not render team discussion chat.">
+          <CaseDiscussionDrawer
+            isOpen={isDiscussionDrawerOpen}
+            onClose={() => setIsDiscussionDrawerOpen(false)}
+            issue={currentIssue}
+            currentUser={currentUser}
+            onOpenEscalateModal={() => {
+              if (isAlreadyEscalated) {
+                alert('This case has already been escalated and cannot be escalated more than once.');
+                return;
+              }
+              setIsEscalateModalOpen(true);
+            }}
+          />
+        </ErrorBoundary>
       )}
 
       {/* Screen 29: Escalate to Team Modal */}

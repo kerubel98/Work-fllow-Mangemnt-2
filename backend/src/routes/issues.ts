@@ -271,7 +271,7 @@ issuesRouter.get('/:id', async (req: Request, res: Response) => {
 issuesRouter.get('/:id/transactions', async (req: Request, res: Response) => {
   try {
     const page = Math.max(1, parseInt(req.query.page as string || '1', 10) || 1);
-    const limit = Math.max(1, Math.min(parseInt(req.query.limit as string || '50', 10) || 50, 500));
+    const limit = Math.max(1, Math.min(parseInt(req.query.limit as string || '50', 10) || 50, 5000));
     const batchId = req.query.batchId as string | undefined;
     const result = await repo.getTaskDatasetTransactions(req.params.id, page, limit, batchId);
     return res.json({

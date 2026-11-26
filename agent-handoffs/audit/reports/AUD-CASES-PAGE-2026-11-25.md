@@ -7,7 +7,7 @@
 **Governing Invariants & Principles**: [`AGENTS.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/AGENTS.md) (Rule 1: PostgreSQL Reality, Rule 6: Frontend Fault Tolerance & Error Boundary, Rule 7: Maker-Checker Dual Authorization, Rule 16: Full-Viewport Workspace Layout, Rule 19: Team-Scoped Connection & Data Isolation)  
 **Target Scope**: Cases Workspace View, Investigation Workspace, Validation Orchestrator Workspace, Issue Detail View, Transaction Drawers & Modals, and Related Backend Dataset / Central Ledger Routes  
 **Branch / Commit**: `feature/frontend-redesign` (`d7bf228`)  
-**Status**: `OPEN`  
+**Status**: `RESOLVED`  
 
 ---
 
@@ -53,12 +53,12 @@ This audit (`AUD-CASES-PAGE-2026-11-25`) establishes the 8th audit scope, target
 
 ## 4. Findings Summary Table
 
-| Finding ID | Severity | Category | Location | Summary |
-| :--- | :--- | :--- | :--- | :--- |
-| `AUD-CAS-001` | **HIGH** | Data Integrity & UX | `CasesWorkspaceView.tsx:126`; `issues.ts:274` | Client-side silent record truncation via mismatched pagination fetch (`limit=5000` requested vs `500` backend cap). |
-| `AUD-CAS-002` | **MEDIUM** | Performance & Resilience | `ValidationOrchestratorWorkspace.tsx:3656-3686`; `CasesWorkspaceView.tsx:430-443` | Unbounded full-dataset React state & unvirtualized table DOM causing UI freezes on large datasets. |
-| `AUD-CAS-003` | **MEDIUM** | Fault Tolerance & Consistency | `InvestigationWorkspace.tsx:28-34`; `CasesWorkspaceView.tsx:149, 1300` | Missing granular sub-pane error boundaries and unhandled optimistic row override desynchronization. |
-| `AUD-CAS-004` | **LOW** | Security & Team Isolation | `backend/src/routes/investigations.ts:267-294` | `GET /api/investigations/:taskId/central-records` lacks team ownership and visibility guards. |
+| Finding ID | Severity | Category | Location | Summary | Status |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| `AUD-CAS-001` | **HIGH** | Data Integrity & UX | `CasesWorkspaceView.tsx:126`; `issues.ts:274` | Client-side silent record truncation via mismatched pagination fetch (`limit=5000` requested vs `500` backend cap). | **RESOLVED** |
+| `AUD-CAS-002` | **MEDIUM** | Performance & Resilience | `ValidationOrchestratorWorkspace.tsx:3656-3686`; `CasesWorkspaceView.tsx:430-443` | Unbounded full-dataset React state & unvirtualized table DOM causing UI freezes on large datasets. | **RESOLVED** |
+| `AUD-CAS-003` | **MEDIUM** | Fault Tolerance & Consistency | `InvestigationWorkspace.tsx:28-34`; `CasesWorkspaceView.tsx:149, 1300` | Missing granular sub-pane error boundaries and unhandled optimistic row override desynchronization. | **RESOLVED** |
+| `AUD-CAS-004` | **LOW** | Security & Team Isolation | `backend/src/routes/investigations.ts:267-294` | `GET /api/investigations/:taskId/central-records` lacks team ownership and visibility guards. | **RESOLVED** |
 
 ---
 
@@ -66,7 +66,7 @@ This audit (`AUD-CASES-PAGE-2026-11-25`) establishes the 8th audit scope, target
 
 ### AUD-CAS-001: Client-Side Silent Record Truncation via Mismatched Pagination Fetch
 - **Severity**: HIGH
-- **Status**: OPEN
+- **Status**: RESOLVED (Resolved via limit expansion to 5000 in `issues.ts:274` & `totalServerCount` comparison alert in `CasesWorkspaceView.tsx`)
 - **Category**: Data Integrity & UX Correctness
 - **Location**: [`frontend/src/components/investigation/CasesWorkspaceView.tsx#L126`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/frontend/src/components/investigation/CasesWorkspaceView.tsx#L126); [`backend/src/routes/issues.ts#L273-L274`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/backend/src/routes/issues.ts#L273-L274)
 - **Evidence**:
@@ -93,7 +93,7 @@ This audit (`AUD-CASES-PAGE-2026-11-25`) establishes the 8th audit scope, target
 
 ### AUD-CAS-002: Unbounded Full-Dataset React State & Unvirtualized Table DOM
 - **Severity**: MEDIUM
-- **Status**: OPEN
+- **Status**: RESOLVED (Resolved via 100-item task switcher windowing with overflow guidance and active table pagination in `CasesWorkspaceView.tsx`)
 - **Category**: Performance & Client Resilience
 - **Location**: [`frontend/src/components/investigation/ValidationOrchestratorWorkspace.tsx#L3656-L3686`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/frontend/src/components/investigation/ValidationOrchestratorWorkspace.tsx#L3656-L3686); [`frontend/src/components/investigation/CasesWorkspaceView.tsx#L430-L443`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/frontend/src/components/investigation/CasesWorkspaceView.tsx#L430-L443)
 - **Evidence**:
@@ -138,7 +138,7 @@ This audit (`AUD-CASES-PAGE-2026-11-25`) establishes the 8th audit scope, target
 
 ### AUD-CAS-003: Missing Granular Sub-Pane Error Boundaries & Optimistic Override Desynchronization
 - **Severity**: MEDIUM
-- **Status**: OPEN
+- **Status**: RESOLVED (Resolved via localized `<ErrorBoundary>` wrappers around side drawers/modals and optimistic rollback handling in `CasesWorkspaceView.tsx`)
 - **Category**: Fault Tolerance & State Consistency
 - **Location**: [`frontend/src/components/investigation/InvestigationWorkspace.tsx#L28-L34`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/frontend/src/components/investigation/InvestigationWorkspace.tsx#L28-L34); [`frontend/src/components/investigation/CasesWorkspaceView.tsx#L149`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/frontend/src/components/investigation/CasesWorkspaceView.tsx#L149)
 - **Evidence**:
@@ -168,7 +168,7 @@ This audit (`AUD-CASES-PAGE-2026-11-25`) establishes the 8th audit scope, target
 
 ### AUD-CAS-004: Unauthenticated Central Transaction Ledger Ingress Lacks Team Ownership Guard
 - **Severity**: LOW
-- **Status**: OPEN
+- **Status**: RESOLVED (Resolved via task existence check and strict team ownership/visibility verification in `investigations.ts`)
 - **Category**: Security & Team Isolation
 - **Location**: [`backend/src/routes/investigations.ts#L267-L294`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/backend/src/routes/investigations.ts#L267-L294)
 - **Evidence**:
@@ -234,9 +234,9 @@ This audit (`AUD-CASES-PAGE-2026-11-25`) establishes the 8th audit scope, target
 
 ## 9. Audit Conclusion & Sign-Off Readiness
 
-- **Audit Result**: `OPEN` (Remediation Required).
-- **Severity Breakdown**: 0 Critical, 1 High, 2 Medium, 1 Low.
-- **Sign-Off Status**: **BLOCKED** until `AUD-CAS-001` (High) and `AUD-CAS-004` (Low/Security) are remediated and verified.
+- **Audit Result**: `RESOLVED` (All 4 findings remediated, certified, and signed off).
+- **Severity Breakdown**: 0 Critical, 0 High, 0 Medium, 0 Low remaining.
+- **Sign-Off Status**: **CERTIFIED & SIGNED OFF** via [`SIGN-OFF-CASES-PAGE-2026-11-26.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/agent-handoffs/audit/sign-off/SIGN-OFF-CASES-PAGE-2026-11-26.md).
 
 ---
 
