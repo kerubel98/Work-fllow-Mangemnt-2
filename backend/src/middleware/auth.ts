@@ -63,8 +63,8 @@ export function requireRole(...allowedRoles: string[]) {
       const isAllowed = allowedRoles.some(r => r.toLowerCase() === userRole || userRole === 'admin');
 
       if (!isAllowed) {
-        res.status(403).json({ 
-          error: `Forbidden: Insufficient privileges. Required role: [${allowedRoles.join(', ')}], current role: ${req.user.role}.` 
+        res.status(403).json({
+          error: `Forbidden: Insufficient privileges. Required role: [${allowedRoles.join(', ')}], current role: ${req.user.role}.`
         });
         return;
       }
