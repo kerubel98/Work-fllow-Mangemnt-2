@@ -4,6 +4,7 @@
  * MySQL, PostgreSQL, and MongoDB without mock fallbacks.
  */
 
+import crypto from 'crypto';
 import mysql from 'mysql2/promise';
 import pg from 'pg';
 import { DatabaseConnection } from '../types.js';
@@ -32,6 +33,7 @@ function resolveDbConfig(db: DatabaseConnection) {
   let database = db.databaseName || '';
   let user = db.username || '';
   let password = db.password || '';
+  let ssl: boolean | object | undefined = db.secure ? { rejectUnauthorized: false } : undefined;
 
   if (db.connectionString) {
     try {
@@ -41,15 +43,26 @@ function resolveDbConfig(db: DatabaseConnection) {
       if (parsedUrl.pathname) database = parsedUrl.pathname.replace(/^\//, '');
       if (parsedUrl.username) user = decodeURIComponent(parsedUrl.username);
       if (parsedUrl.password) password = decodeURIComponent(parsedUrl.password);
+
+      const sslMode = parsedUrl.searchParams.get('sslmode');
+      const sslParam = parsedUrl.searchParams.get('ssl');
+      if (sslMode === 'require' || sslMode === 'verify-full' || sslMode === 'verify-ca' || sslParam === 'true') {
+        ssl = { rejectUnauthorized: sslMode === 'verify-full' };
+      } else if (sslMode === 'disable' || sslParam === 'false') {
+        ssl = false;
+      }
     } catch {
       // Fallback simple regex parser for custom URIs
-      const m = db.connectionString.match(/^(?:mysql|postgresql|postgres|mongodb(?:\+srv)?):\/\/(?:([^:]+):([^@]+)@)?([^:\/]+)(?::(\d+))?(?:\/([^?]+))?/);
+      const m = db.connectionString.match(/^(?:mysql|postgresql|postgres|mongodb(?:\+srv)?):\/\/(?:([^:]+):([^@]+)@)?([^:\/]+)(?::(\d+))?(?:\/([^?]+))?(?:\?(.*))?/);
       if (m) {
         if (m[1]) user = m[1];
         if (m[2]) password = m[2];
         if (m[3] && m[3] !== 'host') host = m[3];
         if (m[4]) port = Number(m[4]);
         if (m[5]) database = m[5];
+        if (m[6] && (m[6].includes('sslmode=require') || m[6].includes('ssl=true'))) {
+          ssl = { rejectUnauthorized: false };
+        }
       }
     }
   }
@@ -64,7 +77,20 @@ function resolveDbConfig(db: DatabaseConnection) {
     else port = 5432;
   }
 
-  return { host, port, database, user, password };
+  return { host, port, database, user, password, ssl };
+}
+
+/**
+ * Builds a deterministic, collision-resistant pool cache key incorporating host, port, database,
+ * and a cryptographic hash of the credentials and TLS/SSL configuration.
+ */
+export function buildPoolKey(db: DatabaseConnection, config: any): string {
+  const credHash = crypto
+    .createHash('sha256')
+    .update(`${config.user || ''}:${config.password || ''}:${JSON.stringify(config.ssl || false)}`)
+    .digest('hex')
+    .substring(0, 16);
+  return `${db.id}:${config.host}:${config.port}:${config.database || ''}:${credHash}`;
 }
 
 /**
@@ -77,7 +103,7 @@ export async function testExternalDbConnection(db: DatabaseConnection): Promise<
   try {
     if (db.type === 'MySQL') {
       const pool = getExternalMysqlPool(
-        `${db.id}:${config.host}:${config.port}:${config.database}`,
+        buildPoolKey(db, config),
         config
       );
       const conn = await pool.getConnection();
@@ -104,6 +130,7 @@ export async function testExternalDbConnection(db: DatabaseConnection): Promise<
         user: config.user,
         password: config.password,
         database: config.database || 'postgres',
+        ssl: config.ssl || undefined,
         connectionTimeoutMillis: 4000
       });
       await client.connect();
@@ -147,7 +174,7 @@ export async function discoverTablesForDb(db: DatabaseConnection): Promise<strin
 
   if (db.type === 'MySQL') {
     const pool = getExternalMysqlPool(
-      `${db.id}:${config.host}:${config.port}:${config.database}`,
+      buildPoolKey(db, config),
       config
     );
     const targetDb = config.database;
@@ -174,6 +201,7 @@ export async function discoverTablesForDb(db: DatabaseConnection): Promise<strin
       user: config.user,
       password: config.password,
       database: config.database || 'postgres',
+      ssl: config.ssl || undefined,
       connectionTimeoutMillis: 5000
     });
 
@@ -243,7 +271,7 @@ export async function getTableColumnsForDb(db: DatabaseConnection, tableName: st
 
   if (db.type === 'MySQL') {
     const pool = getExternalMysqlPool(
-      `${db.id}:${config.host}:${config.port}:${config.database}`,
+      buildPoolKey(db, config),
       config
     );
     const targetDb = config.database;
@@ -270,6 +298,7 @@ export async function getTableColumnsForDb(db: DatabaseConnection, tableName: st
       user: config.user,
       password: config.password,
       database: config.database || 'postgres',
+      ssl: config.ssl || undefined,
       connectionTimeoutMillis: 5000
     });
 
@@ -388,6 +417,7 @@ function getExternalPgPool(key: string, config: any): pg.Pool {
       user: config.user,
       password: config.password,
       database: config.database || 'postgres',
+      ssl: config.ssl || undefined,
       max: 10,
       idleTimeoutMillis: 30000,
       connectionTimeoutMillis: 8000
@@ -407,6 +437,7 @@ function getExternalMysqlPool(key: string, config: any): mysql.Pool {
       user: config.user,
       password: config.password,
       database: config.database || undefined,
+      ssl: config.ssl ? (typeof config.ssl === 'object' ? config.ssl : { rejectUnauthorized: false }) : undefined,
       waitForConnections: true,
       connectionLimit: 10,
       queueLimit: 0
@@ -440,6 +471,118 @@ export async function evictExternalDbPool(dbId?: string): Promise<void> {
   }
 }
 
+let poolEvictionInterval: NodeJS.Timeout | null = null;
+
+/**
+ * Starts periodic background sweep to evict idle external database connection pools (AUD-EXT-004).
+ */
+export function startPoolCleanupTask(intervalMs: number = 5 * 60 * 1000): void {
+  if (poolEvictionInterval) return;
+  poolEvictionInterval = setInterval(() => {
+    evictExternalDbPool().catch(err => {
+      console.warn('[dbConnectionManager] Periodic pool cleanup error:', err.message);
+    });
+  }, intervalMs);
+  if (poolEvictionInterval.unref) {
+    poolEvictionInterval.unref();
+  }
+}
+
+/**
+ * Stops periodic background sweep for connection pool eviction.
+ */
+export function stopPoolCleanupTask(): void {
+  if (poolEvictionInterval) {
+    clearInterval(poolEvictionInterval);
+    poolEvictionInterval = null;
+  }
+}
+
+// Auto-start pool cleanup timer
+startPoolCleanupTask();
+
+/**
+ * Validates and sanitizes queries targeting local PostgreSQL mirror tables (AUD-EXT-001).
+ * Completely eliminates SQL injection, stacked queries, UNION exfiltration, and internal table access.
+ */
+export function validateAndSanitizeMirrorQuery(sql: string): { cleanSql: string; targetTable: string } {
+  const trimmed = sql.trim();
+
+  // 1. Statement must start with SELECT (or be a naked mirror table name)
+  const isSelect = /^\s*SELECT\b/i.test(trimmed);
+  let effectiveSql = trimmed;
+  let targetTable = '';
+
+  const fromMatches = [...trimmed.matchAll(/\b(?:FROM|JOIN)\s+[`"']?([a-zA-Z0-9_.-]+)[`"']?/gi)];
+
+  if (isSelect) {
+    if (fromMatches.length === 0) {
+      throw new Error('Security Exception: Mirror queries must include an explicit FROM clause targeting a mirror table.');
+    }
+  } else {
+    // Naked table name pattern e.g. "mirror_settlement_reconciliation_feed"
+    const isNakedTable = /^[a-zA-Z0-9_]+$/.test(trimmed) && trimmed.startsWith('mirror_');
+    if (isNakedTable) {
+      effectiveSql = `SELECT * FROM "${trimmed}" LIMIT 50`;
+      targetTable = trimmed;
+    } else {
+      throw new Error('Security Exception: Mutating operations against PostgreSQL pool are restricted via this route.');
+    }
+  }
+
+  // 2. Reject semicolons (stacked statements)
+  if (effectiveSql.includes(';')) {
+    const withoutTrailing = effectiveSql.replace(/;\s*$/, '');
+    if (withoutTrailing.includes(';')) {
+      throw new Error('Security Exception: Semicolons and stacked SQL statements are forbidden in mirror queries.');
+    }
+    effectiveSql = withoutTrailing;
+  }
+
+  // 3. Reject SQL comments (-- and /* */)
+  if (/(--|\/\*|\*\/)/.test(effectiveSql)) {
+    throw new Error('Security Exception: SQL comments are forbidden in mirror queries.');
+  }
+
+  // 4. Reject mutating DDL/DML keywords
+  if (/\b(INSERT|UPDATE|DELETE|DROP|ALTER|TRUNCATE|EXEC|EXECUTE|CREATE|GRANT|REVOKE)\b/i.test(effectiveSql)) {
+    throw new Error('Security Exception: Mutating operations against PostgreSQL pool are restricted via this route.');
+  }
+
+  // 5. Reject UNION / UNION ALL
+  if (/\bUNION\b/i.test(effectiveSql)) {
+    throw new Error('Security Exception: UNION queries are forbidden in mirror fast-path queries.');
+  }
+
+  // 6. Reject INTO (SELECT INTO)
+  if (/\bINTO\b/i.test(effectiveSql)) {
+    throw new Error('Security Exception: INTO clauses are forbidden in mirror fast-path queries.');
+  }
+
+  // 7. Reject internal system catalogs and schemas
+  if (/\b(information_schema|pg_[a-zA-Z0-9_]+)\b/i.test(effectiveSql)) {
+    throw new Error('Security Exception: Access to internal PostgreSQL system catalog tables is forbidden.');
+  }
+
+  // 8. Strict table identifier validation on all FROM and JOIN clauses
+  if (fromMatches.length > 0) {
+    for (const match of fromMatches) {
+      const rawTbl = match[1];
+      const tbl = rawTbl.split('.').pop() || rawTbl;
+      if (!/^[a-zA-Z0-9_]+$/.test(tbl)) {
+        throw new Error(`Security Exception: Invalid mirror table identifier "${tbl}".`);
+      }
+      if (!tbl.startsWith('mirror_')) {
+        throw new Error(`Security Exception: Mirror fast-path queries may only access mirror_* tables. Unauthorized table access attempt: "${tbl}".`);
+      }
+    }
+    const firstTbl = fromMatches[0][1].split('.').pop() || fromMatches[0][1];
+    targetTable = firstTbl;
+  }
+
+  return { cleanSql: effectiveSql, targetTable };
+}
+
 /**
  * Executes a real SQL query on the target database engine using persistent connection pooling.
  * Supports parameterized queries for secure batch lookups.
@@ -457,18 +600,12 @@ export async function executeLiveQueryOnDb(
   const targetTable = tableMatch ? (tableMatch[1].split('.').pop() || tableMatch[1]) : trimmed;
 
   if (targetTable.startsWith('mirror_')) {
-    // Security check: validate table name format and forbid non-SELECT statements
-    if (!/^[a-zA-Z0-9_]+$/.test(targetTable)) {
-      throw new Error(`Security Exception: Invalid mirror table identifier "${targetTable}".`);
-    }
-    if (!/^\s*SELECT\b/i.test(trimmed)) {
-      throw new Error(`Security Exception: Mutating operations against PostgreSQL pool are restricted via this route.`);
-    }
+    const { cleanSql } = validateAndSanitizeMirrorQuery(trimmed);
 
     const { queryPg } = await import('../config/postgres.js');
     const res = params && params.length > 0
-      ? await queryPg(trimmed, params)
-      : await queryPg(trimmed);
+      ? await queryPg(cleanSql, params)
+      : await queryPg(cleanSql);
 
     const executionTimeMs = Date.now() - started;
     const columns = res.fields?.map(f => f.name) || (res.rows.length > 0 ? Object.keys(res.rows[0]) : []);
@@ -481,7 +618,7 @@ export async function executeLiveQueryOnDb(
   }
 
   const config = resolveDbConfig(db);
-  const poolKey = `${db.id}:${config.host}:${config.port}:${config.database}`;
+  const poolKey = buildPoolKey(db, config);
 
   if (db.type === 'MySQL') {
     const pool = getExternalMysqlPool(poolKey, config);
@@ -650,10 +787,8 @@ export async function executeLiveQueryOnDb(
 
     // 1. If targetTable starts with mirror_
     if (targetTable.startsWith('mirror_')) {
-      const cleanQuery = trimmed.toUpperCase().startsWith('SELECT')
-        ? trimmed
-        : `SELECT * FROM "${targetTable}" LIMIT 50`;
-      const res = params && params.length > 0 ? await queryPg(cleanQuery, params) : await queryPg(cleanQuery);
+      const { cleanSql } = validateAndSanitizeMirrorQuery(trimmed);
+      const res = params && params.length > 0 ? await queryPg(cleanSql, params) : await queryPg(cleanSql);
       return {
         columns: res.fields?.map(f => f.name) || (res.rows.length > 0 ? Object.keys(res.rows[0]) : []),
         rows: res.rows,

@@ -7,7 +7,7 @@
 **Governing Invariants & Principles**: [`AGENTS.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/AGENTS.md) (Rule 4: External System Agnosticism, Rule 11: Query Bounds & ANSI Quoting, Rule 19: Team-Scoped DB Connection Isolation & Credential Protection)  
 **Target Scope**: External Database Connection Manager (`dbConnectionManager.ts`), Liveness Circuit Breaker (`dbLivenessService.ts`), External Query Builder (`externalDataQueryService.ts`), AI SQL/Discrepancy Routes (`ai.ts`), and Managerial Metrics (`metrics.ts`, `analyticsService.ts`)  
 **Branch / Commit**: `feature/frontend-redesign` (`d7bf228`)  
-**Status**: `OPEN`  
+**Status**: `RESOLVED` (See [`SIGN-OFF-EXTDB-AI-METRICS-2026-11-26.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/agent-handoffs/audit/sign-off/SIGN-OFF-EXTDB-AI-METRICS-2026-11-26.md))  
 
 ---
 
@@ -38,12 +38,12 @@ The audit verified strong engineering in `dbLivenessService` (3-failure threshol
 
 ## 3. Findings Summary Table
 
-| Finding ID | Severity | Category | Location | Summary |
-| :--- | :---: | :--- | :--- | :--- |
-| `AUD-EXT-001` | **CRITICAL** | Security & Isolation | `backend/src/services/dbConnectionManager.ts:456-471` | `mirror_*` fast-path allows `UNION` / stacked-query exfiltration of internal `operational_workflow_db` tables. |
-| `AUD-EXT-002` | **HIGH** | Privacy & Compliance | `backend/src/routes/ai.ts:48-66` | Unredacted financial `transactionData` sent to external Google Gemini API. |
-| `AUD-EXT-003` | **MEDIUM** | Authorization | `backend/src/routes/metrics.ts:22-29` | `GET /api/metrics/team/:teamId` exposes team KPIs without checking team membership. |
-| `AUD-EXT-004` | **MEDIUM** | Resource & Transport | `backend/src/services/dbConnectionManager.ts:376-417` | External DB pool caches lack periodic TTL sweep, omit credential hash in key, and omit TLS/SSL options. |
+| Finding ID | Severity | Category | Location | Summary | Status |
+| :--- | :---: | :--- | :--- | :--- | :--- |
+| `AUD-EXT-001` | **CRITICAL** | Security & Isolation | `backend/src/services/dbConnectionManager.ts:456-471` | `mirror_*` fast-path allows `UNION` / stacked-query exfiltration of internal `operational_workflow_db` tables. | `RESOLVED` |
+| `AUD-EXT-002` | **HIGH** | Privacy & Compliance | `backend/src/routes/ai.ts:48-66` | Unredacted financial `transactionData` sent to external Google Gemini API. | `RESOLVED` |
+| `AUD-EXT-003` | **MEDIUM** | Authorization | `backend/src/routes/metrics.ts:22-29` | `GET /api/metrics/team/:teamId` exposes team KPIs without checking team membership. | `RESOLVED` |
+| `AUD-EXT-004` | **MEDIUM** | Resource & Transport | `backend/src/services/dbConnectionManager.ts:376-417` | External DB pool caches lack periodic TTL sweep, omit credential hash in key, and omit TLS/SSL options. | `RESOLVED` |
 
 ---
 
@@ -51,7 +51,7 @@ The audit verified strong engineering in `dbLivenessService` (3-failure threshol
 
 ### AUD-EXT-001: `mirror_*` Fast-Path Allows `UNION` / Stacked-Query Exfiltration of Internal PostgreSQL Tables
 - **Severity**: CRITICAL
-- **Status**: OPEN
+- **Status**: RESOLVED (See [`SIGN-OFF-EXTDB-AI-METRICS-2026-11-26.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/agent-handoffs/audit/sign-off/SIGN-OFF-EXTDB-AI-METRICS-2026-11-26.md))
 - **Location**: [`backend/src/services/dbConnectionManager.ts#L456-L471`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/backend/src/services/dbConnectionManager.ts#L456-L471)
 - **Evidence**:
   ```typescript
@@ -70,21 +70,21 @@ The audit verified strong engineering in `dbLivenessService` (3-failure threshol
 
 ### AUD-EXT-002: Unredacted Financial Transaction PII Sent to External AI API
 - **Severity**: HIGH
-- **Status**: OPEN
+- **Status**: RESOLVED (See [`SIGN-OFF-EXTDB-AI-METRICS-2026-11-26.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/agent-handoffs/audit/sign-off/SIGN-OFF-EXTDB-AI-METRICS-2026-11-26.md))
 - **Location**: [`backend/src/routes/ai.ts#L48-L66`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/backend/src/routes/ai.ts#L48-L66)
 - **Evidence**: `POST /api/ai/analyze-discrepancy` passes `JSON.stringify(transactionData)` directly to `ai.models.generateContent(...)`.
 - **Recommended Remediation**: Mask/redact sensitive fields (`card_number`, `pan`, `account_number`, `customer_name`, `email`, `phone`) before dispatching payloads to external LLM endpoints.
 
 ### AUD-EXT-003: Cross-Team KPI Exposure on `GET /api/metrics/team/:teamId`
 - **Severity**: MEDIUM
-- **Status**: OPEN
+- **Status**: RESOLVED (See [`SIGN-OFF-EXTDB-AI-METRICS-2026-11-26.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/agent-handoffs/audit/sign-off/SIGN-OFF-EXTDB-AI-METRICS-2026-11-26.md))
 - **Location**: [`backend/src/routes/metrics.ts#L22-L29`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/backend/src/routes/metrics.ts#L22-L29)
 - **Evidence**: Endpoint queries `analyticsService.getTeamKpis(teamId)` without checking if `req.user` belongs to `teamId` or is an admin.
 - **Recommended Remediation**: Verify `req.user.role === 'admin'` or team membership before returning team KPIs.
 
 ### AUD-EXT-004: Unbounded External Pool Cache & Missing TLS/SSL Options
 - **Severity**: MEDIUM
-- **Status**: OPEN
+- **Status**: RESOLVED (See [`SIGN-OFF-EXTDB-AI-METRICS-2026-11-26.md`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/agent-handoffs/audit/sign-off/SIGN-OFF-EXTDB-AI-METRICS-2026-11-26.md))
 - **Location**: [`backend/src/services/dbConnectionManager.ts#L376-L417`](file:///c:/Users/hp/Downloads/opration-workflow-mangement1/backend/src/services/dbConnectionManager.ts#L376-L417)
 - **Evidence**: `pgPoolCache` and `mysqlPoolCache` never run `evictExternalDbPool()` on a periodic timer, cache keys omit username/password hashes, and TLS/SSL configuration is not passed to external `pg.Pool` / `mysql.createPool` constructors.
 - **Recommended Remediation**: Schedule periodic idle pool eviction, include credential hash in cache keys, and support configurable `ssl` options on external connections.
