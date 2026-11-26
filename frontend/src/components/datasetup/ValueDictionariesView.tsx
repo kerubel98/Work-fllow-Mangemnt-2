@@ -364,9 +364,11 @@ export function ValueDictionariesView() {
       setSaveSuccess(true);
       setHasUnsavedChanges(false);
       setTimeout(() => setSaveSuccess(false), 1500);
-    } catch (e) {
+    } catch (e: any) {
       console.warn('Instant delete persist warning:', e);
+      setSaveError(e.message || 'Failed to persist deletion to database');
       setHasUnsavedChanges(true);
+      setTimeout(() => setSaveError(null), 5000);
     }
   };
 
@@ -402,9 +404,11 @@ export function ValueDictionariesView() {
       setHasUnsavedChanges(false);
       setTimeout(() => setSaveSuccess(false), 1500);
       newCodeInputRef.current?.focus();
-    } catch (e) {
+    } catch (e: any) {
       console.warn('Instant add persist warning:', e);
+      setSaveError(e.message || 'Failed to persist new pair to database');
       setHasUnsavedChanges(true);
+      setTimeout(() => setSaveError(null), 5000);
     }
   };
 
@@ -463,9 +467,11 @@ export function ValueDictionariesView() {
       setSaveSuccess(true);
       setHasUnsavedChanges(false);
       setTimeout(() => setSaveSuccess(false), 1500);
-    } catch (e) {
+    } catch (e: any) {
       console.warn('Instant add from missing persist warning:', e);
+      setSaveError(e.message || 'Failed to persist missing pair to database');
       setHasUnsavedChanges(true);
+      setTimeout(() => setSaveError(null), 5000);
     }
   };
 

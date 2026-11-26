@@ -165,6 +165,7 @@ export const dataSanitizerService = {
   /**
    * Intelligently auto-maps raw dataset headers against Global Standard Directory columns
    * using exact matching, slug normalization, and domain-aware financial/settlement synonyms.
+   * Enforces target key uniqueness (Set tracking) to eliminate collision overwrites.
    */
   async autoMapHeaders(
     rawHeaders: string[],
@@ -176,87 +177,176 @@ export const dataSanitizerService = {
     const fields = standardFields || await repo.getGlobalStandardDirectory();
     if (!fields || fields.length === 0) return mapping;
 
+    const assignedTargetKeys = new Set<string>();
+    const unmapped: { cleanHeader: string; slugH: string }[] = [];
+
+    // Helper to claim a target key safely without collision
+    const claimTarget = (cleanHeader: string, candidate: GlobalStandardDirectoryRecord | undefined): boolean => {
+      if (!candidate) return false;
+      const keyLower = candidate.key.toLowerCase();
+      if (assignedTargetKeys.has(keyLower)) return false;
+      mapping[cleanHeader] = candidate.key;
+      assignedTargetKeys.add(keyLower);
+      return true;
+    };
+
+    // Helper to find first available unassigned field matching predicate
+    const findAvailable = (predicate: (f: GlobalStandardDirectoryRecord) => boolean): GlobalStandardDirectoryRecord | undefined => {
+      return fields.find(f => !assignedTargetKeys.has(f.key.toLowerCase()) && predicate(f));
+    };
+
+    // PASS 1: Exact matches by column key or human label
     for (const rawH of rawHeaders) {
       if (!rawH || typeof rawH !== 'string') continue;
       const cleanHeader = rawH.trim();
       const slugH = cleanHeader.toLowerCase().replace(/[-_.\s]/g, '');
 
-      // 1. Exact match by key or label
-      const exactMatch = fields.find(f => {
+      const exactMatch = findAvailable(f => {
         const slugKey = f.key.toLowerCase().replace(/[-_.\s]/g, '');
         const slugLabel = (f.label || '').toLowerCase().replace(/[-_.\s]/g, '');
         return slugKey === slugH || slugLabel === slugH;
       });
-      if (exactMatch) {
-        mapping[cleanHeader] = exactMatch.key;
+
+      if (exactMatch && claimTarget(cleanHeader, exactMatch)) {
         continue;
       }
+      unmapped.push({ cleanHeader, slugH });
+    }
 
-      // 2. High-priority Financial & Settlement domain synonym rules (prioritized for standard directory keys)
+    // PASS 2: High-confidence exact regex patterns for financial domain
+    const remainingAfterPass2: { cleanHeader: string; slugH: string }[] = [];
+    for (const { cleanHeader, slugH } of unmapped) {
+      let matched = false;
+
+      // Date / Timestamp / Time (evaluated before generic 'ref' to prevent Ref_Date false-matching refnum)
+      if (/^(ttime|tran_time|trans_time|txn_time|datetime|timestamp|tr_date|trans_date|txn_date|valuedate|value_date|date|created_at|authtime)$/i.test(slugH) || ((slugH.includes('date') || slugH.includes('time')) && !slugH.includes('update'))) {
+        const target = findAvailable(f => f.key.toLowerCase() === 'ttime')
+          || findAvailable(f => f.key.toLowerCase() === 'tr_date')
+          || findAvailable(f => /ttime|tr_date|value_date|timestamp|created_at/i.test(f.key));
+        if (claimTarget(cleanHeader, target)) matched = true;
+      }
+
       // Transaction / UTRNNO / Reference (prioritize refnum)
-      if (/^(fe_)?utrnno$/i.test(slugH) || /^(txn|trans|transaction|tx)(id|no|num|ref|reference|key)?$/i.test(slugH) || /^(rrn|retrieval_ref_num|refnum|reference_no|ref_no|ref|refno)$/i.test(slugH) || slugH.includes('ref')) {
-        const target = fields.find(f => f.key.toLowerCase() === 'refnum')
-          || fields.find(f => f.key.toLowerCase() === 'transaction_id')
-          || fields.find(f => /refnum|transaction_id|trans_id|utrnno|retrieval_ref_num/i.test(f.key));
-        if (target) { mapping[cleanHeader] = target.key; continue; }
+      if (!matched && (/^(fe_)?utrnno$/i.test(slugH) || /^(txn|trans|transaction|tx)(id|no|num|ref|reference|key)?$/i.test(slugH) || /^(rrn|retrieval_ref_num|refnum|reference_no|ref_no|ref|refno)$/i.test(slugH))) {
+        const target = findAvailable(f => f.key.toLowerCase() === 'refnum')
+          || findAvailable(f => f.key.toLowerCase() === 'transaction_id')
+          || findAvailable(f => /refnum|transaction_id|trans_id|utrnno|retrieval_ref_num/i.test(f.key));
+        if (claimTarget(cleanHeader, target)) matched = true;
       }
 
       // Amount / Currency Amount (prioritize reqamt)
-      if (/^(reqamt|request_amt|requested_amount|req_amount|tran_amt|trans_amt|transaction_amount|txn_amount|amount|amt|val|value|interchangeamt|conamt)$/i.test(slugH) || slugH.includes('amount') || slugH.includes('reqamt') || slugH.includes('amt')) {
-        const target = fields.find(f => f.key.toLowerCase() === 'reqamt')
-          || fields.find(f => f.key.toLowerCase() === 'amount')
-          || fields.find(f => /reqamt|amount|amt/i.test(f.key))
-          || fields.find(f => /interchangeamt|conamt/i.test(f.key));
-        if (target) { mapping[cleanHeader] = target.key; continue; }
+      if (!matched && (/^(reqamt|request_amt|requested_amount|req_amount|tran_amt|trans_amt|transaction_amount|txn_amount|amount|amt|val|value|interchangeamt|conamt)$/i.test(slugH))) {
+        const target = findAvailable(f => f.key.toLowerCase() === 'reqamt')
+          || findAvailable(f => f.key.toLowerCase() === 'amount')
+          || findAvailable(f => /reqamt|amount|amt/i.test(f.key))
+          || findAvailable(f => /interchangeamt|conamt/i.test(f.key));
+        if (claimTarget(cleanHeader, target)) matched = true;
       }
 
       // Card / PAN / Account (prioritize hpan)
-      if (/^(hpan|pan|card|card_no|card_num|card_number|cardnumber|account|acct|acct_no|acct_num|account_number|primary_account_number)$/i.test(slugH) || slugH.includes('card') || slugH.includes('pan')) {
-        const target = fields.find(f => f.key.toLowerCase() === 'hpan')
-          || fields.find(f => f.key.toLowerCase() === 'pan')
-          || fields.find(f => /hpan|pan|card|acct_num/i.test(f.key));
-        if (target) { mapping[cleanHeader] = target.key; continue; }
-      }
-
-      // Date / Timestamp / Time (prioritize ttime)
-      if (/^(ttime|tran_time|trans_time|txn_time|datetime|timestamp|tr_date|trans_date|txn_date|valuedate|value_date|date|created_at|authtime)$/i.test(slugH) || slugH.includes('date') || slugH.includes('time')) {
-        const target = fields.find(f => f.key.toLowerCase() === 'ttime')
-          || fields.find(f => f.key.toLowerCase() === 'tr_date')
-          || fields.find(f => /ttime|tr_date|value_date|timestamp|created_at/i.test(f.key));
-        if (target) { mapping[cleanHeader] = target.key; continue; }
+      if (!matched && (/^(hpan|pan|card|card_no|card_num|card_number|cardnumber|account|acct|acct_no|acct_num|account_number|primary_account_number)$/i.test(slugH))) {
+        const target = findAvailable(f => f.key.toLowerCase() === 'hpan')
+          || findAvailable(f => f.key.toLowerCase() === 'pan')
+          || findAvailable(f => /hpan|pan|card|acct_num/i.test(f.key));
+        if (claimTarget(cleanHeader, target)) matched = true;
       }
 
       // Terminal / Merchant / Device (prioritize terminal_id)
-      if (/^(terminal_id|term_id|tid|terminal|merchant_id|mid|merchant|pos_id|term)$/i.test(slugH) || slugH.includes('terminal') || slugH.includes('term')) {
-        const target = fields.find(f => f.key.toLowerCase() === 'terminal_id')
-          || fields.find(f => f.key.toLowerCase() === 'terminal')
-          || fields.find(f => /terminal_id|terminal|merchant_id|merchant/i.test(f.key));
-        if (target) { mapping[cleanHeader] = target.key; continue; }
+      if (!matched && (/^(terminal_id|term_id|tid|terminal|merchant_id|mid|merchant|pos_id|term)$/i.test(slugH))) {
+        const target = findAvailable(f => f.key.toLowerCase() === 'terminal_id')
+          || findAvailable(f => f.key.toLowerCase() === 'terminal')
+          || findAvailable(f => /terminal_id|terminal|merchant_id|merchant/i.test(f.key));
+        if (claimTarget(cleanHeader, target)) matched = true;
       }
 
       // Processing Code (prioritize prcode)
-      if (/^(prcode|proc_code|processing_code|proccode|trans_type|txn_type)$/i.test(slugH) || slugH.includes('prcode') || slugH.includes('proccode') || slugH.includes('proc')) {
-        const target = fields.find(f => f.key.toLowerCase() === 'prcode')
-          || fields.find(f => /prcode|proc_code|processing_code/i.test(f.key));
-        if (target) { mapping[cleanHeader] = target.key; continue; }
+      if (!matched && (/^(prcode|proc_code|processing_code|proccode|trans_type|txn_type)$/i.test(slugH))) {
+        const target = findAvailable(f => f.key.toLowerCase() === 'prcode')
+          || findAvailable(f => /prcode|proc_code|processing_code/i.test(f.key));
+        if (claimTarget(cleanHeader, target)) matched = true;
       }
 
       // Response / Auth Code
-      if (/^(auth_code|authcode|approval_code|auth_num|auth_id|auth_log)$/i.test(slugH) || slugH.includes('auth')) {
-        const target = fields.find(f => /auth_code|auth_id|approval_code|auth_log/i.test(f.key));
-        if (target) { mapping[cleanHeader] = target.key; continue; }
+      if (!matched && (/^(auth_code|authcode|approval_code|auth_num|auth_id|auth_log)$/i.test(slugH))) {
+        const target = findAvailable(f => /auth_code|auth_id|approval_code|auth_log/i.test(f.key));
+        if (claimTarget(cleanHeader, target)) matched = true;
       }
 
       // Status
-      if (/^(status|state|stat|status_state|verdict)$/i.test(slugH) || slugH.includes('status')) {
-        const target = fields.find(f => /status|state/i.test(f.key));
-        if (target) { mapping[cleanHeader] = target.key; continue; }
+      if (!matched && (/^(status|state|stat|status_state|verdict)$/i.test(slugH))) {
+        const target = findAvailable(f => /status|state/i.test(f.key));
+        if (claimTarget(cleanHeader, target)) matched = true;
       }
 
       // Currency
-      if (/^(curr|currency|cur_code|ccy)$/i.test(slugH) || slugH.includes('curr')) {
-        const target = fields.find(f => /currency|conamt/i.test(f.key));
-        if (target) { mapping[cleanHeader] = target.key; continue; }
+      if (!matched && (/^(curr|currency|cur_code|ccy)$/i.test(slugH))) {
+        const target = findAvailable(f => /currency|conamt/i.test(f.key));
+        if (claimTarget(cleanHeader, target)) matched = true;
+      }
+
+      if (!matched) {
+        remainingAfterPass2.push({ cleanHeader, slugH });
+      }
+    }
+
+    // PASS 3: Broad substring heuristics for remaining headers (strictly unassigned targets only)
+    for (const { cleanHeader, slugH } of remainingAfterPass2) {
+      // Substring Reference check
+      if (slugH.includes('ref')) {
+        const target = findAvailable(f => f.key.toLowerCase() === 'refnum')
+          || findAvailable(f => f.key.toLowerCase() === 'transaction_id')
+          || findAvailable(f => /refnum|transaction_id|trans_id|utrnno|retrieval_ref_num/i.test(f.key));
+        if (claimTarget(cleanHeader, target)) continue;
+      }
+
+      // Substring Amount check
+      if (slugH.includes('amount') || slugH.includes('reqamt') || slugH.includes('amt')) {
+        const target = findAvailable(f => f.key.toLowerCase() === 'reqamt')
+          || findAvailable(f => f.key.toLowerCase() === 'amount')
+          || findAvailable(f => /reqamt|amount|amt/i.test(f.key))
+          || findAvailable(f => /interchangeamt|conamt/i.test(f.key));
+        if (claimTarget(cleanHeader, target)) continue;
+      }
+
+      // Substring Card check
+      if (slugH.includes('card') || slugH.includes('pan')) {
+        const target = findAvailable(f => f.key.toLowerCase() === 'hpan')
+          || findAvailable(f => f.key.toLowerCase() === 'pan')
+          || findAvailable(f => /hpan|pan|card|acct_num/i.test(f.key));
+        if (claimTarget(cleanHeader, target)) continue;
+      }
+
+      // Substring Terminal check
+      if (slugH.includes('terminal') || slugH.includes('term')) {
+        const target = findAvailable(f => f.key.toLowerCase() === 'terminal_id')
+          || findAvailable(f => f.key.toLowerCase() === 'terminal')
+          || findAvailable(f => /terminal_id|terminal|merchant_id|merchant/i.test(f.key));
+        if (claimTarget(cleanHeader, target)) continue;
+      }
+
+      // Substring Processing Code check
+      if (slugH.includes('prcode') || slugH.includes('proccode') || slugH.includes('proc')) {
+        const target = findAvailable(f => f.key.toLowerCase() === 'prcode')
+          || findAvailable(f => /prcode|proc_code|processing_code/i.test(f.key));
+        if (claimTarget(cleanHeader, target)) continue;
+      }
+
+      // Substring Auth check
+      if (slugH.includes('auth')) {
+        const target = findAvailable(f => /auth_code|auth_id|approval_code|auth_log/i.test(f.key));
+        if (claimTarget(cleanHeader, target)) continue;
+      }
+
+      // Substring Status check
+      if (slugH.includes('status')) {
+        const target = findAvailable(f => /status|state/i.test(f.key));
+        if (claimTarget(cleanHeader, target)) continue;
+      }
+
+      // Substring Currency check
+      if (slugH.includes('curr')) {
+        const target = findAvailable(f => /currency|conamt/i.test(f.key));
+        if (claimTarget(cleanHeader, target)) continue;
       }
     }
 

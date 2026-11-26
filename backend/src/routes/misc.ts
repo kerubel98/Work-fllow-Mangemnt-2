@@ -1020,7 +1020,12 @@ miscRouter.get('/metrics', async (_req: Request, res: Response) => {
 // ================= FILE INGESTION MAPPING TEMPLATES (Domain 7) =================
 miscRouter.get('/file-mapping-templates', async (req: Request, res: Response) => {
   try {
-    const teamId = typeof req.query.teamId === 'string' ? req.query.teamId : undefined;
+    const user = (req as any).user;
+    let teamId = typeof req.query.teamId === 'string' ? req.query.teamId : undefined;
+    // Non-admin callers only see templates belonging to their team or global (team_id IS NULL)
+    if (user && user.role !== 'admin' && !teamId && user.teamId) {
+      teamId = user.teamId;
+    }
     const templates = await repo.getFileMappingTemplates(teamId);
     return res.json(templates);
   } catch (err: any) {
@@ -1034,6 +1039,10 @@ miscRouter.get('/file-mapping-templates/:id', async (req: Request, res: Response
     if (!template) {
       return res.status(404).json({ error: 'File mapping template not found' });
     }
+    const user = (req as any).user;
+    if (user && user.role !== 'admin' && template.teamId && user.teamId && template.teamId !== user.teamId) {
+      return res.status(403).json({ error: 'Access denied: Template belongs to another team' });
+    }
     return res.json(template);
   } catch (err: any) {
     return res.status(500).json({ error: err.message });
@@ -1042,10 +1051,30 @@ miscRouter.get('/file-mapping-templates/:id', async (req: Request, res: Response
 
 miscRouter.post('/file-mapping-templates', async (req: Request, res: Response) => {
   try {
+    const user = (req as any).user;
     const payload = req.body;
     if (!payload.name) {
       return res.status(400).json({ error: 'Template name is required' });
     }
+
+    // Check ownership if updating an existing template
+    if (payload.id) {
+      const existing = await repo.getFileMappingTemplateById(payload.id);
+      if (existing) {
+        if (user && user.role !== 'admin' && existing.teamId && user.teamId && existing.teamId !== user.teamId) {
+          return res.status(403).json({ error: 'Access denied: Cannot modify another team\'s template' });
+        }
+      }
+    }
+
+    // Set actor and enforce team boundary for non-admin callers
+    if (user) {
+      payload.createdBy = payload.createdBy || user.id || user.name;
+      if (user.role !== 'admin') {
+        payload.teamId = user.teamId || payload.teamId;
+      }
+    }
+
     const saved = await repo.createOrUpdateFileMappingTemplate(payload);
     return res.status(201).json(saved);
   } catch (err: any) {
@@ -1055,6 +1084,16 @@ miscRouter.post('/file-mapping-templates', async (req: Request, res: Response) =
 
 miscRouter.delete('/file-mapping-templates/:id', async (req: Request, res: Response) => {
   try {
+    const user = (req as any).user;
+    const existing = await repo.getFileMappingTemplateById(req.params.id);
+    if (!existing) {
+      return res.status(404).json({ error: 'File mapping template not found or already deleted' });
+    }
+
+    if (user && user.role !== 'admin' && existing.teamId && user.teamId && existing.teamId !== user.teamId) {
+      return res.status(403).json({ error: 'Access denied: Cannot delete another team\'s template' });
+    }
+
     const success = await repo.deleteFileMappingTemplate(req.params.id);
     if (!success) {
       return res.status(404).json({ error: 'File mapping template not found or already deleted' });

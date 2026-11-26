@@ -537,35 +537,15 @@ export class GlobalMappingService {
   }
 
   /**
-   * Loads or initializes the Central Uploaded Transaction Repository Table
+   * Loads or initializes the Central Uploaded Transaction Repository Table Schema Model in memory.
+   * Per Rule 23, table data and definitions must not be stored in client-side localStorage.
    */
   private loadCentralTable(): CentralUploadedTransactionRepositoryTable {
+    // Proactively purge any stale legacy localStorage persistence
     try {
-      const saved = localStorage.getItem(CENTRAL_TABLE_STORAGE_KEY);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (parsed.tableName && parsed.columns) {
-          // Sanitize any stale synthetic mock records from legacy cache
-          if (Array.isArray(parsed.records)) {
-            const hasMock = parsed.records.some((r: any) => 
-              String(r.user_email).includes('cyberdyne') || 
-              String(r.transaction_id).startsWith('TXN-902')
-            );
-            if (hasMock) {
-              parsed.records = [];
-              parsed.recordCount = 0;
-              try {
-                localStorage.setItem(CENTRAL_TABLE_STORAGE_KEY, JSON.stringify(parsed));
-              } catch (e) {
-                // ignore
-              }
-            }
-          }
-          return parsed;
-        }
-      }
+      localStorage.removeItem(CENTRAL_TABLE_STORAGE_KEY);
     } catch (e) {
-      console.warn('Failed to load central repository table from storage:', e);
+      // ignore
     }
 
     // Generate initial table using current schema model
@@ -597,12 +577,6 @@ export class GlobalMappingService {
       ]
     };
 
-    try {
-      localStorage.setItem(CENTRAL_TABLE_STORAGE_KEY, JSON.stringify(initialTable));
-    } catch (e) {
-      console.warn('Could not cache central table to localStorage:', e);
-    }
-
     return initialTable;
   }
 
@@ -627,10 +601,11 @@ export class GlobalMappingService {
       recordCount: table.records.length,
       updatedAt: new Date().toISOString()
     };
+    // Ensure no business state is persisted to localStorage per Rule 23
     try {
-      localStorage.setItem(CENTRAL_TABLE_STORAGE_KEY, JSON.stringify(this.centralTable));
+      localStorage.removeItem(CENTRAL_TABLE_STORAGE_KEY);
     } catch (e) {
-      console.error('Failed to save central repository table to localStorage:', e);
+      // ignore
     }
   }
 

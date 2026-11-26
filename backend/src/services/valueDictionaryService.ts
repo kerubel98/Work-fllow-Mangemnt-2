@@ -65,6 +65,16 @@ export function applyTransformationRule(rule: string, value: string): string {
       const cleaned = str.replace(/[^0-9.-]/g, '').trim();
       return cleaned || str;
     }
+    case 'NUMBER_CLEAN': {
+      const cleaned = str.replace(/[^0-9.-]/g, '').trim();
+      const num = parseFloat(cleaned);
+      return isNaN(num) ? str : num.toFixed(2);
+    }
+    case 'ROUND_INT': {
+      const cleaned = str.replace(/[^0-9.-]/g, '').trim();
+      const num = parseFloat(cleaned);
+      return isNaN(num) ? str : String(Math.round(num));
+    }
     case 'PHONE_ET': {
       // Standardize Ethiopian phone number to +251...
       const digits = str.replace(/[^0-9]/g, '');
