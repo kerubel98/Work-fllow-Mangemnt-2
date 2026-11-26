@@ -11,10 +11,39 @@ import { repo } from '../store/repository.js';
 import { ftpFileStagingService } from './ftpFileStagingService.js';
 import { stagingService } from './messaging/stagingService.js';
 import { getPostgresPool } from '../config/postgres.js';
-import { FtpFileStagingConfig, DatabaseConnection } from '../types.js';
+import { FtpFileStagingConfig, DatabaseConnection, FtpStagingScheduleConfig } from '../types.js';
+import { isCronDue } from './hashtagSchedulerService.js';
 
 let ftpSchedulerInterval: NodeJS.Timeout | null = null;
 let isFtpExecuting = false;
+
+/**
+ * Evaluates whether an FTP staging schedule is due based on frequency cadence and lastRunAt.
+ * Complies with AUD-TAG-003.
+ */
+export function isFtpScheduleDue(schedule?: FtpStagingScheduleConfig): boolean {
+  if (!schedule || !schedule.enabled) return false;
+  if (schedule.frequency === 'MANUAL') return false;
+
+  const now = Date.now();
+  const lastRun = schedule.lastRunAt ? new Date(schedule.lastRunAt).getTime() : 0;
+  const elapsedMs = now - lastRun;
+
+  switch (schedule.frequency) {
+    case 'EVERY_15_MIN':
+      return !schedule.lastRunAt || elapsedMs >= 15 * 60 * 1000;
+    case 'HOURLY':
+      return !schedule.lastRunAt || elapsedMs >= 60 * 60 * 1000;
+    case 'EVERY_6_HOURS':
+      return !schedule.lastRunAt || elapsedMs >= 6 * 60 * 60 * 1000;
+    case 'DAILY':
+      return !schedule.lastRunAt || elapsedMs >= 24 * 60 * 60 * 1000;
+    case 'CUSTOM_CRON':
+      return isCronDue(schedule.scheduleCron, schedule.lastRunAt);
+    default:
+      return false;
+  }
+}
 
 export interface ScheduledRunResult {
   configId: string;
@@ -76,7 +105,7 @@ export const ftpSchedulerService = {
       // Filter configurations
       const matchedConfigs = allConfigs.filter(c => {
         if (options.connectionId && c.ftpConnectionId !== options.connectionId) return false;
-        if (!options.forceAll && c.scheduleConfig?.enabled !== true) return false;
+        if (!options.forceAll && !isFtpScheduleDue(c.scheduleConfig)) return false;
         
         const targetType = options.targetType || 'ALL';
         if (targetType !== 'ALL') {

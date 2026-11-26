@@ -19,6 +19,7 @@ import crypto from 'crypto';
 import { queryPg, getPostgresPool } from '../config/postgres.js';
 import { repo } from '../store/repository.js';
 import { dataSanitizerService } from './dataSanitizerService.js';
+import { sanitizeSqlConditionPredicate } from './ruleSqlCompiler.js';
 import {
   HashtagPreset, HashtagExecutionRun, HashtagExecutionVerdict,
   DictionaryLookupMapping
@@ -41,6 +42,61 @@ export function derive64BitAdvisoryLockBigInt(identifier: string): string {
   const bigIntVal = BigInt('0x' + hashHex);
   const signedBigInt = BigInt.asIntN(64, bigIntVal);
   return signedBigInt.toString();
+}
+
+/**
+ * Validates that an explicit SELECT query is strictly read-only,
+ * has no stacked statements, no comments, no DDL/DML, and no access to internal system catalogs.
+ * Complies with AGENTS.md Rule 11 & AUD-TAG-001.
+ */
+export function validateReadOnlySelectQuery(sql: string): string {
+  if (!sql || !sql.trim()) {
+    throw new Error('Validation Error: SQL query cannot be empty.');
+  }
+
+  let clean = sql.trim();
+  // Strip single trailing semicolon if present
+  if (clean.endsWith(';')) {
+    clean = clean.slice(0, -1).trim();
+  }
+
+  // Disallow stacked statements or null bytes
+  if (/[;\0]/.test(clean)) {
+    throw new Error('Security Violation: Semicolons and stacked statements are strictly prohibited.');
+  }
+
+  // Disallow SQL comments (-- or /* */)
+  if (/(--|\/\*|\*\/)/.test(clean)) {
+    throw new Error('Security Violation: SQL comments are strictly prohibited in hashtag queries.');
+  }
+
+  // Must start with SELECT or WITH (read-only CTE)
+  const upper = clean.toUpperCase();
+  if (!upper.startsWith('SELECT') && !upper.startsWith('WITH')) {
+    throw new Error('Security Violation: Only read-only SELECT queries are permitted.');
+  }
+
+  // Disallow mutating keywords, DDL, transaction commands, system functions
+  const forbiddenPatterns = [
+    /\b(ALTER|CREATE|DROP|TRUNCATE|GRANT|REVOKE)\b/i,
+    /\b(INSERT|UPDATE|DELETE|MERGE)\b/i,
+    /\b(COMMIT|ROLLBACK|BEGIN|SAVEPOINT)\b/i,
+    /\b(EXEC|EXECUTE)\b/i,
+    /\b(INTO\s+OUTFILE|INTO\s+DUMPFILE|COPY\s+TO|COPY\s+FROM)\b/i,
+    /\b(PG_SLEEP|PG_TERMINATE_BACKEND|PG_CANCEL_BACKEND|CURRENT_SETTING|SET_CONFIG)\b/i,
+    /\b(PG_READ_FILE|PG_READ_BINARY_FILE|PG_LS_DIR|PG_STAT_FILE)\b/i,
+    /\b(DBLINK|DBLINK_EXEC|DBLINK_CONNECT)\b/i,
+    /\b(LO_IMPORT|LO_EXPORT|LO_GET|LO_PUT|LO_UNLINK)\b/i,
+    /\b(PG_CATALOG|INFORMATION_SCHEMA|PG_SHADOW|PG_AUTHID|PG_USER|PG_DATABASE)\b/i
+  ];
+
+  for (const pattern of forbiddenPatterns) {
+    if (pattern.test(clean)) {
+      throw new Error(`Security Violation: Unsafe SQL pattern detected in query: ${pattern.source}`);
+    }
+  }
+
+  return clean;
 }
 
 /** Legacy expression helper for SQL inline contexts */
@@ -335,42 +391,54 @@ export async function executeDatabaseDirectScan(
     }
 
     // Determine anomaly detection query
-    // 1. If criteria or solution starts with SELECT, execute directly
+    // 1. If criteria or solution starts with SELECT or WITH, validate and execute directly
     let anomalyRows: Record<string, any>[] = [];
     const rawSql = (preset.criteria || '').trim();
-    const isExplicitSelect = rawSql.toUpperCase().startsWith('SELECT');
+    const isExplicitSelect = rawSql.toUpperCase().startsWith('SELECT') || rawSql.toUpperCase().startsWith('WITH');
 
     if (isExplicitSelect) {
-      const anomalyRes = await executeQuery(`${rawSql} LIMIT ${limit}`, []);
-      anomalyRows = anomalyRes.rows;
+      try {
+        const validatedSql = validateReadOnlySelectQuery(rawSql);
+        const anomalyRes = await executeQuery(`${validatedSql} LIMIT ${limit}`, []);
+        anomalyRows = anomalyRes.rows;
+      } catch (valErr: any) {
+        errors.push(`Criteria query security error: ${valErr.message}`);
+      }
     } else if (rawSql.includes(',')) {
       // Comma-separated column list: compile to batched duplicate anomaly detection
-      const cols = rawSql.split(',').map(c => `"${c.trim().replace(/"/g, '""')}"`).join(', ');
-      const dupQuery = `
-        SELECT ${tableIdent}.*
-        FROM ${tableIdent}
-        INNER JOIN (
-          SELECT ${cols}, COUNT(*) AS _cnt
+      const colNames = rawSql.split(',').map(c => c.trim()).filter(Boolean);
+      const invalidCol = colNames.find(c => !/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(c));
+      if (invalidCol) {
+        errors.push(`Security Violation: Column identifier '${invalidCol}' is invalid in duplicate scan criteria.`);
+      } else {
+        const cols = colNames.map(c => `"${c.replace(/"/g, '""')}"`).join(', ');
+        const dupQuery = `
+          SELECT ${tableIdent}.*
           FROM ${tableIdent}
-          GROUP BY ${cols}
-          HAVING COUNT(*) > 1
-        ) _dups ON ${rawSql.split(',').map(c => {
-          const colClean = `"${c.trim().replace(/"/g, '""')}"`;
-          return `${tableIdent}.${colClean} = _dups.${colClean}`;
-        }).join(' AND ')}
-        LIMIT ${limit}
-      `;
-      try {
-        const dupRes = await executeQuery(dupQuery, []);
-        anomalyRows = dupRes.rows;
-      } catch (dupErr: any) {
-        errors.push(`Duplicate scan error: ${dupErr.message}`);
+          INNER JOIN (
+            SELECT ${cols}, COUNT(*) AS _cnt
+            FROM ${tableIdent}
+            GROUP BY ${cols}
+            HAVING COUNT(*) > 1
+          ) _dups ON ${colNames.map(c => {
+            const colClean = `"${c.replace(/"/g, '""')}"`;
+            return `${tableIdent}.${colClean} = _dups.${colClean}`;
+          }).join(' AND ')}
+          LIMIT ${limit}
+        `;
+        try {
+          const dupRes = await executeQuery(dupQuery, []);
+          anomalyRows = dupRes.rows;
+        } catch (dupErr: any) {
+          errors.push(`Duplicate scan error: ${dupErr.message}`);
+        }
       }
     } else {
       // Treat criteria as a standard WHERE filter (e.g. status = 'PENDING' OR amount < 0)
       const whereClause = rawSql || '1=1';
-      const scanSql = `SELECT * FROM ${tableIdent} WHERE (${whereClause}) LIMIT ${limit}`;
       try {
+        const sanitizedWhere = sanitizeSqlConditionPredicate(whereClause, '');
+        const scanSql = `SELECT * FROM ${tableIdent} WHERE ${sanitizedWhere} LIMIT ${limit}`;
         const scanRes = await executeQuery(scanSql, []);
         anomalyRows = scanRes.rows;
       } catch (scanErr: any) {
@@ -454,9 +522,11 @@ export async function executeExtractionStaging(
 
       if (preset.targetTableName) {
         const srcIdent = `"${preset.targetTableName.replace(/"/g, '""')}"`;
-        const extractSql = preset.solutionTemplate?.trim().toUpperCase().startsWith('SELECT')
-          ? preset.solutionTemplate
-          : `SELECT * FROM ${srcIdent} LIMIT 10000`;
+        let extractSql = `SELECT * FROM ${srcIdent} LIMIT 10000`;
+        const rawTpl = preset.solutionTemplate?.trim();
+        if (rawTpl && (rawTpl.toUpperCase().startsWith('SELECT') || rawTpl.toUpperCase().startsWith('WITH'))) {
+          extractSql = validateReadOnlySelectQuery(rawTpl);
+        }
         const { rows } = await client.query(extractSql, []);
         sourceRows = rows;
       }

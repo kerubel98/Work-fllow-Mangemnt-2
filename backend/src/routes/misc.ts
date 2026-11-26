@@ -1,7 +1,9 @@
 import { Router, Request, Response } from 'express';
 import { repo } from '../store/repository.js';
 import { HashtagPreset, EnvironmentSystem } from '../types.js';
-import { requireAuth } from '../utils/auth.js';
+import { requireAuth, requireRole, AuthenticatedRequest } from '../middleware/auth.js';
+import { validateReadOnlySelectQuery } from '../services/hashtagService.js';
+import { sanitizeSqlConditionPredicate } from '../services/ruleSqlCompiler.js';
 import {
   translateWithDictionary,
   findUntranslatedValues,
@@ -10,6 +12,46 @@ import {
 } from '../services/valueDictionaryService.js';
 
 export const miscRouter = Router();
+
+/**
+ * Validates that criteria and solutionTemplate comply with read-only & injection-free rules.
+ * Complies with AGENTS.md Rule 11 & AUD-TAG-001.
+ */
+function validateHashtagSql(preset: Partial<HashtagPreset>): void {
+  if (preset.criteria && typeof preset.criteria === 'string') {
+    const crit = preset.criteria.trim();
+    if (crit.toUpperCase().startsWith('SELECT') || crit.toUpperCase().startsWith('WITH')) {
+      validateReadOnlySelectQuery(crit);
+    } else if (crit.includes(',')) {
+      const colNames = crit.split(',').map(c => c.trim()).filter(Boolean);
+      const invalid = colNames.find(c => !/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(c));
+      if (invalid) {
+        throw new Error(`Security Violation: Column identifier '${invalid}' is invalid in criteria list.`);
+      }
+    } else if (crit !== '' && crit !== '1=1') {
+      sanitizeSqlConditionPredicate(crit, '');
+    }
+  }
+
+  if (preset.solutionTemplate && typeof preset.solutionTemplate === 'string') {
+    const sol = preset.solutionTemplate.trim();
+    if (sol.toUpperCase().startsWith('SELECT') || sol.toUpperCase().startsWith('WITH')) {
+      validateReadOnlySelectQuery(sol);
+    }
+  }
+}
+
+/**
+ * Returns true if the hashtag executes automated background queries or elevated SQL actions.
+ */
+function isElevatedHashtag(preset: Partial<HashtagPreset>): boolean {
+  return (
+    preset.executionTrigger === 'SCHEDULED_CRON' ||
+    preset.hashtagType === 'DATABASE_DIRECT_SCANNER' ||
+    preset.hashtagType === 'EXTRACTION_STAGING' ||
+    preset.conditionalAction?.onPass === 'EXECUTE_SQL'
+  );
+}
 
 // ================= HASHTAGS =================
 miscRouter.get('/hashtags', async (_req: Request, res: Response) => {
@@ -21,21 +63,38 @@ miscRouter.get('/hashtags', async (_req: Request, res: Response) => {
   }
 });
 
-miscRouter.post('/hashtags', async (req: Request, res: Response) => {
+miscRouter.post('/hashtags', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const newTag: HashtagPreset = req.body;
     if (!newTag.tag) {
       return res.status(400).json({ error: 'Tag name is required' });
     }
+
+    const callerRole = req.user?.role?.toLowerCase() || '';
+    const isElevated = isElevatedHashtag(newTag);
+
+    // AUD-TAG-002: Restrict elevated automation triggers and SQL execution to authorized roles
+    if (isElevated && callerRole !== 'admin' && callerRole !== 'managerial' && callerRole !== 'lead' && callerRole !== 'technical') {
+      return res.status(403).json({
+        error: 'Forbidden: Creating automated cron schedules, direct database scanner hashtags, extraction staging, or SQL conditional remediation requires Administrator, Lead, or Technical privileges.'
+      });
+    }
+
     const isFileIngestion = !newTag.hashtagType || newTag.hashtagType === 'FILE_INGESTION';
     const requiresSolutionTemplate = isFileIngestion || newTag.conditionalAction?.onPass === 'EXECUTE_SQL';
     if (requiresSolutionTemplate && !newTag.solutionTemplate) {
       return res.status(400).json({ error: 'Solution template is required for file ingestion or SQL conditional remediation' });
     }
+
+    // AUD-TAG-001: Validate SQL criteria and solution templates
+    validateHashtagSql(newTag);
+
+    newTag.author = req.user?.username || req.user?.id || newTag.author || 'Operator';
     const saved = await repo.createHashtag(newTag);
     return res.status(201).json(saved);
   } catch (err: any) {
-    return res.status(500).json({ error: err.message });
+    const isSecurityErr = err.message?.includes('Security Violation') || err.message?.includes('Validation Error');
+    return res.status(isSecurityErr ? 400 : 500).json({ error: err.message });
   }
 });
 
@@ -49,9 +108,14 @@ miscRouter.get('/hashtags/resolve/:tag', async (req: Request, res: Response) => 
   }
 });
 
-// PUT /api/hashtags/:tag/kpis - Attach or update manager KPIs for a hashtag
-miscRouter.put('/hashtags/:tag/kpis', async (req: Request, res: Response) => {
+// PUT /api/hashtags/:tag/kpis - Attach or update manager KPIs for a hashtag (Requires Admin/Managerial role)
+miscRouter.put('/hashtags/:tag/kpis', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
+    const callerRole = req.user?.role?.toLowerCase() || '';
+    if (callerRole !== 'admin' && callerRole !== 'managerial' && callerRole !== 'lead') {
+      return res.status(403).json({ error: 'Forbidden: Attaching manager KPIs requires Managerial or Administrator privileges.' });
+    }
+
     const { kpis } = req.body;
     if (!Array.isArray(kpis)) {
       return res.status(400).json({ error: 'kpis array is required' });
@@ -64,20 +128,55 @@ miscRouter.put('/hashtags/:tag/kpis', async (req: Request, res: Response) => {
   }
 });
 
-// PUT /api/hashtags/:tag - Update an existing hashtag preset
-miscRouter.put('/hashtags/:tag', async (req: Request, res: Response) => {
+// PUT /api/hashtags/:tag - Update an existing hashtag preset (Requires Authentication & Authorization)
+miscRouter.put('/hashtags/:tag', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
+    const existing = await repo.getHashtagByTag(req.params.tag);
+    if (!existing) return res.status(404).json({ error: `Hashtag '${req.params.tag}' not found` });
+
+    const user = req.user;
+    const role = user?.role?.toLowerCase() || '';
+    const isPrivileged = role === 'admin' || role === 'managerial' || role === 'lead' || role === 'technical';
+    const isAuthor = existing.author === user?.username || existing.author === user?.id;
+
+    if (!isPrivileged && !isAuthor) {
+      return res.status(403).json({ error: 'Forbidden: You do not have permission to modify this hashtag preset.' });
+    }
+
+    // AUD-TAG-002: If modifying elevated triggers or actions, require privileged role
+    if (!isPrivileged && (isElevatedHashtag(req.body) || isElevatedHashtag(existing))) {
+      return res.status(403).json({
+        error: 'Forbidden: Modifying automated cron schedules, database direct scanners, extraction staging, or SQL conditional remediation requires Administrator or Lead privileges.'
+      });
+    }
+
+    // AUD-TAG-001: Validate SQL criteria and solution templates
+    validateHashtagSql(req.body);
+
     const updated = await repo.updateHashtag(req.params.tag, req.body);
     if (!updated) return res.status(404).json({ error: `Hashtag '${req.params.tag}' not found` });
     return res.json(updated);
   } catch (err: any) {
-    return res.status(500).json({ error: err.message });
+    const isSecurityErr = err.message?.includes('Security Violation') || err.message?.includes('Validation Error');
+    return res.status(isSecurityErr ? 400 : 500).json({ error: err.message });
   }
 });
 
-// DELETE /api/hashtags/:tag - Delete an existing hashtag preset
-miscRouter.delete('/hashtags/:tag', async (req: Request, res: Response) => {
+// DELETE /api/hashtags/:tag - Delete an existing hashtag preset (Requires Authentication & Ownership)
+miscRouter.delete('/hashtags/:tag', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
+    const existing = await repo.getHashtagByTag(req.params.tag);
+    if (!existing) return res.status(404).json({ error: `Hashtag '${req.params.tag}' not found` });
+
+    const user = req.user;
+    const role = user?.role?.toLowerCase() || '';
+    const isPrivileged = role === 'admin' || role === 'managerial' || role === 'lead';
+    const isAuthor = existing.author === user?.username || existing.author === user?.id;
+
+    if (!isPrivileged && !isAuthor) {
+      return res.status(403).json({ error: 'Forbidden: You do not have permission to delete this hashtag preset.' });
+    }
+
     const success = await repo.deleteHashtag(req.params.tag);
     if (!success) return res.status(404).json({ error: `Hashtag '${req.params.tag}' not found` });
     return res.json({ success: true, deletedTag: req.params.tag });
@@ -87,7 +186,7 @@ miscRouter.delete('/hashtags/:tag', async (req: Request, res: Response) => {
 });
 
 // POST /api/hashtags/create-from-issue/:issueId - Define reusable hashtag out of a resolved issue
-miscRouter.post('/hashtags/create-from-issue/:issueId', async (req: Request, res: Response) => {
+miscRouter.post('/hashtags/create-from-issue/:issueId', requireAuth, async (req: AuthenticatedRequest, res: Response) => {
   try {
     const issue = await repo.getIssueById(req.params.issueId);
     if (!issue) return res.status(404).json({ error: 'Issue not found' });
@@ -101,7 +200,7 @@ miscRouter.post('/hashtags/create-from-issue/:issueId', async (req: Request, res
       criteria: `Derived from ${issue.title}`,
       expectedFileStructure: issue.uploadedFileHeaders && issue.uploadedFileHeaders.length > 0 ? issue.uploadedFileHeaders : ['transaction_id', 'amount', 'status'],
       solutionTemplate: issue.solutionScript || 'SELECT * FROM transactions WHERE status = \'FAILED\';',
-      author: author || issue.creatorName || 'Operator',
+      author: req.user?.username || req.user?.id || author || issue.creatorName || 'Operator',
       createdAt: new Date().toISOString(),
       workflowId: workflowId || issue.workflowId,
       workflowName: workflowName,
@@ -109,10 +208,13 @@ miscRouter.post('/hashtags/create-from-issue/:issueId', async (req: Request, res
       kpis: []
     };
 
+    validateHashtagSql(newPreset);
+
     const saved = await repo.createHashtag(newPreset);
     return res.status(201).json(saved);
   } catch (err: any) {
-    return res.status(500).json({ error: err.message });
+    const isSecurityErr = err.message?.includes('Security Violation') || err.message?.includes('Validation Error');
+    return res.status(isSecurityErr ? 400 : 500).json({ error: err.message });
   }
 });
 

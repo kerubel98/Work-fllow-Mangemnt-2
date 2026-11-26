@@ -130,6 +130,25 @@ export const hashtagSchedulerService = {
               if (action === 'EXECUTE_SQL' || action === 'STAGE_PROPOSAL') {
                 try {
                   const { approvalService } = await import('./approvalService.js');
+                  // AUD-TAG-003: Dynamically resolve team ownership from preset, target database, or attached workflow
+                  let resolvedTeamId = (preset as any).teamId;
+                  if (!resolvedTeamId && preset.targetDbId && preset.targetDbId !== 'internal') {
+                    try {
+                      const db = await repo.getDatabaseById(preset.targetDbId);
+                      if (db?.teamId) {
+                        resolvedTeamId = db.teamId;
+                      }
+                    } catch {}
+                  }
+                  if (!resolvedTeamId && preset.workflowId) {
+                    try {
+                      const wf = await repo.getWorkflowById(preset.workflowId);
+                      if (wf?.teamId) {
+                        resolvedTeamId = wf.teamId;
+                      }
+                    } catch {}
+                  }
+
                   const proposal = await approvalService.submitProposal({
                     type: 'WORKSPACE_SETTING',
                     settingKey: tag,
@@ -137,7 +156,7 @@ export const hashtagSchedulerService = {
                     justification: `Autonomous cron scan passed. Triggering conditional action: ${action}`,
                     makerId: 'SYSTEM_SCHEDULER',
                     makerName: 'Autonomous Scheduler',
-                    teamId: (preset as any).teamId || 'default-team',
+                    teamId: resolvedTeamId || 'default-team',
                     proposedChanges: {
                       action,
                       sql: preset.solutionTemplate || null,
